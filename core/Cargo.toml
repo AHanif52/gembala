@@ -1,0 +1,8 @@
+[package]
+name = "gembala"
+version = "0.1.0"
+description = "Daemon PTY + CLI Gembala (satu binary)"
+edition = "2024"
+
+[dependencies]
+libc = "0.2"
