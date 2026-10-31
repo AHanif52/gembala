@@ -2,6 +2,7 @@
   // Fase 1 M1: grid pane satu tab (FR-1, 37, 38, 50). Tab, profil, dan pengaturan menyusul (M3–M7).
   import { onMount } from "svelte";
   import Tile from "$lib/Tile.svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { call } from "$lib/daemon";
   import { dividers, neighbor, nudge, panes, rects, remove, setRatio, split, type Arrow, type Dir, type Divider, type Node } from "$lib/layout";
 
@@ -45,31 +46,25 @@
     if (focus === pane || !panes(tree).includes(focus)) focus = next ?? panes(tree)[0];
   }
 
-  const ARROWS: Record<string, Arrow> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
+  /// Aksi dari menu "Pane" (key equivalent native, lihat lib.rs). `⌘` milik app, sisanya ke terminal (FR-39).
+  function run(id: string) {
+    if (!tree || confirm) return;
+    const [, group, arg] = id.split(".");
+    if (group === "split") splitFocused(arg === "down" ? "col" : "row");
+    else if (group === "focus" && !zoomed) focus = neighbor(tree, focus, arg as Arrow) ?? focus;
+    else if (group === "resize" && !zoomed) tree = nudge(tree, focus, arg as Arrow);
+    else if (group === "zoom") zoomed = !zoomed;
+    else if (id === "pane.proc.kill") call("pane.kill", { pane: focus });
+    else if (id === "pane.proc.close") askClose(focus);
+  }
 
-  /// `⌘` milik app, sisanya diteruskan ke terminal (FR-39). Default ala Warp.
+  /// Hanya kartu konfirmasi tutup yang menangkap tombol; lainnya milik terminal.
   function onKey(e: KeyboardEvent) {
-    if (confirm) {
-      if (e.key === "Enter") call("pane.close", { pane: confirm.pane });
-      if (e.key === "Enter" || e.key === "Escape") confirm = null;
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-    if (!e.metaKey || !tree) return;
-    const arrow = ARROWS[e.key];
-    let handled = true;
-    if (e.key.toLowerCase() === "d") splitFocused(e.shiftKey ? "col" : "row");
-    else if (e.key.toLowerCase() === "w") askClose(focus);
-    else if (e.key === "." ) call("pane.kill", { pane: focus });
-    else if (e.key === "Enter" && e.shiftKey) zoomed = !zoomed;
-    else if (arrow && e.altKey && !zoomed) focus = neighbor(tree, focus, arrow) ?? focus;
-    else if (arrow && e.ctrlKey && !zoomed) tree = nudge(tree, focus, arrow);
-    else handled = false;
-    if (handled) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    if (!confirm) return;
+    if (e.key === "Enter") call("pane.close", { pane: confirm.pane });
+    if (e.key === "Enter" || e.key === "Escape") confirm = null;
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   function drag(d: Divider, e: PointerEvent) {
@@ -92,6 +87,7 @@
 
   onMount(() => {
     window.addEventListener("keydown", onKey, true);
+    const unlisten = listen<string>("shortcut", ({ payload }) => run(payload));
     (async () => {
       try {
         // ponytail: pane lama dari daemon dijajarkan ke kanan; pulihkan tata letak asli = M5 (FR-45)
@@ -105,7 +101,10 @@
         error = `gagal sambung ke daemon: ${e}`;
       }
     })();
-    return () => window.removeEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      unlisten.then((f) => f());
+    };
   });
 </script>
 
@@ -163,10 +162,14 @@
   .tile {
     position: absolute;
     box-sizing: border-box;
-    transition: opacity 120ms;
   }
-  .tile.dim {
-    opacity: 0.55;
+  /* redup pakai lapisan tipis, bukan opacity: opacity memaksa layer GPU seukuran pane */
+  .tile.dim::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(16, 17, 20, 0.45);
+    pointer-events: none;
   }
   .divider {
     position: absolute;

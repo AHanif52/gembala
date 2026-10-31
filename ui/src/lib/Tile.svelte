@@ -4,6 +4,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
+  import { WebglAddon } from "@xterm/addon-webgl";
   import "@xterm/xterm/css/xterm.css";
   import { call, b64, unb64 } from "./daemon";
 
@@ -28,6 +29,13 @@
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
+    // WebGL: satu canvas per pane, jauh lebih hemat RAM daripada renderer DOM untuk TUI berwarna.
+    // Konteks hilang (GPU reset, terlalu banyak konteks) = kembali ke DOM.
+    try {
+      const gl = new WebglAddon();
+      gl.onContextLoss(() => gl.dispose());
+      term.loadAddon(gl);
+    } catch {}
     fit.fit();
 
     let attached = false;
