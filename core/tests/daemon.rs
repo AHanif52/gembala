@@ -484,3 +484,19 @@ fn status_dari_hook() {
     let mut outsider = Cli::connect(&d, "pane.sock");
     assert_eq!(outsider.call("hello", json!({"proto": 1}))["error"]["code"], "not_a_pane");
 }
+
+/// FR-48: reset menghapus file milik Gembala saja lalu daemon keluar; file lain di folder itu tidak disentuh.
+#[test]
+fn reset_hanya_data_gembala() {
+    let mut d = start("reset");
+    let cfg = d.dir.join("cfg");
+    let mut ui = Cli::ui(&d);
+    ui.call("config.set", json!({"section": "ui", "key": "font_size", "value": 14}));
+    ui.call("layout.save", json!({"layout": {"version": 1}}));
+    std::fs::write(cfg.join("punya-orang-lain.txt"), "jangan dihapus").unwrap();
+    assert!(cfg.join("config.toml").exists() && cfg.join("layout.json").exists() && cfg.join("hooks/opencode.json").exists());
+    assert_eq!(ui.call("daemon.reset", json!({}))["result"], json!({}));
+    assert!(exited_within(&mut d, Duration::from_secs(3)));
+    assert!(!cfg.join("config.toml").exists() && !cfg.join("layout.json").exists() && !cfg.join("hooks").exists());
+    assert!(cfg.join("punya-orang-lain.txt").exists());
+}

@@ -412,6 +412,25 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             });
             Ok(json!({"stopped": true}))
         }
+        "daemon.reset" => {
+            // FR-48: hanya file milik Gembala dengan nama yang dikenal, lalu folder bila kosong; data agent tidak disentuh
+            let path = config::path();
+            let dir = path.parent().ok_or("io")?;
+            for f in [path.clone(), config::layout_path()] {
+                let _ = std::fs::remove_file(f);
+            }
+            let hooks = st.hooks.dir.clone();
+            for (name, _) in profile::hook_files(&st.hooks) {
+                let _ = std::fs::remove_file(hooks.join(name));
+            }
+            let _ = std::fs::remove_dir(&hooks);
+            let _ = std::fs::remove_dir(dir);
+            thread::spawn(|| {
+                thread::sleep(Duration::from_millis(200));
+                std::process::exit(0);
+            });
+            Ok(json!({}))
+        }
         "daemon.stop" => {
             // FR-46 "Keluar dan hentikan semua agent": balasan sempat terkirim, lalu keluar;
             // master PTY tertutup bersama proses = kernel mengirim SIGHUP ke semua sesi pane

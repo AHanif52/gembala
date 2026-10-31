@@ -13,7 +13,7 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-const KC_SERVICE: &str = "dev.gembala.app";
+pub const KC_SERVICE: &str = "dev.gembala.app";
 
 pub struct Client {
     w: Mutex<UnixStream>,
@@ -25,7 +25,7 @@ fn err(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
-fn rundir() -> PathBuf {
+pub fn rundir() -> PathBuf {
     std::env::var_os("GEMBALA_RUNDIR").map(PathBuf::from).unwrap_or_else(|| {
         std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| "/tmp".into()).join("gembala")
     })

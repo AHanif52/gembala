@@ -15,7 +15,11 @@
   type Tab = { id: string; title: string; tree: Node; focus: number };
   type Ws = { id: string; name: string; root: string; tabs: Tab[] };
   /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
-  type Meta = { profile: string; cwd: string | null; agent: string; name: string; busy?: string | null };
+  type Meta = { profile: string; cwd: string | null; agent: string; name: string; busy?: string | null; status?: string };
+  // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
+  const MARK: Record<string, [string, string]> = { blocked: ["!", "butuh izin"], done: ["✓", "selesai"], working: ["•", "bekerja"] };
+  const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
+  const tabStatus = (t: Tab): string => panes(t.tree).reduce((a, p) => (rank(meta[p]?.status) > rank(a) ? (meta[p]?.status ?? "") : a), "");
 
   let wss = $state<Ws[]>([]);
   let at = $state({ ws: 0, tab: 0 });
@@ -378,6 +382,18 @@
     welcome = await call("agents.detect", {}).catch(() => []);
   }
 
+  // FR-40: badge Dock dan Dock melompat hanya saat jendela tidak sedang dilihat
+  let seen = $state(document.hasFocus());
+  const attention = $derived(Object.values(meta).filter((m) => m.status === "blocked" || m.status === "done").length);
+  $effect(() => {
+    invoke("badge", { count: seen ? 0 : attention }).catch(() => {});
+  });
+  function onStatus(pane: number, status: string) {
+    if (!meta[pane]) return;
+    meta[pane].status = status;
+    if (status === "blocked" && !seen) invoke("attention").catch(() => {});
+  }
+
   // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
@@ -396,6 +412,7 @@
       if (i.cwd && meta[p].cwd !== i.cwd) meta[p].cwd = i.cwd;
       const busy = i.busy ? (i.name ?? "proses") : null;
       if (meta[p].busy !== busy) meta[p].busy = busy;
+      if (meta[p].status !== i.status) meta[p].status = i.status;
     }
   }
 
@@ -404,8 +421,13 @@
     const unlisten = listen<string>("shortcut", ({ payload }) => run(payload));
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
+      if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
     });
     const timer = setInterval(poll, 2000);
+    const onFocus = () => (seen = true);
+    const onBlur = () => (seen = false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
     (async () => {
       try {
         cfg = await call("config.get");
@@ -417,6 +439,8 @@
     })();
     return () => {
       clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
       window.removeEventListener("keydown", onKey, true);
       unlisten.then((f) => f());
       unlistenCfg.then((f) => f());
@@ -448,7 +472,8 @@
               <!-- svelte-ignore a11y_autofocus -->
               <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama tab" />
             {:else}
-              <span class="tt">{title(t)}</span>
+              {@const st = tabStatus(t)}
+              <span class="tt">{#if MARK[st]}<span class="mark {st}" title={MARK[st][1]} aria-label={MARK[st][1]}>{MARK[st][0]}</span>{/if}{title(t)}</span>
               <span class="n">{n < 9 ? `⌘${n + 1}` : ""}</span>
               <span class="sub">{home(meta[t.focus]?.cwd)}{agents.length ? ` · ${agents.join(", ")}` : ""}</span>
             {/if}
@@ -562,7 +587,7 @@
     </div>
   {/if}
   {#if settingsOpen && cfg}
-    <Settings {cfg} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} />
+    <Settings {cfg} {meta} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} />
   {/if}
   {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
 </div>
@@ -692,6 +717,20 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .mark {
+    display: inline-block;
+    width: 1.1em;
+    font-weight: 700;
+  }
+  .mark.blocked {
+    color: #d97706;
+  }
+  .mark.done {
+    color: #16a34a;
+  }
+  .mark.working {
+    color: var(--muted);
   }
   .n {
     color: var(--muted);

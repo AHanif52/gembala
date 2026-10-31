@@ -9,7 +9,7 @@ struct Daemon(OnceLock<Result<daemon::Client, String>>);
 
 /// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
 const ALLOWED: &[&str] =
-    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save"];
+    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset"];
 
 /// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview.
 const PANE_KEYS: &[(&str, &str, &str)] = &[
@@ -98,6 +98,29 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
 #[tauri::command]
 fn shortcuts(app: tauri::AppHandle) -> (Vec<Shortcut>, Vec<String>) {
     app.state::<Shortcuts>().0.lock().unwrap().clone()
+}
+
+/// FR-40: badge Dock = jumlah pane butuh perhatian saat jendela tidak dilihat; 0 = hapus.
+#[tauri::command]
+fn badge(app: tauri::AppHandle, count: i64) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_badge_count((count > 0).then_some(count));
+    }
+}
+
+/// FR-40: Dock melompat sekali saat agent butuh izin dan jendela tidak dilihat.
+#[tauri::command]
+fn attention(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+}
+
+/// FR-48: lupakan rahasia kanal UI di Keychain (item milik app ini saja).
+#[tauri::command]
+fn forget_secret() {
+    let account = format!("ui-secret:{}", daemon::rundir().display());
+    let _ = security_framework::passwords::delete_generic_password(daemon::KC_SERVICE, &account);
 }
 
 #[tauri::command]
@@ -246,7 +269,7 @@ pub fn run() {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

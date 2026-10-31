@@ -7,7 +7,29 @@
   import { call } from "./daemon";
   import type { Agent, Config, Ui } from "./config";
 
-  let { cfg, onclose, onquitall }: { cfg: Config; onclose: () => void; onquitall: () => void } = $props();
+  let {
+    cfg,
+    meta,
+    onclose,
+    onquitall,
+  }: { cfg: Config; meta: Record<number, { name: string; agent: string; profile: string; status?: string }>; onclose: () => void; onquitall: () => void } = $props();
+  let daemon = $state<{ daemon: string; proto: number } | null>(null);
+  let resetAsk = $state(false);
+  let copied = $state("");
+
+  /// FR-49: info laporan bug tanpa env, folder, atau isi layar (SEC-12)
+  async function copyInfo() {
+    const rows = Object.values(meta).map((m) => `${m.name || m.profile} (${m.agent || "shell"}) status=${m.status || "-"}`);
+    const text = [`Gembala ${version} · daemon ${daemon?.daemon} · protokol ${daemon?.proto}`, `${navigator.userAgent}`, `pane: ${rows.length}`, ...rows].join("\n");
+    await navigator.clipboard.writeText(text).then(() => (copied = "Tersalin"), () => (copied = "Gagal menyalin"));
+  }
+
+  /// FR-48: hapus config, tata letak, hook, dan rahasia Keychain milik Gembala, lalu keluar
+  async function reset() {
+    await call("daemon.reset").catch(() => {});
+    await invoke("forget_secret").catch(() => {});
+    await invoke("quit");
+  }
 
   const SECTIONS = [
     ["umum", "Umum"],
@@ -35,6 +57,7 @@
 
   onMount(async () => {
     detect(false);
+    daemon = await call("daemon.info").catch(() => null);
     version = await getVersion();
   });
 
@@ -217,9 +240,43 @@
         </section>
       {:else}
         <section>
-          <div class="row"><span>Versi app</span><span class="m">{version}</span></div>
+          <div class="row"><span>App, daemon, protokol</span><span class="m">{version} · {daemon?.daemon ?? "?"} · {daemon?.proto ?? "?"}</span></div>
+          <div class="row">
+            <span>Rilis baru<small>Dibuka di browser; app tidak mengecek sendiri</small></span>
+            <button class="mini" onclick={() => invoke("open_url", { url: "https://github.com/AHanif52/gembala/releases" })}>Halaman rilis</button>
+          </div>
           <div class="row"><span>File config</span><span class="m">{cfg.path}</span></div>
           <div class="row"><span>Status config</span><span class="m">{cfg.errors.length ? `${cfg.errors.length} masalah, lihat atas` : "bersih"}</span></div>
+          <div class="row"><span>Folder socket<small>Bukan symlink, milik kamu, izin 0700; dicek daemon saat start</small></span><span class="m">$TMPDIR/gembala</span></div>
+        </section>
+        <h4>Agent per pane</h4>
+        <section>
+          {#each Object.values(meta) as m}
+            <div class="row">
+              <span>{m.name || m.profile}<small>{["claude", "codex", "opencode", "omp"].includes(m.agent) ? "hook resmi" : "tanpa hook, status tidak dilacak"}</small></span>
+              <span class="m">{m.status || "-"}</span>
+            </div>
+          {:else}
+            <div class="row"><span>Belum ada pane</span></div>
+          {/each}
+        </section>
+        <h4>Bantuan</h4>
+        <section>
+          <div class="row">
+            <span>Salin info untuk laporan bug<small>Versi dan status pane saja; env, folder, dan isi layar tidak ikut</small></span>
+            <span><span class="m">{copied}</span> <button class="mini" onclick={copyInfo}>Salin</button></span>
+          </div>
+          {#if resetAsk}
+            <div class="row" role="alert">
+              <span>Hapus config, tata letak, hook, dan rahasia Keychain milik Gembala, lalu hentikan daemon dan semua pane? Data agent tidak disentuh.</span>
+              <span><button class="mini" onclick={() => (resetAsk = false)}>Batal</button> <button class="mini" onclick={reset}>Hapus</button></span>
+            </div>
+          {:else}
+            <div class="row">
+              <span>Reset Gembala<small>Hapus semua data Gembala; data agent tidak disentuh</small></span>
+              <button class="mini" onclick={() => (resetAsk = true)}>Reset…</button>
+            </div>
+          {/if}
         </section>
       {/if}
     </div>
