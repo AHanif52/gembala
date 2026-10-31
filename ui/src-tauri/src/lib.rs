@@ -188,6 +188,18 @@ fn sweep_paste() {
     }
 }
 
+/// FR-40 banner macOS (T5). Isi hanya nama pane + status (SEC-33): bisa tampil di layar kunci.
+#[tauri::command]
+fn notify_pane(app: tauri::AppHandle, body: String, sound: bool) {
+    use tauri_plugin_notification::NotificationExt;
+    let body: String = body.chars().filter(|c| !c.is_control()).take(80).collect();
+    let mut n = app.notification().builder().title("Gembala").body(body);
+    if sound {
+        n = n.sound("default");
+    }
+    let _ = n.show();
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     app.exit(0);
@@ -326,6 +338,7 @@ fn apply_keys(app: &tauri::AppHandle, keys: &Value) {
 pub fn run() {
     sweep_paste();
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(Daemon(Mutex::new(None)))
         .manage(Shortcuts(Mutex::new(resolve_keys(&serde_json::Map::new()))))
         // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
@@ -335,7 +348,7 @@ pub fn run() {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

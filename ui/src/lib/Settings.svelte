@@ -15,7 +15,7 @@
   }: { cfg: Config; meta: Record<number, { name: string; agent: string; profile: string; status?: string }>; onclose: () => void; onquitall: () => void } = $props();
   let daemon = $state<{ daemon: string; proto: number } | null>(null);
   // FR-29: ubah profil dari layar; satu baris = satu argumen / satu env
-  type Form = { id: string; name: string; command: string; args: string; cwd: string; env: string; secret: string; summarize: boolean; isNew: boolean };
+  type Form = { id: string; name: string; command: string; args: string; cwd: string; env: string; secret: string; summarize: boolean; notify: boolean; isNew: boolean };
   let form = $state<Form | null>(null);
   const BUILTIN = ["shell", "claude", "codex", "opencode", "omp"];
 
@@ -31,6 +31,7 @@
       env: p.env.map((k) => `${k}=`).join("\n"), // nilai env tidak dikirim ke UI; isi ulang bila mengubah
       secret: p.secret_env.map((x) => `${x.name}=${x.ref}`).join("\n"),
       summarize: p.summarize,
+      notify: p.notify,
       isNew: copy,
     };
   }
@@ -52,6 +53,7 @@
       env,
       secret_env: pairs(form.secret),
       summarize: form.summarize,
+      notify: form.notify,
     };
     const r = await call("profile.save", { profile }).catch((e) => ({ error: String(e) }));
     if (r.error) failed = r.error;
@@ -149,6 +151,7 @@
       <label>Env <small>NAMA=nilai per baris; nilai tidak ditampilkan ulang, isi lagi bila ingin mengubah</small><textarea bind:value={form.env} rows="2" spellcheck="false"></textarea></label>
       <label>Rujukan rahasia <small>NAMA=op://vault/item/field atau NAMA=keychain:service/akun</small><textarea bind:value={form.secret} rows="2" spellcheck="false"></textarea></label>
       <label class="inline"><input type="checkbox" bind:checked={form.summarize} /> Ringkas output saat agent keluar</label>
+      <label class="inline"><input type="checkbox" bind:checked={form.notify} /> Notifikasi untuk pane dari profil ini</label>
       <span class="acts"><button class="mini" onclick={() => (form = null)}>Batal</button> <button class="mini" onclick={saveForm}>Simpan</button></span>
     </div>
   {/if}
@@ -178,12 +181,16 @@
         <h4>Notifikasi</h4>
         <section>
           <div class="row">
-            <span>Agent butuh izin<small>Badge Dock dan Dock melompat saat jendela tidak dilihat; juga pane yang menunggu password</small></span>
+            <span>Agent butuh izin<small>Notifikasi, badge Dock, dan Dock melompat saat jendela tidak dilihat; juga pane yang menunggu password. Isinya nama pane dan status saja</small></span>
             <input type="checkbox" role="switch" aria-label="Agent butuh izin" checked={cfg.values.notify.on_blocked} onchange={(e) => setNotify("on_blocked", e.currentTarget.checked)} />
           </div>
           <div class="row">
             <span>Agent atau perintah lama selesai</span>
             <input type="checkbox" role="switch" aria-label="Selesai" checked={cfg.values.notify.on_done} onchange={(e) => setNotify("on_done", e.currentTarget.checked)} />
+          </div>
+          <div class="row">
+            <span>Suara</span>
+            <input type="checkbox" role="switch" aria-label="Suara notifikasi" checked={cfg.values.notify.sound} onchange={(e) => setNotify("sound", e.currentTarget.checked)} />
           </div>
           <div class="row">
             <span>Batas perintah lama<small>Perintah shell lebih lama dari ini lalu selesai dianggap perlu dilihat</small></span>

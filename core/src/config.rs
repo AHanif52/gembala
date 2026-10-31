@@ -32,8 +32,9 @@ const UI: &[(&str, Kind)] = &[
     ("screen_reader", Bool(false)),
 ];
 const LIMITS: &[(&str, Kind)] = &[("max_panes", Int(1, 256, 32))];
-/// FR-40: badge Dock + Dock melompat; banner menunggu T5
-const NOTIFY: &[(&str, Kind)] = &[("on_blocked", Bool(true)), ("on_done", Bool(true)), ("long_command_secs", Int(5, 3600, 30))];
+/// FR-40: banner macOS + badge Dock + Dock melompat
+const NOTIFY: &[(&str, Kind)] =
+    &[("on_blocked", Bool(true)), ("on_done", Bool(true)), ("long_command_secs", Int(5, 3600, 30)), ("sound", Bool(true))];
 const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY)];
 
 pub struct Config {
@@ -229,8 +230,10 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), String> {
     if let Some(args) = p["args"].as_array() {
         t["args"] = toml_edit::value(args.iter().filter_map(Value::as_str).collect::<toml_edit::Array>());
     }
-    if let Some(b) = p["summarize"].as_bool() {
-        t["summarize"] = toml_edit::value(b);
+    for k in ["summarize", "notify"] {
+        if let Some(b) = p[k].as_bool() {
+            t[k] = toml_edit::value(b);
+        }
     }
     // env digabung per kunci (nilai lama tidak dikirim ke UI); secret_env diganti utuh (rujukannya tampil di form)
     for (k, merge) in [("env", true), ("secret_env", false)] {

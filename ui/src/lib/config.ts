@@ -22,6 +22,7 @@ export type Profile = {
   env: string[];
   secret_env: { name: string; ref: string }[];
   summarize: boolean;
+  notify: boolean;
 };
 
 export type Agent = {
@@ -38,7 +39,7 @@ export type Config = {
   values: {
     ui: Ui;
     limits: { max_panes: number };
-    notify: { on_blocked: boolean; on_done: boolean; long_command_secs: number };
+    notify: { on_blocked: boolean; on_done: boolean; long_command_secs: number; sound: boolean };
     keys: Record<string, string>;
     profiles: Profile[];
   };

@@ -564,7 +564,32 @@
 
   // FR-40: badge Dock dan Dock melompat hanya saat jendela tidak sedang dilihat
   let seen = $state(document.hasFocus());
-  const notify = $derived(cfg?.values.notify ?? { on_blocked: true, on_done: true, long_command_secs: 30 });
+  const notify = $derived(cfg?.values.notify ?? { on_blocked: true, on_done: true, long_command_secs: 30, sound: true });
+
+  /// FR-40: banner + Dock melompat saat jendela tidak dilihat; isi nama pane + status saja (SEC-33)
+  let lastNotified: { pane: number; at: number } | null = null;
+  function alert(pane: number, kind: "blocked" | "done", label: string) {
+    const m = meta[pane];
+    if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
+    if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
+    invoke("attention").catch(() => {});
+    invoke("notify_pane", { body: `${m.name || m.profile} ${label}`, sound: notify.sound }).catch(() => {});
+    lastNotified = { pane, at: Date.now() };
+  }
+
+  /// Klik notifikasi = app aktif; loncat ke pane yang terakhir memberi tahu (bila belum lama)
+  function onReturn() {
+    const n = lastNotified;
+    lastNotified = null;
+    if (!n || Date.now() - n.at > 120_000) return;
+    for (const [wi, w] of wss.entries())
+      for (const [ti, t] of w.tabs.entries())
+        if (panes(t.tree).includes(n.pane)) {
+          at = { ws: wi, tab: ti };
+          t.focus = n.pane;
+          zoomed = false;
+        }
+  }
   const attention = $derived(
     Object.values(meta).filter((m) => (m.status === "blocked" && notify.on_blocked) || (m.status === "done" && notify.on_done)).length,
   );
@@ -575,7 +600,8 @@
     if (!meta[pane]) return;
     meta[pane].status = status;
     if (status === "done" || status === "idle") refreshGit(pane); // toolbar diperbarui per giliran (TECH 7a)
-    if (status === "blocked" && notify.on_blocked && !seen) invoke("attention").catch(() => {});
+    if (status === "blocked") alert(pane, "blocked", "butuh izin");
+    if (status === "done") alert(pane, "done", "selesai");
   }
 
   // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
@@ -606,11 +632,11 @@
         if (busy && !m.busy) m.since = Date.now();
         if (i.password && m.status !== "blocked") {
           m.status = "blocked";
-          if (!seen && notify.on_blocked) invoke("attention").catch(() => {});
+          alert(p, "blocked", "menunggu password");
         } else if (!i.password && m.status === "blocked") m.status = "";
         if (!busy && m.busy && Date.now() - (m.since ?? Date.now()) >= notify.long_command_secs * 1000) {
           m.status = "done";
-          if (!seen && notify.on_done) invoke("attention").catch(() => {});
+          alert(p, "done", "selesai menjalankan perintah lama");
         }
       }
       if (m.busy !== busy) m.busy = busy;
@@ -634,7 +660,10 @@
       const text = payload.paths.map(quote).join(" ") + " ";
       call("pane.write", { pane: tab.focus, data: b64(new TextEncoder().encode(`\x1b[200~${text}\x1b[201~`)) });
     });
-    const onFocus = () => (seen = true);
+    const onFocus = () => {
+      seen = true;
+      onReturn();
+    };
     const onBlur = () => (seen = false);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
