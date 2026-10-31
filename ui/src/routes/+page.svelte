@@ -3,10 +3,12 @@
   import { onMount } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
+  import Changes from "$lib/Changes.svelte";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { call } from "$lib/daemon";
+  import { call, b64 } from "$lib/daemon";
   import {
     dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, valid,
     type Arrow, type Dir, type Divider, type Node,
@@ -15,7 +17,17 @@
   type Tab = { id: string; title: string; tree: Node; focus: number };
   type Ws = { id: string; name: string; root: string; tabs: Tab[] };
   /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
-  type Meta = { profile: string; cwd: string | null; agent: string; name: string; busy?: string | null; status?: string };
+  type Meta = {
+    profile: string;
+    cwd: string | null;
+    agent: string;
+    name: string;
+    busy?: string | null;
+    status?: string;
+    session?: string; // FR-53: id sesi Gembala (Claude Code)
+    git?: any; // FR-55: ringkasan git di toolbar
+  };
+  const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
   const MARK: Record<string, [string, string]> = { blocked: ["!", "butuh izin"], done: ["✓", "selesai"], working: ["•", "bekerja"] };
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
@@ -40,6 +52,8 @@
   let newWs = $state<{ name: string; root: string } | null>(null);
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
+  let rich = $state<{ pane: number; text: string } | null>(null); // FR-14
+  let changes = $state<{ pane: number; diff: any } | null>(null); // FR-22
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
   const ws = $derived(wss[at.ws]);
   const tab = $derived(ws?.tabs[at.tab]);
@@ -62,10 +76,40 @@
   const order = $derived(wss.flatMap((w, wi) => w.tabs.map((t, ti) => ({ wi, ti, t }))));
 
   async function createPane(opts: Record<string, unknown> = {}): Promise<number> {
-    const r = await call("pane.create", opts);
-    meta[r.pane] = { profile: (opts.profile as string) ?? "shell", cwd: null, agent: "", name: r.name };
+    const profile = (opts.profile as string) ?? "shell";
+    const agent = cfg?.values.profiles.find((p) => p.id === profile)?.agent ?? "shell";
+    // FR-53: Claude Code menerima id sesi dari luar; dipakai lagi saat pane dijalankan ulang
+    const session = (opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined);
+    const r = await call("pane.create", { ...opts, session });
+    meta[r.pane] = { profile, cwd: null, agent, name: r.name, session };
     return r.pane;
   }
+
+  async function refreshGit(pane: number) {
+    if (!meta[pane] || dead[pane] || !AGENTS.includes(meta[pane].agent)) return;
+    const g = await call("git.status", { pane }).catch(() => null);
+    if (g && meta[pane]) meta[pane].git = g;
+  }
+
+  async function openChanges(pane: number) {
+    if (changes?.pane === pane) return void (changes = null);
+    changes = { pane, diff: null };
+    refreshGit(pane);
+    const diff = await call("git.diff", { pane }).catch(() => ({ repo: false }));
+    if (changes?.pane === pane) changes.diff = diff;
+  }
+
+  /// FR-14: teks dikirim sebagai bracketed paste + satu Enter. ESC, kontrol C0 selain baris baru/tab,
+  /// dan kontrol C1 dibuang supaya isi tidak bisa menutup paste lebih awal.
+  function sendRich() {
+    if (!rich) return;
+    const clean = rich.text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+    const bytes = new TextEncoder().encode(`\x1b[200~${clean}\x1b[201~\r`);
+    call("pane.write", { pane: rich.pane, data: b64(bytes) });
+    rich = null;
+  }
+
+  const quote = (p: string) => `'${p.replaceAll("'", "'\\''")}'`;
 
   async function newTab(profile?: string, wi = at.ws) {
     const w = wss[wi];
@@ -119,7 +163,12 @@
   /// FR-45: pane mati diganti pane baru dari profil dan folder yang sama
   async function restart(old: number) {
     const m = meta[old];
-    const id = await createPane({ profile: m?.profile === "shell" ? undefined : m?.profile, cwd: m?.cwd ?? undefined });
+    const id = await createPane({
+      profile: m?.profile === "shell" ? undefined : m?.profile,
+      cwd: m?.cwd ?? undefined,
+      session: m?.session,
+      resume: AGENTS.includes(m?.agent ?? ""), // FR-53: lanjutkan percakapan pane ini
+    });
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {
@@ -177,7 +226,7 @@
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen || picker || editing || newWs) return;
+    if (settingsOpen || picker || editing || newWs || rich) return;
     if (!tab || confirm || quitAsk || linkAsk || wsAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
@@ -193,6 +242,8 @@
     else if (group === "focus" && !zoomed) tab.focus = neighbor(tab.tree, tab.focus, arg as Arrow) ?? tab.focus;
     else if (group === "resize" && !zoomed) tab.tree = nudge(tab.tree, tab.focus, arg as Arrow);
     else if (group === "zoom") zoomed = !zoomed;
+    else if (id === "pane.input.rich") rich = { pane: tab.focus, text: "" };
+    else if (id === "pane.diff.toggle") openChanges(tab.focus);
     else if (id === "pane.proc.kill") call("pane.kill", { pane: tab.focus });
     else if (id === "pane.proc.close") askClose(tab.focus);
     else if (id === "term.find") tiles[tab.focus]?.openFind();
@@ -224,6 +275,11 @@
         e.preventDefault();
       }
       return; // kontrol di Pengaturan menerima tombol seperti biasa
+    }
+    if (rich) return; // textarea Rich Input menangani tombolnya sendiri
+    if (changes && e.key === "Escape") {
+      changes = null;
+      return stop(e);
     }
     if (editing || newWs) {
       if (e.key === "Escape") {
@@ -382,6 +438,11 @@
     welcome = await call("agents.detect", {}).catch(() => []);
   }
 
+  // FR-55: toolbar pane yang baru difokus diperbarui (tanpa polling git)
+  $effect(() => {
+    if (tab?.focus) refreshGit(tab.focus);
+  });
+
   // FR-40: badge Dock dan Dock melompat hanya saat jendela tidak sedang dilihat
   let seen = $state(document.hasFocus());
   const attention = $derived(Object.values(meta).filter((m) => m.status === "blocked" || m.status === "done").length);
@@ -391,6 +452,7 @@
   function onStatus(pane: number, status: string) {
     if (!meta[pane]) return;
     meta[pane].status = status;
+    if (status === "done" || status === "idle") refreshGit(pane); // toolbar diperbarui per giliran (TECH 7a)
     if (status === "blocked" && !seen) invoke("attention").catch(() => {});
   }
 
@@ -409,7 +471,10 @@
     for (const p of ids) {
       const i = await call("pane.info", { pane: p }).catch(() => null);
       if (!i || !meta[p]) continue;
-      if (i.cwd && meta[p].cwd !== i.cwd) meta[p].cwd = i.cwd;
+      if (i.cwd && meta[p].cwd !== i.cwd) {
+        meta[p].cwd = i.cwd;
+        refreshGit(p);
+      }
       const busy = i.busy ? (i.name ?? "proses") : null;
       if (meta[p].busy !== busy) meta[p].busy = busy;
       if (meta[p].status !== i.status) meta[p].status = i.status;
@@ -424,6 +489,12 @@
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
     });
     const timer = setInterval(poll, 2000);
+    // FR-15: seret file ke jendela = path ber-quote ditempel ke pane yang fokus (bracketed paste, tanpa Enter)
+    const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
+      if (payload.type !== "drop" || !tab || dead[tab.focus] || !payload.paths.length) return;
+      const text = payload.paths.map(quote).join(" ") + " ";
+      call("pane.write", { pane: tab.focus, data: b64(new TextEncoder().encode(`\x1b[200~${text}\x1b[201~`)) });
+    });
     const onFocus = () => (seen = true);
     const onBlur = () => (seen = false);
     window.addEventListener("focus", onFocus);
@@ -444,6 +515,7 @@
       window.removeEventListener("keydown", onKey, true);
       unlisten.then((f) => f());
       unlistenCfg.then((f) => f());
+      unlistenDrop.then((f) => f());
     };
   });
 </script>
@@ -504,6 +576,8 @@
       {#each [...rects(t.tree)] as [pane, r] (pane)}
         {@const hidden = !active || (zoomed && pane !== t.focus)}
         {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
+        {@const bar = !dead[pane] && AGENTS.includes(meta[pane]?.agent ?? "")}
+        {@const g = meta[pane]?.git}
         <div
           class="tile"
           class:dim={active && pane !== t.focus && panes(t.tree).length > 1}
@@ -522,7 +596,41 @@
               <button class="mini" onclick={() => restart(pane)}>Jalankan ulang {meta[pane]?.profile ?? "shell"}</button>
             </div>
           {:else}
-            <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} {zoom} {onexit} {onlink} />
+            <div class="body" class:withbar={bar}>
+              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} {zoom} {onexit} {onlink} />
+            </div>
+            {#if bar}
+              <!-- FR-55: toolbar agent; chip tanpa data (bukan repo) disembunyikan -->
+              <div class="bar">
+                <button class="chip" title="Seret file ke pane untuk menempel path-nya">Lampirkan</button>
+                {#if g?.repo && g.files}
+                  <button class="chip" onclick={() => openChanges(pane)}>{g.files} file <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+                {/if}
+                <button class="chip" onclick={() => (rich = { pane, text: "" })}>Rich Input <span class="n">⌘G</span></button>
+                <span class="grow"></span>
+                <span class="chip quiet" title={meta[pane]?.cwd ?? ""}>{base(meta[pane]?.cwd) || "~"}</span>
+                {#if g?.repo && g.branch}
+                  <span class="chip quiet">{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
+                {/if}
+                <button class="chip" aria-label="Pengaturan profil" onclick={() => (settingsOpen = true)}>⚙</button>
+              </div>
+            {/if}
+            {#if rich?.pane === pane}
+              <div class="rich">
+                <!-- svelte-ignore a11y_autofocus -->
+                <textarea
+                  bind:value={rich.text}
+                  autofocus
+                  rows="4"
+                  aria-label="Rich Input"
+                  placeholder="Tulis prompt · Enter kirim · Shift+Enter baris baru · Esc tutup"
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), sendRich());
+                    if (e.key === "Escape") (e.preventDefault(), (rich = null));
+                  }}
+                ></textarea>
+              </div>
+            {/if}
           {/if}
           {#if confirm?.pane === pane}
             <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
@@ -546,6 +654,9 @@
       aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
     ></div>
   {/each}
+  {#if changes}
+    <Changes status={meta[changes.pane]?.git} diff={changes.diff} onclose={() => (changes = null)} />
+  {/if}
   {#if wsAsk}
     <div class="confirm" role="alertdialog" aria-label="Konfirmasi hapus workspace">
       <span><b>{wsAsk.busy} pane</b> di workspace {wss[wsAsk.wi]?.name} masih menjalankan proses. Hapus dan hentikan?</span>
@@ -768,6 +879,67 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .body {
+    position: absolute;
+    inset: 0;
+  }
+  .body.withbar {
+    bottom: 26px;
+  }
+  .bar {
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+    border-top: 1px solid var(--line);
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .chip {
+    padding: 2px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    white-space: nowrap;
+  }
+  button.chip:hover {
+    background: var(--line);
+    color: var(--fg);
+  }
+  .chip.quiet {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .grow {
+    flex: 1;
+  }
+  .plus {
+    color: #16a34a;
+  }
+  .minus {
+    color: #dc2626;
+  }
+  .rich {
+    position: absolute;
+    inset: auto 8px 32px 8px;
+    z-index: 3;
+  }
+  .rich textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    font: 13px/1.4 "SF Mono", Menlo, monospace;
+    resize: vertical;
+    outline: none;
   }
   .dead {
     position: absolute;
