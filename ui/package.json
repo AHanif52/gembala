@@ -10,7 +10,8 @@
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "sidecar": "cargo build --release -p gembala && mkdir -p src-tauri/binaries && cp ../target/release/gembala src-tauri/binaries/gembala-$(rustc -vV | sed -n 's/^host: //p')"
   },
   "license": "MIT",
   "dependencies": {

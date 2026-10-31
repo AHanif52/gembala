@@ -16,13 +16,18 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub const PROTO: u64 = 1;
 const MAX_LINE: u64 = 64 * 1024;
-const SCROLLBACK: usize = 10_000;
+/// Snapshot hanya layar terlihat dan scrollback UI dipegang xterm.js, jadi daemon cukup
+/// menyimpan baris terakhir untuk `read` (FR-7). 10.000 baris penuh = sekitar 40 MB per pane di vt100.
+const SCROLLBACK: usize = 1_000;
+/// Antrean per koneksi. Penuh = klien terlalu lambat: koneksinya diputus (attach ulang dapat snapshot)
+/// supaya RAM daemon tidak membengkak dan agent tidak tertahan.
+const QUEUE: usize = 256;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Chan {
@@ -35,7 +40,12 @@ struct Pane {
     /// PID shell pane = id sesi semua prosesnya (shell dijalankan dengan `setsid`).
     sid: i32,
     /// Grid dan pelanggan dikunci bersama: attach tidak kehilangan atau menggandakan output.
-    view: Mutex<(Grid, Vec<Sender<String>>)>,
+    view: Mutex<(Grid, Vec<Sub>)>,
+}
+
+struct Sub {
+    tx: SyncSender<String>,
+    sock: UnixStream,
 }
 
 struct State {
@@ -87,7 +97,7 @@ fn line(v: Value) -> String {
     s
 }
 
-fn reply(tx: &Sender<String>, id: &Value, r: Res) {
+fn reply(tx: &SyncSender<String>, id: &Value, r: Res) {
     let v = match r {
         Ok(x) => json!({"id": id, "result": x}),
         Err(code) => json!({"id": id, "error": {"code": code}}),
@@ -97,8 +107,9 @@ fn reply(tx: &Sender<String>, id: &Value, r: Res) {
 
 fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     let peer = peer_pid(&s)?;
-    let (tx, rx) = channel::<String>();
+    let (tx, rx) = sync_channel::<String>(QUEUE);
     let mut w = s.try_clone()?;
+    let sock = s.try_clone()?;
     // satu penulis per koneksi: balasan dan event tidak saling potong.
     // ponytail: setelah klien putus, thread + fd ini baru lepas saat pane yang di-attach mengeluarkan output berikutnya
     thread::spawn(move || {
@@ -145,7 +156,9 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     let mut v = pane.view.lock().unwrap();
                     let (rows, cols) = v.0.size();
                     reply(&tx, id, Ok(json!({"snapshot": B64.encode(v.0.snapshot()), "rows": rows, "cols": cols})));
-                    v.1.push(tx.clone());
+                    if let Ok(sock) = sock.try_clone() {
+                        v.1.push(Sub { tx: tx.clone(), sock });
+                    }
                 }
                 Err(e) => reply(&tx, id, Err(e)),
             }
@@ -249,13 +262,20 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
         let mut v = pane.view.lock().unwrap();
         v.0.feed(&buf[..n]);
         let ev = line(json!({"event": "pane.output", "params": {"pane": id, "data": B64.encode(&buf[..n])}}));
-        v.1.retain(|tx| tx.send(ev.clone()).is_ok());
+        v.1.retain(|sub| match sub.tx.try_send(ev.clone()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                let _ = sub.sock.shutdown(std::net::Shutdown::Both);
+                false
+            }
+            Err(TrySendError::Disconnected(_)) => false,
+        });
     }
     let code = pty.child.wait().ok().and_then(|s| s.code());
     st.panes.lock().unwrap().remove(&id);
     let ev = line(json!({"event": "pane.exit", "params": {"pane": id, "code": code}}));
-    for tx in pane.view.lock().unwrap().1.drain(..) {
-        let _ = tx.send(ev.clone());
+    for sub in pane.view.lock().unwrap().1.drain(..) {
+        let _ = sub.tx.try_send(ev.clone());
     }
 }
 

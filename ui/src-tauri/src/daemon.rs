@@ -14,7 +14,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 const KC_SERVICE: &str = "dev.gembala.app";
-const KC_ACCOUNT: &str = "ui-secret";
 
 pub struct Client {
     w: Mutex<UnixStream>,
@@ -36,8 +35,11 @@ pub type OnEvent = Arc<dyn Fn(Value) + Send + Sync>;
 
 /// Sambung ke daemon; jalankan daemon bila belum ada. `on_event` menerima event daemon.
 pub fn connect(on_event: OnEvent) -> io::Result<Client> {
-    let sock = rundir().join("ui.sock");
-    let kc = security_framework::passwords::get_generic_password(KC_SERVICE, KC_ACCOUNT).ok();
+    let dir = rundir();
+    let sock = dir.join("ui.sock");
+    // satu rahasia per folder run: dev, uji, dan app terpasang tidak saling tindih
+    let account = format!("ui-secret:{}", dir.display());
+    let kc = security_framework::passwords::get_generic_password(KC_SERVICE, &account).ok();
     let secret = kc.and_then(|s| String::from_utf8(s).ok());
     match (secret, UnixStream::connect(&sock)) {
         (Some(secret), Ok(s)) => Client::open(s, &secret, on_event).map_err(|e| {
@@ -47,7 +49,7 @@ pub fn connect(on_event: OnEvent) -> io::Result<Client> {
         (None, Ok(_)) => Err(err("daemon jalan tapi rahasia tidak ada di Keychain; hentikan dengan: pkill -f 'gembala daemon'")),
         (_, Err(_)) => {
             let secret = spawn_daemon()?;
-            security_framework::passwords::set_generic_password(KC_SERVICE, KC_ACCOUNT, secret.as_bytes())
+            security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes())
                 .map_err(|e| err(format!("simpan rahasia ke Keychain: {e}")))?;
             Client::open(UnixStream::connect(&sock)?, &secret, on_event)
         }

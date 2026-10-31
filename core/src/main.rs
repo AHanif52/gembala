@@ -43,7 +43,11 @@ fn daemon(args: &[String]) -> ExitCode {
         daemon::run(&dir, secret, move || {
             if let (Some(fd), Some(s)) = (secret_fd, handoff) {
                 let mut f = unsafe { File::from_raw_fd(fd) }; // ditutup saat drop
-                let _ = writeln!(f, "{s}");
+                if let Err(e) = writeln!(f, "{s}") {
+                    // tanpa serah-terima, kanal UI tidak bisa dipakai siapa pun: daemon tidak berguna
+                    eprintln!("gembala daemon: tulis rahasia ke fd {fd}: {e}");
+                    std::process::exit(1);
+                }
             }
         })
     });

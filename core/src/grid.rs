@@ -109,6 +109,41 @@ mod tests {
         assert_roundtrip(&g);
     }
 
+    /// Manual (release): `cargo test --release -p gembala bench_feed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_feed() {
+        let line = format!("{}\r\n", "a".repeat(100));
+        let chunk = line.repeat(160); // ~16 KB, seukuran baca PTY
+        for sb in [0, 1_000, 10_000] {
+            let mut g = Grid::new(40, 120, sb);
+            let t = std::time::Instant::now();
+            for _ in 0..3200 {
+                g.feed(chunk.as_bytes()); // ~52 MB
+            }
+            let dt = t.elapsed().as_secs_f64();
+            println!("scrollback {sb:>6}: {:.0} MB/s", 52.0 / dt);
+        }
+        let rss = || {
+            let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+            u.ru_maxrss as f64 / 1e6 // macOS: byte
+        };
+        let before = rss();
+        let mut g = Grid::new(40, 120, 10_000);
+        for _ in 0..100 {
+            g.feed(chunk.as_bytes());
+        }
+        println!("maxrss naik {:.0} MB untuk 1 grid scrollback 10.000 penuh", rss() - before);
+        for cmd in ["head -c 52428800 /dev/zero | tr '\\0' 'a' | fold -w 100 > /dev/null", "head -c 52428800 /dev/zero | tr '\\0' 'a' | fold -w 100", "yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | head -c 52428800"] {
+            let t = std::time::Instant::now();
+            let mut p = Pty::spawn(Some(cmd), 40, 120, &[]).unwrap();
+            let n = read_to_end(&p.master).unwrap().len();
+            p.child.wait().unwrap();
+            println!("PTY {:.1} MB dalam {:.2} s: {}", n as f64 / 1e6, t.elapsed().as_secs_f64(), &cmd[cmd.len() - 20..]);
+        }
+    }
+
     /// Manual: `GEMBALA_TUI='claude' cargo test -p gembala tui_nyata_env -- --ignored --nocapture`
     #[test]
     #[ignore]

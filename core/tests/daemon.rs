@@ -175,3 +175,31 @@ fn kriteria_9_skrip_di_pane() {
     assert!(out.contains(r#"{"error":{"code":"not_allowed"},"id":2}"#), "{out}");
     assert!(out.contains(r#"{"error":{"code":"not_allowed"},"id":3}"#), "{out}");
 }
+
+/// Klien yang attach tapi tidak membaca diputus saat antreannya penuh; pane tetap jalan sampai selesai.
+#[test]
+fn klien_lambat_diputus() {
+    let d = start("lambat");
+    let mut ui = Cli::ui(&d);
+    let pane = ui.call("pane.create", json!({"cmd": "yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | head -c 30000000; sleep 1", "rows": 24, "cols": 80}))["result"]["pane"].as_u64().unwrap();
+    let mut lambat = Cli::ui(&d);
+    lambat.call("pane.attach", json!({"pane": pane}));
+    let t0 = Instant::now();
+    loop {
+        let e = ui.call("pane.list", json!({}));
+        if !e["result"].as_array().unwrap().contains(&json!(pane)) {
+            break; // pane selesai; daemon tidak tertahan oleh klien lambat
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "pane tertahan klien lambat");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let mut exit_seen = false;
+    loop {
+        let mut l = String::new();
+        if lambat.r.read_line(&mut l).unwrap_or(0) == 0 {
+            break;
+        }
+        exit_seen |= l.contains("pane.exit");
+    }
+    assert!(!exit_seen, "klien lambat seharusnya sudah diputus sebelum pane keluar");
+}
