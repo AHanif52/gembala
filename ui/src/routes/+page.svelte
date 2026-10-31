@@ -31,6 +31,7 @@
     output?: boolean; // FR-56: ada output sesi agent sebelumnya
     since?: number; // FR-40: kapan proses di pane shell mulai jalan
     sig?: string; // FR-51: sidik profil saat pane dibuat
+    zoom?: number; // FR-34: zoom pane ini di atas zoom global
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
@@ -53,6 +54,7 @@
   let picker = $state<{ items: (Profile & { missing: boolean })[]; sel: number } | null>(null);
   let sidebar = $state(true);
   let filter = $state("");
+  let search = $state<HTMLInputElement>();
   let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
   let renameError = $state("");
   let newWs = $state<{ name: string; root: string } | null>(null);
@@ -308,7 +310,7 @@
     else if (group === "split") splitFocused(arg === "down" ? "col" : "row");
     else if (group === "focus" && !zoomed) tab.focus = neighbor(tab.tree, tab.focus, arg as Arrow) ?? tab.focus;
     else if (group === "resize" && !zoomed) tab.tree = nudge(tab.tree, tab.focus, arg as Arrow);
-    else if (group === "zoom") zoomed = !zoomed;
+    else if (id === "pane.zoom.toggle") zoomed = !zoomed;
     else if (id === "pane.move.newtab") moveToNewTab();
     else if (id === "pane.input.rich") rich = { pane: tab.focus, text: "" };
     else if (id === "pane.diff.toggle") openChanges(tab.focus);
@@ -319,6 +321,14 @@
     else if (id === "term.zoom.in") zoom = Math.min(16, zoom + 1);
     else if (id === "term.zoom.out") zoom = Math.max(-6, zoom - 1);
     else if (id === "term.zoom.reset") zoom = 0;
+    else if (id.startsWith("term.zoom.pane") && meta[tab.focus]) {
+      const m = meta[tab.focus];
+      m.zoom = arg === "pane_reset" ? 0 : Math.max(-6, Math.min(16, (m.zoom ?? 0) + (arg === "pane_in" ? 1 : -1)));
+    }
+    else if (id === "tab.search") {
+      sidebar = true;
+      setTimeout(() => search?.focus(), 0);
+    }
   }
 
   const stop = (e: KeyboardEvent) => {
@@ -649,7 +659,20 @@
 
 {#if sidebar}
   <aside class="side" aria-label="Tab">
-    <input class="search" placeholder="Cari tab" aria-label="Cari tab" bind:value={filter} spellcheck="false" />
+    <input class="search" placeholder="Cari tab  ⌘P" aria-label="Cari tab" bind:this={search} bind:value={filter} spellcheck="false"
+      onkeydown={(e) => {
+        // Enter = buka tab pertama yang cocok; Esc = kosongkan dan kembali ke terminal
+        if (e.key === "Enter") {
+          const i = order.findIndex((o) => title(o.t).toLowerCase().includes(filter.toLowerCase()));
+          if (i >= 0) goto(i);
+          filter = "";
+          search?.blur();
+        }
+        if (e.key === "Escape") {
+          filter = "";
+          search?.blur();
+        }
+      }} />
     {#each wss as w, wi (w.id)}
       <div class="ws">
         {#if editing?.kind === "ws" && editing.id === w.id}
@@ -728,7 +751,7 @@
             </div>
           {:else}
             <div class="body" class:withbar={bar}>
-              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} {zoom} {onexit} {onlink}
+              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])} />
             </div>
             {#if bar}

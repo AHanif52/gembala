@@ -46,6 +46,7 @@ const TAB_KEYS: &[(&str, &str, &str)] = &[
     ("tab.goto.8", "Tab 8", "Cmd+8"),
     ("tab.goto.9", "Tab 9", "Cmd+9"),
     ("tab.sidebar", "Tampilkan/sembunyikan sidebar", "Cmd+B"),
+    ("tab.search", "Cari tab", "Cmd+P"),
 ];
 
 /// Menu "View" (FR-34, FR-36).
@@ -55,6 +56,9 @@ const VIEW_KEYS: &[(&str, &str, &str)] = &[
     ("term.zoom.in", "Perbesar", "Cmd+="),
     ("term.zoom.out", "Perkecil", "Cmd+-"),
     ("term.zoom.reset", "Ukuran asli", "Cmd+0"),
+    ("term.zoom.pane_in", "Perbesar pane ini", "Alt+Cmd+="),
+    ("term.zoom.pane_out", "Perkecil pane ini", "Alt+Cmd+-"),
+    ("term.zoom.pane_reset", "Ukuran asli pane ini", "Alt+Cmd+0"),
 ];
 
 /// SEC-14: hanya http/https, tanpa spasi atau karakter kontrol; dibuka lewat `open`, bukan shell.
