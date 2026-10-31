@@ -39,6 +39,12 @@ pub fn connect(on_event: OnEvent) -> io::Result<Client> {
     let sock = dir.join("ui.sock");
     // satu rahasia per folder run: dev, uji, dan app terpasang tidak saling tindih
     let account = format!("ui-secret:{}", dir.display());
+    // Hanya build debug (alat ukur, uji): rahasia dari env, tanpa Keychain. Build rilis tidak punya
+    // jalur ini, karena SEC-20 melarang rahasia kanal UI ada di environment.
+    #[cfg(debug_assertions)]
+    if let Ok(secret) = std::env::var("GEMBALA_DEV_SECRET") {
+        return Client::open(UnixStream::connect(&sock)?, &secret, on_event);
+    }
     // socket dulu: Keychain hanya dibaca bila daemon hidup. Build tanpa tanda tangan berganti identitas
     // tiap build, dan membaca item build lama memunculkan dialog izin macOS.
     let Ok(s) = UnixStream::connect(&sock) else {

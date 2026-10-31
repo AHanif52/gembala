@@ -28,6 +28,28 @@ const PANE_KEYS: &[(&str, &str, &str)] = &[
     ("pane.proc.close", "Tutup pane", "Cmd+W"),
 ];
 
+/// Menu "View" (FR-34, FR-36).
+const VIEW_KEYS: &[(&str, &str, &str)] = &[
+    ("term.find", "Cari…", "Cmd+F"),
+    ("term.clear", "Bersihkan layar", "Cmd+K"),
+    ("term.zoom.in", "Perbesar", "Cmd+="),
+    ("term.zoom.out", "Perkecil", "Cmd+-"),
+    ("term.zoom.reset", "Ukuran asli", "Cmd+0"),
+];
+
+/// SEC-14: hanya http/https, tanpa spasi atau karakter kontrol; dibuka lewat `open`, bukan shell.
+fn url_ok(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://")) && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url_ok(&url) {
+        return Err("hanya tautan http/https".into());
+    }
+    std::process::Command::new("/usr/bin/open").arg(&url).spawn().map(drop).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Result<Value, String> {
     if !ALLOWED.contains(&method.as_str()) {
@@ -88,15 +110,32 @@ pub fn run() {
                 pane = pane.item(&MenuItemBuilder::with_id(*id, *label).accelerator(*key).build(app)?);
             }
             let pane = pane.build()?;
+            let mut view = SubmenuBuilder::new(app, "View");
+            for (id, label, key) in VIEW_KEYS {
+                view = view.item(&MenuItemBuilder::with_id(*id, *label).accelerator(*key).build(app)?);
+            }
+            let view = view.build()?;
             let window = SubmenuBuilder::new(app, "Window").minimize().fullscreen().build()?;
-            MenuBuilder::new(app).items(&[&main, &edit, &pane, &window]).build()
+            MenuBuilder::new(app).items(&[&main, &edit, &view, &pane, &window]).build()
         })
         .on_menu_event(|app, ev| {
-            if ev.id().0.starts_with("pane.") || ev.id().0.starts_with("app.") {
+            if ["pane.", "app.", "term."].iter().any(|p| ev.id().0.starts_with(p)) {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, renderer, quit])
+        .invoke_handler(tauri::generate_handler![daemon_call, renderer, quit, open_url])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn url_ok_hanya_http() {
+        assert!(super::url_ok("https://github.com/AHanif52/gembala"));
+        assert!(super::url_ok("http://localhost:1420/"));
+        for bad in ["javascript:alert(1)", "file:///etc/passwd", "ssh://x", "https://a b", "https://x\n-a", "HTTPS://x"] {
+            assert!(!super::url_ok(bad), "{bad}");
+        }
+    }
 }

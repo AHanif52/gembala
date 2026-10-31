@@ -12,6 +12,9 @@
   let zoomed = $state(false);
   let confirm = $state<{ pane: number; name: string } | null>(null);
   let quitAsk = $state(0); // jumlah pane yang masih menjalankan proses (FR-46)
+  let linkAsk = $state(""); // SEC-14: URL asli ditampilkan sebelum dibuka
+  let fontSize = $state(13); // FR-34 zoom global; ponytail: zoom per pane dan nilai dari config di M3
+  const tiles: Record<number, Tile> = $state({});
   let error = $state("");
   let box: HTMLDivElement;
 
@@ -48,7 +51,6 @@
     if (focus === pane || !panes(tree).includes(focus)) focus = next ?? panes(tree)[0];
   }
 
-  /// Aksi dari menu "Pane" (key equivalent native, lihat lib.rs). `⌘` milik app, sisanya ke terminal (FR-39).
   /// FR-46: konfirmasi hanya bila masih ada proses jalan
   async function askQuitAll() {
     const ids: number[] = await call("pane.list");
@@ -63,10 +65,19 @@
     await invoke("quit");
   }
 
+  const onlink = (url: string) => (linkAsk = url);
+
+  async function openLink() {
+    const url = linkAsk;
+    linkAsk = "";
+    await invoke("open_url", { url }).catch(() => {});
+  }
+
+  /// Aksi dari menu "Pane" dan "View" (key equivalent native, lihat lib.rs). `⌘` milik app, sisanya ke terminal (FR-39).
   let last = { id: "", at: 0 };
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
-    if (!tree || confirm || quitAsk) return;
+    if (!tree || confirm || quitAsk || linkAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
     last = { id, at: performance.now() };
@@ -77,10 +88,22 @@
     else if (group === "zoom") zoomed = !zoomed;
     else if (id === "pane.proc.kill") call("pane.kill", { pane: focus });
     else if (id === "pane.proc.close") askClose(focus);
+    else if (id === "term.find") tiles[focus]?.openFind();
+    else if (id === "term.clear") tiles[focus]?.clearScreen();
+    else if (id === "term.zoom.in") fontSize = Math.min(32, fontSize + 1);
+    else if (id === "term.zoom.out") fontSize = Math.max(8, fontSize - 1);
+    else if (id === "term.zoom.reset") fontSize = 13;
   }
 
-  /// Kartu konfirmasi tutup (dan ⌘⇧↩) yang menangkap tombol; lainnya milik terminal.
+  /// Kartu konfirmasi (tutup, keluar, buka tautan) dan ⌘⇧↩ yang menangkap tombol; lainnya milik terminal.
   function onKey(e: KeyboardEvent) {
+    if (linkAsk) {
+      if (e.key === "Enter") openLink();
+      if (e.key === "Escape") linkAsk = "";
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (quitAsk) {
       if (e.key === "Enter") quitAll();
       if (e.key === "Escape") quitAsk = 0;
@@ -159,7 +182,7 @@
       onpointerdown={() => (focus = pane)}
       role="presentation"
     >
-      <Tile {pane} focused={pane === focus} {onexit} />
+      <Tile bind:this={tiles[pane]} {pane} focused={pane === focus} {fontSize} {onexit} {onlink} />
       {#if confirm?.pane === pane}
         <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
           <span><b>{confirm?.name}</b> masih jalan. Tutup pane?</span>
@@ -186,14 +209,40 @@
       <span class="keys">Enter keluar · Esc batal</span>
     </div>
   {/if}
+  {#if linkAsk}
+    <div class="confirm" role="alertdialog" aria-label="Konfirmasi buka tautan">
+      <span>Buka di browser?</span>
+      <code class="url">{linkAsk}</code>
+      <span class="keys">Enter buka · Esc batal</span>
+    </div>
+  {/if}
   {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
 </div>
 
 <style>
+  :global(:root) {
+    --bg: #101114;
+    --fg: #d4d4d8;
+    --muted: #8b8b93;
+    --line: #2a2b31;
+    --card: #17181c;
+    --dim: rgba(16, 17, 20, 0.45);
+  }
+  @media (prefers-color-scheme: light) {
+    :global(:root) {
+      --bg: #fafafa;
+      --fg: #27272a;
+      --muted: #71717a;
+      --line: #e4e4e7;
+      --card: #ffffff;
+      --dim: rgba(250, 250, 250, 0.5);
+    }
+  }
   :global(html, body) {
     margin: 0;
     height: 100%;
-    background: #101114;
+    background: var(--bg);
+    color: var(--fg);
     overflow: hidden;
   }
   .grid {
@@ -209,7 +258,7 @@
     content: "";
     position: absolute;
     inset: 0;
-    background: rgba(16, 17, 20, 0.45);
+    background: var(--dim);
     pointer-events: none;
   }
   .divider {
@@ -221,13 +270,13 @@
     margin-left: -3px;
     width: 7px !important;
     cursor: col-resize;
-    background: linear-gradient(to right, transparent 3px, #2a2b31 3px, #2a2b31 4px, transparent 4px);
+    background: linear-gradient(to right, transparent 3px, var(--line) 3px, var(--line) 4px, transparent 4px);
   }
   .divider.col {
     margin-top: -3px;
     height: 7px !important;
     cursor: row-resize;
-    background: linear-gradient(to bottom, transparent 3px, #2a2b31 3px, #2a2b31 4px, transparent 4px);
+    background: linear-gradient(to bottom, transparent 3px, var(--line) 3px, var(--line) 4px, transparent 4px);
   }
   .confirm {
     position: absolute;
@@ -238,16 +287,21 @@
     flex-direction: column;
     gap: 6px;
     padding: 12px 16px;
-    border: 1px solid #2a2b31;
+    border: 1px solid var(--line);
     border-radius: 6px;
-    background: #17181c;
-    color: #d4d4d8;
+    background: var(--card);
+    color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
     z-index: 3;
   }
+  .url {
+    max-width: 60vw;
+    overflow-wrap: anywhere;
+    font: 12px "SF Mono", Menlo, monospace;
+  }
   .keys,
   .zoom {
-    color: #8b8b93;
+    color: var(--muted);
     font-size: 12px;
   }
   .zoom {
