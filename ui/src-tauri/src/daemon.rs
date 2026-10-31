@@ -39,20 +39,22 @@ pub fn connect(on_event: OnEvent) -> io::Result<Client> {
     let sock = dir.join("ui.sock");
     // satu rahasia per folder run: dev, uji, dan app terpasang tidak saling tindih
     let account = format!("ui-secret:{}", dir.display());
-    let kc = security_framework::passwords::get_generic_password(KC_SERVICE, &account).ok();
-    let secret = kc.and_then(|s| String::from_utf8(s).ok());
-    match (secret, UnixStream::connect(&sock)) {
-        (Some(secret), Ok(s)) => Client::open(s, &secret, on_event).map_err(|e| {
-            // ponytail: daemon hidup tapi rahasia Keychain basi; reset otomatis di FR-49 (Fase 1)
-            err(format!("{e}; hentikan daemon lama dengan: pkill -f 'gembala daemon'"))
-        }),
-        (None, Ok(_)) => Err(err("daemon jalan tapi rahasia tidak ada di Keychain; hentikan dengan: pkill -f 'gembala daemon'")),
-        (_, Err(_)) => {
-            let secret = spawn_daemon()?;
-            security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes())
-                .map_err(|e| err(format!("simpan rahasia ke Keychain: {e}")))?;
-            Client::open(UnixStream::connect(&sock)?, &secret, on_event)
+    // socket dulu: Keychain hanya dibaca bila daemon hidup. Build tanpa tanda tangan berganti identitas
+    // tiap build, dan membaca item build lama memunculkan dialog izin macOS.
+    let Ok(s) = UnixStream::connect(&sock) else {
+        let secret = spawn_daemon()?;
+        // gagal simpan (izin ditolak) tidak menggagalkan sesi ini; hanya sambung ulang nanti yang tidak bisa
+        if let Err(e) = security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes()) {
+            eprintln!("simpan rahasia ke Keychain: {e}");
         }
+        return Client::open(UnixStream::connect(&sock)?, &secret, on_event);
+    };
+    let kc = security_framework::passwords::get_generic_password(KC_SERVICE, &account).ok();
+    match kc.and_then(|s| String::from_utf8(s).ok()) {
+        // ponytail: daemon hidup tapi rahasia Keychain basi/tidak ada; reset otomatis di FR-49 (Fase 1)
+        Some(secret) => Client::open(s, &secret, on_event)
+            .map_err(|e| err(format!("{e}; hentikan daemon lama dengan: pkill -f 'gembala daemon'"))),
+        None => Err(err("daemon jalan tapi rahasia tidak ada di Keychain; hentikan dengan: pkill -f 'gembala daemon'")),
     }
 }
 
