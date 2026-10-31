@@ -99,7 +99,8 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     let peer = peer_pid(&s)?;
     let (tx, rx) = channel::<String>();
     let mut w = s.try_clone()?;
-    // satu penulis per koneksi: balasan dan event tidak saling potong
+    // satu penulis per koneksi: balasan dan event tidak saling potong.
+    // ponytail: setelah klien putus, thread + fd ini baru lepas saat pane yang di-attach mengeluarkan output berikutnya
     thread::spawn(move || {
         for l in rx {
             if w.write_all(l.as_bytes()).is_err() {
@@ -181,6 +182,12 @@ fn dim(v: &Value, default: u16) -> u16 {
 
 fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
     match m {
+        "pane.list" => {
+            let panes = st.panes.lock().unwrap();
+            let mut ids: Vec<_> = panes.keys().copied().collect();
+            ids.sort();
+            Ok(json!(ids))
+        }
         "pane.create" => {
             let (rows, cols) = (dim(&p["rows"], 24), dim(&p["cols"], 80));
             let pty = Pty::spawn(p["cmd"].as_str(), rows, cols, &[("GEMBALA_SOCKET", &st.pane_sock)])
