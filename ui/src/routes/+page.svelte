@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Fase 1 M1: grid pane satu tab (FR-1, 37, 38, 50). Tab, profil, dan pengaturan menyusul (M3–M7).
+  // Fase 1: workspace → tab → pohon split pane (FR-1, 37, 38, 43–46, 50, 52). Tata letak disimpan daemon (FR-45).
   import { onMount } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
@@ -7,10 +7,21 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { call } from "$lib/daemon";
-  import { dividers, neighbor, nudge, panes, rects, remove, setRatio, split, type Arrow, type Dir, type Divider, type Node } from "$lib/layout";
+  import {
+    dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, valid,
+    type Arrow, type Dir, type Divider, type Node,
+  } from "$lib/layout";
 
-  let tree = $state<Node | null>(null);
-  let focus = $state(0);
+  type Tab = { id: string; title: string; tree: Node; focus: number };
+  type Ws = { id: string; name: string; root: string; tabs: Tab[] };
+  /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
+  type Meta = { profile: string; cwd: string | null; agent: string; name: string; busy?: string | null };
+
+  let wss = $state<Ws[]>([]);
+  let at = $state({ ws: 0, tab: 0 });
+  let meta = $state<Record<number, Meta>>({});
+  let dead = $state<Record<number, true>>({}); // pane dari run daemon lain atau sudah keluar (id negatif)
+  let boot = "";
   let zoomed = $state(false);
   let confirm = $state<{ pane: number; name: string } | null>(null);
   let quitAsk = $state(0); // jumlah pane yang masih menjalankan proses (FR-46)
@@ -19,7 +30,15 @@
   let cfg = $state<Config | null>(null);
   let settingsOpen = $state(false);
   let picker = $state<{ items: (Profile & { missing: boolean })[]; sel: number } | null>(null);
+  let sidebar = $state(true);
+  let filter = $state("");
+  let editing = $state<{ kind: "tab" | "ws"; id: string; value: string } | null>(null);
+  let newWs = $state<{ name: string; root: string } | null>(null);
+  let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
+  let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
+  const ws = $derived(wss[at.ws]);
+  const tab = $derived(ws?.tabs[at.tab]);
 
   $effect(() => {
     const r = document.documentElement;
@@ -28,39 +47,83 @@
   });
   const tiles: Record<number, Tile> = $state({});
   let error = $state("");
-  let box: HTMLDivElement;
+  let box = $state<HTMLDivElement>();
 
-  const layout = $derived(tree ? rects(tree) : new Map());
-  const lines = $derived(tree && !zoomed ? dividers(tree) : []);
+  const lines = $derived(tab && !zoomed ? dividers(tab.tree) : []);
+  const uid = () => Math.random().toString(36).slice(2, 10);
+  const base = (p: string | null | undefined) => (p ? p.split("/").filter(Boolean).at(-1) ?? "/" : "");
+  const home = (p: string | null | undefined) => (p ?? "").replace(/^\/Users\/[^/]+/, "~");
+  const title = (t: Tab) => t.title || base(meta[t.focus]?.cwd) || "~";
+  /// Urutan global tab untuk ⌘1–⌘9
+  const order = $derived(wss.flatMap((w, wi) => w.tabs.map((t, ti) => ({ wi, ti, t }))));
 
-  const newPane = async (): Promise<number> => (await call("pane.create", {})).pane;
+  async function createPane(opts: Record<string, unknown> = {}): Promise<number> {
+    const r = await call("pane.create", opts);
+    meta[r.pane] = { profile: (opts.profile as string) ?? "shell", cwd: null, agent: "", name: r.name };
+    return r.pane;
+  }
 
-  async function splitFocused(dir: Dir, profile?: string) {
-    if (!tree) return;
-    const id = profile ? (await call("pane.create", { profile, from_pane: focus })).pane : await newPane();
-    tree = split(tree, focus, dir, id);
-    focus = id;
+  async function newTab(profile?: string, wi = at.ws) {
+    const w = wss[wi];
+    const from = wi === at.ws ? tab?.focus : undefined;
+    const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined });
+    w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id });
+    at = { ws: wi, tab: w.tabs.length - 1 };
+    zoomed = false;
+  }
+
+  async function splitFocused(dir: Dir) {
+    if (!tab) return;
+    const id = await createPane({ from_pane: tab.focus });
+    tab.tree = split(tab.tree, tab.focus, dir, id);
+    tab.focus = id;
     zoomed = false;
   }
 
   /// FR-38: konfirmasi bila ada proses selain shell diam
   async function askClose(pane: number) {
+    if (dead[pane]) return onexit(pane);
     const info = await call("pane.info", { pane });
     if (info.busy) confirm = { pane, name: info.name ?? "proses" };
     else await call("pane.close", { pane });
   }
 
+  /// Pane keluar: hilang dari tabnya; tab kosong ditutup; workspace tanpa tab dapat shell baru.
   async function onexit(pane: number) {
-    if (!tree) return;
     if (confirm?.pane === pane) confirm = null;
-    const next = (zoomed ? null : neighbor(tree, pane, "left") ?? neighbor(tree, pane, "up")) ?? null;
-    tree = remove(tree, pane);
-    zoomed = false;
-    if (!tree) {
-      const id = await newPane();
-      tree = { pane: id };
+    for (const [wi, w] of wss.entries()) {
+      const ti = w.tabs.findIndex((t) => panes(t.tree).includes(pane));
+      if (ti < 0) continue;
+      const t = w.tabs[ti];
+      const next = neighbor(t.tree, pane, "left") ?? neighbor(t.tree, pane, "up");
+      const rest = remove(t.tree, pane);
+      if (rest) {
+        t.tree = rest;
+        if (t.focus === pane || !panes(rest).includes(t.focus)) t.focus = next ?? panes(rest)[0];
+      } else {
+        w.tabs.splice(ti, 1);
+        if (at.ws === wi && at.tab >= ti) at.tab = Math.max(0, at.tab - 1);
+      }
+      if (at.ws === wi) zoomed = false;
+      delete meta[pane];
+      delete dead[pane];
+      if (!w.tabs.length) await newTab(undefined, wi);
+      return;
     }
-    if (focus === pane || !panes(tree).includes(focus)) focus = next ?? panes(tree)[0];
+  }
+
+  /// FR-45: pane mati diganti pane baru dari profil dan folder yang sama
+  async function restart(old: number) {
+    const m = meta[old];
+    const id = await createPane({ profile: m?.profile === "shell" ? undefined : m?.profile, cwd: m?.cwd ?? undefined });
+    for (const w of wss)
+      for (const t of w.tabs)
+        if (panes(t.tree).includes(old)) {
+          t.tree = replace(t.tree, old, id);
+          if (t.focus === old) t.focus = id;
+        }
+    delete meta[old];
+    delete dead[old];
   }
 
   /// FR-46: konfirmasi hanya bila masih ada proses jalan
@@ -89,7 +152,7 @@
   function pick(i: number) {
     const p = picker?.items[i];
     picker = null;
-    if (p) splitFocused("row", p.id);
+    if (p) newTab(p.id === "shell" ? undefined : p.id);
   }
 
   async function openLink() {
@@ -98,32 +161,49 @@
     await invoke("open_url", { url }).catch(() => {});
   }
 
-  /// Aksi dari menu "Pane" dan "View" (key equivalent native, lihat lib.rs). `⌘` milik app, sisanya ke terminal (FR-39).
+  function goto(i: number) {
+    const o = order[i];
+    if (!o) return;
+    at = { ws: o.wi, tab: o.ti };
+    zoomed = false;
+  }
+
+  /// Aksi dari menu (key equivalent native, lihat lib.rs). `⌘` milik app, sisanya ke terminal (FR-39).
   let last = { id: "", at: 0 };
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen || picker) return;
-    if (!tree || confirm || quitAsk || linkAsk) return;
+    if (settingsOpen || picker || editing || newWs) return;
+    if (!tab || confirm || quitAsk || linkAsk || wsAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
     last = { id, at: performance.now() };
     const [, group, arg] = id.split(".");
-    if (id === "pane.new.pick") openPicker();
+    const cur = order.findIndex((o) => o.wi === at.ws && o.ti === at.tab);
+    if (id === "tab.new") openPicker();
+    else if (id === "tab.sidebar") sidebar = !sidebar;
+    else if (id === "tab.prev") goto((cur + order.length - 1) % order.length);
+    else if (id === "tab.next") goto((cur + 1) % order.length);
+    else if (group === "goto") goto(+arg - 1);
     else if (group === "split") splitFocused(arg === "down" ? "col" : "row");
-    else if (group === "focus" && !zoomed) focus = neighbor(tree, focus, arg as Arrow) ?? focus;
-    else if (group === "resize" && !zoomed) tree = nudge(tree, focus, arg as Arrow);
+    else if (group === "focus" && !zoomed) tab.focus = neighbor(tab.tree, tab.focus, arg as Arrow) ?? tab.focus;
+    else if (group === "resize" && !zoomed) tab.tree = nudge(tab.tree, tab.focus, arg as Arrow);
     else if (group === "zoom") zoomed = !zoomed;
-    else if (id === "pane.proc.kill") call("pane.kill", { pane: focus });
-    else if (id === "pane.proc.close") askClose(focus);
-    else if (id === "term.find") tiles[focus]?.openFind();
-    else if (id === "term.clear") tiles[focus]?.clearScreen();
+    else if (id === "pane.proc.kill") call("pane.kill", { pane: tab.focus });
+    else if (id === "pane.proc.close") askClose(tab.focus);
+    else if (id === "term.find") tiles[tab.focus]?.openFind();
+    else if (id === "term.clear") tiles[tab.focus]?.clearScreen();
     else if (id === "term.zoom.in") zoom = Math.min(16, zoom + 1);
     else if (id === "term.zoom.out") zoom = Math.max(-6, zoom - 1);
     else if (id === "term.zoom.reset") zoom = 0;
   }
 
-  /// Kartu konfirmasi (tutup, keluar, buka tautan) dan ⌘⇧↩ yang menangkap tombol; lainnya milik terminal.
+  const stop = (e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  /// Kartu konfirmasi, pemilih profil, dan ⌘⇧↩ yang menangkap tombol; lainnya milik terminal.
   function onKey(e: KeyboardEvent) {
     if (picker) {
       const n = picker.items.length;
@@ -132,9 +212,7 @@
       else if (e.key === "Enter") pick(picker.sel);
       else if (e.key === "Escape") picker = null;
       else if (/^[1-9]$/.test(e.key)) pick(+e.key - 1);
-      e.preventDefault();
-      e.stopPropagation();
-      return;
+      return stop(e);
     }
     if (settingsOpen && !quitAsk) {
       if (e.key === "Escape") {
@@ -143,40 +221,95 @@
       }
       return; // kontrol di Pengaturan menerima tombol seperti biasa
     }
+    if (editing || newWs) {
+      if (e.key === "Escape") {
+        editing = null;
+        newWs = null;
+        stop(e);
+      }
+      return; // kotak isian di sidebar menerima tombol seperti biasa
+    }
+    if (wsAsk) {
+      if (e.key === "Enter") removeWorkspace(wsAsk.wi);
+      if (e.key === "Escape") wsAsk = null;
+      return stop(e);
+    }
+    if (welcome && (e.key === "Escape" || e.key === "Enter")) {
+      welcome = null;
+      return stop(e);
+    }
     if (linkAsk) {
       if (e.key === "Enter") openLink();
       if (e.key === "Escape") linkAsk = "";
-      e.preventDefault();
-      e.stopPropagation();
-      return;
+      return stop(e);
     }
     if (quitAsk) {
       if (e.key === "Enter") quitAll();
       if (e.key === "Escape") quitAsk = 0;
-      e.preventDefault();
-      e.stopPropagation();
-      return;
+      return stop(e);
     }
     // WKWebView memakan ⌘⇧↩ sebelum menu sempat menerimanya
     if (!confirm && e.metaKey && e.shiftKey && e.key === "Enter") {
       run("pane.zoom.toggle");
-      e.preventDefault();
-      e.stopPropagation();
-      return;
+      return stop(e);
     }
     if (!confirm) return;
     if (e.key === "Enter") call("pane.close", { pane: confirm.pane });
     if (e.key === "Enter" || e.key === "Escape") confirm = null;
-    e.preventDefault();
-    e.stopPropagation();
+    stop(e);
+  }
+
+  function saveEdit() {
+    if (!editing) return;
+    const v = editing.value.trim().slice(0, 60);
+    if (editing.kind === "tab") {
+      const t = wss.flatMap((w) => w.tabs).find((t) => t.id === editing!.id);
+      if (t) t.title = v; // kosong = kembali ke nama folder
+    } else {
+      const w = wss.find((w) => w.id === editing!.id);
+      if (w && v) w.name = v;
+    }
+    editing = null;
+  }
+
+  /// FR-44: workspace = satu folder project; tab barunya mulai di folder itu
+  async function addWorkspace() {
+    if (!newWs) return;
+    const name = newWs.name.trim().slice(0, 60) || base(newWs.root) || "workspace";
+    const root = newWs.root.trim() || "~";
+    newWs = null;
+    wss.push({ id: uid(), name, root, tabs: [] });
+    await newTab(undefined, wss.length - 1);
+  }
+
+  async function askRemoveWorkspace(wi: number) {
+    if (wss.length < 2) return;
+    const ids = wss[wi].tabs.flatMap((t) => panes(t.tree)).filter((p) => !dead[p]);
+    const infos = await Promise.all(ids.map((pane) => call("pane.info", { pane }).catch(() => ({}))));
+    const busy = infos.filter((i: any) => i.busy).length;
+    if (busy) wsAsk = { wi, busy };
+    else removeWorkspace(wi);
+  }
+
+  function removeWorkspace(wi: number) {
+    wsAsk = null;
+    const ids = wss[wi].tabs.flatMap((t) => panes(t.tree));
+    wss.splice(wi, 1);
+    at = { ws: 0, tab: 0 };
+    for (const p of ids) {
+      if (dead[p]) delete dead[p];
+      else call("pane.close", { pane: p }).catch(() => {});
+      delete meta[p];
+    }
   }
 
   function drag(d: Divider, e: PointerEvent) {
+    if (!box) return;
     const b = box.getBoundingClientRect();
     const move = (m: PointerEvent) => {
-      const at = d.dir === "row" ? (m.clientX - b.left) / b.width : (m.clientY - b.top) / b.height;
+      const x = d.dir === "row" ? (m.clientX - b.left) / b.width : (m.clientY - b.top) / b.height;
       const [start, size] = d.dir === "row" ? [d.rect.x, d.rect.w] : [d.rect.y, d.rect.h];
-      if (tree) tree = setRatio(tree, d.path, (at - start) / size);
+      if (tab) tab.tree = setRatio(tab.tree, d.path, (x - start) / size);
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -189,27 +322,101 @@
 
   const pct = (v: number) => `${v * 100}%`;
 
+  /// Isi layout.json dianggap tidak tepercaya: bentuk salah dibuang, sisanya dipakai.
+  function sanitize(saved: any): Ws[] {
+    if (!Array.isArray(saved?.workspaces)) return [];
+    return saved.workspaces
+      .filter((w: any) => typeof w?.id === "string" && Array.isArray(w.tabs))
+      .map((w: any) => ({
+        id: w.id,
+        name: String(w.name ?? "workspace").slice(0, 60),
+        root: String(w.root ?? "~").slice(0, 500),
+        tabs: w.tabs
+          .filter((t: any) => typeof t?.id === "string" && valid(t.tree))
+          .map((t: any) => ({ id: t.id, title: String(t.title ?? "").slice(0, 60), tree: t.tree, focus: panes(t.tree).includes(t.focus) ? t.focus : panes(t.tree)[0] })),
+      }));
+  }
+
+  /// FR-45 pulihkan; FR-43 pertama kali dibuka
+  async function restore() {
+    boot = (await call("daemon.info")).boot;
+    const saved = await call("layout.load");
+    const alive = new Set<number>(await call("pane.list"));
+    const restored = sanitize(saved);
+    if (restored.length) {
+      const sameBoot = saved.boot === boot;
+      const oldMeta: Record<string, Meta> = saved.panes ?? {};
+      let next = -1;
+      for (const w of restored)
+        for (const t of w.tabs)
+          for (const p of panes(t.tree)) {
+            if (sameBoot && alive.has(p)) {
+              meta[p] = oldMeta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" };
+              alive.delete(p);
+              continue;
+            }
+            // id dari run lain bisa bentrok dengan id baru: pane mati selalu negatif
+            const id = next--;
+            t.tree = replace(t.tree, p, id);
+            if (t.focus === p) t.focus = id;
+            meta[id] = oldMeta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" };
+            dead[id] = true;
+          }
+      wss = restored;
+      // pane hidup yang tidak ada di layout (mis. layout gagal tersimpan) tetap tampil
+      for (const p of alive) wss[0].tabs.push({ id: uid(), title: "", tree: { pane: p }, focus: p });
+      const a = saved.at ?? {};
+      at = wss[a.ws]?.tabs[a.tab] ? { ws: a.ws, tab: a.tab } : { ws: 0, tab: 0 };
+      for (const w of wss) if (!w.tabs.length) await newTab(undefined, wss.indexOf(w));
+      return;
+    }
+    wss = [{ id: uid(), name: "default", root: "~", tabs: [] }];
+    const ids = [...alive];
+    if (ids.length) for (const p of ids) wss[0].tabs.push({ id: uid(), title: "", tree: { pane: p }, focus: p });
+    else await newTab(undefined, 0);
+    at = { ws: 0, tab: 0 };
+    welcome = await call("agents.detect", {}).catch(() => []);
+  }
+
+  // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const body = JSON.stringify({ version: 1, boot, at, workspaces: wss, panes: meta });
+    if (!wss.length || !boot) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => call("layout.save", { layout: JSON.parse(body) }).catch(() => {}), 500);
+  });
+
+  // folder dan proses tiap pane untuk judul tab, subjudul, dan ikon agent (FR-52)
+  async function poll() {
+    const ids = Object.keys(meta).map(Number).filter((p) => !dead[p]);
+    for (const p of ids) {
+      const i = await call("pane.info", { pane: p }).catch(() => null);
+      if (!i || !meta[p]) continue;
+      if (i.cwd && meta[p].cwd !== i.cwd) meta[p].cwd = i.cwd;
+      const busy = i.busy ? (i.name ?? "proses") : null;
+      if (meta[p].busy !== busy) meta[p].busy = busy;
+    }
+  }
+
   onMount(() => {
     window.addEventListener("keydown", onKey, true);
     const unlisten = listen<string>("shortcut", ({ payload }) => run(payload));
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
     });
+    const timer = setInterval(poll, 2000);
     (async () => {
       try {
-        // ponytail: pane lama dari daemon dijajarkan ke kanan; pulihkan tata letak asli = M5 (FR-45)
         cfg = await call("config.get");
-        const ids: number[] = await call("pane.list");
-        if (!ids.length) ids.push(await newPane());
-        let t: Node = { pane: ids[0] };
-        for (const id of ids.slice(1)) t = split(t, panes(t).at(-1)!, "row", id);
-        tree = t;
-        focus = ids.at(-1)!;
+        await restore();
+        poll();
       } catch (e) {
         error = `gagal sambung ke daemon: ${e}`;
       }
     })();
     return () => {
+      clearInterval(timer);
       window.removeEventListener("keydown", onKey, true);
       unlisten.then((f) => f());
       unlistenCfg.then((f) => f());
@@ -217,30 +424,90 @@
   });
 </script>
 
-<div class="grid" bind:this={box}>
-  {#if error}<p class="error">{error}</p>{/if}
-  {#each [...layout] as [pane, r] (pane)}
-    {@const hidden = zoomed && pane !== focus}
-    {@const at = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
-    <div
-      class="tile"
-      class:dim={pane !== focus && layout.size > 1}
-      style:display={hidden ? "none" : "block"}
-      style:left={pct(at.x)}
-      style:top={pct(at.y)}
-      style:width={pct(at.w)}
-      style:height={pct(at.h)}
-      onpointerdown={() => (focus = pane)}
-      role="presentation"
-    >
-      <Tile bind:this={tiles[pane]} {pane} focused={pane === focus} {ui} {zoom} {onexit} {onlink} />
-      {#if confirm?.pane === pane}
-        <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
-          <span><b>{confirm?.name}</b> masih jalan. Tutup pane?</span>
-          <span class="keys">Enter tutup · Esc batal</span>
+{#if sidebar}
+  <aside class="side" aria-label="Tab">
+    <input class="search" placeholder="Cari tab" aria-label="Cari tab" bind:value={filter} spellcheck="false" />
+    {#each wss as w, wi (w.id)}
+      <div class="ws">
+        {#if editing?.kind === "ws" && editing.id === w.id}
+          <!-- svelte-ignore a11y_autofocus -->
+          <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama workspace" />
+        {:else}
+          <span class="wsname" role="button" tabindex="-1" ondblclick={() => (editing = { kind: "ws", id: w.id, value: w.name })}>{w.name}</span>
+          <span class="root" title={w.root}>{home(w.root)}</span>
+          {#if wss.length > 1}<button class="x" aria-label="Hapus workspace {w.name}" onclick={() => askRemoveWorkspace(wi)}>×</button>{/if}
+        {/if}
+      </div>
+      {#each w.tabs as t, ti (t.id)}
+        {@const n = order.findIndex((o) => o.t === t)}
+        {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
+        {#if !filter || title(t).toLowerCase().includes(filter.toLowerCase())}
+          <button class="tab" class:on={at.ws === wi && at.tab === ti} onclick={() => ((at = { ws: wi, tab: ti }), (zoomed = false))}
+            ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
+            {#if editing?.kind === "tab" && editing.id === t.id}
+              <!-- svelte-ignore a11y_autofocus -->
+              <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama tab" />
+            {:else}
+              <span class="tt">{title(t)}</span>
+              <span class="n">{n < 9 ? `⌘${n + 1}` : ""}</span>
+              <span class="sub">{home(meta[t.focus]?.cwd)}{agents.length ? ` · ${agents.join(", ")}` : ""}</span>
+            {/if}
+          </button>
+        {/if}
+      {/each}
+    {/each}
+    <div class="adds">
+      <button class="add" onclick={openPicker}>+ Tab <span class="n">⌘T</span></button>
+      {#if newWs}
+        <div class="newws">
+          <input class="edit" placeholder="Nama" aria-label="Nama workspace baru" bind:value={newWs.name} />
+          <input class="edit" placeholder="Folder, mis. ~/Programming/app" aria-label="Folder workspace baru" bind:value={newWs.root}
+            onkeydown={(e) => e.key === "Enter" && addWorkspace()} />
         </div>
+      {:else}
+        <button class="add" onclick={() => (newWs = { name: "", root: "" })}>+ Workspace</button>
       {/if}
     </div>
+  </aside>
+{/if}
+
+<div class="grid" class:full={!sidebar} bind:this={box}>
+  {#if error}<p class="error">{error}</p>{/if}
+  {#each wss as w, wi (w.id)}
+    {#each w.tabs as t, ti (t.id)}
+      {@const active = at.ws === wi && at.tab === ti}
+      {#each [...rects(t.tree)] as [pane, r] (pane)}
+        {@const hidden = !active || (zoomed && pane !== t.focus)}
+        {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
+        <div
+          class="tile"
+          class:dim={active && pane !== t.focus && panes(t.tree).length > 1}
+          style:display={hidden ? "none" : "block"}
+          style:left={pct(rr.x)}
+          style:top={pct(rr.y)}
+          style:width={pct(rr.w)}
+          style:height={pct(rr.h)}
+          onpointerdown={() => (t.focus = pane)}
+          role="presentation"
+        >
+          {#if dead[pane]}
+            <div class="dead">
+              <span>Pane ini berhenti saat daemon dijalankan ulang.</span>
+              <span class="keys">{meta[pane]?.name || meta[pane]?.profile} · {home(meta[pane]?.cwd) || "~"}</span>
+              <button class="mini" onclick={() => restart(pane)}>Jalankan ulang {meta[pane]?.profile ?? "shell"}</button>
+            </div>
+          {:else}
+            <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} {zoom} {onexit} {onlink} />
+          {/if}
+          {#if confirm?.pane === pane}
+            <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
+              <span><b>{confirm?.name}</b> masih jalan. Tutup pane?</span>
+              <span class="keys">Enter tutup · Esc batal</span>
+            </div>
+          {/if}
+        </div>
+      {/each}
+    {/each}
   {/each}
   {#each lines as d (d.path)}
     <div
@@ -254,6 +521,21 @@
       aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
     ></div>
   {/each}
+  {#if wsAsk}
+    <div class="confirm" role="alertdialog" aria-label="Konfirmasi hapus workspace">
+      <span><b>{wsAsk.busy} pane</b> di workspace {wss[wsAsk.wi]?.name} masih menjalankan proses. Hapus dan hentikan?</span>
+      <span class="keys">Enter hapus · Esc batal</span>
+    </div>
+  {/if}
+  {#if welcome}
+    <div class="confirm welcome" role="dialog" aria-label="Selamat datang">
+      <b>Siap dipakai</b>
+      {#each welcome as a (a.agent)}
+        <span>{a.installed ? "✓" : "·"} {a.name} <span class="keys">{a.installed ? a.version : "tidak terpasang"}</span></span>
+      {/each}
+      <span class="keys">⌘T tab baru dari profil · ⌘, Pengaturan · Enter tutup</span>
+    </div>
+  {/if}
   {#if quitAsk}
     <div class="confirm" role="alertdialog" aria-label="Konfirmasi keluar">
       <span><b>{quitAsk} pane</b> masih menjalankan proses. Keluar dan hentikan semua?</span>
@@ -322,7 +604,153 @@
   }
   .grid {
     position: fixed;
+    inset: 0 0 0 220px;
+  }
+  .grid.full {
+    left: 0;
+  }
+  /* FR-52: tab vertikal per workspace; tenang, hanya yang membantu kerja (memory: UI bersih ala Warp) */
+  .side {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 220px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 8px;
+    border-right: 1px solid var(--line);
+    overflow-y: auto;
+    font: 13px system-ui, -apple-system, sans-serif;
+    color: var(--fg);
+  }
+  .search,
+  .edit {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    outline: none;
+  }
+  .search {
+    margin-bottom: 6px;
+  }
+  .ws {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-top: 8px;
+    padding: 2px 8px;
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .wsname {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .root {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .x {
+    border: 0;
+    background: none;
+    color: var(--muted);
+    visibility: hidden;
+    cursor: pointer;
+  }
+  .ws:hover .x {
+    visibility: visible;
+  }
+  .tab {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0 6px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: default;
+  }
+  .tab.on {
+    background: var(--line);
+  }
+  .tt {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .n {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .sub {
+    grid-column: 1 / -1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .adds {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 10px;
+  }
+  .add {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    text-align: left;
+  }
+  .add:hover {
+    color: var(--fg);
+  }
+  .newws {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .dead {
+    position: absolute;
     inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--muted);
+    font: 13px system-ui, -apple-system, sans-serif;
+  }
+  .mini {
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--card);
+    color: var(--fg);
+    font: inherit;
+  }
+  .welcome {
+    min-width: 280px;
   }
   .tile {
     position: absolute;

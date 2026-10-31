@@ -41,6 +41,19 @@ export function split(n: Node, pane: number, dir: Dir, added: number): Node {
   return { ...n, a: split(n.a, pane, dir, added), b: split(n.b, pane, dir, added) };
 }
 
+export function replace(n: Node, old: number, pane: number): Node {
+  if (isLeaf(n)) return n.pane === old ? { pane } : n;
+  return { ...n, a: replace(n.a, old, pane), b: replace(n.b, old, pane) };
+}
+
+/// Pohon dari file layout dianggap tidak tepercaya: bentuk salah = null.
+export function valid(n: unknown, depth = 0): n is Node {
+  if (depth > 32 || typeof n !== "object" || n === null) return false;
+  const o = n as Record<string, unknown>;
+  if ("pane" in o) return Number.isInteger(o.pane);
+  return (o.dir === "row" || o.dir === "col") && typeof o.ratio === "number" && o.ratio > 0 && o.ratio < 1 && valid(o.a, depth + 1) && valid(o.b, depth + 1);
+}
+
 export function remove(n: Node, pane: number): Node | null {
   if (isLeaf(n)) return n.pane === pane ? null : n;
   const a = remove(n.a, pane);

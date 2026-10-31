@@ -1,7 +1,7 @@
 // @ts-nocheck -- dijalankan `npm test` (node --test), bukan bagian build app
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dividers, neighbor, nudge, panes, rects, remove, setRatio, split, type Node } from "./layout.ts";
+import { dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, valid, type Node } from "./layout.ts";
 
 // [1 | 2/3] : 1 kiri, 2 kanan atas, 3 kanan bawah
 const t3 = (): Node => split(split({ pane: 1 }, 1, "row", 2), 2, "col", 3);
@@ -41,4 +41,13 @@ test("nudge menggeser pemisah terdekat", () => {
   n = nudge(t3(), 3, "up", 0.1); // pemisah atas/bawah di sisi kanan
   assert.ok(Math.abs((n as any).b.ratio - 0.4) < 1e-9);
   assert.deepEqual(nudge({ pane: 1 }, 1, "left"), { pane: 1 });
+});
+
+test("replace menukar id pane, valid menolak bentuk salah", () => {
+  assert.deepEqual(panes(replace(t3(), 2, -7)), [1, -7, 3]);
+  assert.ok(valid(t3()));
+  assert.ok(!valid({ dir: "row", ratio: 2, a: { pane: 1 }, b: { pane: 2 } }));
+  assert.ok(!valid({ dir: "x", ratio: 0.5, a: { pane: 1 }, b: { pane: 2 } }));
+  assert.ok(!valid({ pane: "1" }));
+  assert.ok(!valid(null));
 });

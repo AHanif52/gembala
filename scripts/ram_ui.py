@@ -22,7 +22,7 @@ def footprint(pids_):
 shutil.rmtree(R, ignore_errors=True)
 os.mkdir(R, 0o700)
 r, w = os.pipe()
-d = subprocess.Popen([daemon_bin, "daemon", "--secret-fd", str(w)], env={**os.environ, "GEMBALA_RUNDIR": R},
+d = subprocess.Popen([daemon_bin, "daemon", "--secret-fd", str(w)], env={**os.environ, "GEMBALA_RUNDIR": R, "GEMBALA_CONFIG": os.path.join(R, "cfg", "config.toml")},
                      pass_fds=(w,), start_new_session=True)
 os.close(w)
 secret = os.fdopen(r).readline().strip()
@@ -58,6 +58,11 @@ for at in (5, 10, 20, 30):
 conns = subprocess.run(["lsof", "-a", "-U", "-p", str(d.pid)], capture_output=True, text=True).stdout.count("ui.sock") - 1
 parts = ", ".join(f"{k.replace('com.apple.WebKit.', '')} {v:.0f}" for k, v in sorted(last.items(), key=lambda x: -x[1]))
 ok = "ok" if conns > 0 else "UI TIDAK tersambung"
+lay = os.path.join(R, "cfg", "layout.json")
+if os.path.exists(lay):
+    with open(lay) as fh:
+        L = json.load(fh)
+    ok += f", layout {len(L.get('workspaces', []))} ws / {sum(len(w['tabs']) for w in L['workspaces'])} tab"
 print(f"{n} pane [{ok}] detik 5/10/20/30: {' / '.join(f'{x:.0f}' for x in series)} MB  akhir: {parts}")
 
 for p in ui:

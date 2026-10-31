@@ -9,12 +9,10 @@ struct Daemon(OnceLock<Result<daemon::Client, String>>);
 
 /// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
 const ALLOWED: &[&str] =
-    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect"];
+    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save"];
 
 /// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview.
 const PANE_KEYS: &[(&str, &str, &str)] = &[
-    // ponytail: ⌘T di Warp = tab baru; sebelum tab ada (M7), pane baru dari profil muncul di kanan
-    ("pane.new.pick", "Pane baru dari profil…", "Cmd+T"),
     ("pane.split.right", "Split ke kanan", "Cmd+D"),
     ("pane.split.down", "Split ke bawah", "Cmd+Shift+D"),
     ("pane.focus.left", "Fokus ke kiri", "Cmd+Alt+Left"),
@@ -28,6 +26,23 @@ const PANE_KEYS: &[(&str, &str, &str)] = &[
     ("pane.zoom.toggle", "Maksimalkan pane", "Cmd+Shift+Enter"),
     ("pane.proc.kill", "Hentikan proses", "Cmd+."),
     ("pane.proc.close", "Tutup pane", "Cmd+W"),
+];
+
+/// Menu "Tab" (FR-52, FR-39 default Warp).
+const TAB_KEYS: &[(&str, &str, &str)] = &[
+    ("tab.new", "Tab baru dari profil…", "Cmd+T"),
+    ("tab.prev", "Tab sebelumnya", "Cmd+Shift+["),
+    ("tab.next", "Tab berikutnya", "Cmd+Shift+]"),
+    ("tab.goto.1", "Tab 1", "Cmd+1"),
+    ("tab.goto.2", "Tab 2", "Cmd+2"),
+    ("tab.goto.3", "Tab 3", "Cmd+3"),
+    ("tab.goto.4", "Tab 4", "Cmd+4"),
+    ("tab.goto.5", "Tab 5", "Cmd+5"),
+    ("tab.goto.6", "Tab 6", "Cmd+6"),
+    ("tab.goto.7", "Tab 7", "Cmd+7"),
+    ("tab.goto.8", "Tab 8", "Cmd+8"),
+    ("tab.goto.9", "Tab 9", "Cmd+9"),
+    ("tab.sidebar", "Tampilkan/sembunyikan sidebar", "Cmd+B"),
 ];
 
 /// Menu "View" (FR-34, FR-36).
@@ -130,7 +145,7 @@ fn canon_key(raw: &str) -> Result<String, String> {
 /// lawannya kehilangan pintasan dan ditandai.
 fn resolve_keys(overrides: &serde_json::Map<String, Value>) -> (Vec<Shortcut>, Vec<String>) {
     let mut items: Vec<(Shortcut, bool)> =
-        PANE_KEYS.iter().chain(VIEW_KEYS).map(|(id, label, key)| ((*id, *label, canon_key(key).unwrap_or_default()), false)).collect();
+        TAB_KEYS.iter().chain(PANE_KEYS).chain(VIEW_KEYS).map(|(id, label, key)| ((*id, *label, canon_key(key).unwrap_or_default()), false)).collect();
     let mut errors = Vec::new();
     for (raw, action) in overrides {
         let Some(action) = action.as_str() else { continue };
@@ -183,11 +198,16 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut]) -
     let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
     // pintasan lewat key equivalent native: WKWebView tidak selalu meneruskan ⌘⇧/⌘⌥/⌃⌘ ke keydown JS
     let mut view = SubmenuBuilder::new(app, "View");
+    let mut tab = SubmenuBuilder::new(app, "Tab");
     let mut pane = SubmenuBuilder::new(app, "Pane");
     let mut group = "";
     for k in keys {
         if k.0.starts_with("term.") {
             view = view.item(&item(k)?);
+            continue;
+        }
+        if k.0.starts_with("tab.") {
+            tab = tab.item(&item(k)?);
             continue;
         }
         let g = k.0.split('.').nth(1).unwrap_or("");
@@ -198,7 +218,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut]) -
         pane = pane.item(&item(k)?);
     }
     let window = SubmenuBuilder::new(app, "Window").minimize().fullscreen().build()?;
-    MenuBuilder::new(app).items(&[&main, &edit, &view.build()?, &pane.build()?, &window]).build()
+    MenuBuilder::new(app).items(&[&main, &edit, &view.build()?, &tab.build()?, &pane.build()?, &window]).build()
 }
 
 /// `[keys]` dari config → menu baru (FR-39, berlaku tanpa restart).
@@ -222,7 +242,7 @@ pub fn run() {
         // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
         .menu(|app| build_menu(app, &resolve_keys(&serde_json::Map::new()).0))
         .on_menu_event(|app, ev| {
-            if ["pane.", "app.", "term."].iter().any(|p| ev.id().0.starts_with(p)) {
+            if ["pane.", "app.", "term.", "tab."].iter().any(|p| ev.id().0.starts_with(p)) {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })

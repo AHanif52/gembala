@@ -309,8 +309,13 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let launch = prof.as_ref().and_then(profile::launch);
             let cmd = launch.as_deref().or(p["cmd"].as_str());
             let home = std::env::var("HOME").unwrap_or_default();
-            let cwd = match prof.as_ref().map(|x| x.cwd.as_str()).filter(|c| !c.is_empty()) {
-                Some(c) => Some(std::path::PathBuf::from(c.replacen('~', &home, usize::from(c.starts_with('~'))))),
+            // urutan folder: `cwd` eksplisit (jalankan ulang pane mati, FR-45) > folder profil > pane yang fokus
+            let explicit = p["cwd"].as_str().filter(|c| c.starts_with('/') || c.starts_with('~')).map(std::path::PathBuf::from);
+            let cwd = match explicit.or_else(|| prof.as_ref().map(|x| x.cwd.clone()).filter(|c| !c.is_empty()).map(Into::into)) {
+                Some(c) => {
+                    let c = c.to_string_lossy();
+                    Some(std::path::PathBuf::from(c.replacen('~', &home, usize::from(c.starts_with('~')))))
+                }
                 None => st.pane(&json!({"pane": p["from_pane"]})).ok().and_then(|f| {
                     let pid = pty::busy(&f.master, f.sid).map(|(pid, _)| pid).unwrap_or(f.sid);
                     pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid))
