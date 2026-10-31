@@ -24,6 +24,9 @@ fn cloexec(fd: libc::c_int) -> io::Result<()> {
     check(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) })
 }
 
+// ponytail: daftar tetap dari env sesi Claude Code 2.1 yang teramati; tambah prefix saat agent lain ketahuan menurunkan penanda
+const INHERITED_DROP: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFORT", "CODEX_", "OPENCODE_", "GEMBALA_"];
+
 pub fn login_shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into())
 }
@@ -43,6 +46,13 @@ impl Pty {
         c.arg("-l");
         if let Some(cmd) = cmd {
             c.arg("-c").arg(cmd);
+        }
+        // SEC-35: penanda sesi agent yang menjalankan Gembala (termasuk socket + token pesannya) tidak ikut ke pane
+        for (k, _) in std::env::vars_os() {
+            let k = k.to_string_lossy();
+            if INHERITED_DROP.iter().any(|p| k.starts_with(p)) {
+                c.env_remove(&*k);
+            }
         }
         c.env("TERM", "xterm-256color")
             .envs(env.iter().copied())
