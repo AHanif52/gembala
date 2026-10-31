@@ -35,6 +35,12 @@ impl Grid {
         out.into_bytes()
     }
 
+    pub fn size(&self) -> (u16, u16) {
+        let (r, c) = self.0.screen().size();
+        (r.get(), c.get())
+    }
+
+    #[allow(dead_code)] // dipakai `read` (FR-7) di Fase 2
     pub fn text(&self) -> String {
         self.0.screen().contents()
     }
@@ -84,7 +90,7 @@ mod tests {
 
     /// Jalankan TUI nyata di PTY sebentar, lalu kirim SIGKILL.
     fn capture(cmd: &str, rows: u16, cols: u16, dur: Duration) -> Vec<u8> {
-        let mut p = Pty::spawn(Some(cmd), rows, cols).unwrap();
+        let mut p = Pty::spawn(Some(cmd), rows, cols, &[]).unwrap();
         let r = p.master.try_clone().unwrap();
         let t = std::thread::spawn(move || read_to_end(r).unwrap());
         std::thread::sleep(dur);

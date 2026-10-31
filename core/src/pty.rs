@@ -30,7 +30,7 @@ pub fn login_shell() -> String {
 
 impl Pty {
     /// `$SHELL -l -c <cmd>`, atau `$SHELL -l` interaktif bila `cmd` kosong.
-    pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16) -> io::Result<Pty> {
+    pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16, env: &[(&str, &str)]) -> io::Result<Pty> {
         let (mut m, mut s) = (0, 0);
         let mut ws = winsize(rows, cols);
         check(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) })?;
@@ -45,6 +45,7 @@ impl Pty {
             c.arg("-c").arg(cmd);
         }
         c.env("TERM", "xterm-256color")
+            .envs(env.iter().copied())
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
@@ -60,13 +61,15 @@ impl Pty {
         Ok(Pty { master: File::from(master), child })
     }
 
-    pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
-        let ws = winsize(rows, cols);
-        check(unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) })
-    }
+}
+
+pub fn resize(master: &File, rows: u16, cols: u16) -> io::Result<()> {
+    let ws = winsize(rows, cols);
+    check(unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) })
 }
 
 /// Baca master sampai pane tutup. macOS/Linux memberi EIO, bukan EOF, saat slave sudah tertutup.
+#[cfg(test)]
 pub fn read_to_end(mut r: impl io::Read) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
@@ -94,22 +97,22 @@ mod tests {
 
     #[test]
     fn echo_lewat_pty() {
-        let out = run(Pty::spawn(Some("echo gembala-ok"), 24, 80).unwrap());
+        let out = run(Pty::spawn(Some("echo gembala-ok"), 24, 80, &[]).unwrap());
         assert!(out.contains("gembala-ok"), "{out:?}");
     }
 
     #[test]
     fn ukuran_awal_dan_resize() {
-        assert!(run(Pty::spawn(Some("stty size"), 30, 100).unwrap()).contains("30 100"));
-        let p = Pty::spawn(Some("sleep 0.3; stty size"), 24, 80).unwrap();
-        p.resize(40, 120).unwrap();
+        assert!(run(Pty::spawn(Some("stty size"), 30, 100, &[]).unwrap()).contains("30 100"));
+        let p = Pty::spawn(Some("sleep 0.3; stty size"), 24, 80, &[]).unwrap();
+        resize(&p.master, 40, 120).unwrap();
         let out = run(p);
         assert!(out.contains("40 120"), "{out:?}");
     }
 
     #[test]
     fn tulis_ke_pty() {
-        let p = Pty::spawn(Some("read x; echo dapat-$x"), 24, 80).unwrap();
+        let p = Pty::spawn(Some("read x; echo dapat-$x"), 24, 80, &[]).unwrap();
         (&p.master).write_all(b"halo\r").unwrap();
         let out = run(p);
         assert!(out.contains("dapat-halo"), "{out:?}");
@@ -118,7 +121,7 @@ mod tests {
     #[test]
     fn punya_tty_pengendali() {
         // /dev/tty hanya bisa dibuka bila setsid + TIOCSCTTY berhasil
-        let out = run(Pty::spawn(Some("tty; echo x > /dev/tty"), 24, 80).unwrap());
+        let out = run(Pty::spawn(Some("tty; echo x > /dev/tty"), 24, 80, &[]).unwrap());
         assert!(!out.contains("Device not configured"), "{out:?}");
         assert!(out.contains("/dev/ttys") || out.contains("/dev/pts/"), "{out:?}");
     }

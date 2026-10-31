@@ -995,7 +995,9 @@ dependencies = [
 name = "gembala"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "libc",
+ "serde_json",
  "vt100",
 ]
 

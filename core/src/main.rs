@@ -1,18 +1,20 @@
-#[allow(dead_code)] // dipakai daemon mulai pekerjaan 0.3; hapus allow saat itu
+mod daemon;
 mod grid;
-#[allow(dead_code)]
 mod pty;
 mod rundir;
 
+use std::fs::File;
+use std::io::Write;
+use std::os::fd::FromRawFd;
 use std::process::ExitCode;
 
-const USAGE: &str = "pakai: gembala <daemon|send|wait|read|reply|hook>";
+const USAGE: &str = "pakai: gembala <daemon [--secret-fd N]|send|wait|read|reply|hook>";
 
 fn main() -> ExitCode {
-    let cmd = std::env::args().nth(1).unwrap_or_default();
-    match cmd.as_str() {
-        "daemon" => daemon(),
-        "send" | "wait" | "read" | "reply" | "hook" => {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str).unwrap_or_default() {
+        "daemon" => daemon(&args[1..]),
+        cmd @ ("send" | "wait" | "read" | "reply" | "hook") => {
             eprintln!("gembala {cmd}: belum ada (Fase 2)");
             ExitCode::from(2)
         }
@@ -23,18 +25,38 @@ fn main() -> ExitCode {
     }
 }
 
-// ponytail: baru cek folder socket; PTY + socket + attach = kerja Fase 0
-fn daemon() -> ExitCode {
-    let dir = rundir::default_dir();
-    let res = rundir::ensure_private_dir(&dir).and_then(|_| rundir::socket_path(&dir, "pane.sock"));
+/// `--secret-fd N`: rahasia kanal UI ditulis ke descriptor warisan peluncur (UI), lalu ditutup.
+/// Tanpa flag ini kanal UI menolak semua koneksi.
+fn daemon(args: &[String]) -> ExitCode {
+    let secret_fd = match args {
+        [] => None,
+        [f, n] if f == "--secret-fd" => match n.parse::<i32>() {
+            Ok(n) if n > 2 => Some(n),
+            _ => return usage(),
+        },
+        _ => return usage(),
+    };
+    let dir = daemon::default_dir();
+    let res = rundir::ensure_private_dir(&dir).and_then(|_| {
+        let secret = secret_fd.map(|_| daemon::new_secret()).transpose()?;
+        let handoff = secret.clone();
+        daemon::run(&dir, secret, move || {
+            if let (Some(fd), Some(s)) = (secret_fd, handoff) {
+                let mut f = unsafe { File::from_raw_fd(fd) }; // ditutup saat drop
+                let _ = writeln!(f, "{s}");
+            }
+        })
+    });
     match res {
-        Ok(sock) => {
-            println!("folder socket siap: {}", sock.display());
-            ExitCode::SUCCESS
-        }
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("gembala daemon: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn usage() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
 }
