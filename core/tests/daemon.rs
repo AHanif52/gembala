@@ -449,3 +449,38 @@ fn baris_terlalu_panjang_ditutup() {
     let mut rest = String::new();
     assert_eq!(ui.r.read_line(&mut rest).unwrap_or(0), 0, "koneksi harus ditutup");
 }
+
+/// FR-4: hook agent di dalam pane mengubah status pane itu saja; UI diberi tahu lewat `pane.status`.
+#[test]
+fn status_dari_hook() {
+    let d = start("hook");
+    let mut ui = Cli::ui(&d);
+    let exe = env!("CARGO_BIN_EXE_gembala");
+    // profil dengan agent "claude" supaya status dilacak; perintahnya skrip yang memanggil hook seperti Claude Code
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    // pengganti `claude`: mengabaikan flag hook yang disisipkan Gembala, memanggil hook seperti Claude Code
+    let fake = cfg.join("fake-claude.sh");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\n'{exe}' hook claude prompt </dev/null\nsleep 1\necho '{{\"message\":\"Claude needs your permission to use Bash\"}}' | '{exe}' hook claude notify\nsleep 30\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(cfg.join("config.toml"), format!("[[profile]]\nid = \"claude\"\ncommand = {}\n", json!(fake))).unwrap();
+    let t0 = Instant::now();
+    while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("fake-claude") {
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let pane = ui.call("pane.create", json!({"profile": "claude"}))["result"]["pane"].as_u64().unwrap();
+    let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
+    assert_eq!(e["params"], json!({"pane": pane, "status": "working"}), "{e}");
+    let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
+    assert_eq!(e["params"]["status"], "blocked", "{e}");
+    assert_eq!(ui.call("pane.info", json!({"pane": pane}))["result"]["status"], "blocked");
+    // proses di luar pane tidak bisa mengubah status siapa pun
+    let mut outsider = Cli::connect(&d, "pane.sock");
+    assert_eq!(outsider.call("hello", json!({"proto": 1}))["error"]["code"], "not_a_pane");
+}

@@ -131,15 +131,88 @@ fn q(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Lokasi binary `gembala` dan folder file hook milik Gembala (SEC-26: config agent tidak disentuh).
+pub struct Hooks {
+    pub exe: String,
+    pub dir: std::path::PathBuf,
+}
+
+/// FR-4: event hook agent → status pane. `None` = event tidak mengubah status.
+/// `payload` = stdin (Claude) atau argumen terakhir (Codex); hanya dipakai untuk membedakan "butuh izin",
+/// isinya tidak pernah diteruskan ke daemon (SEC-33).
+pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static str> {
+    Some(match (agent, event) {
+        ("claude", "prompt" | "tool") => "working",
+        ("claude", "stop") => "done",
+        // Notification Claude Code: izin alat = blocked; "menunggu input" = siap menerima tugas
+        ("claude", "notify") if payload.to_lowercase().contains("permission") => "blocked",
+        ("claude", "notify") => "idle",
+        ("codex", "notify") if payload.contains("agent-turn-complete") => "done",
+        ("opencode", "busy") | ("omp", "start") => "working",
+        ("opencode", "idle") | ("omp", "end") => "done",
+        ("opencode", "permission") => "blocked",
+        _ => return None,
+    })
+}
+
+/// Flag/env hook per agent saat launch (TECH bagian 7, teruji 31 Okt 2026).
+fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
+    let cmd = |ev: &str| format!("{} hook claude {ev}", q(&h.exe));
+    let file = |name: &str| h.dir.join(name).to_string_lossy().into_owned();
+    match p.agent.as_str() {
+        "claude" => {
+            let one = |ev: &str| json!([{"hooks": [{"type": "command", "command": cmd(ev)}]}]);
+            let settings = json!({"hooks": {
+                "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "Stop": one("stop"), "Notification": one("notify"),
+            }});
+            (vec!["--settings".into(), settings.to_string()], vec![])
+        }
+        "codex" => (vec!["-c".into(), format!("notify={}", json!([h.exe, "hook", "codex", "notify"]))], vec![]),
+        "opencode" => (vec![], vec![("OPENCODE_CONFIG".into(), file("opencode.json"))]),
+        "omp" => (vec![format!("--hook={}", file("omp-gembala.ts"))], vec![]),
+        _ => (vec![], vec![]),
+    }
+}
+
+/// File hook OpenCode dan Oh My Pi, ditulis daemon saat start ke folder config Gembala (`0700`/`0600`).
+pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
+    let exe = json!(h.exe);
+    let plugin = h.dir.join("opencode-gembala.js").to_string_lossy().into_owned();
+    vec![
+        ("opencode.json", json!({"$schema": "https://opencode.ai/config.json", "plugin": [format!("file://{plugin}")]}).to_string()),
+        (
+            "opencode-gembala.js",
+            format!(
+                "// dibuat Gembala; status pane (FR-4)\nimport {{ execFile }} from \"node:child_process\";\n\
+                 const hook = (s) => execFile({exe}, [\"hook\", \"opencode\", s], () => {{}});\n\
+                 export const Gembala = async () => ({{\n  event: async ({{ event }}) => {{\n\
+                 \x20   if (event.type === \"session.status\") hook(event.properties?.status?.type === \"busy\" ? \"busy\" : \"idle\");\n\
+                 \x20   else if (event.type === \"session.idle\") hook(\"idle\");\n\
+                 \x20   else if (event.type.startsWith(\"permission.\")) hook(\"permission\");\n  }},\n}});\n"
+            ),
+        ),
+        (
+            "omp-gembala.ts",
+            format!(
+                "// dibuat Gembala; status pane (FR-4)\nimport {{ execFile }} from \"node:child_process\";\n\
+                 const hook = (s: string) => execFile({exe}, [\"hook\", \"omp\", s], () => {{}});\n\
+                 export default function (pi: any) {{\n  pi.on(\"agent_start\", async () => hook(\"start\"));\n\
+                 \x20 pi.on(\"agent_end\", async () => hook(\"end\"));\n}}\n"
+            ),
+        ),
+    ]
+}
+
 /// Teks yang dijalankan `$SHELL -l -c` (TECH bagian 6). `None` = shell login interaktif.
 /// Agent jalan di subshell supaya env rahasia tidak tertinggal di shell pane setelah agent keluar;
 /// lalu `exec $SHELL -l` membuat pane tetap hidup (FR-18). Exit 127 = pesan instal (FR-32).
-pub fn launch(p: &Profile) -> Option<String> {
+pub fn launch(p: &Profile, h: Option<&Hooks>) -> Option<String> {
     if p.command.is_empty() {
         return None;
     }
+    let (flags, hook_env) = h.map(|h| hook_flags(p, h)).unwrap_or_default();
     let mut s = String::from("( ");
-    for (k, v) in &p.env {
+    for (k, v) in p.env.iter().chain(&hook_env) {
         s += &format!("export {k}={}; ", q(v));
     }
     for (k, r) in &p.secret_env {
@@ -151,7 +224,7 @@ pub fn launch(p: &Profile) -> Option<String> {
         }
     }
     s += &q(&p.command);
-    for a in &p.args {
+    for a in flags.iter().chain(&p.args) {
         s += &format!(" {}", q(a));
     }
     let install = AGENTS.iter().find(|a| a.0 == p.agent).map(|a| a.3);
@@ -273,23 +346,52 @@ mod tests {
             secret_env: vec![("K".into(), "keychain:svc/me@x".into()), ("O".into(), "op://V/I/f".into())],
             ..builtin()[1].clone()
         };
-        let s = launch(&p).unwrap();
+        let s = launch(&p, None).unwrap();
         assert!(s.starts_with("( export X='a b'\\''c'; "), "{s}");
         assert!(s.contains("export K=\"$(security find-generic-password -w -s 'svc' -a 'me@x')\"; "), "{s}");
         assert!(s.contains("export O=\"$(op read 'op://V/I/f')\"; "), "{s}");
         assert!(s.contains("'my tool' 'it'\\''s' '$(id)' );"), "{s}");
         assert!(s.ends_with("exec \"$SHELL\" -l"), "{s}");
         assert!(s.contains("brew install --cask claude-code"), "{s}");
-        assert_eq!(launch(&builtin()[0]), None);
+        assert_eq!(launch(&builtin()[0], None), None);
     }
 
     #[test]
     fn launch_jalan_dan_pesan_127() {
         // perintah tidak ada: pesan instal tampil, lalu shell login (di sini `exit` lewat env SHELL palsu)
         let p = Profile { command: "gembala-tidak-ada-xyz".into(), ..builtin()[1].clone() };
-        let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p).unwrap()).output().unwrap();
+        let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None).unwrap()).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("Claude Code tidak ditemukan") && text.contains("brew install"), "{text}");
+    }
+
+    #[test]
+    fn hook_dipasang_per_agent() {
+        let h = Hooks { exe: "/Apps/Gem bala/gembala".into(), dir: "/cfg/hooks".into() };
+        let by = |id: &str| builtin().into_iter().find(|p| p.id == id).unwrap();
+        let claude = launch(&by("claude"), Some(&h)).unwrap();
+        assert!(claude.contains("'claude' '--settings' '{\"hooks\":"), "{claude}");
+        assert!(claude.contains("hook claude stop"), "{claude}");
+        let codex = launch(&by("codex"), Some(&h)).unwrap();
+        assert!(codex.contains("'-c' 'notify=[\"/Apps/Gem bala/gembala\",\"hook\",\"codex\",\"notify\"]'"), "{codex}");
+        assert!(launch(&by("opencode"), Some(&h)).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
+        assert!(launch(&by("omp"), Some(&h)).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
+        assert_eq!(launch(&by("shell"), Some(&h)), None);
+        // perintah hook Claude dijalankan shell: path berspasi tetap satu kata
+        let settings: serde_json::Value = serde_json::from_str(hook_flags(&by("claude"), &h).0[1].as_str()).unwrap();
+        assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
+    }
+
+    #[test]
+    fn status_dari_event_hook() {
+        assert_eq!(hook_status("claude", "prompt", ""), Some("working"));
+        assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude needs your permission to use Bash"}"#), Some("blocked"));
+        assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude is waiting for your input"}"#), Some("idle"));
+        assert_eq!(hook_status("codex", "notify", r#"{"type":"agent-turn-complete"}"#), Some("done"));
+        assert_eq!(hook_status("codex", "notify", r#"{"type":"lain"}"#), None);
+        assert_eq!(hook_status("opencode", "permission", ""), Some("blocked"));
+        assert_eq!(hook_status("omp", "end", ""), Some("done"));
+        assert_eq!(hook_status("x", "y", ""), None);
     }
 
     #[test]

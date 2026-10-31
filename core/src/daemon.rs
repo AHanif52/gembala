@@ -45,6 +45,8 @@ struct Pane {
     /// Nama otomatis `<agent>-<n>` (FR-30) dan agent profilnya ("shell" bila tanpa profil).
     name: String,
     agent: String,
+    /// FR-4: idle | working | blocked | done; kosong = tidak dilacak (shell, profil tanpa hook)
+    status: Mutex<&'static str>,
     /// Grid dan pelanggan dikunci bersama: attach tidak kehilangan atau menggandakan output.
     view: Mutex<(Grid, Vec<Sub>)>,
 }
@@ -72,6 +74,7 @@ struct State {
     agents: Mutex<Value>,
     /// Id acak per run daemon: id pane dari run lain tidak boleh dianggap pane yang sama (FR-45).
     boot: String,
+    hooks: profile::Hooks,
 }
 
 struct UiClient(Arc<State>, u64);
@@ -101,7 +104,12 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         profiles: Mutex::new(profile::builtin()),
         agents: Mutex::new(Value::Null),
         boot: new_secret()?[..16].to_string(),
+        hooks: profile::Hooks {
+            exe: std::env::current_exe()?.to_string_lossy().into_owned(),
+            dir: config::path().with_file_name("hooks"),
+        },
     });
+    write_hook_files(&st.hooks);
     reload_config(&st);
     on_ready();
     let st3 = st.clone();
@@ -208,8 +216,23 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             continue;
         }
         if chan == Chan::Pane {
-            // ponytail: method pane (send/wait/read/reply/status) baru di Fase 2
-            reply(&tx, id, Err("not_allowed"));
+            // identitas dari hello (getsid), bukan dari isi pesan (SEC-3)
+            let me = st.pane_of_pid(peer);
+            let r = match (method, me) {
+                ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done"].into_iter().find(|s| *s == x)) {
+                    Some(status) => {
+                        let pane = st.panes.lock().unwrap().get(&me).cloned();
+                        if let Some(pane) = pane {
+                            set_status(&st, me, &pane, status, None);
+                        }
+                        Ok(json!({}))
+                    }
+                    None => Err("bad_params"),
+                },
+                // ponytail: method pane (send/wait/read/reply/status) baru di Fase 2
+                _ => Err("not_allowed"),
+            };
+            reply(&tx, id, r);
             continue;
         }
         if method == "pane.attach" {
@@ -306,7 +329,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 Some(id) => Some(st.profiles.lock().unwrap().iter().find(|x| x.id == id).cloned().ok_or("no_such_profile")?),
                 None => None,
             };
-            let launch = prof.as_ref().and_then(profile::launch);
+            let launch = prof.as_ref().and_then(|x| profile::launch(x, Some(&st.hooks)));
             let cmd = launch.as_deref().or(p["cmd"].as_str());
             let home = std::env::var("HOME").unwrap_or_default();
             // urutan folder: `cwd` eksplisit (jalankan ulang pane mati, FR-45) > folder profil > pane yang fokus
@@ -333,6 +356,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                     let n = st.panes.lock().unwrap().values().filter(|q| q.name.starts_with(&format!("{label}-"))).count() + 1;
                     format!("{label}-{n}")
                 },
+                status: Mutex::new(if ["claude", "codex", "opencode", "omp"].contains(&agent.as_str()) { "idle" } else { "" }),
                 agent,
                 view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
             });
@@ -346,6 +370,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let pane = st.pane(p)?;
             let data = p["data"].as_str().and_then(|d| B64.decode(d).ok()).ok_or("bad_params")?;
             (&pane.master).write_all(&data).map_err(|_| "io")?;
+            // hasil "done" dianggap sudah dibaca begitu pengguna mengetik di pane itu (bagian 8 BRD)
+            set_status(st, p["pane"].as_u64().unwrap_or_default(), &pane, "idle", Some("done"));
             Ok(json!({}))
         }
         "pane.resize" => {
@@ -364,7 +390,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let busy = pty::busy(&pane.master, pane.sid);
             Ok(json!({
                 "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)),
-                "pane_name": pane.name, "agent": pane.agent,
+                "pane_name": pane.name, "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
@@ -408,6 +434,27 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         _ => Err("unknown_method"),
+    }
+}
+
+/// Ubah status pane dan beri tahu semua UI (`pane.status`). `only_from` = ubah hanya bila status sekarang itu.
+fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from: Option<&str>) {
+    let mut cur = pane.status.lock().unwrap();
+    if cur.is_empty() || *cur == status || only_from.is_some_and(|f| *cur != f) {
+        return;
+    }
+    *cur = status;
+    drop(cur);
+    let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": status}}));
+    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+}
+
+/// File hook OpenCode/omp di folder config Gembala (SEC-26). Gagal tulis = agent itu tanpa hook, pane tetap jalan.
+fn write_hook_files(h: &profile::Hooks) {
+    for (name, body) in profile::hook_files(h) {
+        if let Err(e) = config::write_atomic(&h.dir.join(name), body.as_bytes()) {
+            eprintln!("gembala daemon: tulis hook {name}: {e}");
+        }
     }
 }
 

@@ -191,6 +191,10 @@ pub fn set(path: &Path, section: &str, key: &str, value: &Value) -> Result<(), S
 /// Tulis ke file sementara di folder yang sama lalu `rename` (TECH bagian 5). Folder `0700` (SEC-25).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("path tanpa folder"))?;
+    // folder Gembala dan subfoldernya (hooks/) dibuat 0700; satu tingkat di atasnya cukup
+    if let Some(up) = dir.parent().filter(|u| !u.exists()) {
+        crate::rundir::ensure_private_dir(up)?;
+    }
     crate::rundir::ensure_private_dir(dir)?;
     let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
     let tmp = dir.join(format!(".{name}.{}", std::process::id()));
