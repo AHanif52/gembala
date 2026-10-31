@@ -188,6 +188,25 @@ fn sweep_paste() {
     }
 }
 
+/// FR-15: path asli (symlink diselesaikan); yang gagal diselesaikan dibuang.
+fn canonical(paths: impl IntoIterator<Item = std::path::PathBuf>) -> Vec<String> {
+    paths.into_iter().filter_map(|p| std::fs::canonicalize(p).ok()).map(|p| p.to_string_lossy().into_owned()).collect()
+}
+
+/// FR-15: dialog pilih file; path yang dipilih ditempel UI ke prompt agent (agent membaca dengan izinnya sendiri).
+#[tauri::command]
+async fn pick_files(app: tauri::AppHandle) -> Vec<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_files()).await.ok().flatten();
+    canonical(picked.unwrap_or_default().into_iter().filter_map(|f| f.into_path().ok()))
+}
+
+/// FR-15: file yang diseret ke pane juga diselesaikan symlink-nya.
+#[tauri::command]
+fn resolve_paths(paths: Vec<String>) -> Vec<String> {
+    canonical(paths.into_iter().map(Into::into))
+}
+
 /// FR-40 banner macOS (T5). Isi hanya nama pane + status (SEC-33): bisa tampil di layar kunci.
 #[tauri::command]
 fn notify_pane(app: tauri::AppHandle, body: String, sound: bool) {
@@ -339,6 +358,7 @@ pub fn run() {
     sweep_paste();
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(Daemon(Mutex::new(None)))
         .manage(Shortcuts(Mutex::new(resolve_keys(&serde_json::Map::new()))))
         // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
@@ -348,7 +368,7 @@ pub fn run() {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, resolve_paths])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -356,6 +376,19 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn path_symlink_diselesaikan() {
+        let d = std::env::temp_dir().join(format!("gembala-canon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("asli.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(d.join("asli.txt"), d.join("tautan.txt")).unwrap();
+        let out = super::resolve_paths(vec![d.join("tautan.txt").to_string_lossy().into(), d.join("tidak-ada").to_string_lossy().into()]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].ends_with("/asli.txt"), "{out:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn paste_gambar_aman() {

@@ -145,6 +145,14 @@
     rich = null;
   }
 
+  /// FR-15: path asli (symlink diselesaikan) ber-quote ditempel ke prompt sebagai bracketed paste, tanpa Enter
+  async function attach(pane: number, paths: string[], resolved = false) {
+    const real: string[] = resolved ? paths : await invoke<string[]>("resolve_paths", { paths }).catch(() => []);
+    if (!real.length || dead[pane]) return;
+    const text = real.map(quote).join(" ") + " ";
+    call("pane.write", { pane, data: b64(new TextEncoder().encode(`\x1b[200~${text}\x1b[201~`)) });
+  }
+
   const quote = (p: string) => `'${p.replaceAll("'", "'\\''")}'`;
 
   async function newTab(profile?: string, wi = at.ws) {
@@ -657,8 +665,7 @@
     // FR-15: seret file ke jendela = path ber-quote ditempel ke pane yang fokus (bracketed paste, tanpa Enter)
     const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type !== "drop" || !tab || dead[tab.focus] || !payload.paths.length) return;
-      const text = payload.paths.map(quote).join(" ") + " ";
-      call("pane.write", { pane: tab.focus, data: b64(new TextEncoder().encode(`\x1b[200~${text}\x1b[201~`)) });
+      attach(tab.focus, payload.paths);
     });
     const onFocus = () => {
       seen = true;
@@ -794,7 +801,7 @@
                 {:else}
                   <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{meta[pane]?.name}</button>
                 {/if}
-                <button class="chip" title="Seret file ke pane untuk menempel path-nya">Lampirkan</button>
+                <button class="chip" title="Pilih file, atau seret file ke pane" onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>Lampirkan</button>
                 {#if g?.repo && g.files}
                   <button class="chip" onclick={() => openChanges(pane)}>{g.files} file <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
                 {/if}
