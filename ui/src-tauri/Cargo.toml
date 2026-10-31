@@ -17,6 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.23.1"
 libc = "0.2.191"
 security-framework = "3.7.0"
 serde_json = "1.0.154"

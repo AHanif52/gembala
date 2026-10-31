@@ -125,6 +125,55 @@ fn forget_secret() {
     let _ = security_framework::passwords::delete_generic_password(daemon::KC_SERVICE, &account);
 }
 
+/// FR-54/SEC-34: gambar tempelan disimpan di `$TMPDIR/gembala/paste/` (`0700`), file `0600` bernama acak.
+/// Hanya PNG/JPEG/GIF/WebP dan maks 20 MB; path dikembalikan untuk ditempel ke pane.
+#[tauri::command]
+fn save_paste(data: String, ext: String) -> Result<String, String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use std::io::{Read, Write};
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    if !["png", "jpg", "gif", "webp"].contains(&ext.as_str()) {
+        return Err("bukan gambar".into());
+    }
+    let bytes = STANDARD.decode(data).map_err(|e| e.to_string())?;
+    if bytes.len() > 20 << 20 {
+        return Err("gambar lebih dari 20 MB".into());
+    }
+    let dir = daemon::rundir().join("paste");
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    let mut rnd = [0u8; 12];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut rnd)).map_err(|e| e.to_string())?;
+    let name: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
+    let path = dir.join(format!("{name}.{ext}"));
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+    f.write_all(&bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// SEC-34: hapus gambar tempelan milik pane yang ditutup; hanya file di folder paste milik Gembala.
+#[tauri::command]
+fn forget_paste(paths: Vec<String>) {
+    let dir = daemon::rundir().join("paste");
+    for p in paths {
+        let p = std::path::PathBuf::from(p);
+        if p.parent() == Some(dir.as_path()) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// SEC-34: gambar tempelan lebih dari 24 jam dibuang saat app dibuka.
+fn sweep_paste() {
+    let Ok(entries) = std::fs::read_dir(daemon::rundir().join("paste")) else { return };
+    for e in entries.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > 24 * 3600);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     app.exit(0);
@@ -261,6 +310,7 @@ fn apply_keys(app: &tauri::AppHandle, keys: &Value) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    sweep_paste();
     tauri::Builder::default()
         .manage(Daemon(OnceLock::new()))
         .manage(Shortcuts(Mutex::new(resolve_keys(&serde_json::Map::new()))))
@@ -271,7 +321,7 @@ pub fn run() {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -279,6 +329,24 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn paste_gambar_aman() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gembala-paste-{}", std::process::id()));
+        // satu-satunya test yang memakai env ini; test lain di crate ini tidak membaca env
+        unsafe { std::env::set_var("GEMBALA_RUNDIR", &dir) };
+        let p = super::save_paste("iVBORw0KGgo=".into(), "png".into()).unwrap();
+        let meta = std::fs::metadata(&p).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(dir.join("paste")).unwrap().permissions().mode() & 0o777, 0o700);
+        assert!(super::save_paste("aGFp".into(), "sh".into()).is_err());
+        let outside = dir.join("jangan.txt");
+        std::fs::write(&outside, "x").unwrap();
+        super::forget_paste(vec![p.clone(), outside.to_string_lossy().into_owned()]);
+        assert!(!std::path::Path::new(&p).exists() && outside.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn canon_key_wajib_cmd() {

@@ -1,6 +1,7 @@
 <script lang="ts">
   // Satu pane = satu xterm yang di-attach ke daemon (FR-1, FR-2), plus FR-34 sampai 36, 41.
   import { onMount, tick } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Terminal, type ITheme } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
@@ -18,6 +19,7 @@
     zoom,
     onexit,
     onlink,
+    onpasted,
   }: {
     pane: number;
     focused: boolean;
@@ -25,6 +27,7 @@
     zoom: number;
     onexit: (pane: number) => void;
     onlink: (url: string) => void;
+    onpasted: (path: string) => void;
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -139,6 +142,26 @@
     };
     el.addEventListener("keydown", onAlt, true);
 
+    // FR-54: ⌘V berisi gambar = simpan ke folder sementara Gembala (SEC-34), tempel path-nya ber-quote.
+    // Teks biasa tidak disentuh: handler paste xterm yang menanganinya (bracketed paste).
+    const EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+    const onPaste = async (e: ClipboardEvent) => {
+      const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === "file" && EXT[i.type]);
+      const file = item?.getAsFile();
+      if (!item || !file) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        const path = await invoke<string>("save_paste", { data: b64(new Uint8Array(await file.arrayBuffer())), ext: EXT[item.type] });
+        onpasted(path);
+        const quoted = `'${path.replaceAll("'", "'\\''")}' `;
+        call("pane.write", { pane, data: b64(enc.encode(`\x1b[200~${quoted}\x1b[201~`)) });
+      } catch (err) {
+        term.write(`\r\n\x1b[31mgagal menyimpan gambar: ${err}\x1b[0m\r\n`);
+      }
+    };
+    el.addEventListener("paste", onPaste, true);
+
     let attached = false;
     const early: any[] = [];
     const onEvent = (e: any) => {
@@ -175,6 +198,7 @@
       ro.disconnect();
       light.removeEventListener("change", onTheme);
       el.removeEventListener("keydown", onAlt, true);
+      el.removeEventListener("paste", onPaste, true);
       unlisten.then((f) => f());
       term.dispose();
     };

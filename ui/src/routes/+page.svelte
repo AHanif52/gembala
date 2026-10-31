@@ -26,6 +26,7 @@
     status?: string;
     session?: string; // FR-53: id sesi Gembala (Claude Code)
     git?: any; // FR-55: ringkasan git di toolbar
+    pastes?: string[]; // SEC-34: gambar tempelan, dihapus saat pane ditutup
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
@@ -153,6 +154,7 @@
         if (at.ws === wi && at.tab >= ti) at.tab = Math.max(0, at.tab - 1);
       }
       if (at.ws === wi) zoomed = false;
+      if (meta[pane]?.pastes?.length) invoke("forget_paste", { paths: meta[pane].pastes }).catch(() => {});
       delete meta[pane];
       delete dead[pane];
       if (!w.tabs.length) await newTab(undefined, wi);
@@ -597,7 +599,8 @@
             </div>
           {:else}
             <div class="body" class:withbar={bar}>
-              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} {zoom} {onexit} {onlink} />
+              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} {zoom} {onexit} {onlink}
+                onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])} />
             </div>
             {#if bar}
               <!-- FR-55: toolbar agent; chip tanpa data (bukan repo) disembunyikan -->
