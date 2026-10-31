@@ -9,22 +9,25 @@
   import { Unicode11Addon } from "@xterm/addon-unicode11";
   import "@xterm/xterm/css/xterm.css";
   import { call, b64, unb64 } from "./daemon";
+  import type { Ui } from "./config";
 
   let {
     pane,
     focused,
-    fontSize,
+    ui,
+    zoom,
     onexit,
     onlink,
   }: {
     pane: number;
     focused: boolean;
-    fontSize: number;
+    ui: Ui;
+    zoom: number;
     onexit: (pane: number) => void;
     onlink: (url: string) => void;
   } = $props();
 
-  // ponytail: dua tema tetap; palet dan font dari config.toml di M3
+  // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
   const DARK: ITheme = { background: "#101114", foreground: "#d4d4d8", cursor: "#d4d4d8", selectionBackground: "#3f3f46" };
   const LIGHT: ITheme = { background: "#fafafa", foreground: "#27272a", cursor: "#27272a", selectionBackground: "#d4d4d8" };
   const MATCH = {
@@ -45,14 +48,28 @@
   const enc = new TextEncoder();
 
   $effect(() => {
-    if (focused && term && !finding) term.focus();
+    if (focused && ready && !finding) term.focus();
   });
 
+  const light = matchMedia("(prefers-color-scheme: light)");
+  let systemLight = $state(light.matches);
+  const isLight = $derived(ui.theme === "light" || (ui.theme === "system" && systemLight));
+
+  // FR-34: [ui] dari config berlaku langsung tanpa restart; zoom ⌘=/⌘- di atas ukuran config
+  let ready = $state(false); // term bukan state (objek xterm besar); efek di bawah menunggu ini
   $effect(() => {
-    if (term && term.options.fontSize !== fontSize) {
-      term.options.fontSize = fontSize;
-      if (el.offsetParent) fit.fit();
-    }
+    if (!ready) return;
+    const o = term.options;
+    o.fontFamily = `'${ui.font_family.replace(/['"\\]/g, "")}', 'SF Mono', Menlo, monospace`;
+    o.fontSize = Math.max(6, ui.font_size + zoom);
+    o.lineHeight = ui.line_height;
+    o.cursorStyle = ui.cursor;
+    o.cursorBlink = ui.cursor_blink;
+    o.scrollback = ui.scrollback_lines;
+    o.screenReaderMode = ui.screen_reader;
+    o.macOptionIsMeta = ui.option_as_meta === "left" || ui.option_as_meta === "both";
+    o.theme = isLight ? LIGHT : DARK;
+    if (el.offsetParent) fit.fit();
   });
 
   /// FR-36: ⌘F
@@ -91,14 +108,8 @@
 
   // Renderer DOM bawaan xterm: terukur lebih hemat RAM dan datar per pane dibanding WebGL (TECH M1)
   onMount(() => {
-    const light = matchMedia("(prefers-color-scheme: light)");
     term = new Terminal({
-      fontFamily: "'SF Mono', Menlo, monospace",
-      fontSize,
-      cursorStyle: "bar",
-      macOptionIsMeta: true,
       allowProposedApi: true, // decorations hasil cari dan Unicode 11
-      theme: light.matches ? LIGHT : DARK,
       // SEC-14: tautan OSC 8 tidak dibuka langsung; URL asli ditampilkan dulu
       linkHandler: { activate: (_e, uri) => onlink(uri) },
     });
@@ -110,19 +121,21 @@
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11"; // FR-41: lebar emoji dan CJK
     term.open(el);
+    ready = true;
     fit.fit();
 
-    const onTheme = () => (term.options.theme = light.matches ? LIGHT : DARK);
+    const onTheme = () => (systemLight = light.matches);
     light.addEventListener("change", onTheme);
     search.onDidChangeResults(({ resultIndex, resultCount }) => {
       found = resultCount ? `${resultIndex + 1}/${resultCount}` : query ? "0" : "";
     });
 
-    // FR-35: Option kiri = Meta, kanan = karakter biasa (mis. ⌥⇧2 = €). xterm hanya punya satu
-    // saklar, jadi diganti tepat saat tombol Option ditekan, sebelum tombol karakternya.
+    // FR-35: Option kiri dan kanan diatur terpisah (bawaan: kiri Meta, kanan karakter, mis. ⌥⇧2 = €).
+    // xterm hanya punya satu saklar, jadi diganti tepat saat tombol Option ditekan.
     const onAlt = (e: KeyboardEvent) => {
-      if (e.code === "AltLeft") term.options.macOptionIsMeta = true;
-      if (e.code === "AltRight") term.options.macOptionIsMeta = false;
+      const m = ui.option_as_meta;
+      if (e.code === "AltLeft") term.options.macOptionIsMeta = m === "left" || m === "both";
+      if (e.code === "AltRight") term.options.macOptionIsMeta = m === "right" || m === "both";
     };
     el.addEventListener("keydown", onAlt, true);
 

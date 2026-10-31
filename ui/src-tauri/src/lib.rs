@@ -9,7 +9,7 @@ struct Daemon(OnceLock<Result<daemon::Client, String>>);
 
 /// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
 const ALLOWED: &[&str] =
-    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop"];
+    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set"];
 
 /// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview.
 const PANE_KEYS: &[(&str, &str, &str)] = &[
@@ -70,6 +70,12 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
     .map_err(|e| e.to_string())?
 }
 
+/// Daftar pintasan untuk Pengaturan > Pintasan (FR-39).
+#[tauri::command]
+fn shortcuts() -> Vec<(&'static str, &'static str, &'static str)> {
+    PANE_KEYS.iter().chain(VIEW_KEYS).copied().collect()
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     app.exit(0);
@@ -84,6 +90,8 @@ pub fn run() {
             use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
             let main = SubmenuBuilder::new(app, "Gembala")
                 .about(None)
+                .separator()
+                .item(&MenuItemBuilder::with_id("app.settings", "Pengaturan…").accelerator("Cmd+,").build(app)?)
                 .separator()
                 .hide()
                 .hide_others()
@@ -116,7 +124,7 @@ pub fn run() {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

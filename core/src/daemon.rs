@@ -4,6 +4,7 @@
 //! diserahkan ke peluncurnya lewat descriptor; koneksi dari dalam sesi pane ditolak walau
 //! rahasianya benar. Kanal pane (SEC-3): identitas dari `getsid(peer_pid)`, bukan isi pesan.
 
+use crate::config;
 use crate::grid::Grid;
 use crate::pty::{self, Pty};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
@@ -56,6 +57,10 @@ struct State {
     pane_sock: String,
     /// Klien kanal UI yang sedang tersambung (FR-20: daemon berhenti bila 0 dan semua pane diam).
     ui_clients: AtomicUsize,
+    /// Antrean event semua klien UI, untuk event yang bukan milik satu pane (`config.changed`).
+    ui_txs: Mutex<Vec<SyncSender<String>>>,
+    /// Config yang berlaku + galatnya (FR-42). File rusak = nilai valid terakhir tetap dipakai.
+    config: Mutex<Value>,
 }
 
 struct UiClient(Arc<State>);
@@ -78,10 +83,15 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         secret,
         pane_sock: pane_path.to_string_lossy().into_owned(),
         ui_clients: AtomicUsize::new(0),
+        ui_txs: Mutex::default(),
+        config: Mutex::new(Value::Null),
     });
+    reload_config(&st);
     on_ready();
     let st3 = st.clone();
     thread::spawn(move || idle_exit(st3));
+    let st4 = st.clone();
+    thread::spawn(move || watch_config(st4));
     let st2 = st.clone();
     thread::spawn(move || accept(pn, st2, Chan::Pane));
     accept(ui, st, Chan::Ui);
@@ -157,6 +167,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             if ready && chan == Chan::Ui {
                 st.ui_clients.fetch_add(1, Ordering::Relaxed);
                 _ui = Some(UiClient(st.clone()));
+                st.ui_txs.lock().unwrap().push(tx.clone());
             }
             reply(&tx, id, r);
             if !ready {
@@ -220,7 +231,21 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             ids.sort();
             Ok(json!(ids))
         }
+        "config.get" => Ok(st.config.lock().unwrap().clone()),
+        "config.set" => {
+            let (section, key) = (p["section"].as_str().ok_or("bad_params")?, p["key"].as_str().ok_or("bad_params")?);
+            if let Err(why) = config::set(&config::path(), section, key, &p["value"]) {
+                return Ok(json!({"error": why}));
+            }
+            reload_config(st);
+            Ok(json!({}))
+        }
         "pane.create" => {
+            // batas bagian 11 BRD, bisa diubah lewat [limits] max_panes
+            let max = st.config.lock().unwrap()["values"]["limits"]["max_panes"].as_u64().unwrap_or(32) as usize;
+            if st.panes.lock().unwrap().len() >= max {
+                return Err("max_panes");
+            }
             let (rows, cols) = (dim(&p["rows"], 24), dim(&p["cols"], 80));
             let pty = Pty::spawn(p["cmd"].as_str(), rows, cols, &[("GEMBALA_SOCKET", &st.pane_sock)])
                 .map_err(|_| "spawn_failed")?;
@@ -297,6 +322,32 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         _ => Err("unknown_method"),
+    }
+}
+
+/// Baca ulang config; file rusak = nilai valid terakhir tetap, galat diperbarui. Semua UI diberi tahu.
+fn reload_config(st: &State) {
+    let path = config::path();
+    let text = std::fs::read_to_string(&path).ok();
+    let c = config::load(text.as_deref());
+    let mut cur = st.config.lock().unwrap();
+    let values = if c.broken && !cur.is_null() { cur["values"].clone() } else { c.values };
+    *cur = json!({"values": values, "errors": c.errors, "path": path.to_string_lossy()});
+    let ev = line(json!({"event": "config.changed", "params": *cur}));
+    st.ui_txs.lock().unwrap().retain(|tx| tx.try_send(ev.clone()).is_ok());
+}
+
+/// Pantau `mtime` + ukuran tiap 1 detik (TECH bagian 5), tanpa dependency.
+fn watch_config(st: Arc<State>) {
+    let stamp = || std::fs::metadata(config::path()).ok().map(|m| (m.modified().ok(), m.len()));
+    let mut last = stamp();
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        let now = stamp();
+        if now != last {
+            last = now;
+            reload_config(&st);
+        }
     }
 }
 

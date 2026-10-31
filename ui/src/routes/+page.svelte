@@ -2,6 +2,8 @@
   // Fase 1 M1: grid pane satu tab (FR-1, 37, 38, 50). Tab, profil, dan pengaturan menyusul (M3–M7).
   import { onMount } from "svelte";
   import Tile from "$lib/Tile.svelte";
+  import Settings from "$lib/Settings.svelte";
+  import { UI_DEFAULT, type Config } from "$lib/config";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { call } from "$lib/daemon";
@@ -13,7 +15,16 @@
   let confirm = $state<{ pane: number; name: string } | null>(null);
   let quitAsk = $state(0); // jumlah pane yang masih menjalankan proses (FR-46)
   let linkAsk = $state(""); // SEC-14: URL asli ditampilkan sebelum dibuka
-  let fontSize = $state(13); // FR-34 zoom global; ponytail: zoom per pane dan nilai dari config di M3
+  let zoom = $state(0); // FR-34 ⌘=/⌘- sementara di atas ukuran config; ponytail: zoom per pane menyusul
+  let cfg = $state<Config | null>(null);
+  let settingsOpen = $state(false);
+  const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
+
+  $effect(() => {
+    const r = document.documentElement;
+    if (ui.theme === "system") delete r.dataset.theme;
+    else r.dataset.theme = ui.theme;
+  });
   const tiles: Record<number, Tile> = $state({});
   let error = $state("");
   let box: HTMLDivElement;
@@ -77,6 +88,8 @@
   let last = { id: "", at: 0 };
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
+    if (id === "app.settings") return void (settingsOpen = !settingsOpen);
+    if (settingsOpen) return;
     if (!tree || confirm || quitAsk || linkAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
@@ -90,13 +103,20 @@
     else if (id === "pane.proc.close") askClose(focus);
     else if (id === "term.find") tiles[focus]?.openFind();
     else if (id === "term.clear") tiles[focus]?.clearScreen();
-    else if (id === "term.zoom.in") fontSize = Math.min(32, fontSize + 1);
-    else if (id === "term.zoom.out") fontSize = Math.max(8, fontSize - 1);
-    else if (id === "term.zoom.reset") fontSize = 13;
+    else if (id === "term.zoom.in") zoom = Math.min(16, zoom + 1);
+    else if (id === "term.zoom.out") zoom = Math.max(-6, zoom - 1);
+    else if (id === "term.zoom.reset") zoom = 0;
   }
 
   /// Kartu konfirmasi (tutup, keluar, buka tautan) dan ⌘⇧↩ yang menangkap tombol; lainnya milik terminal.
   function onKey(e: KeyboardEvent) {
+    if (settingsOpen && !quitAsk) {
+      if (e.key === "Escape") {
+        settingsOpen = false;
+        e.preventDefault();
+      }
+      return; // kontrol di Pengaturan menerima tombol seperti biasa
+    }
     if (linkAsk) {
       if (e.key === "Enter") openLink();
       if (e.key === "Escape") linkAsk = "";
@@ -146,9 +166,13 @@
   onMount(() => {
     window.addEventListener("keydown", onKey, true);
     const unlisten = listen<string>("shortcut", ({ payload }) => run(payload));
+    const unlistenCfg = listen<any>("daemon", ({ payload }) => {
+      if (payload.event === "config.changed") cfg = payload.params;
+    });
     (async () => {
       try {
         // ponytail: pane lama dari daemon dijajarkan ke kanan; pulihkan tata letak asli = M5 (FR-45)
+        cfg = await call("config.get");
         const ids: number[] = await call("pane.list");
         if (!ids.length) ids.push(await newPane());
         let t: Node = { pane: ids[0] };
@@ -162,6 +186,7 @@
     return () => {
       window.removeEventListener("keydown", onKey, true);
       unlisten.then((f) => f());
+      unlistenCfg.then((f) => f());
     };
   });
 </script>
@@ -182,7 +207,7 @@
       onpointerdown={() => (focus = pane)}
       role="presentation"
     >
-      <Tile bind:this={tiles[pane]} {pane} focused={pane === focus} {fontSize} {onexit} {onlink} />
+      <Tile bind:this={tiles[pane]} {pane} focused={pane === focus} {ui} {zoom} {onexit} {onlink} />
       {#if confirm?.pane === pane}
         <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
           <span><b>{confirm?.name}</b> masih jalan. Tutup pane?</span>
@@ -216,6 +241,9 @@
       <span class="keys">Enter buka · Esc batal</span>
     </div>
   {/if}
+  {#if settingsOpen && cfg}
+    <Settings {cfg} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} />
+  {/if}
   {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
 </div>
 
@@ -228,8 +256,9 @@
     --card: #17181c;
     --dim: rgba(16, 17, 20, 0.45);
   }
+  /* tema mengikuti sistem kecuali [ui] theme memaksa (data-theme) */
   @media (prefers-color-scheme: light) {
-    :global(:root) {
+    :global(:root:not([data-theme="dark"])) {
       --bg: #fafafa;
       --fg: #27272a;
       --muted: #71717a;
@@ -237,6 +266,14 @@
       --card: #ffffff;
       --dim: rgba(250, 250, 250, 0.5);
     }
+  }
+  :global(:root[data-theme="light"]) {
+    --bg: #fafafa;
+    --fg: #27272a;
+    --muted: #71717a;
+    --line: #e4e4e7;
+    --card: #ffffff;
+    --dim: rgba(250, 250, 250, 0.5);
   }
   :global(html, body) {
     margin: 0;

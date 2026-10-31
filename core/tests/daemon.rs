@@ -40,6 +40,7 @@ fn start_idle(tag: &str, idle_secs: u64) -> Daemon {
     c.current_dir("/").args(["daemon", "--secret-fd", "3"])
         .env("GEMBALA_RUNDIR", &dir)
         .env("GEMBALA_IDLE_SECS", idle_secs.to_string())
+        .env("GEMBALA_CONFIG", dir.join("cfg/config.toml"))
         // seolah Gembala dijalankan dari dalam sesi agent (SEC-35)
         .env("CLAUDECODE", "1")
         .env("CLAUDE_CODE_MESSAGING_TOKEN", "token-bocor-uji")
@@ -305,4 +306,61 @@ fn daemon_stop() {
     ui.call("pane.create", json!({"cmd": "sleep 60"}));
     assert_eq!(ui.call("daemon.stop", json!({}))["result"], json!({}));
     assert!(exited_within(&mut d, Duration::from_secs(3)));
+}
+
+fn next_event(c: &mut Cli, name: &str, within: Duration) -> Value {
+    let t0 = Instant::now();
+    if let Some(i) = c.events.iter().position(|e| e["event"] == name) {
+        return c.events.remove(i);
+    }
+    while t0.elapsed() < within {
+        let e = c.recv();
+        if e["event"] == name {
+            return e;
+        }
+    }
+    Value::Null
+}
+
+/// FR-42: config dari file, perubahan file berlaku tanpa restart, file rusak tidak menghapus nilai valid terakhir.
+#[test]
+fn config_dibaca_dipantau_dan_ditulis() {
+    let d = start("cfg");
+    let path = d.dir.join("cfg/config.toml");
+    let mut ui = Cli::ui(&d);
+    let c = ui.call("config.get", json!({}))["result"].clone();
+    assert_eq!(c["values"]["ui"]["font_size"], 13);
+    assert_eq!(c["errors"], json!([]));
+
+    assert_eq!(ui.call("config.set", json!({"section": "ui", "key": "font_size", "value": 15}))["result"], json!({}));
+    assert!(std::fs::read_to_string(&path).unwrap().contains("font_size = 15"));
+    let e = next_event(&mut ui, "config.changed", Duration::from_secs(3));
+    assert_eq!(e["params"]["values"]["ui"]["font_size"], 15, "{e}");
+    let r = ui.call("config.set", json!({"section": "ui", "key": "font_size", "value": 99}))["result"].clone();
+    assert!(r["error"].as_str().unwrap().contains("8–32"), "{r}");
+
+    // diedit pengguna di editor: berlaku tanpa restart
+    std::fs::write(&path, "[ui]\nfont_size = 17\ncursor = \"kotak\"\n").unwrap();
+    let e = next_event(&mut ui, "config.changed", Duration::from_secs(4));
+    assert_eq!(e["params"]["values"]["ui"]["font_size"], 17, "{e}");
+    assert!(e["params"]["errors"][0].as_str().unwrap().contains("ui.cursor"), "{e}");
+
+    // rusak: nilai valid terakhir tetap, galat ditandai, file tidak ditimpa
+    std::fs::write(&path, "[ui\n").unwrap();
+    let e = next_event(&mut ui, "config.changed", Duration::from_secs(4));
+    assert_eq!(e["params"]["values"]["ui"]["font_size"], 17, "{e}");
+    assert!(e["params"]["errors"][0].as_str().unwrap().contains("tidak bisa diurai"), "{e}");
+    assert!(ui.call("config.set", json!({"section": "ui", "key": "font_size", "value": 14}))["result"]["error"].is_string());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "[ui\n");
+}
+
+/// Bagian 11 BRD: batas pane per daemon, bisa diatur lewat [limits].
+#[test]
+fn batas_jumlah_pane() {
+    let d = start("max");
+    let mut ui = Cli::ui(&d);
+    ui.call("config.set", json!({"section": "limits", "key": "max_panes", "value": 2}));
+    assert!(ui.call("pane.create", json!({}))["result"]["pane"].is_u64());
+    assert!(ui.call("pane.create", json!({}))["result"]["pane"].is_u64());
+    assert_eq!(ui.call("pane.create", json!({}))["error"]["code"], "max_panes");
 }
