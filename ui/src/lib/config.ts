@@ -21,6 +21,7 @@ export type Profile = {
   cwd: string;
   env: string[];
   secret_env: { name: string; ref: string }[];
+  summarize: boolean;
 };
 
 export type Agent = {

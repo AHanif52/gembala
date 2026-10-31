@@ -188,6 +188,82 @@ pub fn set(path: &Path, section: &str, key: &str, value: &Value) -> Result<(), S
     write_atomic(path, doc.to_string().as_bytes()).map_err(|e| e.to_string())
 }
 
+fn read_doc(path: &Path) -> Result<(DocumentMut, Vec<String>), String> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    let doc: DocumentMut = text.parse().map_err(|_| "config.toml rusak; perbaiki filenya dulu, Pengaturan tidak menimpanya".to_string())?;
+    Ok((doc, load(Some(&text)).errors))
+}
+
+/// Tulis hanya bila tidak menambah galat baru; galat baru dikembalikan ke Pengaturan, file tidak disentuh.
+fn commit(path: &Path, doc: &DocumentMut, before: &[String]) -> Result<(), String> {
+    let text = doc.to_string();
+    let fresh: Vec<String> = load(Some(&text)).errors.into_iter().filter(|e| !before.contains(e)).collect();
+    if !fresh.is_empty() {
+        return Err(fresh.join("; "));
+    }
+    write_atomic(path, text.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// FR-29: simpan profil dari Pengaturan ke `[[profile]]` dengan id yang sama (atau tambah baru).
+pub fn save_profile(path: &Path, p: &Value) -> Result<(), String> {
+    let id = p["id"].as_str().ok_or("id wajib diisi")?;
+    let (mut doc, before) = read_doc(path)?;
+    // gabung dengan entri lama: kunci yang tidak dikirim (mis. env yang nilainya tidak ditampilkan) tetap
+    let old = doc
+        .get("profile")
+        .and_then(|v| v.as_array_of_tables())
+        .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id)).cloned());
+    let mut t = old.unwrap_or_default();
+    t["id"] = toml_edit::value(id);
+    for k in ["name", "command", "cwd"] {
+        if let Some(v) = p[k].as_str() {
+            t[k] = toml_edit::value(v);
+        }
+    }
+    if let Some(args) = p["args"].as_array() {
+        t["args"] = toml_edit::value(args.iter().filter_map(Value::as_str).collect::<toml_edit::Array>());
+    }
+    if let Some(b) = p["summarize"].as_bool() {
+        t["summarize"] = toml_edit::value(b);
+    }
+    // env digabung per kunci (nilai lama tidak dikirim ke UI); secret_env diganti utuh (rujukannya tampil di form)
+    for (k, merge) in [("env", true), ("secret_env", false)] {
+        if let Some(m) = p[k].as_object() {
+            let mut sub = match (merge, t.get(k).and_then(|v| v.as_table())) {
+                (true, Some(old)) => old.clone(),
+                _ => toml_edit::Table::new(),
+            };
+            for (name, v) in m {
+                sub[name.as_str()] = toml_edit::value(v.as_str().unwrap_or_default());
+            }
+            t[k] = toml_edit::Item::Table(sub);
+        }
+    }
+    if doc.get("profile").is_none() {
+        doc["profile"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+    }
+    let arr = doc["profile"].as_array_of_tables_mut().ok_or("profile: harus ditulis sebagai [[profile]]")?;
+    let found = arr.iter().position(|x| x.get("id").and_then(|v| v.as_str()) == Some(id));
+    match found.and_then(|i| arr.get_mut(i)) {
+        Some(existing) => *existing = t,
+        None => arr.push(t),
+    }
+    commit(path, &doc, &before)
+}
+
+/// FR-29: profil bawaan kembali ke asal / profil tambahan dihapus = semua `[[profile]]` dengan id itu dibuang.
+pub fn reset_profile(path: &Path, id: &str) -> Result<(), String> {
+    let (mut doc, before) = read_doc(path)?;
+    if let Some(arr) = doc.get_mut("profile").and_then(|v| v.as_array_of_tables_mut()) {
+        arr.retain(|x| x.get("id").and_then(|v| v.as_str()) != Some(id));
+    }
+    commit(path, &doc, &before)
+}
+
 /// Tulis ke file sementara di folder yang sama lalu `rename` (TECH bagian 5). Folder `0700` (SEC-25).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("path tanpa folder"))?;
@@ -258,6 +334,32 @@ mod tests {
         assert!(set(&p, "ui", "warna", &json!(1)).is_err());
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn profil_disimpan_dan_dikembalikan() {
+        let p = scratch("profil");
+        set(&p, "ui", "font_size", &json!(14)).unwrap();
+        let pr = json!({"id": "claude", "args": ["--model", "opus"], "env": {"CLAUDE_CONFIG_DIR": "~/.claude"}, "summarize": false});
+        save_profile(&p, &pr).unwrap();
+        save_profile(&p, &json!({"id": "lazygit", "name": "Lazygit", "command": "lazygit"})).unwrap();
+        let c = load(Some(&fs::read_to_string(&p).unwrap()));
+        let claude = c.profiles.iter().find(|x| x.id == "claude").unwrap();
+        assert_eq!((claude.args.len(), claude.summarize), (2, false));
+        assert!(c.profiles.iter().any(|x| x.id == "lazygit"));
+        assert_eq!(c.values["ui"]["font_size"], 14, "bagian lain tetap");
+        // ubah tanpa mengirim env: env lama tetap
+        save_profile(&p, &json!({"id": "claude", "name": "Claude"})).unwrap();
+        let c = load(Some(&fs::read_to_string(&p).unwrap()));
+        assert_eq!(c.profiles.iter().find(|x| x.id == "claude").unwrap().env.len(), 1);
+        // rahasia di env biasa ditolak, file tidak berubah
+        let before = fs::read_to_string(&p).unwrap();
+        let bad = save_profile(&p, &json!({"id": "claude", "env": {"KEY": "sk-ant-123"}})).unwrap_err();
+        assert!(bad.contains("rahasia"), "{bad}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), before);
+        reset_profile(&p, "claude").unwrap();
+        let c = load(Some(&fs::read_to_string(&p).unwrap()));
+        assert_eq!(c.profiles.iter().find(|x| x.id == "claude").unwrap().args.len(), 0);
     }
 
     #[test]

@@ -5,7 +5,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { call } from "./daemon";
-  import type { Agent, Config, Ui } from "./config";
+  import type { Agent, Config, Profile, Ui } from "./config";
 
   let {
     cfg,
@@ -14,6 +14,55 @@
     onquitall,
   }: { cfg: Config; meta: Record<number, { name: string; agent: string; profile: string; status?: string }>; onclose: () => void; onquitall: () => void } = $props();
   let daemon = $state<{ daemon: string; proto: number } | null>(null);
+  // FR-29: ubah profil dari layar; satu baris = satu argumen / satu env
+  type Form = { id: string; name: string; command: string; args: string; cwd: string; env: string; secret: string; summarize: boolean; isNew: boolean };
+  let form = $state<Form | null>(null);
+  const BUILTIN = ["shell", "claude", "codex", "opencode", "omp"];
+
+  function edit(p: Profile, copy = false) {
+    let id = p.id;
+    if (copy) for (let n = 2; cfg.values.profiles.some((x) => x.id === id); n++) id = `${p.id}-${n}`;
+    form = {
+      id,
+      name: copy ? `${p.name} ${id.split("-").at(-1)}` : p.name,
+      command: p.command,
+      args: p.args.join("\n"),
+      cwd: p.cwd,
+      env: p.env.map((k) => `${k}=`).join("\n"), // nilai env tidak dikirim ke UI; isi ulang bila mengubah
+      secret: p.secret_env.map((x) => `${x.name}=${x.ref}`).join("\n"),
+      summarize: p.summarize,
+      isNew: copy,
+    };
+  }
+
+  const pairs = (text: string) =>
+    Object.fromEntries(text.split("\n").map((l) => l.trim()).filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")).trim(), l.slice(l.indexOf("=") + 1).trim()]));
+
+  async function saveForm() {
+    if (!form) return;
+    failed = "";
+    // hanya env yang diisi; yang dibiarkan kosong tetap memakai nilai lama di file
+    const env = Object.fromEntries(Object.entries(pairs(form.env)).filter(([, v]) => v));
+    const profile = {
+      id: form.id.trim(),
+      name: form.name.trim(),
+      command: form.command.trim(),
+      args: form.args.split("\n").map((a) => a.trim()).filter(Boolean),
+      cwd: form.cwd.trim(),
+      env,
+      secret_env: pairs(form.secret),
+      summarize: form.summarize,
+    };
+    const r = await call("profile.save", { profile }).catch((e) => ({ error: String(e) }));
+    if (r.error) failed = r.error;
+    else form = null;
+  }
+
+  async function resetProfile(id: string) {
+    failed = "";
+    const r = await call("profile.reset", { id }).catch((e) => ({ error: String(e) }));
+    if (r.error) failed = r.error;
+  }
   let resetAsk = $state(false);
   let copied = $state("");
 
@@ -87,6 +136,22 @@
       .replace(/Left|Right|Up|Down/, (d) => ({ Left: "←", Right: "→", Up: "↑", Down: "↓" })[d]!)
       .replaceAll("+", "");
 </script>
+
+{#snippet editor()}
+  {#if form}
+    <div class="form">
+      <label>Id <input bind:value={form.id} disabled={!form.isNew} spellcheck="false" /></label>
+      <label>Nama <input bind:value={form.name} /></label>
+      <label>Perintah <input bind:value={form.command} placeholder="kosong = shell" spellcheck="false" /></label>
+      <label>Argumen <small>satu per baris</small><textarea bind:value={form.args} rows="2" spellcheck="false"></textarea></label>
+      <label>Folder <input bind:value={form.cwd} placeholder="kosong = ikut pane yang fokus" spellcheck="false" /></label>
+      <label>Env <small>NAMA=nilai per baris; nilai tidak ditampilkan ulang, isi lagi bila ingin mengubah</small><textarea bind:value={form.env} rows="2" spellcheck="false"></textarea></label>
+      <label>Rujukan rahasia <small>NAMA=op://vault/item/field atau NAMA=keychain:service/akun</small><textarea bind:value={form.secret} rows="2" spellcheck="false"></textarea></label>
+      <label class="inline"><input type="checkbox" bind:checked={form.summarize} /> Ringkas output saat agent keluar</label>
+      <span class="acts"><button class="mini" onclick={() => (form = null)}>Batal</button> <button class="mini" onclick={saveForm}>Simpan</button></span>
+    </div>
+  {/if}
+{/snippet}
 
 <div class="veil" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>
   <div class="modal" role="dialog" aria-label="Pengaturan">
@@ -196,16 +261,24 @@
         <section>
           {#each cfg.values.profiles as p (p.id)}
             <div class="row">
-              <span
+              <span class="grow"
                 >{p.name}<small
                   >{p.command ? [p.command, ...p.args].join(" ") : "$SHELL -l"} · folder {p.cwd || "ikut pane yang fokus"}{p.env.length
                     ? ` · env ${p.env.join(", ")}`
                     : ""}{p.secret_env.length ? ` · rujukan ${p.secret_env.map((x) => x.name).join(", ")}` : ""}</small
                 ></span
               >
-              <span class="m">{p.id}</span>
+              <span class="acts">
+                <button class="mini" onclick={() => edit(p)}>Ubah</button>
+                <button class="mini" onclick={() => edit(p, true)}>Duplikat</button>
+                <button class="mini" onclick={() => resetProfile(p.id)} title={BUILTIN.includes(p.id) ? "Hapus ubahan di config" : "Hapus profil"}
+                  >{BUILTIN.includes(p.id) ? "Kembalikan" : "Hapus"}</button
+                >
+              </span>
             </div>
+            {#if form && form.id === p.id && !form.isNew}{@render editor()}{/if}
           {/each}
+          {#if form?.isNew}{@render editor()}{/if}
         </section>
         <p class="note">
           Ubah atau tambah lewat <code>[[profile]]</code> di config.toml (id sama = menimpa bawaan). Rahasia hanya sebagai rujukan
@@ -390,6 +463,41 @@
   }
   .seg button.on {
     background: var(--line);
+  }
+  .grow {
+    min-width: 0;
+  }
+  .acts {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .form {
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+  }
+  .form label {
+    display: grid;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .form label.inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .form input:not([type]),
+  .form textarea {
+    padding: 5px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--card);
+    color: var(--fg);
+    font: 12px "SF Mono", Menlo, monospace;
   }
   h4 {
     margin: 16px 0 8px;

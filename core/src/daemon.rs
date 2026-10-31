@@ -322,6 +322,18 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             Ok(st.agents.lock().unwrap().clone())
         }
+        "profile.save" | "profile.reset" => {
+            let r = if m == "profile.save" {
+                config::save_profile(&config::path(), &p["profile"])
+            } else {
+                config::reset_profile(&config::path(), p["id"].as_str().ok_or("bad_params")?)
+            };
+            if let Err(why) = r {
+                return Ok(json!({"error": why}));
+            }
+            reload_config(st);
+            Ok(json!({}))
+        }
         "config.set" => {
             let (section, key) = (p["section"].as_str().ok_or("bad_params")?, p["key"].as_str().ok_or("bad_params")?);
             if let Err(why) = config::set(&config::path(), section, key, &p["value"]) {
