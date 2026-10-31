@@ -33,7 +33,7 @@ fn start(tag: &str) -> Daemon {
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
     let (r, w) = (fds[0], fds[1]);
     let mut c = Command::new(env!("CARGO_BIN_EXE_gembala"));
-    c.args(["daemon", "--secret-fd", "3"])
+    c.current_dir("/").args(["daemon", "--secret-fd", "3"])
         .env("GEMBALA_RUNDIR", &dir)
         // seolah Gembala dijalankan dari dalam sesi agent (SEC-35)
         .env("CLAUDECODE", "1")
@@ -214,9 +214,11 @@ fn klien_lambat_diputus() {
 fn env_pane_bersih() {
     let d = start("env");
     let mut ui = Cli::ui(&d);
-    let pane = ui.call("pane.create", json!({"cmd": "env; echo SELESAI-ENV", "rows": 50, "cols": 200}))["result"]["pane"].as_u64().unwrap();
+    let pane = ui.call("pane.create", json!({"cmd": "env; echo CWD=$(pwd); echo SELESAI-ENV", "rows": 50, "cols": 200}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(pane, &["SELESAI-ENV"]);
     assert!(out.contains("GEMBALA_SOCKET="), "{out}");
+    // daemon dijalankan dari cwd `/` (seperti app dari Finder), pane tetap mulai di home
+    assert!(out.contains(&format!("CWD={}", std::env::var("HOME").unwrap())), "{out}");
     for bocor in ["CLAUDECODE=", "token-bocor-uji", "thread-bocor-uji", "GEMBALA_RUNDIR="] {
         assert!(!out.contains(bocor), "{bocor} bocor ke pane");
     }

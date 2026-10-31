@@ -54,6 +54,11 @@ impl Pty {
                 c.env_remove(&*k);
             }
         }
+        // app dari Finder/Dock mewarisi cwd `/` dari launchd; pane mulai di home seperti terminal biasa.
+        // ponytail: folder per profil/tab (FR-30, FR-52) menyusul di M4/M7
+        if let Some(home) = std::env::var_os("HOME") {
+            c.current_dir(home);
+        }
         c.env("TERM", "xterm-256color")
             .envs(env.iter().copied())
             .stdin(Stdio::from(slave.try_clone()?))
