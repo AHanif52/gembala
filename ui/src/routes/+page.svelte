@@ -30,6 +30,7 @@
     pastes?: string[]; // SEC-34: gambar tempelan, dihapus saat pane ditutup
     output?: boolean; // FR-56: ada output sesi agent sebelumnya
     since?: number; // FR-40: kapan proses di pane shell mulai jalan
+    sig?: string; // FR-51: sidik profil saat pane dibuat
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
@@ -87,8 +88,35 @@
     // FR-53: Claude Code menerima id sesi dari luar; dipakai lagi saat pane dijalankan ulang
     const session = (opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined);
     const r = await call("pane.create", { ...opts, session });
-    meta[r.pane] = { profile, cwd: null, agent, name: r.name, session };
+    meta[r.pane] = { profile, cwd: null, agent, name: r.name, session, sig: sig(profile) };
     return r.pane;
+  }
+
+  const sig = (id: string) => JSON.stringify(cfg?.values.profiles.find((p) => p.id === id) ?? null);
+
+  /// FR-51: pane yang profilnya berubah diganti pane baru dari profil terbaru di posisi yang sama
+  const relaunching = new Set<number>(); // pane lama yang sedang diganti: pane.exit-nya tidak menutup tab
+  async function relaunch(old: number) {
+    const m = meta[old];
+    if (!m || relaunching.has(old)) return;
+    relaunching.add(old);
+    // tutup dulu: agent lama dan baru tidak boleh memakai sesi yang sama bersamaan
+    await call("pane.close", { pane: old }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 400));
+    const id = await createPane({
+      profile: m.profile === "shell" ? undefined : m.profile,
+      cwd: m.cwd ?? undefined,
+      session: m.session,
+      resume: AGENTS.includes(m.agent),
+    });
+    for (const w of wss)
+      for (const t of w.tabs)
+        if (panes(t.tree).includes(old)) {
+          t.tree = replace(t.tree, old, id);
+          if (t.focus === old) t.focus = id;
+        }
+    delete meta[old];
+    relaunching.delete(old);
   }
 
   async function refreshGit(pane: number) {
@@ -144,6 +172,7 @@
 
   /// Pane keluar: hilang dari tabnya; tab kosong ditutup; workspace tanpa tab dapat shell baru.
   async function onexit(pane: number) {
+    if (relaunching.has(pane)) return;
     if (confirm?.pane === pane) confirm = null;
     for (const [wi, w] of wss.entries()) {
       const ti = w.tabs.findIndex((t) => panes(t.tree).includes(pane));
@@ -717,6 +746,9 @@
                 {/if}
                 <button class="chip" onclick={() => (rich = { pane, text: "" })}>Rich Input <span class="n">⌘G</span></button>
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
+                {#if meta[pane]?.sig && meta[pane].sig !== sig(meta[pane].profile)}
+                  <button class="chip changed" onclick={() => relaunch(pane)}>Profil berubah · jalankan ulang</button>
+                {/if}
                 <span class="grow"></span>
                 <span class="chip quiet" title={meta[pane]?.cwd ?? ""}>{base(meta[pane]?.cwd) || "~"}</span>
                 {#if g?.repo && g.branch}
@@ -1029,6 +1061,9 @@
   button.chip:hover {
     background: var(--line);
     color: var(--fg);
+  }
+  .chip.changed {
+    color: #d97706;
   }
   .chip.pname {
     color: var(--fg);
