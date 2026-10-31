@@ -40,7 +40,7 @@
   let at = $state({ ws: 0, tab: 0 });
   let meta = $state<Record<number, Meta>>({});
   let dead = $state<Record<number, true>>({}); // pane dari run daemon lain atau sudah keluar (id negatif)
-  let boot = "";
+  let boot = $state(""); // state: layout disimpan ulang saat daemon baru dijalankan
   let zoomed = $state(false);
   let confirm = $state<{ pane: number; name: string } | null>(null);
   let quitAsk = $state(0); // jumlah pane yang masih menjalankan proses (FR-46)
@@ -183,6 +183,37 @@
         }
     delete meta[old];
     delete dead[old];
+  }
+
+  /// Kriteria 17: daemon mati paksa = semua pane tampil sebagai pane mati (tombol jalankan ulang),
+  /// lalu daemon baru dijalankan lewat panggilan berikutnya.
+  let lost = false;
+  async function onLost() {
+    if (lost) return;
+    lost = true;
+    let next = Math.min(-1, ...Object.keys(meta).map(Number), ...Object.keys(dead).map(Number)) - 1;
+    for (const w of wss)
+      for (const t of w.tabs)
+        for (const p of panes(t.tree)) {
+          if (dead[p]) continue;
+          const id = next--;
+          t.tree = replace(t.tree, p, id);
+          if (t.focus === p) t.focus = id;
+          meta[id] = meta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" };
+          delete meta[p];
+          dead[id] = true;
+        }
+    confirm = null;
+    changes = null;
+    rich = null;
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      boot = (await call("daemon.info")).boot;
+      cfg = await call("config.get");
+    } catch (e) {
+      error = `daemon tidak bisa dijalankan lagi: ${e}`;
+    }
+    lost = false;
   }
 
   /// FR-46: konfirmasi hanya bila masih ada proses jalan
@@ -531,6 +562,7 @@
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
       if (payload.event === "pane.replace" && meta[payload.params.pane]) meta[payload.params.pane].output = true;
+      if (payload.event === "daemon.lost") onLost();
     });
     const timer = setInterval(poll, 2000);
     // FR-15: seret file ke jendela = path ber-quote ditempel ke pane yang fokus (bracketed paste, tanpa Enter)
@@ -639,7 +671,7 @@
         >
           {#if dead[pane]}
             <div class="dead">
-              <span>Pane ini berhenti saat daemon dijalankan ulang.</span>
+              <span>Pane ini berhenti karena daemon berhenti atau dijalankan ulang.</span>
               <span class="keys">{meta[pane]?.name || meta[pane]?.profile} · {home(meta[pane]?.cwd) || "~"}</span>
               <button class="mini" onclick={() => restart(pane)}>Jalankan ulang {meta[pane]?.profile ?? "shell"}</button>
             </div>

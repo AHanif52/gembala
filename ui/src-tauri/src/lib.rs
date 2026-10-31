@@ -2,10 +2,10 @@
 mod daemon;
 
 use serde_json::Value;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
-struct Daemon(OnceLock<Result<daemon::Client, String>>);
+struct Daemon(Mutex<Option<Arc<daemon::Client>>>);
 
 /// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
 const ALLOWED: &[&str] =
@@ -78,16 +78,25 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<Daemon>();
         let app2 = app.clone();
-        let c = st.0.get_or_init(|| {
-            let emit: daemon::OnEvent = Arc::new(move |v| {
-                if v["event"] == "config.changed" {
-                    apply_keys(&app2, &v["params"]["values"]["keys"]);
+        let c = {
+            let mut slot = st.0.lock().unwrap();
+            match slot.as_ref().filter(|c| c.alive.load(std::sync::atomic::Ordering::Relaxed)) {
+                Some(c) => c.clone(),
+                // belum tersambung, atau daemon mati: sambung/jalankan lagi (kriteria 17)
+                None => {
+                    let emit: daemon::OnEvent = Arc::new(move |v| {
+                        if v["event"] == "config.changed" {
+                            apply_keys(&app2, &v["params"]["values"]["keys"]);
+                        }
+                        let _ = app2.emit("daemon", v);
+                    });
+                    let c = Arc::new(daemon::connect(emit).map_err(|e| e.to_string())?);
+                    *slot = Some(c.clone());
+                    c
                 }
-                let _ = app2.emit("daemon", v);
-            });
-            daemon::connect(emit).map_err(|e| e.to_string())
-        });
-        let r = c.as_ref().map_err(Clone::clone)?.call(&method, params)?;
+            }
+        };
+        let r = c.call(&method, params)?;
         if method == "config.get" {
             apply_keys(&app, &r["values"]["keys"]);
         }
@@ -313,7 +322,7 @@ fn apply_keys(app: &tauri::AppHandle, keys: &Value) {
 pub fn run() {
     sweep_paste();
     tauri::Builder::default()
-        .manage(Daemon(OnceLock::new()))
+        .manage(Daemon(Mutex::new(None)))
         .manage(Shortcuts(Mutex::new(resolve_keys(&serde_json::Map::new()))))
         // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
         .menu(|app| build_menu(app, &resolve_keys(&serde_json::Map::new()).0))

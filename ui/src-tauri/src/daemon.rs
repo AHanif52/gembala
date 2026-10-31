@@ -16,6 +16,8 @@ use std::thread;
 pub const KC_SERVICE: &str = "dev.gembala.app";
 
 pub struct Client {
+    /// Daemon putus = false; pemanggil membuat klien baru (kriteria 17: daemon dijalankan lagi).
+    pub alive: Arc<std::sync::atomic::AtomicBool>,
     w: Mutex<UnixStream>,
     pending: Arc<Mutex<HashMap<u64, Sender<Value>>>>,
     next: Mutex<u64>,
@@ -42,15 +44,23 @@ pub fn connect(on_event: OnEvent) -> io::Result<Client> {
     // Hanya build debug (alat ukur, uji): rahasia dari env, tanpa Keychain. Build rilis tidak punya
     // jalur ini, karena SEC-20 melarang rahasia kanal UI ada di environment.
     #[cfg(debug_assertions)]
-    if let Ok(secret) = std::env::var("GEMBALA_DEV_SECRET") {
-        return Client::open(UnixStream::connect(&sock)?, &secret, on_event);
+    let dev = std::env::var("GEMBALA_DEV_SECRET").ok();
+    #[cfg(not(debug_assertions))]
+    let dev: Option<String> = None;
+    if let (Some(secret), Ok(s)) = (&dev, UnixStream::connect(&sock)) {
+        return Client::open(s, secret, on_event);
     }
     // socket dulu: Keychain hanya dibaca bila daemon hidup. Build tanpa tanda tangan berganti identitas
     // tiap build, dan membaca item build lama memunculkan dialog izin macOS.
     let Ok(s) = UnixStream::connect(&sock) else {
         let secret = spawn_daemon()?;
-        // gagal simpan (izin ditolak) tidak menggagalkan sesi ini; hanya sambung ulang nanti yang tidak bisa
-        if let Err(e) = security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes()) {
+        // gagal simpan (izin ditolak) tidak menggagalkan sesi ini; hanya sambung ulang nanti yang tidak bisa.
+        // Alat ukur/uji (build debug + GEMBALA_DEV_SECRET) tidak menulis Keychain pengguna.
+        let saved = match dev {
+            None => security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes()),
+            Some(_) => Ok(()),
+        };
+        if let Err(e) = saved {
             eprintln!("simpan rahasia ke Keychain: {e}");
         }
         return Client::open(UnixStream::connect(&sock)?, &secret, on_event);
@@ -111,6 +121,8 @@ impl Client {
         }
         let pending: Arc<Mutex<HashMap<u64, Sender<Value>>>> = Arc::default();
         let p2 = pending.clone();
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let alive2 = alive.clone();
         thread::spawn(move || {
             for l in r.lines() {
                 let Ok(v) = serde_json::from_str::<Value>(&l.unwrap_or_default()) else { break };
@@ -123,9 +135,12 @@ impl Client {
                     None => on_event(v),
                 }
             }
+            // panggilan yang masih menunggu dibatalkan, bukan menggantung selamanya
+            alive2.store(false, std::sync::atomic::Ordering::Relaxed);
+            p2.lock().unwrap().clear();
             on_event(json!({"event": "daemon.lost"}));
         });
-        Ok(Client { w: Mutex::new(w), pending, next: Mutex::new(1) })
+        Ok(Client { alive, w: Mutex::new(w), pending, next: Mutex::new(1) })
     }
 
     pub fn call(&self, method: &str, params: Value) -> Result<Value, String> {
