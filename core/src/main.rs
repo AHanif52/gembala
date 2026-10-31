@@ -1,4 +1,6 @@
 #[allow(dead_code)] // dipakai daemon mulai pekerjaan 0.3; hapus allow saat itu
+mod grid;
+#[allow(dead_code)]
 mod pty;
 mod rundir;
 
