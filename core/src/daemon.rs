@@ -48,6 +48,11 @@ struct Pane {
     agent: String,
     /// FR-4: idle | working | blocked | done; kosong = tidak dilacak (shell, profil tanpa hook)
     status: Mutex<&'static str>,
+    /// FR-53: id sesi Gembala untuk Claude Code (UUID tervalidasi)
+    session: Option<String>,
+    /// FR-56: output sesi agent yang sedang jalan (sejak penanda mulai) dan sesi terakhir yang sudah selesai; RAM saja (SEC-13)
+    agent_log: Mutex<Option<(std::time::Instant, Vec<u8>)>>,
+    last_output: Mutex<Vec<u8>>,
     /// Grid dan pelanggan dikunci bersama: attach tidak kehilangan atau menggandakan output.
     view: Mutex<(Grid, Vec<Sub>)>,
 }
@@ -366,6 +371,9 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                     let n = (1..).find(|n| !taken.contains(&format!("{label}-{n}"))).unwrap_or(1);
                     Mutex::new(format!("{label}-{n}"))
                 },
+                session: session.id.clone().filter(|s| profile::valid_uuid(s)),
+                agent_log: Mutex::new(None),
+                last_output: Mutex::new(Vec::new()),
                 status: Mutex::new(if ["claude", "codex", "opencode", "omp"].contains(&agent.as_str()) { "idle" } else { "" }),
                 agent,
                 view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
@@ -394,6 +402,12 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             pty::resize(&pane.master, rows, cols).map_err(|_| "io")?;
             v.0.resize(rows, cols);
             Ok(json!({}))
+        }
+        "pane.agent_output" => {
+            // FR-56: output lengkap sesi agent terakhir, selama pane hidup
+            let pane = st.pane(p)?;
+            let data = pane.last_output.lock().unwrap().clone();
+            Ok(json!({"data": B64.encode(&data), "bytes": data.len()}))
         }
         "pane.rename" => {
             // FR-3: huruf kecil, angka, '-', maks 32, unik
@@ -544,6 +558,80 @@ fn idle_exit(st: Arc<State>) {
     }
 }
 
+type View = (Grid, Vec<Sub>);
+
+fn send_all(v: &mut View, ev: String) {
+    v.1.retain(|sub| match sub.tx.try_send(ev.clone()) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            let _ = sub.sock.shutdown(std::net::Shutdown::Both);
+            false
+        }
+        Err(TrySendError::Disconnected(_)) => false,
+    });
+}
+
+fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    v.0.feed(bytes);
+    if let Some((_, log)) = pane.agent_log.lock().unwrap().as_mut() {
+        log.extend_from_slice(bytes);
+        let over = log.len().saturating_sub(AGENT_LOG_MAX);
+        log.drain(..over); // simpan bagian terakhir saja
+    }
+    send_all(v, line(json!({"event": "pane.output", "params": {"pane": id, "data": B64.encode(bytes)}})));
+}
+
+const AGENT_LOG_MAX: usize = 4 << 20;
+const MARK: &[u8] = b"\x1b]777;gembala;";
+
+/// `(posisi, panjang, isi)` penanda OSC 777 Gembala pertama. Penanda yang terpotong batas baca PTY
+/// tidak dikenali dan lolos sebagai OSC biasa (diabaikan terminal).
+// ponytail: tanpa penyangga antar-baca; penanda printf kecil hampir selalu datang utuh
+fn find_marker(b: &[u8]) -> Option<(usize, usize, &str)> {
+    let pos = b.windows(MARK.len()).position(|w| w == MARK)?;
+    let body = &b[pos + MARK.len()..];
+    let end = body.iter().position(|&c| c == 0x07)?;
+    Some((pos, MARK.len() + end + 1, std::str::from_utf8(&body[..end]).ok()?))
+}
+
+/// FR-56: agent mulai = catat log sesi; agent keluar = layar diganti satu blok ringkas, log lengkap disimpan di RAM.
+fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
+    if mark == "agent-start" {
+        *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
+        return;
+    }
+    let Some(code) = mark.strip_prefix("agent-exit;") else { return };
+    let Some((started, log)) = pane.agent_log.lock().unwrap().take() else { return };
+    *pane.last_output.lock().unwrap() = log;
+    let secs = started.elapsed().as_secs();
+    let dur = match secs {
+        0..60 => format!("{secs} dtk"),
+        60..3600 => format!("{} mnt {} dtk", secs / 60, secs % 60),
+        _ => format!("{} jam {} mnt", secs / 3600, secs % 3600 / 60),
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let cwd = pty::cwd_of(pane.sid).map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
+    let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
+    let resume = match (pane.agent.as_str(), pane.session.as_deref()) {
+        ("claude", Some(sid)) => format!("claude --resume {sid}"),
+        ("codex", _) => "codex resume --last".into(),
+        ("opencode", _) => "opencode --continue".into(),
+        ("omp", _) => "omp --continue".into(),
+        _ => String::new(),
+    };
+    let mut text = format!("\x1b[2m─ {} selesai · {dur} · {cwd}{exit}\x1b[0m\r\n", pane.name.lock().unwrap());
+    if !resume.is_empty() {
+        text += &format!("\x1b[2m  lanjutkan: {resume}\x1b[0m\r\n");
+    }
+    let (rows, cols) = v.0.size();
+    v.0 = Grid::new(rows, cols, SCROLLBACK);
+    v.0.feed(text.as_bytes());
+    send_all(v, line(json!({"event": "pane.replace", "params": {"pane": id, "data": B64.encode(&text)}})));
+}
+
 /// Output PTY → grid + semua pelanggan. Selesai saat shell pane keluar.
 fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
     let mut buf = [0u8; 16 * 1024];
@@ -555,16 +643,14 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
             Err(_) => break, // EIO: slave tertutup
         };
         let mut v = pane.view.lock().unwrap();
-        v.0.feed(&buf[..n]);
-        let ev = line(json!({"event": "pane.output", "params": {"pane": id, "data": B64.encode(&buf[..n])}}));
-        v.1.retain(|sub| match sub.tx.try_send(ev.clone()) {
-            Ok(()) => true,
-            Err(TrySendError::Full(_)) => {
-                let _ = sub.sock.shutdown(std::net::Shutdown::Both);
-                false
-            }
-            Err(TrySendError::Disconnected(_)) => false,
-        });
+        // FR-56: penanda sesi agent dari skrip launch dipotong dari stream; sisanya diteruskan apa adanya
+        let mut rest = &buf[..n];
+        while let Some((pos, len, mark)) = find_marker(rest) {
+            emit(&mut v, &pane, id, &rest[..pos]);
+            on_marker(&mut v, &pane, id, mark);
+            rest = &rest[pos + len..];
+        }
+        emit(&mut v, &pane, id, rest);
     }
     let code = pty.child.wait().ok().and_then(|s| s.code());
     st.panes.lock().unwrap().remove(&id);

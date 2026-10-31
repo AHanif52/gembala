@@ -4,6 +4,7 @@
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
   import Changes from "$lib/Changes.svelte";
+  import OutputView from "$lib/OutputView.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { invoke } from "@tauri-apps/api/core";
@@ -27,6 +28,7 @@
     session?: string; // FR-53: id sesi Gembala (Claude Code)
     git?: any; // FR-55: ringkasan git di toolbar
     pastes?: string[]; // SEC-34: gambar tempelan, dihapus saat pane ditutup
+    output?: boolean; // FR-56: ada output sesi agent sebelumnya
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
@@ -56,6 +58,7 @@
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
   let rich = $state<{ pane: number; text: string } | null>(null); // FR-14
   let changes = $state<{ pane: number; diff: any } | null>(null); // FR-22
+  let outputOf = $state<number | null>(null); // FR-56
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
   const ws = $derived(wss[at.ws]);
   const tab = $derived(ws?.tabs[at.tab]);
@@ -527,6 +530,7 @@
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
+      if (payload.event === "pane.replace" && meta[payload.params.pane]) meta[payload.params.pane].output = true;
     });
     const timer = setInterval(poll, 2000);
     // FR-15: seret file ke jendela = path ber-quote ditempel ke pane yang fokus (bracketed paste, tanpa Enter)
@@ -658,6 +662,7 @@
                   <button class="chip" onclick={() => openChanges(pane)}>{g.files} file <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
                 {/if}
                 <button class="chip" onclick={() => (rich = { pane, text: "" })}>Rich Input <span class="n">⌘G</span></button>
+                {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
                 <span class="grow"></span>
                 <span class="chip quiet" title={meta[pane]?.cwd ?? ""}>{base(meta[pane]?.cwd) || "~"}</span>
                 {#if g?.repo && g.branch}
@@ -665,6 +670,9 @@
                 {/if}
                 <button class="chip" aria-label="Pengaturan profil" onclick={() => (settingsOpen = true)}>⚙</button>
               </div>
+            {/if}
+            {#if outputOf === pane}
+              <OutputView {pane} onclose={() => (outputOf = null)} />
             {/if}
             {#if rich?.pane === pane}
               <div class="rich">

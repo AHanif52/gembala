@@ -166,6 +166,11 @@
     const early: any[] = [];
     const onEvent = (e: any) => {
       if (e.event === "pane.output") term.write(unb64(e.params.data));
+      // FR-56: agent keluar = layar diganti blok ringkas dari daemon
+      if (e.event === "pane.replace") {
+        term.reset();
+        term.write(unb64(e.params.data));
+      }
       if (e.event === "pane.exit") onexit(pane);
     };
     const unlisten = listen<any>("daemon", ({ payload }) => {

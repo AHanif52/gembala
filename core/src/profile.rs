@@ -19,6 +19,8 @@ pub struct Profile {
     pub env: Vec<(String, String)>,
     /// Rujukan saja: `op://…` atau `keychain:service/akun` (SEC-32).
     pub secret_env: Vec<(String, String)>,
+    /// FR-56: ringkas output saat agent keluar (bawaan nyala).
+    pub summarize: bool,
 }
 
 /// (agent, nama, perintah, perintah instal yang ditampilkan bila tidak ada, versi teruji major.minor)
@@ -40,6 +42,7 @@ pub fn builtin() -> Vec<Profile> {
         cwd: String::new(),
         env: vec![],
         secret_env: vec![],
+        summarize: true,
     };
     let agents = AGENTS.iter().map(|(agent, name, cmd, _, _)| Profile {
         id: agent.to_string(),
@@ -103,6 +106,11 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
                 Some(Some(s)) if ok_text(s, 200) && (key != "cwd" || s.is_empty() || s.starts_with('/') || s.starts_with('~')) => *field = s.into(),
                 Some(_) => errors.push(format!("{}: teks tidak sah, memakai bawaan", at(key))),
             }
+        }
+        match t.get("summarize").map(|v| v.as_bool()) {
+            None => {}
+            Some(Some(b)) => p.summarize = b,
+            Some(None) => errors.push(format!("{}: harus true atau false", at("summarize"))),
         }
         if let Some(a) = t.get("args") {
             match a.as_array().map(|arr| arr.iter().map(|v| v.as_str().filter(|s| ok_text(s, 500)).map(String::from)).collect::<Option<Vec<_>>>()) {
@@ -239,7 +247,8 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
     }
     let (mut flags, hook_env) = h.map(|h| hook_flags(p, h)).unwrap_or_default();
     flags.extend(session.map(|s| session_flags(&p.agent, s)).unwrap_or_default());
-    let mut s = String::from("( ");
+    // FR-56: penanda tak terlihat untuk daemon (OSC 777), mengapit output sesi agent
+    let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
     for (k, v) in p.env.iter().chain(&hook_env) {
         s += &format!("export {k}={}; ", q(v));
     }
@@ -260,13 +269,17 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
         Some(i) => format!("{} tidak ditemukan di PATH login shell. Pasang dengan: {i}", p.name),
         None => format!("Perintah {} tidak ditemukan di PATH login shell.", p.command),
     };
-    s += &format!(" ); [ $? -eq 127 ] && printf '\\n%s\\n' {}; exec \"$SHELL\" -l", q(&hint));
+    s += " ); s=$?; ";
+    if p.summarize {
+        s += "printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\"; ";
+    }
+    s += &format!("[ \"$s\" -eq 127 ] && printf '\\n%s\\n' {}; exec \"$SHELL\" -l", q(&hint));
     Some(s)
 }
 
 pub fn to_json(p: &Profile) -> Value {
     json!({
-        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd,
+        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize,
         "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
         "secret_env": p.secret_env.iter().map(|(k, r)| json!({"name": k, "ref": r})).collect::<Vec<_>>(),
     })
@@ -375,7 +388,10 @@ mod tests {
             ..builtin()[1].clone()
         };
         let s = launch(&p, None, None).unwrap();
-        assert!(s.starts_with("( export X='a b'\\''c'; "), "{s}");
+        assert!(s.starts_with("printf '\\033]777;gembala;agent-start\\007'; ( export X='a b'\\''c'; "), "{s}");
+        assert!(s.contains("printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\""), "{s}");
+        let quiet = Profile { summarize: false, ..p.clone() };
+        assert!(!launch(&quiet, None, None).unwrap().contains("777"));
         assert!(s.contains("export K=\"$(security find-generic-password -w -s 'svc' -a 'me@x')\"; "), "{s}");
         assert!(s.contains("export O=\"$(op read 'op://V/I/f')\"; "), "{s}");
         assert!(s.contains("'my tool' 'it'\\''s' '$(id)' );"), "{s}");

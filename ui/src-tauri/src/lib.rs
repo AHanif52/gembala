@@ -9,7 +9,7 @@ struct Daemon(OnceLock<Result<daemon::Client, String>>);
 
 /// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
 const ALLOWED: &[&str] =
-    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset", "git.status", "git.diff", "pane.rename"];
+    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset", "git.status", "git.diff", "pane.rename", "pane.agent_output"];
 
 /// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview.
 const PANE_KEYS: &[(&str, &str, &str)] = &[

@@ -521,3 +521,34 @@ fn ganti_nama_pane() {
     ui.call("pane.rename", json!({"pane": b, "name": "shell-3"}));
     assert_eq!(ui.call("pane.create", json!({}))["result"]["name"], "shell-1");
 }
+
+/// FR-56: agent keluar = layar diganti blok ringkas; output lengkap tetap bisa dibuka selama pane hidup.
+#[test]
+fn ringkas_output_saat_agent_keluar() {
+    let d = start("ringkas");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(
+        cfg.join("config.toml"),
+        "[[profile]]\nid = \"palsu\"\ncommand = \"sh\"\nargs = [\"-c\", \"echo OUTPUT-AGENT-PANJANG; sleep 1; exit 3\"]\n",
+    )
+    .unwrap();
+    let mut ui = Cli::ui(&d);
+    let t0 = Instant::now();
+    while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("OUTPUT-AGENT") {
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let pane = ui.call("pane.create", json!({"profile": "palsu"}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.attach", json!({"pane": pane}));
+    let e = next_event(&mut ui, "pane.replace", Duration::from_secs(10));
+    let text = String::from_utf8(B64.decode(e["params"]["data"].as_str().unwrap()).unwrap()).unwrap();
+    assert!(text.contains("palsu-1 selesai") && text.contains("keluar 3"), "{text}");
+    let mut ui2 = Cli::ui(&d);
+    let snap = ui2.call("pane.attach", json!({"pane": pane}))["result"]["snapshot"].as_str().unwrap().to_string();
+    let snap = String::from_utf8(B64.decode(snap).unwrap()).unwrap();
+    assert!(snap.contains("selesai") && !snap.contains("OUTPUT-AGENT-PANJANG"), "{snap}");
+    let full = ui.call("pane.agent_output", json!({"pane": pane}))["result"]["data"].as_str().unwrap().to_string();
+    assert!(String::from_utf8_lossy(&B64.decode(full).unwrap()).contains("OUTPUT-AGENT-PANJANG"));
+}
