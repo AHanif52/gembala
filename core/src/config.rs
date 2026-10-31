@@ -32,7 +32,9 @@ const UI: &[(&str, Kind)] = &[
     ("screen_reader", Bool(false)),
 ];
 const LIMITS: &[(&str, Kind)] = &[("max_panes", Int(1, 256, 32))];
-const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS)];
+/// FR-40: badge Dock + Dock melompat; banner menunggu T5
+const NOTIFY: &[(&str, Kind)] = &[("on_blocked", Bool(true)), ("on_done", Bool(true)), ("long_command_secs", Int(5, 3600, 30))];
+const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY)];
 
 pub struct Config {
     /// Profil bawaan + `[[profile]]` yang lolos validasi (FR-29). Rujukan rahasia ikut, nilainya tidak.

@@ -564,7 +564,10 @@
 
   // FR-40: badge Dock dan Dock melompat hanya saat jendela tidak sedang dilihat
   let seen = $state(document.hasFocus());
-  const attention = $derived(Object.values(meta).filter((m) => m.status === "blocked" || m.status === "done").length);
+  const notify = $derived(cfg?.values.notify ?? { on_blocked: true, on_done: true, long_command_secs: 30 });
+  const attention = $derived(
+    Object.values(meta).filter((m) => (m.status === "blocked" && notify.on_blocked) || (m.status === "done" && notify.on_done)).length,
+  );
   $effect(() => {
     invoke("badge", { count: seen ? 0 : attention }).catch(() => {});
   });
@@ -572,7 +575,7 @@
     if (!meta[pane]) return;
     meta[pane].status = status;
     if (status === "done" || status === "idle") refreshGit(pane); // toolbar diperbarui per giliran (TECH 7a)
-    if (status === "blocked" && !seen) invoke("attention").catch(() => {});
+    if (status === "blocked" && notify.on_blocked && !seen) invoke("attention").catch(() => {});
   }
 
   // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
@@ -600,15 +603,14 @@
         if (m.status !== i.status) m.status = i.status; // status agent dari hook (daemon)
       } else {
         // FR-40 untuk pane shell: perintah lebih dari 30 detik lalu selesai = done; menunggu password = blocked
-        // ponytail: batas 30 detik tetap; [notify] long_command_secs dari config menyusul
         if (busy && !m.busy) m.since = Date.now();
         if (i.password && m.status !== "blocked") {
           m.status = "blocked";
-          if (!seen) invoke("attention").catch(() => {});
+          if (!seen && notify.on_blocked) invoke("attention").catch(() => {});
         } else if (!i.password && m.status === "blocked") m.status = "";
-        if (!busy && m.busy && Date.now() - (m.since ?? Date.now()) >= 30_000) {
+        if (!busy && m.busy && Date.now() - (m.since ?? Date.now()) >= notify.long_command_secs * 1000) {
           m.status = "done";
-          if (!seen) invoke("attention").catch(() => {});
+          if (!seen && notify.on_done) invoke("attention").catch(() => {});
         }
       }
       if (m.busy !== busy) m.busy = busy;

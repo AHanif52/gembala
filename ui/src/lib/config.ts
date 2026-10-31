@@ -35,7 +35,13 @@ export type Agent = {
 };
 
 export type Config = {
-  values: { ui: Ui; limits: { max_panes: number }; keys: Record<string, string>; profiles: Profile[] };
+  values: {
+    ui: Ui;
+    limits: { max_panes: number };
+    notify: { on_blocked: boolean; on_done: boolean; long_command_secs: number };
+    keys: Record<string, string>;
+    profiles: Profile[];
+  };
   errors: string[];
   path: string;
 };

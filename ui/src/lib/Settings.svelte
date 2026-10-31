@@ -119,11 +119,12 @@
     });
   });
 
-  async function set<K extends keyof Ui>(key: K, value: Ui[K]) {
+  async function set<K extends keyof Ui>(key: K, value: Ui[K], section = "ui") {
     failed = "";
-    const r = await call("config.set", { section: "ui", key, value }).catch((e) => ({ error: String(e) }));
+    const r = await call("config.set", { section, key, value }).catch((e) => ({ error: String(e) }));
     if (r.error) failed = r.error;
   }
+  const setNotify = (key: string, value: boolean | number) => set(key as keyof Ui, value as never, "notify");
 
   // tampilkan pintasan dengan simbol Mac
   const pretty = (k: string) =>
@@ -173,6 +174,26 @@
         <section>
           <div class="row"><span>Bahasa</span><span class="m">Indonesia</span></div>
           <div class="row"><span>Daemon<small>Memegang semua pane; tetap jalan selama ada proses di pane</small></span><span class="m">berjalan · protokol 1</span></div>
+        </section>
+        <h4>Notifikasi</h4>
+        <section>
+          <div class="row">
+            <span>Agent butuh izin<small>Badge Dock dan Dock melompat saat jendela tidak dilihat; juga pane yang menunggu password</small></span>
+            <input type="checkbox" role="switch" aria-label="Agent butuh izin" checked={cfg.values.notify.on_blocked} onchange={(e) => setNotify("on_blocked", e.currentTarget.checked)} />
+          </div>
+          <div class="row">
+            <span>Agent atau perintah lama selesai</span>
+            <input type="checkbox" role="switch" aria-label="Selesai" checked={cfg.values.notify.on_done} onchange={(e) => setNotify("on_done", e.currentTarget.checked)} />
+          </div>
+          <div class="row">
+            <span>Batas perintah lama<small>Perintah shell lebih lama dari ini lalu selesai dianggap perlu dilihat</small></span>
+            <select aria-label="Batas perintah lama" value={cfg.values.notify.long_command_secs} onchange={(e) => setNotify("long_command_secs", +e.currentTarget.value)}>
+              {#each [10, 30, 60, 120, 300] as n}<option value={n}>{n} detik</option>{/each}
+            </select>
+          </div>
+        </section>
+        <h4>Keluar</h4>
+        <section>
           <div class="row">
             <span>Keluar dan hentikan semua agent<small>Menghentikan daemon dan semua proses di pane</small></span>
             <button class="mini" onclick={onquitall}>Hentikan…</button>
