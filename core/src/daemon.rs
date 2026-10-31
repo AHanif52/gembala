@@ -426,6 +426,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let busy = pty::busy(&pane.master, pane.sid);
             Ok(json!({
                 "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)),
+                "password": busy.is_some() && pty::wants_password(&pane.master),
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))

@@ -552,3 +552,23 @@ fn ringkas_output_saat_agent_keluar() {
     let full = ui.call("pane.agent_output", json!({"pane": pane}))["result"]["data"].as_str().unwrap().to_string();
     assert!(String::from_utf8_lossy(&B64.decode(full).unwrap()).contains("OUTPUT-AGENT-PANJANG"));
 }
+
+/// FR-40: pane yang menunggu password (kanonik + echo mati) terdeteksi; proses biasa tidak.
+#[test]
+fn deteksi_menunggu_password() {
+    let d = start("pass");
+    let mut ui = Cli::ui(&d);
+    let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    let w = |ui: &mut Cli, s: &str| ui.call("pane.write", json!({"pane": pane, "data": B64.encode(s)}));
+    w(&mut ui, "sleep 30\r");
+    let r = wait_info(&mut ui, pane, true, Duration::from_secs(5));
+    assert_eq!(r["password"], false, "{r}");
+    ui.call("pane.kill", json!({"pane": pane}));
+    wait_info(&mut ui, pane, false, Duration::from_secs(5));
+    w(&mut ui, "sh -c 'stty -echo; read x'\r");
+    let t0 = Instant::now();
+    while ui.call("pane.info", json!({"pane": pane}))["result"]["password"] != true {
+        assert!(t0.elapsed() < Duration::from_secs(5), "prompt password tidak terdeteksi");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}

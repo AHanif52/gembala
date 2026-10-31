@@ -29,6 +29,7 @@
     git?: any; // FR-55: ringkasan git di toolbar
     pastes?: string[]; // SEC-34: gambar tempelan, dihapus saat pane ditutup
     output?: boolean; // FR-56: ada output sesi agent sebelumnya
+    since?: number; // FR-40: kapan proses di pane shell mulai jalan
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
@@ -511,6 +512,12 @@
     welcome = await call("agents.detect", {}).catch(() => []);
   }
 
+  // FR-40: tanda selesai pane shell hilang begitu pane itu dilihat
+  $effect(() => {
+    const m = tab ? meta[tab.focus] : undefined;
+    if (seen && m && !AGENTS.includes(m.agent) && m.status === "done") m.status = "";
+  });
+
   // FR-55: toolbar pane yang baru difokus diperbarui (tanpa polling git)
   $effect(() => {
     if (tab?.focus) refreshGit(tab.focus);
@@ -549,8 +556,23 @@
         refreshGit(p);
       }
       const busy = i.busy ? (i.name ?? "proses") : null;
-      if (meta[p].busy !== busy) meta[p].busy = busy;
-      if (meta[p].status !== i.status) meta[p].status = i.status;
+      const m = meta[p];
+      if (AGENTS.includes(m.agent)) {
+        if (m.status !== i.status) m.status = i.status; // status agent dari hook (daemon)
+      } else {
+        // FR-40 untuk pane shell: perintah lebih dari 30 detik lalu selesai = done; menunggu password = blocked
+        // ponytail: batas 30 detik tetap; [notify] long_command_secs dari config menyusul
+        if (busy && !m.busy) m.since = Date.now();
+        if (i.password && m.status !== "blocked") {
+          m.status = "blocked";
+          if (!seen) invoke("attention").catch(() => {});
+        } else if (!i.password && m.status === "blocked") m.status = "";
+        if (!busy && m.busy && Date.now() - (m.since ?? Date.now()) >= 30_000) {
+          m.status = "done";
+          if (!seen) invoke("attention").catch(() => {});
+        }
+      }
+      if (m.busy !== busy) m.busy = busy;
       if (i.pane_name && meta[p].name !== i.pane_name) meta[p].name = i.pane_name;
     }
   }

@@ -101,6 +101,16 @@ pub fn busy(master: &File, shell: i32) -> Option<(i32, bool)> {
     children(shell).first().map(|&c| (c, false))
 }
 
+/// FR-40: terminal menunggu password = mode kanonik (baris) tetapi echo mati, pola `sudo`/`read -s`.
+/// TUI agent memakai mode raw (non-kanonik), jadi tidak ikut terdeteksi.
+pub fn wants_password(master: &File) -> bool {
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(master.as_raw_fd(), &mut t) } != 0 {
+        return false;
+    }
+    t.c_lflag & libc::ICANON != 0 && t.c_lflag & libc::ECHO == 0
+}
+
 /// Sinyal ke proses `busy`; `0` = cek masih hidup.
 pub fn signal((pid, group): (i32, bool), sig: libc::c_int) -> bool {
     unsafe { if group { libc::killpg(pid, sig) == 0 } else { libc::kill(pid, sig) == 0 } }
