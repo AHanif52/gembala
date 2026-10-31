@@ -43,8 +43,8 @@ struct Pane {
     master: File,
     /// PID shell pane = id sesi semua prosesnya (shell dijalankan dengan `setsid`).
     sid: i32,
-    /// Nama otomatis `<agent>-<n>` (FR-30) dan agent profilnya ("shell" bila tanpa profil).
-    name: String,
+    /// Nama otomatis `<agent>-<n>` (FR-30), bisa diganti, unik per daemon (FR-3); agent profilnya ("shell" bila tanpa profil).
+    name: Mutex<String>,
     agent: String,
     /// FR-4: idle | working | blocked | done; kosong = tidak dilacak (shell, profil tanpa hook)
     status: Mutex<&'static str>,
@@ -362,15 +362,16 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 sid: pty.child.id() as i32,
                 name: {
                     let label = prof.as_ref().map_or("shell", |x| if x.agent == "custom" { x.id.as_str() } else { x.agent.as_str() });
-                    let n = st.panes.lock().unwrap().values().filter(|q| q.name.starts_with(&format!("{label}-"))).count() + 1;
-                    format!("{label}-{n}")
+                    let taken: Vec<String> = st.panes.lock().unwrap().values().map(|q| q.name.lock().unwrap().clone()).collect();
+                    let n = (1..).find(|n| !taken.contains(&format!("{label}-{n}"))).unwrap_or(1);
+                    Mutex::new(format!("{label}-{n}"))
                 },
                 status: Mutex::new(if ["claude", "codex", "opencode", "omp"].contains(&agent.as_str()) { "idle" } else { "" }),
                 agent,
                 view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
             });
             st.panes.lock().unwrap().insert(id, pane.clone());
-            let name = pane.name.clone();
+            let name = pane.name.lock().unwrap().clone();
             let st = st.clone();
             thread::spawn(move || pump(st, id, pane, pty));
             Ok(json!({"pane": id, "name": name}))
@@ -394,12 +395,24 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             v.0.resize(rows, cols);
             Ok(json!({}))
         }
+        "pane.rename" => {
+            // FR-3: huruf kecil, angka, '-', maks 32, unik
+            let pane = st.pane(p)?;
+            let name = p["name"].as_str().filter(|n| (1..=32).contains(&n.len()) && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+            let name = name.ok_or("bad_name")?;
+            let panes = st.panes.lock().unwrap();
+            if panes.values().any(|q| !Arc::ptr_eq(q, &pane) && *q.name.lock().unwrap() == name) {
+                return Err("name_taken");
+            }
+            *pane.name.lock().unwrap() = name.to_string();
+            Ok(json!({"name": name}))
+        }
         "pane.info" => {
             let pane = st.pane(p)?;
             let busy = pty::busy(&pane.master, pane.sid);
             Ok(json!({
                 "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)),
-                "pane_name": pane.name, "agent": pane.agent, "status": *pane.status.lock().unwrap(),
+                "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }

@@ -257,8 +257,13 @@ fn info_dan_hentikan_proses() {
     assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], true);
     assert_eq!(wait_info(&mut ui, pane, false, Duration::from_secs(2))["busy"], false, "sleep harus mati oleh TERM");
 
-    w(&mut ui, "perl -e '$SIG{TERM}=\"IGNORE\"; sleep 60'\r");
-    assert_eq!(wait_info(&mut ui, pane, true, Duration::from_secs(5))["name"], "perl");
+    // TERM diabaikan sebelum exec, jadi sudah berlaku begitu namanya terlihat "perl"
+    w(&mut ui, "sh -c \"trap '' TERM; exec perl -e 'sleep 60'\"\r");
+    let t0 = Instant::now();
+    while ui.call("pane.info", json!({"pane": pane}))["result"]["name"] != "perl" {
+        assert!(t0.elapsed() < Duration::from_secs(5), "perl tidak terlihat");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let t0 = Instant::now();
     ui.call("pane.kill", json!({"pane": pane}));
     std::thread::sleep(Duration::from_millis(1500));
@@ -499,4 +504,20 @@ fn reset_hanya_data_gembala() {
     assert!(exited_within(&mut d, Duration::from_secs(3)));
     assert!(!cfg.join("config.toml").exists() && !cfg.join("layout.json").exists() && !cfg.join("hooks").exists());
     assert!(cfg.join("punya-orang-lain.txt").exists());
+}
+
+/// FR-3: nama pane unik dan bisa diganti.
+#[test]
+fn ganti_nama_pane() {
+    let d = start("rename");
+    let mut ui = Cli::ui(&d);
+    let a = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    let b = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    assert_eq!(ui.call("pane.rename", json!({"pane": a, "name": "review-1"}))["result"]["name"], "review-1");
+    assert_eq!(ui.call("pane.rename", json!({"pane": b, "name": "review-1"}))["error"]["code"], "name_taken");
+    assert_eq!(ui.call("pane.rename", json!({"pane": b, "name": "Ada Spasi"}))["error"]["code"], "bad_name");
+    assert_eq!(ui.call("pane.info", json!({"pane": a}))["result"]["pane_name"], "review-1");
+    // nama otomatis berikutnya tidak bentrok dengan yang sudah dipakai
+    ui.call("pane.rename", json!({"pane": b, "name": "shell-3"}));
+    assert_eq!(ui.call("pane.create", json!({}))["result"]["name"], "shell-1");
 }

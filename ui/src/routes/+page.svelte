@@ -49,7 +49,8 @@
   let picker = $state<{ items: (Profile & { missing: boolean })[]; sel: number } | null>(null);
   let sidebar = $state(true);
   let filter = $state("");
-  let editing = $state<{ kind: "tab" | "ws"; id: string; value: string } | null>(null);
+  let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
+  let renameError = $state("");
   let newWs = $state<{ name: string; root: string } | null>(null);
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
@@ -244,6 +245,7 @@
     else if (group === "focus" && !zoomed) tab.focus = neighbor(tab.tree, tab.focus, arg as Arrow) ?? tab.focus;
     else if (group === "resize" && !zoomed) tab.tree = nudge(tab.tree, tab.focus, arg as Arrow);
     else if (group === "zoom") zoomed = !zoomed;
+    else if (id === "pane.move.newtab") moveToNewTab();
     else if (id === "pane.input.rich") rich = { pane: tab.focus, text: "" };
     else if (id === "pane.diff.toggle") openChanges(tab.focus);
     else if (id === "pane.proc.kill") call("pane.kill", { pane: tab.focus });
@@ -291,6 +293,10 @@
       }
       return; // kotak isian di sidebar menerima tombol seperti biasa
     }
+    if (renameError && (e.key === "Enter" || e.key === "Escape")) {
+      renameError = "";
+      return stop(e);
+    }
     if (wsAsk) {
       if (e.key === "Enter") removeWorkspace(wsAsk.wi);
       if (e.key === "Escape") wsAsk = null;
@@ -324,6 +330,15 @@
   function saveEdit() {
     if (!editing) return;
     const v = editing.value.trim().slice(0, 60);
+    if (editing.kind === "pane") {
+      // FR-3: nama unik dicek daemon; gagal = nama lama tetap
+      const pane = +editing.id;
+      editing = null;
+      call("pane.rename", { pane, name: v.toLowerCase() })
+        .then((r) => meta[pane] && (meta[pane].name = r.name))
+        .catch((e) => (renameError = e === "name_taken" ? `Nama "${v}" sudah dipakai pane lain` : "Nama hanya huruf kecil, angka, dan '-'"));
+      return;
+    }
     if (editing.kind === "tab") {
       const t = wss.flatMap((w) => w.tabs).find((t) => t.id === editing!.id);
       if (t) t.title = v; // kosong = kembali ke nama folder
@@ -332,6 +347,28 @@
       if (w && v) w.name = v;
     }
     editing = null;
+  }
+
+  /// FR-37: pane fokus pindah ke tab baru di workspace yang sama
+  function moveToNewTab() {
+    if (!tab || panes(tab.tree).length < 2) return;
+    const pane = tab.focus;
+    const rest = remove(tab.tree, pane);
+    if (!rest) return;
+    tab.tree = rest;
+    tab.focus = panes(rest)[0];
+    ws.tabs.push({ id: uid(), title: "", tree: { pane }, focus: pane });
+    at = { ws: at.ws, tab: ws.tabs.length - 1 };
+    zoomed = false;
+  }
+
+  /// FR-44: urutkan workspace
+  function moveWs(wi: number, d: number) {
+    const j = wi + d;
+    if (j < 0 || j >= wss.length) return;
+    const cur = wss[at.ws].id;
+    [wss[wi], wss[j]] = [wss[j], wss[wi]];
+    at = { ws: wss.findIndex((w) => w.id === cur), tab: at.tab };
   }
 
   /// FR-44: workspace = satu folder project; tab barunya mulai di folder itu
@@ -480,6 +517,7 @@
       const busy = i.busy ? (i.name ?? "proses") : null;
       if (meta[p].busy !== busy) meta[p].busy = busy;
       if (meta[p].status !== i.status) meta[p].status = i.status;
+      if (i.pane_name && meta[p].name !== i.pane_name) meta[p].name = i.pane_name;
     }
   }
 
@@ -533,7 +571,11 @@
         {:else}
           <span class="wsname" role="button" tabindex="-1" ondblclick={() => (editing = { kind: "ws", id: w.id, value: w.name })}>{w.name}</span>
           <span class="root" title={w.root}>{home(w.root)}</span>
-          {#if wss.length > 1}<button class="x" aria-label="Hapus workspace {w.name}" onclick={() => askRemoveWorkspace(wi)}>×</button>{/if}
+          {#if wss.length > 1}
+            <button class="x" aria-label="Naikkan workspace {w.name}" onclick={() => moveWs(wi, -1)}>↑</button>
+            <button class="x" aria-label="Turunkan workspace {w.name}" onclick={() => moveWs(wi, 1)}>↓</button>
+            <button class="x" aria-label="Hapus workspace {w.name}" onclick={() => askRemoveWorkspace(wi)}>×</button>
+          {/if}
         {/if}
       </div>
       {#each w.tabs as t, ti (t.id)}
@@ -605,6 +647,12 @@
             {#if bar}
               <!-- FR-55: toolbar agent; chip tanpa data (bukan repo) disembunyikan -->
               <div class="bar">
+                {#if editing?.kind === "pane" && editing.id === String(pane)}
+                  <!-- svelte-ignore a11y_autofocus -->
+                  <input class="edit pname" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama pane" />
+                {:else}
+                  <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{meta[pane]?.name}</button>
+                {/if}
                 <button class="chip" title="Seret file ke pane untuk menempel path-nya">Lampirkan</button>
                 {#if g?.repo && g.files}
                   <button class="chip" onclick={() => openChanges(pane)}>{g.files} file <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
@@ -659,6 +707,12 @@
   {/each}
   {#if changes}
     <Changes status={meta[changes.pane]?.git} diff={changes.diff} onclose={() => (changes = null)} />
+  {/if}
+  {#if renameError}
+    <div class="confirm" role="alert">
+      <span>{renameError}</span>
+      <button class="mini" onclick={() => (renameError = "")}>Oke</button>
+    </div>
   {/if}
   {#if wsAsk}
     <div class="confirm" role="alertdialog" aria-label="Konfirmasi hapus workspace">
@@ -913,6 +967,14 @@
   button.chip:hover {
     background: var(--line);
     color: var(--fg);
+  }
+  .chip.pname {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  input.pname {
+    width: 140px;
+    padding: 1px 6px;
   }
   .chip.quiet {
     overflow: hidden;
