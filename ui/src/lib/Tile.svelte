@@ -1,11 +1,9 @@
 <script lang="ts">
   // Satu pane = satu xterm yang di-attach ke daemon (FR-1, FR-2), plus FR-34 sampai 36, 41.
   import { onMount, tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Terminal, type ITheme } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
-  import { WebglAddon } from "@xterm/addon-webgl";
   import { SearchAddon } from "@xterm/addon-search";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -91,6 +89,7 @@
     if (!info.busy) call("pane.write", { pane, data: b64(new Uint8Array([0x0c])) });
   }
 
+  // Renderer DOM bawaan xterm: terukur lebih hemat RAM dan datar per pane dibanding WebGL (TECH M1)
   onMount(() => {
     const light = matchMedia("(prefers-color-scheme: light)");
     term = new Terminal({
@@ -140,15 +139,6 @@
     });
 
     (async () => {
-      // WebGL atau DOM: mana yang lebih hemat RAM belum terukur bersih (TECH M1).
-      // Konteks hilang (GPU reset, terlalu banyak konteks) = kembali ke DOM.
-      if ((await invoke<string>("renderer")) === "webgl") {
-        try {
-          const gl = new WebglAddon();
-          gl.onContextLoss(() => gl.dispose());
-          term.loadAddon(gl);
-        } catch {}
-      }
       try {
         await call("pane.resize", { pane, rows: term.rows, cols: term.cols });
         // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan

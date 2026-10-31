@@ -75,13 +75,6 @@ fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// Renderer xterm: "webgl" (bawaan) atau "dom".
-// ponytail: saklar env untuk eksperimen RAM; jadi pengaturan `[ui]` di M3
-#[tauri::command]
-fn renderer() -> String {
-    std::env::var("GEMBALA_RENDERER").unwrap_or_else(|_| "webgl".into())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -123,7 +116,7 @@ pub fn run() {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, renderer, quit, open_url])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
