@@ -52,6 +52,11 @@ pub fn path() -> PathBuf {
     home.join("Library/Application Support/Gembala/config.toml")
 }
 
+/// Tata letak (FR-45) di sebelah config: struktur workspace, tab, split, profil, folder. Tanpa isi layar (SEC-13).
+pub fn layout_path() -> PathBuf {
+    path().with_file_name("layout.json")
+}
+
 fn default(kind: &Kind) -> Value {
     match kind {
         Int(_, _, d) => json!(d),
@@ -184,10 +189,11 @@ pub fn set(path: &Path, section: &str, key: &str, value: &Value) -> Result<(), S
 }
 
 /// Tulis ke file sementara di folder yang sama lalu `rename` (TECH bagian 5). Folder `0700` (SEC-25).
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("path tanpa folder"))?;
     crate::rundir::ensure_private_dir(dir)?;
-    let tmp = dir.join(format!(".config.toml.{}", std::process::id()));
+    let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.{}", std::process::id()));
     let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;

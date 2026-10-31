@@ -62,19 +62,24 @@ struct State {
     /// Klien kanal UI yang sedang tersambung (FR-20: daemon berhenti bila 0 dan semua pane diam).
     ui_clients: AtomicUsize,
     /// Antrean event semua klien UI, untuk event yang bukan milik satu pane (`config.changed`).
-    ui_txs: Mutex<Vec<SyncSender<String>>>,
+    /// Dilepas saat klien putus (UiClient), supaya thread penulisnya ikut selesai.
+    ui_txs: Mutex<Vec<(u64, SyncSender<String>)>>,
+    ui_next: AtomicU64,
     /// Config yang berlaku + galatnya (FR-42). File rusak = nilai valid terakhir tetap dipakai.
     config: Mutex<Value>,
     profiles: Mutex<Vec<profile::Profile>>,
     /// Hasil deteksi agent terakhir (FR-28); Null = belum pernah.
     agents: Mutex<Value>,
+    /// Id acak per run daemon: id pane dari run lain tidak boleh dianggap pane yang sama (FR-45).
+    boot: String,
 }
 
-struct UiClient(Arc<State>);
+struct UiClient(Arc<State>, u64);
 
 impl Drop for UiClient {
     fn drop(&mut self) {
         self.0.ui_clients.fetch_sub(1, Ordering::Relaxed);
+        self.0.ui_txs.lock().unwrap().retain(|(id, _)| *id != self.1);
     }
 }
 
@@ -91,9 +96,11 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         pane_sock: pane_path.to_string_lossy().into_owned(),
         ui_clients: AtomicUsize::new(0),
         ui_txs: Mutex::default(),
+        ui_next: AtomicU64::new(1),
         config: Mutex::new(Value::Null),
         profiles: Mutex::new(profile::builtin()),
         agents: Mutex::new(Value::Null),
+        boot: new_secret()?[..16].to_string(),
     });
     reload_config(&st);
     on_ready();
@@ -140,20 +147,33 @@ fn reply(tx: &SyncSender<String>, id: &Value, r: Res) {
     let _ = tx.send(line(v));
 }
 
+/// Sesi selesai (normal atau ditolak): penulis diberi tanda kosong, menghabiskan antrean, lalu menutup
+/// socket dua arah. Klien tidak menunggu selamanya dan balasan terakhir tetap sampai.
+struct CloseAfterFlush(SyncSender<String>, UnixStream);
+
+impl Drop for CloseAfterFlush {
+    fn drop(&mut self) {
+        if self.0.try_send(String::new()).is_err() {
+            let _ = self.1.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
 fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     let peer = peer_pid(&s)?;
     let (tx, rx) = sync_channel::<String>(QUEUE);
     let mut w = s.try_clone()?;
     let sock = s.try_clone()?;
-    // satu penulis per koneksi: balasan dan event tidak saling potong.
-    // ponytail: setelah klien putus, thread + fd ini baru lepas saat pane yang di-attach mengeluarkan output berikutnya
+    // satu penulis per koneksi: balasan dan event tidak saling potong
     thread::spawn(move || {
         for l in rx {
-            if w.write_all(l.as_bytes()).is_err() {
+            if l.is_empty() || w.write_all(l.as_bytes()).is_err() {
                 break;
             }
         }
+        let _ = w.shutdown(std::net::Shutdown::Both);
     });
+    let _close = CloseAfterFlush(tx.clone(), s.try_clone()?);
     let mut r = BufReader::new(s);
     let mut ready = false;
     let mut _ui: Option<UiClient> = None;
@@ -177,8 +197,9 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             ready = r.is_ok();
             if ready && chan == Chan::Ui {
                 st.ui_clients.fetch_add(1, Ordering::Relaxed);
-                _ui = Some(UiClient(st.clone()));
-                st.ui_txs.lock().unwrap().push(tx.clone());
+                let id = st.ui_next.fetch_add(1, Ordering::Relaxed);
+                st.ui_txs.lock().unwrap().push((id, tx.clone()));
+                _ui = Some(UiClient(st.clone(), id));
             }
             reply(&tx, id, r);
             if !ready {
@@ -227,7 +248,7 @@ fn hello(st: &State, chan: Chan, peer: i32, p: &Value) -> Res {
         Chan::Pane if pane.is_none() => return Err("not_a_pane"),
         Chan::Pane => {}
     }
-    Ok(json!({"proto": PROTO, "daemon": env!("CARGO_PKG_VERSION"), "pane": pane}))
+    Ok(json!({"proto": PROTO, "daemon": env!("CARGO_PKG_VERSION"), "pane": pane, "boot": st.boot}))
 }
 
 fn dim(v: &Value, default: u16) -> u16 {
@@ -243,6 +264,20 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!(ids))
         }
         "config.get" => Ok(st.config.lock().unwrap().clone()),
+        "daemon.info" => Ok(json!({"boot": st.boot, "daemon": env!("CARGO_PKG_VERSION"), "proto": PROTO})),
+        "layout.load" => {
+            let text = std::fs::read_to_string(config::layout_path()).unwrap_or_default();
+            Ok(serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).unwrap_or(Value::Null))
+        }
+        "layout.save" => {
+            // hanya struktur dari UI; ukurannya sudah dibatasi 64 KB per baris protokol
+            let body = p["layout"].to_string();
+            if !p["layout"].is_object() {
+                return Err("bad_params");
+            }
+            config::write_atomic(&config::layout_path(), body.as_bytes()).map_err(|_| "io")?;
+            Ok(json!({}))
+        }
         "agents.detect" => {
             // FR-28: hasil tersimpan; "Periksa ulang" = refresh
             if p["refresh"].as_bool() == Some(true) || st.agents.lock().unwrap().is_null() {
@@ -325,6 +360,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({
                 "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)),
                 "pane_name": pane.name, "agent": pane.agent,
+                "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
         "pane.kill" => {
@@ -382,16 +418,18 @@ fn reload_config(st: &State) {
     }
     *cur = json!({"values": values, "errors": c.errors, "path": path.to_string_lossy()});
     let ev = line(json!({"event": "config.changed", "params": *cur}));
-    st.ui_txs.lock().unwrap().retain(|tx| tx.try_send(ev.clone()).is_ok());
+    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
 }
 
 /// Pantau `mtime` + ukuran tiap 1 detik (TECH bagian 5), tanpa dependency.
 fn watch_config(st: Arc<State>) {
     let stamp = || std::fs::metadata(config::path()).ok().map(|m| (m.modified().ok(), m.len()));
-    let mut last = stamp();
+    // None = belum pernah dibandingkan: pemeriksaan pertama selalu memuat ulang, supaya file yang ditulis
+    // di antara pembacaan awal dan start watcher tidak terlewat
+    let mut last = None;
     loop {
         thread::sleep(Duration::from_secs(1));
-        let now = stamp();
+        let now = Some(stamp());
         if now != last {
             last = now;
             reload_config(&st);

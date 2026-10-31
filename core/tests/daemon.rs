@@ -380,12 +380,20 @@ fn pane_dari_profil() {
     )
     .unwrap();
     let mut ui = Cli::ui(&d);
-    std::thread::sleep(Duration::from_millis(1500)); // watcher config 1 detik
+    let until = |ui: &mut Cli, what: &str, ok: &dyn Fn(&Value) -> bool, m: &str, p: Value| {
+        let t0 = Instant::now();
+        while !ok(&ui.call(m, p.clone())["result"]) {
+            assert!(t0.elapsed() < Duration::from_secs(10), "menunggu {what}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    // watcher config memeriksa tiap 1 detik
+    until(&mut ui, "profil cek", &|c| c["values"]["profiles"].as_array().is_some_and(|a| a.iter().any(|p| p["id"] == "cek")), "config.get", json!({}));
     let base = ui.call("pane.create", json!({}))["result"].clone();
     assert_eq!(base["name"], "shell-1");
     let b = base["pane"].as_u64().unwrap();
     ui.call("pane.write", json!({"pane": b, "data": B64.encode("cd /tmp\r")}));
-    std::thread::sleep(Duration::from_millis(800));
+    until(&mut ui, "cd /tmp", &|i| i["cwd"].as_str().is_some_and(|c| c.ends_with("/tmp")), "pane.info", json!({"pane": b}));
 
     let r = ui.call("pane.create", json!({"profile": "cek", "from_pane": b}))["result"].clone();
     assert_eq!(r["name"], "cek-1", "{r}");
@@ -411,4 +419,33 @@ fn deteksi_agent() {
     for a in r.as_array().unwrap() {
         assert!(a["installed"].is_boolean() && a["install"].is_string(), "{a}");
     }
+}
+
+/// FR-45: tata letak tersimpan (tanpa isi layar) dan id run daemon untuk membedakan pane lama.
+#[test]
+fn layout_dan_boot() {
+    let d = start("layout");
+    let mut ui = Cli::ui(&d);
+    assert_eq!(ui.call("layout.load", json!({}))["result"], Value::Null);
+    let boot = ui.call("daemon.info", json!({}))["result"]["boot"].as_str().unwrap().to_string();
+    assert_eq!(boot.len(), 16);
+    let layout = json!({"version": 1, "boot": boot, "workspaces": [{"id": "w1", "tabs": []}]});
+    assert_eq!(ui.call("layout.save", json!({"layout": layout}))["result"], json!({}));
+    assert_eq!(ui.call("layout.load", json!({}))["result"], layout);
+    let mode = std::fs::metadata(d.dir.join("cfg/layout.json")).unwrap().permissions();
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777, 0o600);
+    assert_eq!(ui.call("layout.save", json!({"layout": "bukan objek"}))["error"]["code"], "bad_params");
+}
+
+/// Baris lebih dari 64 KB: ditolak dan koneksi ditutup, klien tidak menggantung.
+#[test]
+fn baris_terlalu_panjang_ditutup() {
+    let d = start("long");
+    let mut ui = Cli::ui(&d);
+    let big = format!("{{\"id\":1,\"method\":\"layout.save\",\"params\":{{\"layout\":{{\"x\":\"{}\"}}}}}}\n", "x".repeat(70_000));
+    let _ = ui.w.write_all(big.as_bytes()); // boleh gagal bila daemon sudah menutup
+    let v = ui.recv();
+    assert_eq!(v["error"]["code"], "line_too_long", "{v}");
+    let mut rest = String::new();
+    assert_eq!(ui.r.read_line(&mut rest).unwrap_or(0), 0, "koneksi harus ditutup");
 }
