@@ -47,8 +47,12 @@
   }
 
   /// Aksi dari menu "Pane" (key equivalent native, lihat lib.rs). `⌘` milik app, sisanya ke terminal (FR-39).
+  let last = { id: "", at: 0 };
   function run(id: string) {
     if (!tree || confirm) return;
+    // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
+    if (id === last.id && performance.now() - last.at < 150) return;
+    last = { id, at: performance.now() };
     const [, group, arg] = id.split(".");
     if (group === "split") splitFocused(arg === "down" ? "col" : "row");
     else if (group === "focus" && !zoomed) focus = neighbor(tree, focus, arg as Arrow) ?? focus;
@@ -58,8 +62,15 @@
     else if (id === "pane.proc.close") askClose(focus);
   }
 
-  /// Hanya kartu konfirmasi tutup yang menangkap tombol; lainnya milik terminal.
+  /// Kartu konfirmasi tutup (dan ⌘⇧↩) yang menangkap tombol; lainnya milik terminal.
   function onKey(e: KeyboardEvent) {
+    // WKWebView memakan ⌘⇧↩ sebelum menu sempat menerimanya
+    if (!confirm && e.metaKey && e.shiftKey && e.key === "Enter") {
+      run("pane.zoom.toggle");
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (!confirm) return;
     if (e.key === "Enter") call("pane.close", { pane: confirm.pane });
     if (e.key === "Enter" || e.key === "Escape") confirm = null;
