@@ -9,7 +9,7 @@ struct Daemon(OnceLock<Result<daemon::Client, String>>);
 
 /// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
 const ALLOWED: &[&str] =
-    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill"];
+    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop"];
 
 /// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview.
 const PANE_KEYS: &[(&str, &str, &str)] = &[
@@ -48,6 +48,18 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+fn quit(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// Renderer xterm: "webgl" (bawaan) atau "dom".
+// ponytail: saklar env untuk eksperimen RAM; jadi pengaturan `[ui]` di M3
+#[tauri::command]
+fn renderer() -> String {
+    std::env::var("GEMBALA_RENDERER").unwrap_or_else(|_| "webgl".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -62,6 +74,8 @@ pub fn run() {
                 .hide_others()
                 .show_all()
                 .separator()
+                // FR-46: ⌘Q menutup jendela saja; agent jalan terus di daemon (FR-20)
+                .item(&MenuItemBuilder::with_id("app.quit_all", "Keluar dan hentikan semua agent…").build(app)?)
                 .quit()
                 .build()?;
             let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
@@ -78,11 +92,11 @@ pub fn run() {
             MenuBuilder::new(app).items(&[&main, &edit, &pane, &window]).build()
         })
         .on_menu_event(|app, ev| {
-            if ev.id().0.starts_with("pane.") {
+            if ev.id().0.starts_with("pane.") || ev.id().0.starts_with("app.") {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call])
+        .invoke_handler(tauri::generate_handler![daemon_call, renderer, quit])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

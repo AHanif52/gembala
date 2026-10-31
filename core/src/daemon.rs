@@ -15,10 +15,11 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 pub const PROTO: u64 = 1;
 const MAX_LINE: u64 = 64 * 1024;
@@ -53,6 +54,16 @@ struct State {
     next: AtomicU64,
     secret: Option<String>,
     pane_sock: String,
+    /// Klien kanal UI yang sedang tersambung (FR-20: daemon berhenti bila 0 dan semua pane diam).
+    ui_clients: AtomicUsize,
+}
+
+struct UiClient(Arc<State>);
+
+impl Drop for UiClient {
+    fn drop(&mut self) {
+        self.0.ui_clients.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 type Res = Result<Value, &'static str>;
@@ -66,8 +77,11 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         next: AtomicU64::new(1),
         secret,
         pane_sock: pane_path.to_string_lossy().into_owned(),
+        ui_clients: AtomicUsize::new(0),
     });
     on_ready();
+    let st3 = st.clone();
+    thread::spawn(move || idle_exit(st3));
     let st2 = st.clone();
     thread::spawn(move || accept(pn, st2, Chan::Pane));
     accept(ui, st, Chan::Ui);
@@ -121,6 +135,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     });
     let mut r = BufReader::new(s);
     let mut ready = false;
+    let mut _ui: Option<UiClient> = None;
     loop {
         let mut buf = String::new();
         let n = (&mut r).take(MAX_LINE + 1).read_line(&mut buf)?;
@@ -139,6 +154,10 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         if !ready {
             let r = if method == "hello" { hello(&st, chan, peer, p) } else { Err("hello_required") };
             ready = r.is_ok();
+            if ready && chan == Chan::Ui {
+                st.ui_clients.fetch_add(1, Ordering::Relaxed);
+                _ui = Some(UiClient(st.clone()));
+            }
             reply(&tx, id, r);
             if !ready {
                 return Ok(());
@@ -247,7 +266,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             pty::signal(target, libc::SIGTERM);
             thread::spawn(move || {
                 for _ in 0..30 {
-                    thread::sleep(std::time::Duration::from_millis(100));
+                    thread::sleep(Duration::from_millis(100));
                     if !pty::signal(target, 0) {
                         return;
                     }
@@ -255,6 +274,15 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 pty::signal(target, libc::SIGKILL);
             });
             Ok(json!({"stopped": true}))
+        }
+        "daemon.stop" => {
+            // FR-46 "Keluar dan hentikan semua agent": balasan sempat terkirim, lalu keluar;
+            // master PTY tertutup bersama proses = kernel mengirim SIGHUP ke semua sesi pane
+            thread::spawn(|| {
+                thread::sleep(Duration::from_millis(200));
+                std::process::exit(0);
+            });
+            Ok(json!({}))
         }
         "pane.close" => {
             let pane = st.pane(p)?;
@@ -269,6 +297,20 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         _ => Err("unknown_method"),
+    }
+}
+
+/// FR-20: tanpa UI dan semua pane shell diam selama dua pemeriksaan berturut-turut = keluar.
+fn idle_exit(st: Arc<State>) {
+    let every = std::env::var("GEMBALA_IDLE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let mut strikes = 0;
+    loop {
+        thread::sleep(Duration::from_secs(every));
+        let busy = st.panes.lock().unwrap().values().any(|p| pty::busy(&p.master, p.sid).is_some());
+        strikes = if st.ui_clients.load(Ordering::Relaxed) == 0 && !busy { strikes + 1 } else { 0 };
+        if strikes >= 2 {
+            std::process::exit(0);
+        }
     }
 }
 

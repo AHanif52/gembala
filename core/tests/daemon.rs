@@ -26,6 +26,10 @@ impl Drop for Daemon {
 }
 
 fn start(tag: &str) -> Daemon {
+    start_idle(tag, 3600)
+}
+
+fn start_idle(tag: &str, idle_secs: u64) -> Daemon {
     let dir = std::env::temp_dir().join(format!("gbl-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
@@ -35,6 +39,7 @@ fn start(tag: &str) -> Daemon {
     let mut c = Command::new(env!("CARGO_BIN_EXE_gembala"));
     c.current_dir("/").args(["daemon", "--secret-fd", "3"])
         .env("GEMBALA_RUNDIR", &dir)
+        .env("GEMBALA_IDLE_SECS", idle_secs.to_string())
         // seolah Gembala dijalankan dari dalam sesi agent (SEC-35)
         .env("CLAUDECODE", "1")
         .env("CLAUDE_CODE_MESSAGING_TOKEN", "token-bocor-uji")
@@ -260,4 +265,44 @@ fn info_dan_hentikan_proses() {
     assert_eq!(wait_info(&mut ui, pane, false, Duration::from_secs(5))["busy"], false, "KILL setelah 3 detik");
     assert!(t0.elapsed() >= Duration::from_secs(3));
     assert!(ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(pane)), "shell pane tetap hidup");
+}
+
+fn exited_within(d: &mut Daemon, within: Duration) -> bool {
+    let t0 = Instant::now();
+    while t0.elapsed() < within {
+        if d.child.try_wait().unwrap().is_some() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+/// FR-20: tanpa UI dan semua pane diam = daemon keluar sendiri; ada proses jalan = tetap hidup.
+#[test]
+fn daemon_berhenti_bila_tanpa_ui_dan_pane_diam() {
+    let mut d = start_idle("idle", 1);
+    let mut ui = Cli::ui(&d);
+    let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.write", json!({"pane": pane, "data": B64.encode("sleep 30\r")}));
+    wait_info(&mut ui, pane, true, Duration::from_secs(5));
+    drop(ui);
+    assert!(!exited_within(&mut d, Duration::from_secs(4)), "ada proses jalan, daemon harus tetap hidup");
+
+    let mut ui = Cli::ui(&d);
+    ui.call("pane.kill", json!({"pane": pane}));
+    wait_info(&mut ui, pane, false, Duration::from_secs(5));
+    assert!(!exited_within(&mut d, Duration::from_secs(3)), "UI masih tersambung, daemon harus tetap hidup");
+    drop(ui);
+    assert!(exited_within(&mut d, Duration::from_secs(5)), "tanpa UI dan pane diam, daemon harus keluar");
+}
+
+/// FR-46: "Keluar dan hentikan semua agent".
+#[test]
+fn daemon_stop() {
+    let mut d = start("stop");
+    let mut ui = Cli::ui(&d);
+    ui.call("pane.create", json!({"cmd": "sleep 60"}));
+    assert_eq!(ui.call("daemon.stop", json!({}))["result"], json!({}));
+    assert!(exited_within(&mut d, Duration::from_secs(3)));
 }

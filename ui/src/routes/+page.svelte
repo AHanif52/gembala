@@ -2,6 +2,7 @@
   // Fase 1 M1: grid pane satu tab (FR-1, 37, 38, 50). Tab, profil, dan pengaturan menyusul (M3–M7).
   import { onMount } from "svelte";
   import Tile from "$lib/Tile.svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { call } from "$lib/daemon";
   import { dividers, neighbor, nudge, panes, rects, remove, setRatio, split, type Arrow, type Dir, type Divider, type Node } from "$lib/layout";
@@ -10,6 +11,7 @@
   let focus = $state(0);
   let zoomed = $state(false);
   let confirm = $state<{ pane: number; name: string } | null>(null);
+  let quitAsk = $state(0); // jumlah pane yang masih menjalankan proses (FR-46)
   let error = $state("");
   let box: HTMLDivElement;
 
@@ -47,9 +49,24 @@
   }
 
   /// Aksi dari menu "Pane" (key equivalent native, lihat lib.rs). `⌘` milik app, sisanya ke terminal (FR-39).
+  /// FR-46: konfirmasi hanya bila masih ada proses jalan
+  async function askQuitAll() {
+    const ids: number[] = await call("pane.list");
+    const infos = await Promise.all(ids.map((pane) => call("pane.info", { pane })));
+    quitAsk = infos.filter((i) => i.busy).length;
+    if (!quitAsk) quitAll();
+  }
+
+  async function quitAll() {
+    quitAsk = 0;
+    await call("daemon.stop").catch(() => {});
+    await invoke("quit");
+  }
+
   let last = { id: "", at: 0 };
   function run(id: string) {
-    if (!tree || confirm) return;
+    if (id === "app.quit_all") return askQuitAll();
+    if (!tree || confirm || quitAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
     last = { id, at: performance.now() };
@@ -64,6 +81,13 @@
 
   /// Kartu konfirmasi tutup (dan ⌘⇧↩) yang menangkap tombol; lainnya milik terminal.
   function onKey(e: KeyboardEvent) {
+    if (quitAsk) {
+      if (e.key === "Enter") quitAll();
+      if (e.key === "Escape") quitAsk = 0;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     // WKWebView memakan ⌘⇧↩ sebelum menu sempat menerimanya
     if (!confirm && e.metaKey && e.shiftKey && e.key === "Enter") {
       run("pane.zoom.toggle");
@@ -156,6 +180,12 @@
       aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
     ></div>
   {/each}
+  {#if quitAsk}
+    <div class="confirm" role="alertdialog" aria-label="Konfirmasi keluar">
+      <span><b>{quitAsk} pane</b> masih menjalankan proses. Keluar dan hentikan semua?</span>
+      <span class="keys">Enter keluar · Esc batal</span>
+    </div>
+  {/if}
   {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
 </div>
 

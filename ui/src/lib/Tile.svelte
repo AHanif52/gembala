@@ -1,6 +1,7 @@
 <script lang="ts">
   // Satu pane = satu xterm yang di-attach ke daemon (FR-1, FR-2).
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
@@ -29,13 +30,6 @@
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
-    // WebGL: satu canvas per pane, jauh lebih hemat RAM daripada renderer DOM untuk TUI berwarna.
-    // Konteks hilang (GPU reset, terlalu banyak konteks) = kembali ke DOM.
-    try {
-      const gl = new WebglAddon();
-      gl.onContextLoss(() => gl.dispose());
-      term.loadAddon(gl);
-    } catch {}
     fit.fit();
 
     let attached = false;
@@ -51,6 +45,15 @@
     });
 
     (async () => {
+      // WebGL atau DOM: mana yang lebih hemat RAM belum terukur bersih (TECH M1).
+      // Konteks hilang (GPU reset, terlalu banyak konteks) = kembali ke DOM.
+      if ((await invoke<string>("renderer")) === "webgl") {
+        try {
+          const gl = new WebglAddon();
+          gl.onContextLoss(() => gl.dispose());
+          term.loadAddon(gl);
+        } catch {}
+      }
       try {
         await call("pane.resize", { pane, rows: term.rows, cols: term.cols });
         // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
