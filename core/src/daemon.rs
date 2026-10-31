@@ -5,6 +5,7 @@
 //! rahasianya benar. Kanal pane (SEC-3): identitas dari `getsid(peer_pid)`, bukan isi pesan.
 
 use crate::config;
+use crate::git;
 use crate::profile;
 use crate::grid::Grid;
 use crate::pty::{self, Pty};
@@ -288,6 +289,13 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         }
         "config.get" => Ok(st.config.lock().unwrap().clone()),
         "daemon.info" => Ok(json!({"boot": st.boot, "daemon": env!("CARGO_PKG_VERSION"), "proto": PROTO})),
+        "git.status" | "git.diff" => {
+            // folder kerja pane itu sendiri (proses foreground atau shell), bukan dari parameter
+            let pane = st.pane(p)?;
+            let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
+            let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
+            Ok(if m == "git.status" { git::status(&cwd) } else { git::diff(&cwd) })
+        }
         "layout.load" => {
             let text = std::fs::read_to_string(config::layout_path()).unwrap_or_default();
             Ok(serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).unwrap_or(Value::Null))
@@ -329,7 +337,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 Some(id) => Some(st.profiles.lock().unwrap().iter().find(|x| x.id == id).cloned().ok_or("no_such_profile")?),
                 None => None,
             };
-            let launch = prof.as_ref().and_then(|x| profile::launch(x, Some(&st.hooks)));
+            let session = profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) };
+            let launch = prof.as_ref().and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
             let cmd = launch.as_deref().or(p["cmd"].as_str());
             let home = std::env::var("HOME").unwrap_or_default();
             // urutan folder: `cwd` eksplisit (jalankan ulang pane mati, FR-45) > folder profil > pane yang fokus

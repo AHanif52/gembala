@@ -52,7 +52,12 @@ pub fn builtin() -> Vec<Profile> {
 }
 
 /// SEC-12/SEC-32: nilai yang tampak seperti kunci rahasia.
-const SECRET: &[&str] = &["sk-ant-", "sk-", "ghp_", "github_pat_", "AKIA", "PRIVATE KEY", "xoxb-", "xoxp-"];
+pub const SECRET: &[&str] = &["sk-ant-", "sk-", "ghp_", "github_pat_", "AKIA", "PRIVATE KEY", "xoxb-", "xoxp-"];
+
+/// Posisi `pat` yang tidak menempel di akhir kata lain (`task-list` bukan `sk-`).
+pub fn word_start(s: &str, pat: &str) -> Option<usize> {
+    s.match_indices(pat).map(|(i, _)| i).find(|&i| !s[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-'))
+}
 
 fn ok_text(s: &str, max: usize) -> bool {
     s.len() <= max && !s.chars().any(char::is_control)
@@ -114,7 +119,7 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
                     errors.push(format!("{}.{k}: nama env tidak sah", at(key)));
                 } else if secret && !ok_ref(v) {
                     errors.push(format!("{}.{k}: harus rujukan op://vault/item/field atau keychain:service/akun", at(key)));
-                } else if !secret && (!ok_text(v, 1000) || SECRET.iter().any(|s| v.contains(s))) {
+                } else if !secret && (!ok_text(v, 1000) || SECRET.iter().any(|s| word_start(v, s).is_some())) {
                     errors.push(format!("{}.{k}: nilai tampak seperti rahasia; simpan rujukan di secret_env", at(key)));
                 } else {
                     list.push((k.to_string(), v.to_string()));
@@ -203,14 +208,37 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// FR-53: id sesi dari Gembala (UUID) dan apakah pane melanjutkan sesi sebelumnya.
+pub struct Session {
+    pub id: Option<String>,
+    pub resume: bool,
+}
+
+pub fn valid_uuid(s: &str) -> bool {
+    s.len() == 36 && s.chars().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() })
+}
+
+/// Claude Code menerima id dari luar; agent lain hanya "lanjutkan terakhir" (TECH bagian 7a, `--help` 1 Nov 2026).
+fn session_flags(agent: &str, s: &Session) -> Vec<String> {
+    let id = s.id.as_deref().filter(|i| valid_uuid(i));
+    match (agent, s.resume, id) {
+        ("claude", false, Some(id)) => vec!["--session-id".into(), id.into()],
+        ("claude", true, Some(id)) => vec!["--resume".into(), id.into()],
+        ("claude", true, None) | ("opencode" | "omp", true, _) => vec!["--continue".into()],
+        ("codex", true, _) => vec!["resume".into(), "--last".into()],
+        _ => vec![],
+    }
+}
+
 /// Teks yang dijalankan `$SHELL -l -c` (TECH bagian 6). `None` = shell login interaktif.
 /// Agent jalan di subshell supaya env rahasia tidak tertinggal di shell pane setelah agent keluar;
 /// lalu `exec $SHELL -l` membuat pane tetap hidup (FR-18). Exit 127 = pesan instal (FR-32).
-pub fn launch(p: &Profile, h: Option<&Hooks>) -> Option<String> {
+pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Option<String> {
     if p.command.is_empty() {
         return None;
     }
-    let (flags, hook_env) = h.map(|h| hook_flags(p, h)).unwrap_or_default();
+    let (mut flags, hook_env) = h.map(|h| hook_flags(p, h)).unwrap_or_default();
+    flags.extend(session.map(|s| session_flags(&p.agent, s)).unwrap_or_default());
     let mut s = String::from("( ");
     for (k, v) in p.env.iter().chain(&hook_env) {
         s += &format!("export {k}={}; ", q(v));
@@ -281,7 +309,7 @@ fn version_of(raw: &str) -> Option<String> {
         .map(|t| t.trim_matches('.').to_string())
 }
 
-fn run_with_timeout(mut c: Command, limit: Duration) -> Option<String> {
+pub fn run_with_timeout(mut c: Command, limit: Duration) -> Option<String> {
     let mut child = c.spawn().ok()?;
     let t0 = Instant::now();
     while child.try_wait().ok()?.is_none() {
@@ -325,11 +353,11 @@ mod tests {
     #[test]
     fn sec32_rahasia_ditolak_rujukan_diterima() {
         let (ps, errs) = parse(
-            "[[profile]]\nid = \"claude\"\n[profile.env]\nANTHROPIC_API_KEY = \"sk-ant-abc\"\nOK = \"biasa\"\n\
+            "[[profile]]\nid = \"claude\"\n[profile.env]\nANTHROPIC_API_KEY = \"sk-ant-abc\"\nOK = \"biasa --disk-cache\"\n\
              [profile.secret_env]\nA = \"op://Private/Anthropic/credential\"\nB = \"keychain:anthropic/aufa@x.id\"\nC = \"op://x\"\nD = \"$(rm -rf /)\"\n",
         );
         let p = ps.iter().find(|p| p.id == "claude").unwrap();
-        assert_eq!(p.env, [("OK".to_string(), "biasa".to_string())]);
+        assert_eq!(p.env, [("OK".to_string(), "biasa --disk-cache".to_string())]);
         assert_eq!(p.secret_env.len(), 2);
         let all = errs.join("\n");
         for want in ["ANTHROPIC_API_KEY", "secret_env.C", "secret_env.D"] {
@@ -346,21 +374,21 @@ mod tests {
             secret_env: vec![("K".into(), "keychain:svc/me@x".into()), ("O".into(), "op://V/I/f".into())],
             ..builtin()[1].clone()
         };
-        let s = launch(&p, None).unwrap();
+        let s = launch(&p, None, None).unwrap();
         assert!(s.starts_with("( export X='a b'\\''c'; "), "{s}");
         assert!(s.contains("export K=\"$(security find-generic-password -w -s 'svc' -a 'me@x')\"; "), "{s}");
         assert!(s.contains("export O=\"$(op read 'op://V/I/f')\"; "), "{s}");
         assert!(s.contains("'my tool' 'it'\\''s' '$(id)' );"), "{s}");
         assert!(s.ends_with("exec \"$SHELL\" -l"), "{s}");
         assert!(s.contains("brew install --cask claude-code"), "{s}");
-        assert_eq!(launch(&builtin()[0], None), None);
+        assert_eq!(launch(&builtin()[0], None, None), None);
     }
 
     #[test]
     fn launch_jalan_dan_pesan_127() {
         // perintah tidak ada: pesan instal tampil, lalu shell login (di sini `exit` lewat env SHELL palsu)
         let p = Profile { command: "gembala-tidak-ada-xyz".into(), ..builtin()[1].clone() };
-        let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None).unwrap()).output().unwrap();
+        let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None, None).unwrap()).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("Claude Code tidak ditemukan") && text.contains("brew install"), "{text}");
     }
@@ -369,17 +397,32 @@ mod tests {
     fn hook_dipasang_per_agent() {
         let h = Hooks { exe: "/Apps/Gem bala/gembala".into(), dir: "/cfg/hooks".into() };
         let by = |id: &str| builtin().into_iter().find(|p| p.id == id).unwrap();
-        let claude = launch(&by("claude"), Some(&h)).unwrap();
+        let claude = launch(&by("claude"), Some(&h), None).unwrap();
         assert!(claude.contains("'claude' '--settings' '{\"hooks\":"), "{claude}");
         assert!(claude.contains("hook claude stop"), "{claude}");
-        let codex = launch(&by("codex"), Some(&h)).unwrap();
+        let codex = launch(&by("codex"), Some(&h), None).unwrap();
         assert!(codex.contains("'-c' 'notify=[\"/Apps/Gem bala/gembala\",\"hook\",\"codex\",\"notify\"]'"), "{codex}");
-        assert!(launch(&by("opencode"), Some(&h)).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
-        assert!(launch(&by("omp"), Some(&h)).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
-        assert_eq!(launch(&by("shell"), Some(&h)), None);
+        assert!(launch(&by("opencode"), Some(&h), None).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
+        assert!(launch(&by("omp"), Some(&h), None).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
+        assert_eq!(launch(&by("shell"), Some(&h), None), None);
         // perintah hook Claude dijalankan shell: path berspasi tetap satu kata
         let settings: serde_json::Value = serde_json::from_str(hook_flags(&by("claude"), &h).0[1].as_str()).unwrap();
         assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
+    }
+
+    #[test]
+    fn sesi_per_agent() {
+        let by = |id: &str| builtin().into_iter().find(|p| p.id == id).unwrap();
+        let id = "0b6f2a1e-5c3d-4e7f-8a9b-1c2d3e4f5a6b";
+        let new = Session { id: Some(id.into()), resume: false };
+        let again = Session { id: Some(id.into()), resume: true };
+        assert!(launch(&by("claude"), None, Some(&new)).unwrap().contains(&format!("'claude' '--session-id' '{id}'")));
+        assert!(launch(&by("claude"), None, Some(&again)).unwrap().contains(&format!("'claude' '--resume' '{id}'")));
+        assert!(launch(&by("codex"), None, Some(&again)).unwrap().contains("'codex' 'resume' '--last'"));
+        assert!(launch(&by("opencode"), None, Some(&again)).unwrap().contains("'opencode' '--continue'"));
+        let bad = Session { id: Some("x; rm -rf /".into()), resume: false };
+        assert!(!launch(&by("claude"), None, Some(&bad)).unwrap().contains("rm"));
+        assert!(valid_uuid(id) && !valid_uuid("0b6f2a1e"));
     }
 
     #[test]

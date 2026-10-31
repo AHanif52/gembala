@@ -1,5 +1,6 @@
 mod config;
 mod daemon;
+mod git;
 mod grid;
 mod profile;
 mod pty;
