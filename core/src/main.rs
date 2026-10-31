@@ -1,3 +1,5 @@
+#[allow(dead_code)] // dipakai daemon mulai pekerjaan 0.3; hapus allow saat itu
+mod pty;
 mod rundir;
 
 use std::process::ExitCode;
