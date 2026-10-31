@@ -20,12 +20,21 @@
   let sec = $state<(typeof SECTIONS)[number][0]>("tampilan");
   let failed = $state("");
   let keys = $state<[string, string, string][]>([]);
+  let keyErrors = $state<string[]>([]);
   let version = $state("");
   const ui = $derived(cfg.values.ui);
 
   onMount(async () => {
-    keys = await invoke("shortcuts");
     version = await getVersion();
+  });
+
+  // [keys] berubah = menu dibangun ulang di sisi Rust; ambil ulang daftar yang berlaku
+  $effect(() => {
+    void cfg.values.keys;
+    invoke<[[string, string, string][], string[]]>("shortcuts").then(([k, e]) => {
+      keys = k;
+      keyErrors = e;
+    });
   });
 
   async function set<K extends keyof Ui>(key: K, value: Ui[K]) {
@@ -132,15 +141,24 @@
           </div>
         </section>
       {:else if sec === "pintasan"}
+        {#if keyErrors.length}
+          <div class="errs" role="alert">
+            <b>Masalah di [keys]</b>
+            {#each keyErrors as e}<span>{e}</span>{/each}
+          </div>
+        {/if}
         <section>
-          {#each keys as [, label, key]}
-            <div class="row"><span>{label}</span><kbd>{pretty(key)}</kbd></div>
+          {#each keys as [id, label, key]}
+            <div class="row"><span>{label}<small class="m">{id}</small></span><kbd>{key ? pretty(key) : "—"}</kbd></div>
           {/each}
           <div class="row"><span>Salin / tempel</span><kbd>⌘C ⌘V</kbd></div>
           <div class="row"><span>Pengaturan</span><kbd>⌘,</kbd></div>
           <div class="row"><span>Shift+Tab, Ctrl, dan tombol lain</span><span class="m">diteruskan ke terminal</span></div>
         </section>
-        <p class="note">⌘ milik aplikasi; tombol lain milik terminal.</p>
+        <p class="note">
+          ⌘ milik aplikasi; tombol lain milik terminal. Ubah lewat bagian <code>[keys]</code> di config.toml, mis.
+          <code>"cmd+t" = "pane.split.right"</code>; berlaku tanpa restart.
+        </p>
       {:else if sec === "keamanan"}
         <section>
           <div class="row"><span>Folder socket<small>Bukan symlink, milik kamu, izin 0700</small></span><span class="m">$TMPDIR/gembala</span></div>
@@ -231,6 +249,7 @@
   }
   small,
   .note,
+  code,
   footer {
     color: var(--muted);
     font-size: 12px;
