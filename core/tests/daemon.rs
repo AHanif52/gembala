@@ -221,3 +221,41 @@ fn env_pane_bersih() {
         assert!(!out.contains(bocor), "{bocor} bocor ke pane");
     }
 }
+
+fn wait_info(ui: &mut Cli, pane: u64, busy: bool, within: Duration) -> Value {
+    let t0 = Instant::now();
+    loop {
+        let r = ui.call("pane.info", json!({"pane": pane}))["result"].clone();
+        if r["busy"] == busy || t0.elapsed() > within {
+            return r;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// FR-38 nama proses untuk konfirmasi tutup; FR-50 hentikan: TERM dulu, KILL setelah 3 detik, shell tetap.
+#[test]
+fn info_dan_hentikan_proses() {
+    let d = start("kill");
+    let mut ui = Cli::ui(&d);
+    let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    let w = |ui: &mut Cli, s: &str| ui.call("pane.write", json!({"pane": pane, "data": B64.encode(s)}));
+    assert_eq!(wait_info(&mut ui, pane, false, Duration::from_secs(5))["busy"], false);
+    assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], false);
+
+    w(&mut ui, "sleep 60\r");
+    let r = wait_info(&mut ui, pane, true, Duration::from_secs(5));
+    assert_eq!(r["name"], "sleep", "{r}");
+    assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], true);
+    assert_eq!(wait_info(&mut ui, pane, false, Duration::from_secs(2))["busy"], false, "sleep harus mati oleh TERM");
+
+    w(&mut ui, "perl -e '$SIG{TERM}=\"IGNORE\"; sleep 60'\r");
+    assert_eq!(wait_info(&mut ui, pane, true, Duration::from_secs(5))["name"], "perl");
+    let t0 = Instant::now();
+    ui.call("pane.kill", json!({"pane": pane}));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(ui.call("pane.info", json!({"pane": pane}))["result"]["busy"], true, "TERM diabaikan, belum boleh mati");
+    assert_eq!(wait_info(&mut ui, pane, false, Duration::from_secs(5))["busy"], false, "KILL setelah 3 detik");
+    assert!(t0.elapsed() >= Duration::from_secs(3));
+    assert!(ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(pane)), "shell pane tetap hidup");
+}

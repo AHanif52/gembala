@@ -233,6 +233,29 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             v.0.resize(rows, cols);
             Ok(json!({}))
         }
+        "pane.info" => {
+            let pane = st.pane(p)?;
+            let busy = pty::busy(&pane.master, pane.sid);
+            Ok(json!({"busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid))}))
+        }
+        "pane.kill" => {
+            // FR-50: SIGTERM ke proses yang jalan, SIGKILL bila masih hidup setelah 3 detik; shell pane tetap
+            let pane = st.pane(p)?;
+            let Some(target) = pty::busy(&pane.master, pane.sid) else {
+                return Ok(json!({"stopped": false}));
+            };
+            pty::signal(target, libc::SIGTERM);
+            thread::spawn(move || {
+                for _ in 0..30 {
+                    thread::sleep(std::time::Duration::from_millis(100));
+                    if !pty::signal(target, 0) {
+                        return;
+                    }
+                }
+                pty::signal(target, libc::SIGKILL);
+            });
+            Ok(json!({"stopped": true}))
+        }
         "pane.close" => {
             let pane = st.pane(p)?;
             // seperti menutup jendela terminal: SIGHUP ke job foreground dan ke sesi pane

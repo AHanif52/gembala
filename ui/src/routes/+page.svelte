@@ -1,87 +1,153 @@
 <script lang="ts">
-  // Fase 0.4: satu tile xterm.js tersambung ke daemon. Grid pane, split, dll. di Fase 1 (M1).
+  // Fase 1 M1: grid pane satu tab (FR-1, 37, 38, 50). Tab, profil, dan pengaturan menyusul (M3–M7).
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
-  import { Terminal } from "@xterm/xterm";
-  import { FitAddon } from "@xterm/addon-fit";
-  import "@xterm/xterm/css/xterm.css";
+  import Tile from "$lib/Tile.svelte";
+  import { call } from "$lib/daemon";
+  import { dividers, neighbor, nudge, panes, rects, remove, setRatio, split, type Arrow, type Dir, type Divider, type Node } from "$lib/layout";
 
-  let el: HTMLDivElement;
+  let tree = $state<Node | null>(null);
+  let focus = $state(0);
+  let zoomed = $state(false);
+  let confirm = $state<{ pane: number; name: string } | null>(null);
+  let error = $state("");
+  let box: HTMLDivElement;
 
-  const call = (method: string, params: object = {}) => invoke<any>("daemon_call", { method, params });
+  const layout = $derived(tree ? rects(tree) : new Map());
+  const lines = $derived(tree && !zoomed ? dividers(tree) : []);
 
-  const enc = new TextEncoder();
-  function b64(bytes: Uint8Array): string {
-    let s = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return btoa(s);
+  const newPane = async (): Promise<number> => (await call("pane.create", {})).pane;
+
+  async function splitFocused(dir: Dir) {
+    if (!tree) return;
+    const id = await newPane();
+    tree = split(tree, focus, dir, id);
+    focus = id;
+    zoomed = false;
   }
-  const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+  /// FR-38: konfirmasi bila ada proses selain shell diam
+  async function askClose(pane: number) {
+    const info = await call("pane.info", { pane });
+    if (info.busy) confirm = { pane, name: info.name ?? "proses" };
+    else await call("pane.close", { pane });
+  }
+
+  async function onexit(pane: number) {
+    if (!tree) return;
+    if (confirm?.pane === pane) confirm = null;
+    const next = (zoomed ? null : neighbor(tree, pane, "left") ?? neighbor(tree, pane, "up")) ?? null;
+    tree = remove(tree, pane);
+    zoomed = false;
+    if (!tree) {
+      const id = await newPane();
+      tree = { pane: id };
+    }
+    if (focus === pane || !panes(tree).includes(focus)) focus = next ?? panes(tree)[0];
+  }
+
+  const ARROWS: Record<string, Arrow> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
+
+  /// `⌘` milik app, sisanya diteruskan ke terminal (FR-39). Default ala Warp.
+  function onKey(e: KeyboardEvent) {
+    if (confirm) {
+      if (e.key === "Enter") call("pane.close", { pane: confirm.pane });
+      if (e.key === "Enter" || e.key === "Escape") confirm = null;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (!e.metaKey || !tree) return;
+    const arrow = ARROWS[e.key];
+    let handled = true;
+    if (e.key.toLowerCase() === "d") splitFocused(e.shiftKey ? "col" : "row");
+    else if (e.key.toLowerCase() === "w") askClose(focus);
+    else if (e.key === "." ) call("pane.kill", { pane: focus });
+    else if (e.key === "Enter" && e.shiftKey) zoomed = !zoomed;
+    else if (arrow && e.altKey && !zoomed) focus = neighbor(tree, focus, arrow) ?? focus;
+    else if (arrow && e.ctrlKey && !zoomed) tree = nudge(tree, focus, arrow);
+    else handled = false;
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+
+  function drag(d: Divider, e: PointerEvent) {
+    const b = box.getBoundingClientRect();
+    const move = (m: PointerEvent) => {
+      const at = d.dir === "row" ? (m.clientX - b.left) / b.width : (m.clientY - b.top) / b.height;
+      const [start, size] = d.dir === "row" ? [d.rect.x, d.rect.w] : [d.rect.y, d.rect.h];
+      if (tree) tree = setRatio(tree, d.path, (at - start) / size);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    e.preventDefault();
+  }
+
+  const pct = (v: number) => `${v * 100}%`;
 
   onMount(() => {
-    const term = new Terminal({
-      fontFamily: "'SF Mono', Menlo, monospace",
-      fontSize: 13,
-      cursorStyle: "bar",
-      macOptionIsMeta: true,
-      allowProposedApi: false,
-      theme: { background: "#101114", foreground: "#d4d4d8" },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(el);
-    fit.fit();
-
-    let pane = 0;
-    let attached = false;
-    const early: any[] = [];
-    const onEvent = (e: any) => {
-      if (e.params?.pane !== pane) return;
-      if (e.event === "pane.output") term.write(unb64(e.params.data));
-      if (e.event === "pane.exit") term.write(`\r\n\x1b[2m[proses keluar, kode ${e.params.code ?? "-"}]\x1b[0m\r\n`);
-    };
-    const unlisten = listen<any>("daemon", ({ payload }) => {
-      if (payload.event === "daemon.lost") term.write("\r\n\x1b[31m[daemon terputus]\x1b[0m\r\n");
-      else if (attached) onEvent(payload);
-      else early.push(payload);
-    });
-
+    window.addEventListener("keydown", onKey, true);
     (async () => {
       try {
+        // ponytail: pane lama dari daemon dijajarkan ke kanan; pulihkan tata letak asli = M5 (FR-45)
         const ids: number[] = await call("pane.list");
-        if (ids.length) {
-          pane = ids[ids.length - 1];
-          await call("pane.resize", { pane, rows: term.rows, cols: term.cols });
-        } else {
-          pane = (await call("pane.create", { rows: term.rows, cols: term.cols })).pane;
-        }
-        // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
-        const a = await call("pane.attach", { pane });
-        term.write(unb64(a.snapshot));
-        attached = true;
-        early.splice(0).forEach(onEvent);
+        if (!ids.length) ids.push(await newPane());
+        let t: Node = { pane: ids[0] };
+        for (const id of ids.slice(1)) t = split(t, panes(t).at(-1)!, "row", id);
+        tree = t;
+        focus = ids.at(-1)!;
       } catch (e) {
-        term.write(`\x1b[31mgagal sambung ke daemon: ${e}\x1b[0m\r\n`);
+        error = `gagal sambung ke daemon: ${e}`;
       }
     })();
-
-    term.onData((d) => pane && call("pane.write", { pane, data: b64(enc.encode(d)) }));
-    term.onBinary((d) => pane && call("pane.write", { pane, data: btoa(d) }));
-    term.onResize(({ rows, cols }) => pane && call("pane.resize", { pane, rows, cols }));
-    const ro = new ResizeObserver(() => fit.fit());
-    ro.observe(el);
-    term.focus();
-
-    return () => {
-      ro.disconnect();
-      unlisten.then((f) => f());
-      term.dispose();
-    };
+    return () => window.removeEventListener("keydown", onKey, true);
   });
 </script>
 
-<div class="tile" bind:this={el}></div>
+<div class="grid" bind:this={box}>
+  {#if error}<p class="error">{error}</p>{/if}
+  {#each [...layout] as [pane, r] (pane)}
+    {@const hidden = zoomed && pane !== focus}
+    {@const at = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
+    <div
+      class="tile"
+      class:dim={pane !== focus && layout.size > 1}
+      style:display={hidden ? "none" : "block"}
+      style:left={pct(at.x)}
+      style:top={pct(at.y)}
+      style:width={pct(at.w)}
+      style:height={pct(at.h)}
+      onpointerdown={() => (focus = pane)}
+      role="presentation"
+    >
+      <Tile {pane} focused={pane === focus} {onexit} />
+      {#if confirm?.pane === pane}
+        <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
+          <span><b>{confirm?.name}</b> masih jalan. Tutup pane?</span>
+          <span class="keys">Enter tutup · Esc batal</span>
+        </div>
+      {/if}
+    </div>
+  {/each}
+  {#each lines as d (d.path)}
+    <div
+      class="divider {d.dir}"
+      style:left={d.dir === "row" ? pct(d.at) : pct(d.rect.x)}
+      style:top={d.dir === "row" ? pct(d.rect.y) : pct(d.at)}
+      style:width={d.dir === "row" ? "0" : pct(d.rect.w)}
+      style:height={d.dir === "row" ? pct(d.rect.h) : "0"}
+      onpointerdown={(e) => drag(d, e)}
+      role="separator"
+      aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
+    ></div>
+  {/each}
+  {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
+</div>
 
 <style>
   :global(html, body) {
@@ -90,8 +156,66 @@
     background: #101114;
     overflow: hidden;
   }
-  .tile {
+  .grid {
     position: fixed;
-    inset: 8px 0 0 10px;
+    inset: 0;
+  }
+  .tile {
+    position: absolute;
+    box-sizing: border-box;
+    transition: opacity 120ms;
+  }
+  .tile.dim {
+    opacity: 0.55;
+  }
+  .divider {
+    position: absolute;
+    z-index: 2;
+  }
+  /* garis 1px, area tangkap 7px */
+  .divider.row {
+    margin-left: -3px;
+    width: 7px !important;
+    cursor: col-resize;
+    background: linear-gradient(to right, transparent 3px, #2a2b31 3px, #2a2b31 4px, transparent 4px);
+  }
+  .divider.col {
+    margin-top: -3px;
+    height: 7px !important;
+    cursor: row-resize;
+    background: linear-gradient(to bottom, transparent 3px, #2a2b31 3px, #2a2b31 4px, transparent 4px);
+  }
+  .confirm {
+    position: absolute;
+    left: 50%;
+    top: 40%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 16px;
+    border: 1px solid #2a2b31;
+    border-radius: 6px;
+    background: #17181c;
+    color: #d4d4d8;
+    font: 13px system-ui, -apple-system, sans-serif;
+    z-index: 3;
+  }
+  .keys,
+  .zoom {
+    color: #8b8b93;
+    font-size: 12px;
+  }
+  .zoom {
+    position: absolute;
+    right: 12px;
+    bottom: 6px;
+    font-family: system-ui, -apple-system, sans-serif;
+    z-index: 3;
+  }
+  .error {
+    color: #f87171;
+    font: 13px Menlo, monospace;
+    padding: 8px 12px;
   }
 </style>

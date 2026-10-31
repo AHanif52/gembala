@@ -70,12 +70,53 @@ impl Pty {
         drop(c); // tutup salinan slave di daemon; tanpa ini baca master tidak pernah EOF
         Ok(Pty { master: File::from(master), child })
     }
-
 }
 
 pub fn resize(master: &File, rows: u16, cols: u16) -> io::Result<()> {
     let ws = winsize(rows, cols);
     check(unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) })
+}
+
+/// Proses yang sedang jalan di pane (FR-38, FR-50): `(pid, grup)`. Job foreground bila shell
+/// memakai job control; anak langsung shell bila tidak (`$SHELL -l -c`). `None` = shell diam.
+pub fn busy(master: &File, shell: i32) -> Option<(i32, bool)> {
+    let fg = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+    if fg > 0 && fg != shell {
+        return Some((fg, true));
+    }
+    children(shell).first().map(|&c| (c, false))
+}
+
+/// Sinyal ke proses `busy`; `0` = cek masih hidup.
+pub fn signal((pid, group): (i32, bool), sig: libc::c_int) -> bool {
+    unsafe { if group { libc::killpg(pid, sig) == 0 } else { libc::kill(pid, sig) == 0 } }
+}
+
+#[cfg(target_os = "macos")]
+pub fn proc_name(pid: i32) -> Option<String> {
+    let mut buf = [0u8; 4 * libc::MAXPATHLEN as usize];
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    let path = std::str::from_utf8(&buf[..usize::try_from(n).ok().filter(|&n| n > 0)?]).ok()?;
+    path.rsplit('/').next().map(str::to_string)
+}
+
+#[cfg(target_os = "macos")]
+fn children(pid: i32) -> Vec<i32> {
+    let mut buf = [0 as libc::pid_t; 64];
+    let size = std::mem::size_of_val(&buf) as libc::c_int;
+    let n = unsafe { libc::proc_listchildpids(pid, buf.as_mut_ptr().cast(), size) };
+    buf[..n.clamp(0, 64) as usize].to_vec()
+}
+
+#[cfg(target_os = "linux")]
+pub fn proc_name(pid: i32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn children(pid: i32) -> Vec<i32> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+    s.split_whitespace().filter_map(|p| p.parse().ok()).collect()
 }
 
 /// Baca master sampai pane tutup. macOS/Linux memberi EIO, bukan EOF, saat slave sudah tertutup.

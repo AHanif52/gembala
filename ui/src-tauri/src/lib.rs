@@ -8,7 +8,8 @@ use tauri::{Emitter, Manager};
 struct Daemon(OnceLock<Result<daemon::Client, String>>);
 
 /// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
-const ALLOWED: &[&str] = &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close"];
+const ALLOWED: &[&str] =
+    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill"];
 
 #[tauri::command]
 async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Result<Value, String> {
@@ -34,6 +35,22 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
 pub fn run() {
     tauri::Builder::default()
         .manage(Daemon(OnceLock::new()))
+        // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
+        .menu(|app| {
+            use tauri::menu::{MenuBuilder, SubmenuBuilder};
+            let main = SubmenuBuilder::new(app, "Gembala")
+                .about(None)
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .quit()
+                .build()?;
+            let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
+            let window = SubmenuBuilder::new(app, "Window").minimize().fullscreen().build()?;
+            MenuBuilder::new(app).items(&[&main, &edit, &window]).build()
+        })
         .invoke_handler(tauri::generate_handler![daemon_call])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
