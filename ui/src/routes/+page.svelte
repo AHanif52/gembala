@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
-  import { UI_DEFAULT, type Config } from "$lib/config";
+  import { UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { call } from "$lib/daemon";
@@ -18,6 +18,7 @@
   let zoom = $state(0); // FR-34 ⌘=/⌘- sementara di atas ukuran config; ponytail: zoom per pane menyusul
   let cfg = $state<Config | null>(null);
   let settingsOpen = $state(false);
+  let picker = $state<{ items: (Profile & { missing: boolean })[]; sel: number } | null>(null);
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
 
   $effect(() => {
@@ -34,9 +35,9 @@
 
   const newPane = async (): Promise<number> => (await call("pane.create", {})).pane;
 
-  async function splitFocused(dir: Dir) {
+  async function splitFocused(dir: Dir, profile?: string) {
     if (!tree) return;
-    const id = await newPane();
+    const id = profile ? (await call("pane.create", { profile, from_pane: focus })).pane : await newPane();
     tree = split(tree, focus, dir, id);
     focus = id;
     zoomed = false;
@@ -78,6 +79,19 @@
 
   const onlink = (url: string) => (linkAsk = url);
 
+  /// FR-30: pilih profil; agent yang tidak terdeteksi tetap bisa dipilih (pane menampilkan cara pasang)
+  async function openPicker() {
+    const agents: Agent[] = await call("agents.detect", {}).catch(() => []);
+    const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
+    picker = { items: (cfg?.values.profiles ?? []).map((p) => ({ ...p, missing: missing.has(p.agent) })), sel: 0 };
+  }
+
+  function pick(i: number) {
+    const p = picker?.items[i];
+    picker = null;
+    if (p) splitFocused("row", p.id);
+  }
+
   async function openLink() {
     const url = linkAsk;
     linkAsk = "";
@@ -89,13 +103,14 @@
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen) return;
+    if (settingsOpen || picker) return;
     if (!tree || confirm || quitAsk || linkAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
     last = { id, at: performance.now() };
     const [, group, arg] = id.split(".");
-    if (group === "split") splitFocused(arg === "down" ? "col" : "row");
+    if (id === "pane.new.pick") openPicker();
+    else if (group === "split") splitFocused(arg === "down" ? "col" : "row");
     else if (group === "focus" && !zoomed) focus = neighbor(tree, focus, arg as Arrow) ?? focus;
     else if (group === "resize" && !zoomed) tree = nudge(tree, focus, arg as Arrow);
     else if (group === "zoom") zoomed = !zoomed;
@@ -110,6 +125,17 @@
 
   /// Kartu konfirmasi (tutup, keluar, buka tautan) dan ⌘⇧↩ yang menangkap tombol; lainnya milik terminal.
   function onKey(e: KeyboardEvent) {
+    if (picker) {
+      const n = picker.items.length;
+      if (e.key === "ArrowDown") picker.sel = (picker.sel + 1) % n;
+      else if (e.key === "ArrowUp") picker.sel = (picker.sel + n - 1) % n;
+      else if (e.key === "Enter") pick(picker.sel);
+      else if (e.key === "Escape") picker = null;
+      else if (/^[1-9]$/.test(e.key)) pick(+e.key - 1);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (settingsOpen && !quitAsk) {
       if (e.key === "Escape") {
         settingsOpen = false;
@@ -241,6 +267,18 @@
       <span class="keys">Enter buka · Esc batal</span>
     </div>
   {/if}
+  {#if picker}
+    <div class="confirm picker" role="listbox" aria-label="Pane baru dari profil">
+      {#each picker.items as p, i (p.id)}
+        <button class="opt" class:on={i === picker.sel} role="option" aria-selected={i === picker.sel} onclick={() => pick(i)}>
+          <span class="num">{i < 9 ? i + 1 : ""}</span>
+          <span>{p.name}</span>
+          <span class="keys">{p.missing ? "tidak terpasang" : p.command || "$SHELL"}</span>
+        </button>
+      {/each}
+      <span class="keys">↑↓ pilih · Enter buka · Esc batal · folder ikut pane yang fokus</span>
+    </div>
+  {/if}
   {#if settingsOpen && cfg}
     <Settings {cfg} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} />
   {/if}
@@ -330,6 +368,30 @@
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
     z-index: 3;
+  }
+  .picker {
+    min-width: 320px;
+    gap: 2px;
+  }
+  .opt {
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+  }
+  .opt.on {
+    background: var(--line);
+  }
+  .num {
+    color: var(--muted);
+    font: 12px "SF Mono", Menlo, monospace;
   }
   .url {
     max-width: 60vw;

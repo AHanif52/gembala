@@ -12,8 +12,29 @@ export type Ui = {
   screen_reader: boolean;
 };
 
+export type Profile = {
+  id: string;
+  name: string;
+  agent: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env: string[];
+  secret_env: { name: string; ref: string }[];
+};
+
+export type Agent = {
+  agent: string;
+  name: string;
+  installed: boolean;
+  path: string | null;
+  version: string | null;
+  tested: boolean;
+  install: string;
+};
+
 export type Config = {
-  values: { ui: Ui; limits: { max_panes: number }; keys: Record<string, string> };
+  values: { ui: Ui; limits: { max_panes: number }; keys: Record<string, string>; profiles: Profile[] };
   errors: string[];
   path: string;
 };

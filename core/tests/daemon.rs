@@ -364,3 +364,51 @@ fn batas_jumlah_pane() {
     assert!(ui.call("pane.create", json!({}))["result"]["pane"].is_u64());
     assert_eq!(ui.call("pane.create", json!({}))["error"]["code"], "max_panes");
 }
+
+/// FR-29/30: pane dari profil (nama `<agent>-<n>`, folder ikut pane fokus); profil tambahan dari config;
+/// FR-32: perintah tidak ada = pesan jelas, pane tetap hidup sebagai shell.
+#[test]
+fn pane_dari_profil() {
+    let d = start("prof");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(
+        cfg.join("config.toml"),
+        "[[profile]]\nid = \"cek\"\ncommand = \"sh\"\nargs = [\"-c\", \"echo PROFIL-$X-$(pwd)\"]\n[profile.env]\nX = \"jalan\"\n\
+         [[profile]]\nid = \"hilang\"\ncommand = \"gembala-tidak-ada-xyz\"\n",
+    )
+    .unwrap();
+    let mut ui = Cli::ui(&d);
+    std::thread::sleep(Duration::from_millis(1500)); // watcher config 1 detik
+    let base = ui.call("pane.create", json!({}))["result"].clone();
+    assert_eq!(base["name"], "shell-1");
+    let b = base["pane"].as_u64().unwrap();
+    ui.call("pane.write", json!({"pane": b, "data": B64.encode("cd /tmp\r")}));
+    std::thread::sleep(Duration::from_millis(800));
+
+    let r = ui.call("pane.create", json!({"profile": "cek", "from_pane": b}))["result"].clone();
+    assert_eq!(r["name"], "cek-1", "{r}");
+    let out = ui.attach_until(r["pane"].as_u64().unwrap(), &["PROFIL-jalan-"]);
+    assert!(out.contains("PROFIL-jalan-/tmp") || out.contains("PROFIL-jalan-/private/tmp"), "{out}");
+
+    let r = ui.call("pane.create", json!({"profile": "hilang"}))["result"].clone();
+    let p = r["pane"].as_u64().unwrap();
+    let out = ui.attach_until(p, &["tidak ditemukan"]);
+    assert!(out.contains("Perintah gembala-tidak-ada-xyz tidak ditemukan"), "{out}");
+    assert!(ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(p)), "pane tetap hidup");
+    assert_eq!(ui.call("pane.create", json!({"profile": "tidak-ada"}))["error"]["code"], "no_such_profile");
+}
+
+/// FR-28: deteksi lewat login shell; tiap agent didukung punya baris.
+#[test]
+fn deteksi_agent() {
+    let d = start("detect");
+    let mut ui = Cli::ui(&d);
+    let r = ui.call("agents.detect", json!({"refresh": true}))["result"].clone();
+    let names: Vec<&str> = r.as_array().unwrap().iter().map(|a| a["agent"].as_str().unwrap()).collect();
+    assert_eq!(names, ["claude", "codex", "opencode", "omp"]);
+    for a in r.as_array().unwrap() {
+        assert!(a["installed"].is_boolean() && a["install"].is_string(), "{a}");
+    }
+}

@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 pub struct Pty {
@@ -27,13 +28,23 @@ fn cloexec(fd: libc::c_int) -> io::Result<()> {
 // ponytail: daftar tetap dari env sesi Claude Code 2.1 yang teramati; tambah prefix saat agent lain ketahuan menurunkan penanda
 const INHERITED_DROP: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFORT", "CODEX_", "OPENCODE_", "GEMBALA_"];
 
+/// SEC-35: penanda sesi agent yang menjalankan Gembala (termasuk socket + token pesannya) tidak ikut ke pane.
+pub fn scrub_env(c: &mut Command) {
+    for (k, _) in std::env::vars_os() {
+        let k = k.to_string_lossy();
+        if INHERITED_DROP.iter().any(|p| k.starts_with(p)) {
+            c.env_remove(&*k);
+        }
+    }
+}
+
 pub fn login_shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into())
 }
 
 impl Pty {
     /// `$SHELL -l -c <cmd>`, atau `$SHELL -l` interaktif bila `cmd` kosong.
-    pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16, env: &[(&str, &str)]) -> io::Result<Pty> {
+    pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16, env: &[(&str, &str)], cwd: Option<&Path>) -> io::Result<Pty> {
         let (mut m, mut s) = (0, 0);
         let mut ws = winsize(rows, cols);
         check(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) })?;
@@ -47,17 +58,15 @@ impl Pty {
         if let Some(cmd) = cmd {
             c.arg("-c").arg(cmd);
         }
-        // SEC-35: penanda sesi agent yang menjalankan Gembala (termasuk socket + token pesannya) tidak ikut ke pane
-        for (k, _) in std::env::vars_os() {
-            let k = k.to_string_lossy();
-            if INHERITED_DROP.iter().any(|p| k.starts_with(p)) {
-                c.env_remove(&*k);
+        scrub_env(&mut c);
+        // app dari Finder/Dock mewarisi cwd `/` dari launchd; tanpa folder dari profil/pane, mulai di home
+        match cwd.filter(|d| d.is_dir()) {
+            Some(d) => drop(c.current_dir(d)),
+            None => {
+                if let Some(home) = std::env::var_os("HOME") {
+                    c.current_dir(home);
+                }
             }
-        }
-        // app dari Finder/Dock mewarisi cwd `/` dari launchd; pane mulai di home seperti terminal biasa.
-        // ponytail: folder per profil/tab (FR-30, FR-52) menyusul di M4/M7
-        if let Some(home) = std::env::var_os("HOME") {
-            c.current_dir(home);
         }
         c.env("TERM", "xterm-256color")
             .envs(env.iter().copied())
@@ -103,6 +112,26 @@ pub fn proc_name(pid: i32) -> Option<String> {
     let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
     let path = std::str::from_utf8(&buf[..usize::try_from(n).ok().filter(|&n| n > 0)?]).ok()?;
     path.rsplit('/').next().map(str::to_string)
+}
+
+/// Folder kerja proses (FR-30: pane baru ikut folder pane yang fokus).
+#[cfg(target_os = "macos")]
+pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, (&raw mut info).cast(), size) };
+    if n != size {
+        return None;
+    }
+    let raw: &[libc::c_char] = info.pvi_cdir.vip_path.as_flattened();
+    let bytes: Vec<u8> = raw.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+    use std::os::unix::ffi::OsStringExt;
+    Some(std::ffi::OsString::from_vec(bytes).into()).filter(|p: &std::path::PathBuf| p.is_absolute())
+}
+
+#[cfg(target_os = "linux")]
+pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -153,14 +182,14 @@ mod tests {
 
     #[test]
     fn echo_lewat_pty() {
-        let out = run(Pty::spawn(Some("echo gembala-ok"), 24, 80, &[]).unwrap());
+        let out = run(Pty::spawn(Some("echo gembala-ok"), 24, 80, &[], None).unwrap());
         assert!(out.contains("gembala-ok"), "{out:?}");
     }
 
     #[test]
     fn ukuran_awal_dan_resize() {
-        assert!(run(Pty::spawn(Some("stty size"), 30, 100, &[]).unwrap()).contains("30 100"));
-        let p = Pty::spawn(Some("sleep 0.3; stty size"), 24, 80, &[]).unwrap();
+        assert!(run(Pty::spawn(Some("stty size"), 30, 100, &[], None).unwrap()).contains("30 100"));
+        let p = Pty::spawn(Some("sleep 0.3; stty size"), 24, 80, &[], None).unwrap();
         resize(&p.master, 40, 120).unwrap();
         let out = run(p);
         assert!(out.contains("40 120"), "{out:?}");
@@ -168,7 +197,7 @@ mod tests {
 
     #[test]
     fn tulis_ke_pty() {
-        let p = Pty::spawn(Some("read x; echo dapat-$x"), 24, 80, &[]).unwrap();
+        let p = Pty::spawn(Some("read x; echo dapat-$x"), 24, 80, &[], None).unwrap();
         (&p.master).write_all(b"halo\r").unwrap();
         let out = run(p);
         assert!(out.contains("dapat-halo"), "{out:?}");
@@ -177,7 +206,7 @@ mod tests {
     #[test]
     fn punya_tty_pengendali() {
         // /dev/tty hanya bisa dibuka bila setsid + TIOCSCTTY berhasil
-        let out = run(Pty::spawn(Some("tty; echo x > /dev/tty"), 24, 80, &[]).unwrap());
+        let out = run(Pty::spawn(Some("tty; echo x > /dev/tty"), 24, 80, &[], None).unwrap());
         assert!(!out.contains("Device not configured"), "{out:?}");
         assert!(out.contains("/dev/ttys") || out.contains("/dev/pts/"), "{out:?}");
     }

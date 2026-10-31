@@ -5,6 +5,7 @@
 //! rahasianya benar. Kanal pane (SEC-3): identitas dari `getsid(peer_pid)`, bukan isi pesan.
 
 use crate::config;
+use crate::profile;
 use crate::grid::Grid;
 use crate::pty::{self, Pty};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
@@ -41,6 +42,9 @@ struct Pane {
     master: File,
     /// PID shell pane = id sesi semua prosesnya (shell dijalankan dengan `setsid`).
     sid: i32,
+    /// Nama otomatis `<agent>-<n>` (FR-30) dan agent profilnya ("shell" bila tanpa profil).
+    name: String,
+    agent: String,
     /// Grid dan pelanggan dikunci bersama: attach tidak kehilangan atau menggandakan output.
     view: Mutex<(Grid, Vec<Sub>)>,
 }
@@ -61,6 +65,9 @@ struct State {
     ui_txs: Mutex<Vec<SyncSender<String>>>,
     /// Config yang berlaku + galatnya (FR-42). File rusak = nilai valid terakhir tetap dipakai.
     config: Mutex<Value>,
+    profiles: Mutex<Vec<profile::Profile>>,
+    /// Hasil deteksi agent terakhir (FR-28); Null = belum pernah.
+    agents: Mutex<Value>,
 }
 
 struct UiClient(Arc<State>);
@@ -85,6 +92,8 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         ui_clients: AtomicUsize::new(0),
         ui_txs: Mutex::default(),
         config: Mutex::new(Value::Null),
+        profiles: Mutex::new(profile::builtin()),
+        agents: Mutex::new(Value::Null),
     });
     reload_config(&st);
     on_ready();
@@ -92,6 +101,8 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     thread::spawn(move || idle_exit(st3));
     let st4 = st.clone();
     thread::spawn(move || watch_config(st4));
+    let st5 = st.clone();
+    thread::spawn(move || *st5.agents.lock().unwrap() = profile::detect()); // FR-28: saat pertama dibuka
     let st2 = st.clone();
     thread::spawn(move || accept(pn, st2, Chan::Pane));
     accept(ui, st, Chan::Ui);
@@ -232,6 +243,14 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!(ids))
         }
         "config.get" => Ok(st.config.lock().unwrap().clone()),
+        "agents.detect" => {
+            // FR-28: hasil tersimpan; "Periksa ulang" = refresh
+            if p["refresh"].as_bool() == Some(true) || st.agents.lock().unwrap().is_null() {
+                let found = profile::detect();
+                *st.agents.lock().unwrap() = found;
+            }
+            Ok(st.agents.lock().unwrap().clone())
+        }
         "config.set" => {
             let (section, key) = (p["section"].as_str().ok_or("bad_params")?, p["key"].as_str().ok_or("bad_params")?);
             if let Err(why) = config::set(&config::path(), section, key, &p["value"]) {
@@ -247,18 +266,41 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 return Err("max_panes");
             }
             let (rows, cols) = (dim(&p["rows"], 24), dim(&p["cols"], 80));
-            let pty = Pty::spawn(p["cmd"].as_str(), rows, cols, &[("GEMBALA_SOCKET", &st.pane_sock)])
+            // FR-30: profil (bawaan "shell"); folder = folder profil, atau folder pane yang fokus
+            let prof = match p["profile"].as_str() {
+                Some(id) => Some(st.profiles.lock().unwrap().iter().find(|x| x.id == id).cloned().ok_or("no_such_profile")?),
+                None => None,
+            };
+            let launch = prof.as_ref().and_then(profile::launch);
+            let cmd = launch.as_deref().or(p["cmd"].as_str());
+            let home = std::env::var("HOME").unwrap_or_default();
+            let cwd = match prof.as_ref().map(|x| x.cwd.as_str()).filter(|c| !c.is_empty()) {
+                Some(c) => Some(std::path::PathBuf::from(c.replacen('~', &home, usize::from(c.starts_with('~'))))),
+                None => st.pane(&json!({"pane": p["from_pane"]})).ok().and_then(|f| {
+                    let pid = pty::busy(&f.master, f.sid).map(|(pid, _)| pid).unwrap_or(f.sid);
+                    pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid))
+                }),
+            };
+            let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
+            let pty = Pty::spawn(cmd, rows, cols, &[("GEMBALA_SOCKET", &st.pane_sock)], cwd.as_deref())
                 .map_err(|_| "spawn_failed")?;
             let id = st.next.fetch_add(1, Ordering::Relaxed);
             let pane = Arc::new(Pane {
                 master: pty.master.try_clone().map_err(|_| "spawn_failed")?,
                 sid: pty.child.id() as i32,
+                name: {
+                    let label = prof.as_ref().map_or("shell", |x| if x.agent == "custom" { x.id.as_str() } else { x.agent.as_str() });
+                    let n = st.panes.lock().unwrap().values().filter(|q| q.name.starts_with(&format!("{label}-"))).count() + 1;
+                    format!("{label}-{n}")
+                },
+                agent,
                 view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
             });
             st.panes.lock().unwrap().insert(id, pane.clone());
+            let name = pane.name.clone();
             let st = st.clone();
             thread::spawn(move || pump(st, id, pane, pty));
-            Ok(json!({"pane": id}))
+            Ok(json!({"pane": id, "name": name}))
         }
         "pane.write" => {
             let pane = st.pane(p)?;
@@ -280,7 +322,10 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         "pane.info" => {
             let pane = st.pane(p)?;
             let busy = pty::busy(&pane.master, pane.sid);
-            Ok(json!({"busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid))}))
+            Ok(json!({
+                "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)),
+                "pane_name": pane.name, "agent": pane.agent,
+            }))
         }
         "pane.kill" => {
             // FR-50: SIGTERM ke proses yang jalan, SIGKILL bila masih hidup setelah 3 detik; shell pane tetap
@@ -332,6 +377,9 @@ fn reload_config(st: &State) {
     let c = config::load(text.as_deref());
     let mut cur = st.config.lock().unwrap();
     let values = if c.broken && !cur.is_null() { cur["values"].clone() } else { c.values };
+    if !c.broken {
+        *st.profiles.lock().unwrap() = c.profiles;
+    }
     *cur = json!({"values": values, "errors": c.errors, "path": path.to_string_lossy()});
     let ev = line(json!({"event": "config.changed", "params": *cur}));
     st.ui_txs.lock().unwrap().retain(|tx| tx.try_send(ev.clone()).is_ok());

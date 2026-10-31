@@ -35,6 +35,8 @@ const LIMITS: &[(&str, Kind)] = &[("max_panes", Int(1, 256, 32))];
 const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS)];
 
 pub struct Config {
+    /// Profil bawaan + `[[profile]]` yang lolos validasi (FR-29). Rujukan rahasia ikut, nilainya tidak.
+    pub profiles: Vec<crate::profile::Profile>,
     /// `{ui, limits, keys}` yang berlaku (nilai bawaan untuk yang rusak atau tidak ada).
     pub values: Value,
     pub errors: Vec<String>,
@@ -93,7 +95,7 @@ pub fn load(text: Option<&str>) -> Config {
     let doc = match text.map(str::parse::<DocumentMut>) {
         Some(Err(e)) => {
             errors.push(format!("config.toml tidak bisa diurai: {}", e.to_string().trim()));
-            return Config { values: defaults(), errors, broken: true };
+            return Config { values: defaults(), errors, broken: true, profiles: crate::profile::builtin() };
         }
         Some(Ok(d)) => Some(d),
         None => None,
@@ -130,7 +132,16 @@ pub fn load(text: Option<&str>) -> Config {
         }
     }
     values.insert("keys".into(), Value::Object(keys));
-    Config { values: Value::Object(values), errors, broken: false }
+    let item = doc.as_ref().and_then(|d| d.get("profile"));
+    let arr = item.and_then(|v| v.as_array_of_tables());
+    if item.is_some() && arr.is_none() {
+        errors.push("profile: harus ditulis sebagai [[profile]], diabaikan".into());
+    }
+    let tables: Vec<&dyn toml_edit::TableLike> = arr.map(|a| a.iter().map(|t| t as &dyn toml_edit::TableLike).collect()).unwrap_or_default();
+    let (profiles, perr) = crate::profile::from_config(&tables);
+    errors.extend(perr);
+    values.insert("profiles".into(), profiles.iter().map(crate::profile::to_json).collect());
+    Config { values: Value::Object(values), errors, broken: false, profiles }
 }
 
 fn defaults() -> Value {
@@ -140,6 +151,7 @@ fn defaults() -> Value {
         values.insert(section.to_string(), Value::Object(out));
     }
     values.insert("keys".into(), json!({}));
+    values.insert("profiles".into(), crate::profile::builtin().iter().map(crate::profile::to_json).collect());
     Value::Object(values)
 }
 

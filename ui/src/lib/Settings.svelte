@@ -5,14 +5,14 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { call } from "./daemon";
-  import type { Config, Ui } from "./config";
+  import type { Agent, Config, Ui } from "./config";
 
   let { cfg, onclose, onquitall }: { cfg: Config; onclose: () => void; onquitall: () => void } = $props();
 
-  // ponytail: bagian Agent menyusul di M4 (deteksi agent + profil)
   const SECTIONS = [
     ["umum", "Umum"],
     ["tampilan", "Tampilan"],
+    ["agent", "Agent"],
     ["pintasan", "Pintasan"],
     ["keamanan", "Keamanan"],
     ["diagnostik", "Diagnostik"],
@@ -22,9 +22,19 @@
   let keys = $state<[string, string, string][]>([]);
   let keyErrors = $state<string[]>([]);
   let version = $state("");
+  let agents = $state<Agent[]>([]);
+  let detecting = $state(false);
+
+  /// FR-28: deteksi lewat login shell; "Periksa ulang" memaksa deteksi baru
+  async function detect(refresh: boolean) {
+    detecting = true;
+    agents = await call("agents.detect", { refresh }).catch(() => []);
+    detecting = false;
+  }
   const ui = $derived(cfg.values.ui);
 
   onMount(async () => {
+    detect(false);
     version = await getVersion();
   });
 
@@ -140,6 +150,44 @@
             <input type="checkbox" role="switch" aria-label="Mode pembaca layar" checked={ui.screen_reader} onchange={(e) => set("screen_reader", e.currentTarget.checked)} />
           </div>
         </section>
+      {:else if sec === "agent"}
+        <section>
+          {#each agents as a (a.agent)}
+            <div class="row">
+              <span
+                >{a.name}<small
+                  >{a.installed
+                    ? `${a.version ?? "versi tidak terbaca"} · ${a.tested ? "teruji" : "belum diuji, status dari pola layar"}`
+                    : `Tidak ditemukan di PATH login shell. Pasang: ${a.install}`}</small
+                ></span
+              >
+              <span class="m">{a.installed ? "✓ terpasang" : "✗ tidak ada"}</span>
+            </div>
+          {/each}
+          <div class="row">
+            <span>Periksa ulang<small>Mencari agent lewat login shell, sama dengan terminal biasa</small></span>
+            <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? "Memeriksa…" : "Periksa"}</button>
+          </div>
+        </section>
+        <h4>Profil</h4>
+        <section>
+          {#each cfg.values.profiles as p (p.id)}
+            <div class="row">
+              <span
+                >{p.name}<small
+                  >{p.command ? [p.command, ...p.args].join(" ") : "$SHELL -l"} · folder {p.cwd || "ikut pane yang fokus"}{p.env.length
+                    ? ` · env ${p.env.join(", ")}`
+                    : ""}{p.secret_env.length ? ` · rujukan ${p.secret_env.map((x) => x.name).join(", ")}` : ""}</small
+                ></span
+              >
+              <span class="m">{p.id}</span>
+            </div>
+          {/each}
+        </section>
+        <p class="note">
+          Ubah atau tambah lewat <code>[[profile]]</code> di config.toml (id sama = menimpa bawaan). Rahasia hanya sebagai rujukan
+          <code>op://…</code> atau <code>keychain:service/akun</code> di <code>secret_env</code>, dibuka shell pane saat agent dijalankan.
+        </p>
       {:else if sec === "pintasan"}
         {#if keyErrors.length}
           <div class="errs" role="alert">
@@ -285,6 +333,11 @@
   }
   .seg button.on {
     background: var(--line);
+  }
+  h4 {
+    margin: 16px 0 8px;
+    font: 600 12px system-ui, -apple-system, sans-serif;
+    color: var(--muted);
   }
   .errs {
     display: flex;

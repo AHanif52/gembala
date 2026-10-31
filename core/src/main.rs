@@ -1,6 +1,7 @@
 mod config;
 mod daemon;
 mod grid;
+mod profile;
 mod pty;
 mod rundir;
 
