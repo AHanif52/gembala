@@ -601,6 +601,8 @@ fn penanda_blok_zsh() {
     let out = ui.attach_until(p, &[&format!("ZD-{zd}-2")]);
     assert!(out.contains(&format!("\x1b]133;C;{}\x07", B64.encode("(exit 3)"))), "{out:?}");
     assert!(out.contains("\x1b]133;D;3\x07"), "{out:?}");
+    // FR-59: prompt disembunyikan, baris perintah ditulis tebal oleh zle (kepala blok)
+    assert!(out.contains("\x1b[1m"), "perintah tidak tebal: {out:?}");
     // FR-59: attach berikutnya tahu shell sedang di prompt (snapshot tidak memuat penanda)
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(Cli::ui(&d).call("pane.attach", json!({"pane": p}))["result"]["prompt"], true);

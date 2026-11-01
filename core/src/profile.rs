@@ -245,6 +245,7 @@ const ZSH_MARKS: &str = r#"__gembala_precmd() {
   builtin print -n "\e]133;D;$s\a\e]133;A\a"
   if [[ -n $GEMBALA_EDITOR ]]; then
     PS1="%{"$'\e]133;B\a'"%}" RPROMPT=  # FR-59: editor Gembala menggantikan prompt
+    (( ${#zle_highlight} )) || zle_highlight=(default:bold)  # perintah tebal = kepala blok (ala Warp)
   else
     [[ $PS1 == *'133;B'* ]] || PS1="$PS1%{"$'\e]133;B\a'"%}"
   fi
