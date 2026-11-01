@@ -745,6 +745,8 @@
       "-",
       ["Salin perintah blok ini", () => copy(blk?.cmd), !!blk?.cmd],
       ["Salin output blok ini", () => copy(blk?.output), !!blk?.output],
+      // FR-58: perintah blok masuk editor untuk diubah lalu dijalankan lagi (ala Warp)
+      ["Pakai lagi di editor", () => blk && ((draft[pane] = blk.cmd), document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus()), !!blk?.cmd && editorShown(pane)],
       "-",
       ["Split kanan", () => splitFocused("row")],
       ["Split bawah", () => splitFocused("col")],
@@ -1506,7 +1508,10 @@
           {#if confirm?.pane === pane}
             <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
               <span><b>{confirm?.name}</b> masih jalan. Tutup {confirm?.what}?</span>
-              <span class="keys">Enter tutup · Esc batal</span>
+              <span class="acts">
+                <button class="mini" onclick={() => (confirm = null)}>Batal <span class="keys">Esc</span></button>
+                <button class="mini danger" onclick={() => { confirm?.close.forEach((p) => call("pane.close", { pane: p }).catch(() => {})); confirm = null; }}>Tutup <span class="keys">↩</span></button>
+              </span>
             </div>
           {/if}
         </div>
@@ -1576,7 +1581,10 @@
   {#if wsAsk}
     <div class="confirm" role="alertdialog" aria-label="Konfirmasi hapus workspace">
       <span><b>{wsAsk.busy} pane</b> di workspace {wss[wsAsk.wi]?.name} masih menjalankan proses. Hapus dan hentikan?</span>
-      <span class="keys">Enter hapus · Esc batal</span>
+      <span class="acts">
+        <button class="mini" onclick={() => (wsAsk = null)}>Batal <span class="keys">Esc</span></button>
+        <button class="mini danger" onclick={() => wsAsk && removeWorkspace(wsAsk.wi)}>Hapus <span class="keys">↩</span></button>
+      </span>
     </div>
   {/if}
   {#if welcome}
@@ -1585,20 +1593,28 @@
       {#each welcome as a (a.agent)}
         <span>{a.installed ? "✓" : "·"} {a.name} <span class="keys">{a.installed ? a.version : "tidak terpasang"}</span></span>
       {/each}
-      <span class="keys">⌘T tab baru dari profil · ⌘, Pengaturan · Enter tutup</span>
+      <span class="keys">⌘P cari tab dan aksi · ⌘T tab baru dari profil · ⌘, Pengaturan</span>
+      <span class="keys">Ketik perintah di kotak bawah · @@ di prompt agent = lempar ke agent lain</span>
+      <span class="acts"><button class="mini" onclick={() => (welcome = null)}>Mulai <span class="keys">↩</span></button></span>
     </div>
   {/if}
   {#if quitAsk}
     <div class="confirm" role="alertdialog" aria-label="Konfirmasi keluar">
       <span><b>{quitAsk} pane</b> masih menjalankan proses. Keluar dan hentikan semua?</span>
-      <span class="keys">Enter keluar · Esc batal</span>
+      <span class="acts">
+        <button class="mini" onclick={() => (quitAsk = 0)}>Batal <span class="keys">Esc</span></button>
+        <button class="mini danger" onclick={quitAll}>Keluar <span class="keys">↩</span></button>
+      </span>
     </div>
   {/if}
   {#if linkAsk}
     <div class="confirm" role="alertdialog" aria-label="Konfirmasi buka tautan">
       <span>Buka di browser?</span>
       <code class="url">{linkAsk}</code>
-      <span class="keys">Enter buka · Esc batal</span>
+      <span class="acts">
+        <button class="mini" onclick={() => (linkAsk = "")}>Batal <span class="keys">Esc</span></button>
+        <button class="mini" onclick={openLink}>Buka <span class="keys">↩</span></button>
+      </span>
     </div>
   {/if}
   {#if pal}
@@ -2253,6 +2269,17 @@
     background: var(--card);
     color: var(--fg);
     font: inherit;
+  }
+  .mini.danger {
+    border-color: rgba(220, 38, 38, 0.5);
+    color: #ef4444;
+  }
+  .mini .keys {
+    margin-left: 4px;
+    font-size: 11px;
+  }
+  .mini:hover {
+    background: var(--line);
   }
   .card {
     position: absolute;
