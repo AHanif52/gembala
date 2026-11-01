@@ -23,6 +23,8 @@ pub struct Profile {
     pub summarize: bool,
     /// FR-40: notifikasi untuk pane dari profil ini (bawaan nyala).
     pub notify: bool,
+    /// SEC-5: kebijakan penerima `auto` | `confirm` | `deny`
+    pub policy: String,
 }
 
 /// (agent, nama, perintah, perintah instal yang ditampilkan bila tidak ada, versi teruji major.minor)
@@ -46,6 +48,7 @@ pub fn builtin() -> Vec<Profile> {
         secret_env: vec![],
         summarize: true,
         notify: true,
+        policy: "auto".into(),
     };
     let agents = AGENTS.iter().map(|(agent, name, cmd, _, _)| Profile {
         id: agent.to_string(),
@@ -116,6 +119,11 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
                 Some(Some(b)) => *field = b,
                 Some(None) => errors.push(format!("{}: harus true atau false", at(key))),
             }
+        }
+        match t.get("policy").map(|v| v.as_str()) {
+            None => {}
+            Some(Some(v)) if crate::msg::Policy::parse(v).is_some() => p.policy = v.into(),
+            Some(_) => errors.push(format!("{}: harus auto, confirm, atau deny", at("policy"))),
         }
         if let Some(a) = t.get("args") {
             match a.as_array().map(|arr| arr.iter().map(|v| v.as_str().filter(|s| ok_text(s, 500)).map(String::from)).collect::<Option<Vec<_>>>()) {
@@ -302,7 +310,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
 
 pub fn to_json(p: &Profile) -> Value {
     json!({
-        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify,
+        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy,
         "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
         "secret_env": p.secret_env.iter().map(|(k, r)| json!({"name": k, "ref": r})).collect::<Vec<_>>(),
     })

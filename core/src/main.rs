@@ -1,7 +1,9 @@
+mod bus;
 mod config;
 mod daemon;
 mod git;
 mod grid;
+mod msg;
 mod profile;
 mod pty;
 mod rundir;
@@ -11,17 +13,19 @@ use std::io::Write;
 use std::os::fd::FromRawFd;
 use std::process::ExitCode;
 
-const USAGE: &str = "pakai: gembala <daemon [--secret-fd N]|send|wait|read|reply|hook>";
+const USAGE: &str = "pakai: gembala daemon [--secret-fd N]
+       gembala send <pane> <pesan…> [--queue] [--reply-to <msg_id>]
+       gembala wait [<pane>] [--reply <msg_id>] [--pattern <regex>] [--timeout <detik>]
+       gembala read <pane> [-n <baris>]
+       gembala reply <msg_id> <teks…>
+       gembala status";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str).unwrap_or_default() {
         "daemon" => daemon(&args[1..]),
         "hook" => hook(&args[1..]),
-        cmd @ ("send" | "wait" | "read" | "reply") => {
-            eprintln!("gembala {cmd}: belum ada (Fase 2)");
-            ExitCode::from(2)
-        }
+        cmd @ ("send" | "wait" | "read" | "reply" | "status") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -90,6 +94,69 @@ fn hook(args: &[String]) -> ExitCode {
     };
     let _ = send();
     ExitCode::SUCCESS
+}
+
+/// Fase 2 (O2): CLI untuk agent di dalam pane. Satu baris JSON ke stdout; kode keluar 0 = diterima/berhasil,
+/// 1 = ditolak/timeout, 2 = salah pakai atau tidak bisa tersambung. Identitas dari kernel (SEC-3), bukan argumen.
+fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
+    use serde_json::{Value, json};
+    let mut rest: Vec<String> = Vec::new();
+    let mut opt = std::collections::HashMap::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--queue" => drop(opt.insert("queue", Value::Bool(true))),
+            "--reply-to" | "--reply" | "--pattern" | "--timeout" | "-n" => match it.next() {
+                Some(v) => drop(opt.insert(a.trim_start_matches('-'), json!(v))),
+                None => return usage(),
+            },
+            _ => rest.push(a.clone()),
+        }
+    }
+    let text = |from: usize| rest.get(from..).map(|r| r.join(" ")).unwrap_or_default();
+    let params = match cmd {
+        "send" if rest.len() >= 2 => json!({"to": rest[0], "body": text(1), "queue": opt.get("queue"), "reply_to": opt.get("reply-to")}),
+        "reply" if rest.len() >= 2 => json!({"msg_id": rest[0], "body": text(1)}),
+        "read" if rest.len() == 1 => json!({"target": rest[0], "lines": opt.get("n").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok())}),
+        "wait" if rest.len() <= 1 => json!({
+            "target": rest.first(), "reply": opt.get("reply"), "pattern": opt.get("pattern"),
+            "timeout_ms": opt.get("timeout").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok()).map(|s| s * 1000),
+        }),
+        "status" => json!({}),
+        _ => return usage(),
+    };
+    let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else {
+        eprintln!("gembala {cmd}: GEMBALA_SOCKET tidak ada; jalankan dari dalam pane Gembala");
+        return ExitCode::from(2);
+    };
+    let run = || -> std::io::Result<Value> {
+        use std::io::{BufRead, BufReader};
+        let mut s = std::os::unix::net::UnixStream::connect(sock)?;
+        let mut r = BufReader::new(s.try_clone()?);
+        let mut l = String::new();
+        writeln!(s, "{}", json!({"id": 1, "method": "hello", "params": {"proto": daemon::PROTO, "client": "cli"}}))?;
+        r.read_line(&mut l)?;
+        let hello: Value = serde_json::from_str(&l).unwrap_or_default();
+        if hello.get("result").is_none() {
+            return Ok(hello);
+        }
+        writeln!(s, "{}", json!({"id": 2, "method": cmd, "params": params}))?;
+        l.clear();
+        r.read_line(&mut l)?;
+        Ok(serde_json::from_str(&l).unwrap_or_default())
+    };
+    match run() {
+        Ok(v) => {
+            let out = v.get("result").cloned().unwrap_or_else(|| v.get("error").cloned().unwrap_or_default());
+            println!("{out}");
+            let ok = v.get("result").is_some_and(|r| r["result"] != "rejected" && r.get("timeout").is_none());
+            ExitCode::from(if ok { 0 } else { 1 })
+        }
+        Err(e) => {
+            eprintln!("gembala {cmd}: {e}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 fn usage() -> ExitCode {

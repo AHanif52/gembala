@@ -236,7 +236,7 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), String> {
         .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id)).cloned());
     let mut t = old.unwrap_or_default();
     t["id"] = toml_edit::value(id);
-    for k in ["name", "command", "cwd"] {
+    for k in ["name", "command", "cwd", "policy"] {
         if let Some(v) = p[k].as_str() {
             t[k] = toml_edit::value(v);
         }

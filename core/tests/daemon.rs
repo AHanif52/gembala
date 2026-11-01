@@ -74,7 +74,7 @@ impl Cli {
 
     fn recv(&mut self) -> Value {
         let mut l = String::new();
-        self.r.read_line(&mut l).unwrap();
+        let _ = self.r.read_line(&mut l); // batas waktu baca = Null, pemanggil yang memutuskan
         serde_json::from_str(&l).unwrap_or(Value::Null)
     }
 
@@ -593,4 +593,93 @@ fn status_dari_pola_layar() {
         assert!(t0.elapsed() < Duration::from_secs(10), "status blocked tidak terdeteksi dari layar");
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+// ---------- Fase 2 ----------
+
+/// Tulis config profil uji dan tunggu daemon membacanya.
+fn profiles(d: &Daemon, ui: &mut Cli, toml: &str, wait_for: &str) {
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(cfg.join("config.toml"), toml).unwrap();
+    let t0 = Instant::now();
+    while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains(wait_for) {
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn sh_profile(id: &str, script: &str) -> String {
+    format!("[[profile]]\nid = \"{id}\"\ncommand = \"sh\"\nargs = [\"-c\", {}]\n", json!(script))
+}
+
+/// Kriteria 1 + FR-19: dari satu pane, satu perintah mengirim tugas; balasan `reply` terbaca kembali tanpa keyboard.
+#[test]
+fn kriteria_1_kirim_dan_balas() {
+    let d = start("bus1");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    // penerima: baca label (ambil msg_id) dan isi, lalu balas
+    let terima = format!(
+        "IFS= read -r l; id=$(printf '%s' \"$l\" | sed -n 's/.*· \\(msg_[a-z0-9]*\\)\\].*/\\1/p'); IFS= read -r b; \
+         '{g}' reply \"$id\" \"hasil untuk: $(printf '%s' \"$b\" | tr -cd 'a-z ')\"; sleep 30"
+    );
+    // pengirim: kirim lalu tunggu balasan
+    let kirim = format!(
+        "sleep 2; id=$('{g}' send terima-1 'tulis unit test' --queue | sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p'); \
+         echo ID=$id; '{g}' wait --reply \"$id\" --timeout 20; echo SELESAI-K1; sleep 30"
+    );
+    profiles(&d, &mut ui, &(sh_profile("terima", &terima) + &sh_profile("kirim", &kirim)), "SELESAI-K1");
+    let b = ui.call("pane.create", json!({"profile": "terima", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let a = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(a, &["SELESAI-K1"]);
+    let mut ui2 = Cli::ui(&d);
+    let other = ui2.attach_until(b, &["tidak-ada"]);
+    let h = ui.call("msg.list", json!({}))["result"]["history"].to_string();
+    assert!(out.contains("hasil untuk: tulis unit test"), "PENGIRIM:\n{out}\nPENERIMA:\n{other}\nRIWAYAT: {h}");
+    let h = ui.call("msg.list", json!({}))["result"]["history"].to_string();
+    assert!(h.contains("\"sent\"") && h.contains("\"reply\""), "{h}");
+}
+
+/// Kriteria 10 + SEC-21: baca hanya dalam workspace sama; pane shell hanya bila diizinkan pengguna.
+#[test]
+fn kriteria_10_baca_dibatasi() {
+    let d = start("bus10");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = format!("sleep 1; '{g}' read lain-1; '{g}' read shell-1; echo SELESAI-K10; sleep 30");
+    profiles(&d, &mut ui, &(sh_profile("lain", "sleep 60") + &sh_profile("baca", &script)), "SELESAI-K10");
+    ui.call("pane.create", json!({"workspace": "w1"})); // shell-1, tidak diizinkan dibaca
+    ui.call("pane.create", json!({"profile": "lain", "workspace": "w2"})); // workspace lain
+    let p = ui.call("pane.create", json!({"profile": "baca", "workspace": "w1"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(p, &["SELESAI-K10"]);
+    assert_eq!(out.matches("acl_denied").count(), 2, "{out}");
+}
+
+/// Kriteria 4 + FR-12: tidak ada pesan ke `blocked`; kebijakan `confirm` = kartu yang hanya bisa diputus kanal UI.
+#[test]
+fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
+    let d = start("bus4");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = format!("sleep 2; '{g}' send tanya-1 halo; '{g}' send sopan-1 halo; echo SELESAI-K4; sleep 30");
+    let toml = sh_profile("tanya", "printf 'Hapus semua? (y/n) '; sleep 60")
+        + &sh_profile("sopan", "sleep 60")
+        + "policy = \"confirm\"\n"
+        + &sh_profile("kirim", &script);
+    profiles(&d, &mut ui, &toml, "SELESAI-K4");
+    ui.call("pane.create", json!({"profile": "tanya", "workspace": "w"}));
+    ui.call("pane.create", json!({"profile": "sopan", "workspace": "w"}));
+    let p = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(p, &["SELESAI-K4"]);
+    assert!(out.contains("target_blocked") && out.contains("needs_confirmation"), "{out}");
+    let pending = ui.call("msg.list", json!({}))["result"]["pending"].clone();
+    assert_eq!(pending.as_array().unwrap().len(), 1, "{pending}");
+    let id = pending[0]["id"].as_str().unwrap().to_string();
+    // kanal pane tidak bisa menyetujui (kriteria 9)
+    let mut outsider = Cli::connect(&d, "pane.sock");
+    assert_eq!(outsider.call("hello", json!({"proto": 1}))["error"]["code"], "not_a_pane");
+    let r = ui.call("msg.approve", json!({"id": id}))["result"].clone();
+    assert!(r["result"] == "accepted" || r["result"] == "queued", "{r}");
 }
