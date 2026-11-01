@@ -102,11 +102,13 @@
   }
 
   /// FR-36: bersihkan layar dan scrollback. Shell diam juga diminta menggambar ulang prompt (Ctrl+L);
-  /// bila ada proses jalan (agent), hanya tampilan yang dibersihkan supaya input agent tidak terganggu.
+  /// bila ada proses jalan (agent), hanya scrollback yang dibuang: layar milik TUI digambar ulang per bagian,
+  /// jadi layar yang dikosongkan dari luar membuat tampilan agent rusak.
   export async function clearScreen() {
-    term.clear();
     const info = await call("pane.info", { pane });
-    if (!info.busy) call("pane.write", { pane, data: b64(new Uint8Array([0x0c])) });
+    if (info.busy) return void term.write("\x1b[3J");
+    term.clear();
+    call("pane.write", { pane, data: b64(new Uint8Array([0x0c])) });
   }
 
   // Renderer DOM bawaan xterm: terukur lebih hemat RAM dan datar per pane dibanding WebGL (TECH M1)

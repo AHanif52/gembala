@@ -88,6 +88,8 @@
       .filter((p) => !dead[p] && meta[p])
       .map((p) => ({ pane: p, name: meta[p].name, agent: meta[p].agent || "shell", status: meta[p].status, policy: meta[p].policy, readable: meta[p].readable })),
   );
+  // tujuan kirim: pane agent selain yang fokus, termasuk agent yang diketik sendiri di pane shell (status dilacak daemon)
+  const targets = $derived(rows.filter((r) => r.pane !== tab?.focus && (r.agent !== "shell" || r.status)));
 
   async function sendCompose() {
     if (!compose || compose.to === null) return;
@@ -361,8 +363,7 @@
     if (id === "msg.drawer") return void ((drawer = !drawer), drawer && refreshMsgs());
     if (id === "msg.stop") return void call("msg.pause", { on: !msgData?.paused }).then(refreshMsgs);
     if (id === "msg.compose") {
-      const others = rows.filter((r) => r.pane !== tab.focus && r.agent !== "shell");
-      compose = { to: others[0]?.pane ?? null, body: "", force: false, error: "" };
+      compose = { to: targets[0]?.pane ?? null, body: "", force: false, error: "" };
       return;
     }
     if (id === "tab.new") openPicker();
@@ -916,6 +917,8 @@
                   rows="4"
                   aria-label="Rich Input"
                   placeholder="Tulis prompt · Enter kirim · Shift+Enter baris baru · Esc tutup"
+                  spellcheck="false"
+                  autocapitalize="off"
                   onkeydown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), sendRich());
                     if (e.key === "Escape") (e.preventDefault(), (rich = null));
@@ -977,10 +980,10 @@
     <div class="confirm compose" role="dialog" aria-label="Kirim ke agent lain">
       <b>Kirim ke agent lain</b>
       <select aria-label="Pane tujuan" bind:value={compose.to}>
-        {#each rows.filter((r) => r.pane !== tab?.focus && r.agent !== "shell") as r (r.pane)}<option value={r.pane}>{r.name} · {r.status || "?"}</option>{/each}
+        {#each targets as r (r.pane)}<option value={r.pane}>{r.name} · {r.status || "?"}</option>{/each}
       </select>
       <!-- svelte-ignore a11y_autofocus -->
-      <textarea bind:value={compose.body} rows="5" autofocus aria-label="Isi pesan" placeholder="Isi pesan; dikirim dengan label dari pengguna"
+      <textarea bind:value={compose.body} rows="5" autofocus aria-label="Isi pesan" placeholder="Isi pesan; dikirim dengan label dari pengguna" spellcheck="false" autocapitalize="off"
         onkeydown={(e) => e.key === "Enter" && e.metaKey && sendCompose()}></textarea>
       <label class="inline"><input type="checkbox" bind:checked={compose.force} /> Paksa bila status target tidak diketahui</label>
       {#if compose.error}<span class="err">{compose.error}</span>{/if}

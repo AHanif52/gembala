@@ -1130,12 +1130,21 @@ impl State {
         self.panes.lock().unwrap().get(&id).cloned().ok_or("no_such_pane")
     }
 
-    fn pane_of_pid(&self, pid: i32) -> Option<u64> {
-        let sid = unsafe { libc::getsid(pid) };
-        if sid <= 0 {
-            return None;
+    /// SEC-3: peer PID ditelusuri lewat proses induk sampai sesi pane. Tool agent sering membuat sesi
+    /// baru (mis. Bash Claude Code), jadi `getsid` peer saja tidak cukup.
+    fn pane_of_pid(&self, mut pid: i32) -> Option<u64> {
+        let panes = self.panes.lock().unwrap();
+        for _ in 0..64 {
+            if pid <= 1 {
+                return None;
+            }
+            let sid = unsafe { libc::getsid(pid) };
+            if let Some((id, _)) = panes.iter().find(|(_, p)| sid > 0 && p.sid == sid) {
+                return Some(*id);
+            }
+            pid = pty::ppid(pid)?;
         }
-        self.panes.lock().unwrap().iter().find(|(_, p)| p.sid == sid).map(|(id, _)| *id)
+        None
     }
 }
 

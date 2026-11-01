@@ -794,8 +794,8 @@ fn token_cadangan() {
     let d = start("token");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
-    // perl POSIX::setsid = proses keluar dari sesi pane, seperti server tmux
-    let lepas = format!("sleep 1; perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' '{g}' status; echo; echo TOKEN=$GEMBALA_TOKEN; echo SELESAI-T; sleep 30");
+    // setsid + subshell yang langsung keluar = proses keluar dari sesi dan pohon pane (induk jadi launchd), seperti server tmux
+    let lepas = format!("sleep 1; (perl -e 'use POSIX; POSIX::setsid(); sleep 1; exec @ARGV' '{g}' status &); sleep 3; echo; echo TOKEN=$GEMBALA_TOKEN; echo SELESAI-T; sleep 30");
     let toml = sh_profile("bertoken", &lepas) + "token = true\n" + &sh_profile("tanpa", &lepas);
     profiles(&d, &mut ui, &toml, "SELESAI-T");
     let a = ui.call("pane.create", json!({"profile": "bertoken", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
@@ -814,6 +814,19 @@ fn token_cadangan() {
     let mut ui3 = Cli::ui(&d);
     let read = ui3.attach_until(r, &["SELESAI-R"]);
     assert!(read.contains("TOKEN=[disamarkan]") && !read.contains(&token), "{read}");
+}
+
+/// SEC-3: proses yang membuat sesi baru tapi masih keturunan shell pane (mis. tool Bash Claude Code) tetap dikenali tanpa token.
+#[test]
+fn sesi_baru_masih_anak_pane() {
+    let d = start("anak");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = format!("sleep 1; perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' '{g}' status; echo; echo SELESAI-A; sleep 30");
+    profiles(&d, &mut ui, &sh_profile("anak", &script), "SELESAI-A");
+    let a = ui.call("pane.create", json!({"profile": "anak", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(a, &["SELESAI-A"]);
+    assert!(out.contains("\"me\":\"anak-1\""), "{out}");
 }
 
 /// SEC-5: flag lewati-izin yang tidak terlihat di profil (dibungkus skrip) tetap terbaca dari argumen proses.

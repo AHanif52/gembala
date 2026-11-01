@@ -139,6 +139,21 @@ pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
     Some(std::ffi::OsString::from_vec(bytes).into()).filter(|p: &std::path::PathBuf| p.is_absolute())
 }
 
+/// Proses induk (SEC-3: penelusuran peer PID sampai shell pane).
+#[cfg(target_os = "macos")]
+pub fn ppid(pid: i32) -> Option<i32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    (n == size).then_some(info.pbi_ppid as i32)
+}
+
+#[cfg(target_os = "linux")]
+pub fn ppid(pid: i32) -> Option<i32> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    s.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+}
+
 #[cfg(target_os = "linux")]
 pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
