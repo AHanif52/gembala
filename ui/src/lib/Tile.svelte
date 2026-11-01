@@ -20,6 +20,8 @@
     onexit,
     onlink,
     onpasted,
+    online,
+    onkey,
   }: {
     pane: number;
     focused: boolean;
@@ -28,6 +30,8 @@
     onexit: (pane: number) => void;
     onlink: (url: string) => void;
     onpasted: (path: string) => void;
+    online: (line: string) => void; // FR-57: teks yang diketik sejak Enter terakhir
+    onkey: (key: string) => boolean; // FR-57: true = tombol dipakai daftar @, tidak diteruskan ke terminal
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -100,6 +104,21 @@
     if (e.key === "Enter") find(e.shiftKey);
     if (e.key === "Escape") closeFind();
   }
+
+  /// FR-57: baris ketikan, hanya huruf yang diketik langsung; tombol khusus (panah, Enter, paste ber-ESC) mengosongkannya.
+  /// ponytail: tidak tahu isi prompt TUI sebenarnya; cukup untuk mengenali `@` di awal baris baru
+  let line = "";
+  function track(d: string) {
+    if (d === "\x7f") line = line.slice(0, -1);
+    else if (/[\x00-\x1f]/.test(d)) line = "";
+    else line += d;
+    online(line);
+  }
+  export function resetLine() {
+    line = "";
+    online(line);
+  }
+  export const focus = () => term.focus();
 
   /// FR-37: menu klik kanan
   export const selection = () => term.getSelection();
@@ -200,11 +219,16 @@
 
     // Shift+Enter = ESC CR (sama dengan /terminal-setup Claude Code di iTerm2): baris baru di TUI agent
     term.attachCustomKeyEventHandler((e) => {
+      // FR-57: daftar @ terbuka = Tab/panah/Esc milik daftar
+      if (e.type === "keydown" && ["Tab", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && onkey(e.key)) return false;
       if (e.key !== "Enter" || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return true;
       if (e.type === "keydown") call("pane.write", { pane, data: b64(enc.encode("\x1b\r")) });
       return false;
     });
-    term.onData((d) => call("pane.write", { pane, data: b64(enc.encode(d)) }));
+    term.onData((d) => {
+      track(d);
+      call("pane.write", { pane, data: b64(enc.encode(d)) });
+    });
     term.onBinary((d) => call("pane.write", { pane, data: btoa(d) }));
     term.onResize(({ rows, cols }) => call("pane.resize", { pane, rows, cols }));
     const ro = new ResizeObserver(() => el.offsetParent && fit.fit());

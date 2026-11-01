@@ -97,15 +97,60 @@
   // tujuan kirim: pane agent selain yang fokus, termasuk agent yang diketik sendiri di pane shell (status dilacak daemon)
   const targets = $derived(rows.filter((r) => r.pane !== tab?.focus && (r.agent !== "shell" || r.status)));
 
+  /// Kirim manual dari pengguna (⌘⇧K, FR-57); "" = terkirim, selain itu alasan ditolak untuk ditampilkan
+  async function sendMsg(to: number, body: string, force: boolean): Promise<string> {
+    try {
+      await call("msg.send", { to, body, force });
+      refreshMsgs();
+      return "";
+    } catch (e) {
+      return e === "target_blocked" ? "Target sedang butuh izin; jawab langsung di pane itu" : e === "target_busy" ? "Target sedang bekerja; kirim paksa bila yakin" : String(e);
+    }
+  }
+
   async function sendCompose() {
     if (!compose || compose.to === null) return;
-    try {
-      await call("msg.send", { to: compose.to, body: compose.body, force: compose.force });
-      compose = null;
-      refreshMsgs();
-    } catch (e) {
-      if (compose) compose.error = e === "target_blocked" ? "Target sedang butuh izin; jawab langsung di pane itu" : e === "target_busy" ? "Target sedang bekerja; centang paksa bila yakin" : String(e);
-    }
+    const error = await sendMsg(compose.to, compose.body, compose.force);
+    if (!error) compose = null;
+    else if (compose) compose.error = error;
+  }
+
+  // FR-57: `@` di awal prompt pane = daftar agent lain; pilih = bar kirim di pane itu
+  let mention = $state<{ pane: number; q: string; sel: number } | null>(null);
+  let lempar = $state<{ pane: number; to: number; name: string; body: string; error: string } | null>(null);
+  const mentionItems = $derived(
+    mention ? targets.filter((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].some((s) => s.toLowerCase().startsWith(mention!.q.toLowerCase()))) : [],
+  );
+  function onLine(pane: number, line: string) {
+    const m = /^@([\w.-]*)$/.exec(line);
+    mention = m ? { pane, q: m[1], sel: 0 } : null;
+  }
+  function onMentionKey(pane: number, key: string): boolean {
+    if (!mention || mention.pane !== pane || !mentionItems.length) return false;
+    const n = mentionItems.length;
+    if (key === "ArrowDown") mention.sel = (mention.sel + 1) % n;
+    else if (key === "ArrowUp") mention.sel = (mention.sel + n - 1) % n;
+    else if (key === "Tab") chooseMention(mention.sel);
+    else mention = null; // Escape: tutup daftar, ketikan `@…` tetap di prompt
+    return true;
+  }
+  function chooseMention(i: number) {
+    const r = mentionItems[i];
+    if (!mention || !r) return;
+    const { pane, q } = mention;
+    // `@…` yang sudah terkirim ke TUI dihapus lagi dengan backspace
+    call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length + 1))) });
+    tiles[pane]?.resetLine();
+    mention = null;
+    lempar = { pane, to: r.pane, name: r.name, body: "", error: "" };
+  }
+  async function sendLempar(force = false) {
+    if (!lempar?.body.trim()) return;
+    const { pane, to, body } = lempar;
+    const error = await sendMsg(to, body, force);
+    if (error) return void (lempar && (lempar.error = error));
+    lempar = null;
+    tiles[pane]?.focus();
   }
 
   $effect(() => {
@@ -387,7 +432,7 @@
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen || picker || editing || rich || pal) return;
+    if (settingsOpen || picker || editing || rich || pal || lempar) return;
     if (confirm || quitAsk || linkAsk || wsAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
@@ -617,7 +662,7 @@
       }
       return; // kontrol di Pengaturan menerima tombol seperti biasa
     }
-    if (rich || pal) return; // textarea Rich Input dan kotak palet menangani tombolnya sendiri
+    if (rich || pal || lempar) return; // textarea Rich Input, palet, dan bar lempar menangani tombolnya sendiri
     if (compose) {
       if (e.key === "Escape") (compose = null), stop(e);
       return;
@@ -1089,9 +1134,40 @@
               </div>
             {/if}
             <div class="body" class:withbar={bar} class:withhead={head} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
-              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
-                onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])} />
+              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
+                onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
+                online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)} />
             </div>
+            {#if mention?.pane === pane && mentionItems.length}
+              <!-- FR-57: daftar @; Tab pilih, ↑↓ geser, Esc tutup, terus mengetik = @ milik agent -->
+              <div class="mention" class:withbar={bar} role="listbox" aria-label="Lempar ke agent">
+                {#each mentionItems as r, i (r.pane)}
+                  <button class="opt" class:on={i === mention.sel} role="option" aria-selected={i === mention.sel}
+                    onpointerdown={(e) => e.preventDefault()} onclick={() => chooseMention(i)}>
+                    <span class="dot {r.status}"></span>
+                    <span>{r.name}</span>
+                    <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {STATUS[r.status ?? ""] ?? r.status ?? "?"}</span>
+                  </button>
+                {/each}
+                <span class="keys">Tab lempar · ↑↓ pilih · Esc tutup</span>
+              </div>
+            {/if}
+            {#if lempar?.pane === pane}
+              <div class="lempar" class:withbar={bar}>
+                <span class="to">→ {lempar.name}</span>
+                <!-- svelte-ignore a11y_autofocus -->
+                <textarea bind:value={lempar.body} rows="2" autofocus aria-label="Pesan ke {lempar.name}" placeholder="Pesan · Enter kirim · Shift+Enter baris baru · Esc batal"
+                  spellcheck="false" autocapitalize="off"
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), sendLempar());
+                    if (e.key === "Escape") (e.preventDefault(), (lempar = null), tiles[pane]?.focus());
+                  }}></textarea>
+                {#if lempar.error}
+                  <span class="err">{lempar.error}</span>
+                  {#if lempar.error.includes("paksa")}<button class="mini" onclick={() => sendLempar(true)}>Kirim paksa</button>{/if}
+                {/if}
+              </div>
+            {/if}
             {#if meta[pane]?.ended}
               {@const resume = meta[pane].ended.resume}
               <!-- FR-56: blok agent selesai dengan tombol; hilang saat proses baru jalan atau ditutup -->
@@ -1747,6 +1823,51 @@
   }
   .compose {
     min-width: 420px;
+  }
+  /* FR-57: daftar @ dan bar lempar, menempel di bawah pane (di atas toolbar agent) */
+  .mention,
+  .lempar {
+    position: absolute;
+    left: 10px;
+    bottom: 8px;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    font: 13px system-ui, -apple-system, sans-serif;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  }
+  .mention {
+    min-width: 260px;
+  }
+  .mention .opt {
+    grid-template-columns: 10px 1fr auto;
+  }
+  .lempar {
+    right: 10px;
+    gap: 6px;
+  }
+  .mention.withbar,
+  .lempar.withbar {
+    bottom: 34px;
+  }
+  .lempar .to {
+    font-weight: 600;
+  }
+  .lempar textarea {
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.4 "SF Mono", Menlo, monospace;
+    resize: vertical;
+    outline: none;
   }
   .targets {
     display: flex;
