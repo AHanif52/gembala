@@ -1151,7 +1151,7 @@ fn printed_resume(log: &[u8]) -> Option<String> {
 // bila omp mengubahnya, blok kembali ke `omp --continue`
 fn omp_session(home: &std::path::Path, cwd: &std::path::Path, since: std::time::SystemTime) -> Option<String> {
     let slug = |p: &std::path::Path| p.to_string_lossy().trim_matches('/').replace('/', "-");
-    let dir = match cwd.strip_prefix(&home) {
+    let dir = match cwd.strip_prefix(home) {
         Ok(r) if r.as_os_str().is_empty() => "----".to_string(),
         Ok(r) => format!("-{}", slug(r)),
         Err(_) => format!("--{}--", slug(cwd)),
