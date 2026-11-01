@@ -1498,7 +1498,7 @@
                   {#if meta[pane]?.git?.repo && meta[pane].git.branch}
                     <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${meta[pane].git.files} file` : ""}</span>
                   {/if}
-                  <span class="ehint">Enter jalankan · ⇧Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan</span>
+                  <span class="ehint" class:off={!active || pane !== t.focus}>Enter jalankan · ⇧Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan</span>
                 </div>
                 {#if comp?.pane === pane}
                   <!-- FR-59: daftar Tab ala Warp -->
@@ -2191,6 +2191,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* petunjuk tombol cukup di pane yang fokus; tetap memakan tempat supaya baris chip tidak bergeser */
+  .ehint.off {
+    visibility: hidden;
+  }
   .editor {
     position: absolute;
     left: 0;
@@ -2691,9 +2695,10 @@
     background: var(--dim);
     pointer-events: none;
   }
+  /* di atas editor, kartu, dan bar (z-index 3): garis pemisah utuh sampai bawah, input antar pane tidak menyambung */
   .divider {
     position: absolute;
-    z-index: 2;
+    z-index: 4;
   }
   /* garis 1px, area tangkap 7px */
   .divider.row {
