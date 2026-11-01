@@ -318,7 +318,7 @@
     // Shift+Enter = ESC CR (sama dengan /terminal-setup Claude Code di iTerm2): baris baru di TUI agent
     term.attachCustomKeyEventHandler((e) => {
       // FR-57: daftar @ terbuka = Tab/panah/Esc milik daftar
-      if (e.type === "keydown" && ["Tab", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && onkey(e.key)) return false;
+      if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && !e.shiftKey && onkey(e.key)) return false;
       if (e.key !== "Enter" || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return true;
       if (e.type === "keydown") call("pane.write", { pane, data: b64(enc.encode("\x1b\r")) });
       return false;

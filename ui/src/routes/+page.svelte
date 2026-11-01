@@ -313,14 +313,15 @@
   /// di tengah kalimat (mis. "cek buat @@om") = diganti `@<nama pane>` untuk agent itu
   function onLine(pane: number, line: string) {
     const m = /(?:^|\s)@@([\w.-]*)$/.exec(line);
-    mention = m ? { pane, q: m[1], sel: 0, inline: !line.startsWith("@@") } : null;
+    // selalu lengkapi nama: Gembala tidak tahu pasti isi baris prompt TUI, jadi "awal baris" tidak bisa diandalkan
+    mention = m ? { pane, q: m[1], sel: 0, inline: true } : null;
   }
   function onMentionKey(pane: number, key: string): boolean {
     if (!mention || mention.pane !== pane || !mentionItems.length) return false;
     const n = mentionItems.length;
     if (key === "ArrowDown") mention.sel = (mention.sel + 1) % n;
     else if (key === "ArrowUp") mention.sel = (mention.sel + n - 1) % n;
-    else if (key === "Tab") chooseMention(mention.sel);
+    else if (key === "Tab" || key === "Enter") chooseMention(mention.sel);
     else mention = null; // Escape: tutup daftar, ketikan `@…` tetap di prompt
     return true;
   }
@@ -1549,7 +1550,7 @@
                     <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {STATUS[r.status ?? ""] ?? r.status ?? "?"}</span>
                   </button>
                 {/each}
-                {#if mentionItems.length}<span class="keys">{mention.inline ? "Tab lengkapi nama" : "Tab lempar"} · ↑↓ pilih · Esc tutup</span>{/if}
+                {#if mentionItems.length}<span class="keys">Tab/Enter {mention.inline ? "lengkapi nama" : "pilih"} · ↑↓ pilih · Esc tutup</span>{/if}
               </div>
             {/if}
             {#if lempar?.pane === pane}
