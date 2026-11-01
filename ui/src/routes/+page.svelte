@@ -984,7 +984,7 @@
     <div class="confirm compose" role="dialog" aria-label="Kirim ke agent lain">
       <b>Kirim ke agent lain</b>
       <select aria-label="Pane tujuan" bind:value={compose.to}>
-        {#each targets as r (r.pane)}<option value={r.pane}>{r.name} · {r.status || "?"}</option>{/each}
+        {#each targets as r (r.pane)}<option value={r.pane}>{r.name} · {r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {r.status || "?"}</option>{/each}
       </select>
       <!-- svelte-ignore a11y_autofocus -->
       <textarea bind:value={compose.body} rows="5" autofocus aria-label="Isi pesan" placeholder="Isi pesan; dikirim dengan label dari pengguna" spellcheck="false" autocapitalize="off"
