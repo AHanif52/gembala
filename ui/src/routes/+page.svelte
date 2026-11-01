@@ -7,6 +7,7 @@
   import OutputView from "$lib/OutputView.svelte";
   import Messages from "$lib/Messages.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { getVersion } from "@tauri-apps/api/app";
   import { UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -62,6 +63,7 @@
   let renameError = $state("");
   let newWs = $state<{ name: string; root: string } | null>(null);
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
+  let upgrade = $state<{ daemon: string; app: string; panes: number } | null>(null); // FR-21
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
   let rich = $state<{ pane: number; text: string } | null>(null); // FR-14
   let changes = $state<{ pane: number; diff: any } | null>(null); // FR-22
@@ -738,6 +740,9 @@
         for (const p of Object.keys(meta).map(Number).filter((p) => !dead[p])) call("pane.workspace", { pane: p, workspace: wsIdOf(p) }).catch(() => {});
         refreshMsgs();
         poll();
+        // FR-21: app baru + daemon lama = tanya dulu; menjalankan ulang daemon menghentikan semua pane
+        const [d, app] = await Promise.all([call("daemon.info"), getVersion()]);
+        if (d.daemon !== app) upgrade = { daemon: d.daemon, app, panes: (await call("pane.list")).length };
       } catch (e) {
         error = `gagal sambung ke daemon: ${e}`;
       }
@@ -938,6 +943,16 @@
       aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
     ></div>
   {/each}
+  {#if upgrade}
+    <div class="confirm" role="alertdialog" aria-label="Daemon versi lama">
+      <span>Daemon versi <b>{upgrade.daemon}</b> masih jalan, app sekarang <b>{upgrade.app}</b>.</span>
+      <span>Menjalankan ulang daemon menghentikan <b>{upgrade.panes} pane</b>; pane tampil lagi dengan tombol "Jalankan ulang".</span>
+      <span class="acts">
+        <button class="mini" onclick={() => (upgrade = null)}>Nanti</button>
+        <button class="mini" onclick={() => ((upgrade = null), call("daemon.stop").catch(() => {}))}>Jalankan ulang daemon</button>
+      </span>
+    </div>
+  {/if}
   {#if msgData?.paused}
     <div class="paused" role="status">Pesan antar agent dijeda · ⌘⇧. untuk lanjut</div>
   {/if}

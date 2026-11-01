@@ -683,3 +683,85 @@ fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
     let r = ui.call("msg.approve", json!({"id": id}))["result"].clone();
     assert!(r["result"] == "accepted" || r["result"] == "queued", "{r}");
 }
+
+/// Kriteria 5: pesan berisi ESC, CR, `\e[201~`, C1, dan baris baru = tepat satu kiriman (satu Enter) di target.
+#[test]
+fn kriteria_5_satu_kiriman() {
+    let d = start("bus5");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let body = "a\\rb\\x1b[201~c\\xc2\\x9bd\\ne";
+    let kirim = format!("sleep 4; '{g}' send cat-1 \"$(printf '{body}')\" --queue; echo SELESAI-K5; sleep 30");
+    // target: terminal mode raw, setiap byte kontrol tampil (cat -v): Enter = ^M
+    profiles(&d, &mut ui, &(sh_profile("cat", "stty raw -echo; cat -v") + &sh_profile("kirim", &kirim)), "SELESAI-K5");
+    let t = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let k = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(k, &["SELESAI-K5"]);
+    assert!(out.contains("accepted") || out.contains("queued"), "{out}");
+    let mut ui2 = Cli::ui(&d);
+    let got = ui2.attach_until(t, &["e^[[201~^M"]);
+    assert_eq!(got.matches("^M").count(), 1, "tepat satu Enter: {got}");
+    assert_eq!(got.matches("^[[201~").count(), 1, "penutup paste hanya milik daemon: {got}");
+    assert!(!got.contains("M-^["), "C1 dibuang: {got}");
+}
+
+/// Kriteria 8: dua agent yang diprogram saling membalas berhenti di hop 3.
+#[test]
+fn kriteria_8_berhenti_di_hop_3() {
+    let d = start("bus8");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    // tiap agent: baca label pesan masuk, balas ke lawan dengan --reply-to, ulangi
+    let pingpong = |lawan: &str| {
+        format!(
+            "while IFS= read -r l; do id=$(printf '%s' \"$l\" | sed -n 's/.*· \\(msg_[a-z0-9]*\\)\\].*/\\1/p'); \
+             [ -n \"$id\" ] || continue; IFS= read -r b; sleep 1; '{g}' send {lawan} balas --reply-to \"$id\" --queue; done"
+        )
+    };
+    let toml = sh_profile("pa", &pingpong("pb-1")) + &sh_profile("pb", &pingpong("pa-1")) + &sh_profile("mulai", &format!("sleep 4; '{g}' send pa-1 mulai --queue; sleep 60"));
+    profiles(&d, &mut ui, &toml, "mulai --queue");
+    for prof in ["pa", "pb", "mulai"] {
+        ui.call("pane.create", json!({"profile": prof, "workspace": "w"}));
+    }
+    let t0 = Instant::now();
+    loop {
+        let h = ui.call("msg.list", json!({}))["result"]["history"].to_string();
+        if h.contains("hop_limit") {
+            let sent = h.matches("\"kind\":\"sent\"").count();
+            assert_eq!(sent, 4, "hop 0 sampai 3 terkirim, hop 4 ditolak: {h}");
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60), "rantai tidak berhenti: {h}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Kriteria 7: API key palsu tercetak di layar dan ikut dalam pesan tidak tersimpan di log atau disk mana pun.
+#[test]
+fn kriteria_7_key_tidak_ke_disk() {
+    let d = start("bus7");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    // key dibentuk saat skrip jalan, supaya teksnya tidak ada di config.toml buatan uji ini sendiri
+    let key = "sk-ant-api03-PALSU$((1234567000+890))";
+    let kirim = format!("echo {key}; sleep 4; '{g}' send diam-1 'pakai {key} ya' --queue; '{g}' read diam-1; echo SELESAI-K7; sleep 30");
+    profiles(&d, &mut ui, &(sh_profile("diam", &format!("echo {key}; sleep 60")) + &sh_profile("kirim", &kirim)), "SELESAI-K7");
+    ui.call("pane.create", json!({"profile": "diam", "workspace": "w"}));
+    let k = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(k, &["SELESAI-K7"]);
+    assert!(out.contains("[disamarkan]"), "read harus tersamar: {out}");
+    ui.call("layout.save", json!({"layout": {"version": 1}}));
+    std::thread::sleep(Duration::from_millis(500));
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if e.path().is_dir() { walk(&e.path(), out) } else { out.push(e.path()) }
+        }
+    }
+    let mut files = vec![];
+    walk(&d.dir, &mut files);
+    assert!(files.iter().any(|f| f.to_string_lossy().contains("audit-")), "log audit harus ada: {files:?}");
+    for f in files {
+        let bytes = std::fs::read(&f).unwrap_or_default();
+        assert!(!String::from_utf8_lossy(&bytes).contains("PALSU1234567890"), "key bocor ke {}", f.display());
+    }
+}
