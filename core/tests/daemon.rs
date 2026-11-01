@@ -815,3 +815,18 @@ fn token_cadangan() {
     let read = ui3.attach_until(r, &["SELESAI-R"]);
     assert!(read.contains("TOKEN=[disamarkan]") && !read.contains(&token), "{read}");
 }
+
+/// SEC-5: flag lewati-izin yang tidak terlihat di profil (dibungkus skrip) tetap terbaca dari argumen proses.
+#[test]
+fn lewati_izin_dari_argumen_proses() {
+    let d = start("yolo");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let toml = sh_profile("nekat", "exec perl -e 'sleep 60' -- --yolo")
+        + &sh_profile("kirim", &format!("sleep 4; '{g}' send nekat-1 halo; echo SELESAI-Y; sleep 30"));
+    profiles(&d, &mut ui, &toml, "SELESAI-Y");
+    ui.call("pane.create", json!({"profile": "nekat", "workspace": "w"}));
+    let k = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(k, &["SELESAI-Y"]);
+    assert!(out.contains("needs_confirmation"), "{out}");
+}

@@ -36,6 +36,10 @@
 
   const act = (method: string, params: object) => call(method, params).then(onchange, onchange);
   const muted = $derived(new Set<string>(data?.muted ?? []));
+  /// FR-10: tugas terakhir per agent = pesan terakhir yang terkirim ke agent itu
+  const lastTask = $derived(
+    Object.fromEntries((data?.history ?? []).filter((h: any) => h.kind === "sent").map((h: any) => [h.msg.to, h.msg.preview])),
+  );
 </script>
 
 <aside class="drawer" aria-label="Laci pesan">
@@ -51,7 +55,9 @@
     <section>
       {#each rows as r (r.pane)}
         <div class="row">
-          <span class="grow"><b>{r.name}</b><small>{r.agent} · {r.status || "tidak dilacak"}</small></span>
+          <span class="grow"
+            ><b>{r.name}</b><small>{r.agent} · {r.status || "tidak dilacak"}{lastTask[r.name] ? ` · tugas terakhir: ${lastTask[r.name]}` : ""}</small></span
+          >
           {#if r.agent === "shell"}
             <label class="sw"><input type="checkbox" checked={r.readable} onchange={(e) => act("pane.readable", { pane: r.pane, on: e.currentTarget.checked })} /> boleh dibaca agent</label>
           {:else}

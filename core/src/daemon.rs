@@ -670,7 +670,8 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
     msg::Facts {
         target_status: if to.status.lock().unwrap().is_empty() { "unknown" } else { *to.status.lock().unwrap() },
         stable_for: to.status_at.lock().unwrap().elapsed(),
-        policy: *to.policy.lock().unwrap(),
+        // SEC-5: flag lewati-izin dari profil sudah masuk saat pane dibuat; yang diketik sendiri di pane dibaca dari argumen proses
+        policy: msg::effective_policy(*to.policy.lock().unwrap(), &pty::busy(&to.master, to.sid).map(|(pid, _)| pty::args_of(pid)).unwrap_or_default()),
         same_workspace: *to.workspace.lock().unwrap() == from_ws,
         paused: eng.paused,
         muted: eng.muted.contains(&m.to),

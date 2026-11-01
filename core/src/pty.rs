@@ -144,6 +144,28 @@ pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
+/// Argumen proses (SEC-5: flag lewati-izin pada agent yang diketik sendiri di pane shell).
+#[cfg(target_os = "macos")]
+pub fn args_of(pid: i32) -> Vec<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut len = buf.len();
+    let rc = unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+    if rc != 0 || len < 4 {
+        return vec![];
+    }
+    // tata letak: argc (i32), path exec, NUL pengisi, lalu argv[0..argc]
+    let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]).max(0) as usize;
+    let rest = &buf[4..len];
+    let mut parts = rest.split(|&b| b == 0).filter(|p| !p.is_empty()).skip(1); // lewati path exec
+    (0..argc).filter_map(|_| parts.next()).map(|p| String::from_utf8_lossy(p).into_owned()).collect()
+}
+
+#[cfg(target_os = "linux")]
+pub fn args_of(pid: i32) -> Vec<String> {
+    std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default().split(|&b| b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect()
+}
+
 #[cfg(target_os = "macos")]
 fn children(pid: i32) -> Vec<i32> {
     let mut buf = [0 as libc::pid_t; 64];
@@ -211,6 +233,16 @@ mod tests {
         (&p.master).write_all(b"halo\r").unwrap();
         let out = run(p);
         assert!(out.contains("dapat-halo"), "{out:?}");
+    }
+
+    #[test]
+    fn argumen_proses_terbaca() {
+        let mut c = std::process::Command::new("perl").args(["-e", "sleep 5", "--", "--yolo"]).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let args = args_of(c.id() as i32);
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(args, ["perl", "-e", "sleep 5", "--", "--yolo"]);
     }
 
     #[test]
