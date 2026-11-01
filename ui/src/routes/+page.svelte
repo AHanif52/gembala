@@ -19,7 +19,7 @@
   } from "$lib/layout";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
-  type Ws = { id: string; name: string; root: string; tabs: Tab[] };
+  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean };
   /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
   type Meta = {
     profile: string;
@@ -46,7 +46,8 @@
   // FR-52: warna tab pilihan pengguna (garis tipis kiri)
   const COLORS: [string, string][] = [["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"], ["purple", "Ungu"]];
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
-  const tabStatus = (t: Tab): string => panes(t.tree).reduce((a, p) => (rank(meta[p]?.status) > rank(a) ? (meta[p]?.status ?? "") : a), "");
+  const worst = (ps: number[]): string => ps.reduce((a, p) => (rank(meta[p]?.status) > rank(a) ? (meta[p]?.status ?? "") : a), "");
+  const tabStatus = (t: Tab) => worst(panes(t.tree));
 
   let wss = $state<Ws[]>([]);
   let at = $state({ ws: 0, tab: 0 });
@@ -120,12 +121,18 @@
   const uid = () => Math.random().toString(36).slice(2, 10);
   const base = (p: string | null | undefined) => (p ? p.split("/").filter(Boolean).at(-1) ?? "/" : "");
   const home = (p: string | null | undefined) => (p ?? "").replace(/^\/Users\/[^/]+/, "~");
-  /// sidebar sempit: folder perantara disingkat ke huruf awal, dua terakhir utuh (`~/P/m/gembala/app`)
+  /// sidebar sempit: folder perantara disingkat ke huruf awal, yang terakhir utuh (`~/P/m/g/app`)
   const short = (p: string | null | undefined) =>
     home(p)
       .split("/")
-      .map((s, i, a) => (i === 0 || i >= a.length - 2 ? s : [...s].slice(0, s.startsWith(".") ? 2 : 1).join("")))
+      .map((s, i, a) => (i === 0 || i === a.length - 1 ? s : [...s].slice(0, s.startsWith(".") ? 2 : 1).join("")))
       .join("/");
+  /// FR-52 subjudul tab: hanya yang beda dari workspace. Folder = akar workspace → kosong; di dalamnya → relatif.
+  const where = (cwd: string | null | undefined, root: string) => {
+    const c = home(cwd);
+    if (!c || c === root) return "";
+    return root !== "~" && c.startsWith(root + "/") ? c.slice(root.length + 1) : short(cwd);
+  };
   /// FR-52: judul bawaan = agent yang sedang jalan di pane fokus, lalu folder (`~` untuk home)
   const title = (t: Tab) => {
     const m = meta[t.focus];
@@ -175,7 +182,7 @@
   }
 
   async function refreshGit(pane: number) {
-    if (!meta[pane] || dead[pane] || ![...AGENTS, "custom"].includes(meta[pane].agent)) return;
+    if (!meta[pane] || dead[pane]) return; // semua pane: branch juga jadi subjudul tab (FR-52)
     const g = await call("git.status", { pane }).catch(() => null);
     if (g && meta[pane]) meta[pane].git = g;
   }
@@ -486,6 +493,7 @@
     popup(e, [
       ["Ganti nama", () => (editing = { kind: "ws", id: w.id, value: w.name })],
       ["Ganti folder…", () => changeRoot(w)],
+      [w.collapsed ? "Buka" : "Ciutkan", () => (w.collapsed = !w.collapsed)],
       "-",
       ["Hapus workspace", () => askRemoveWorkspace(wss.indexOf(w)), wss.length > 1],
     ]);
@@ -757,6 +765,7 @@
         id: w.id,
         name: String(w.name ?? "workspace").slice(0, 60),
         root: String(w.root ?? "~").slice(0, 500),
+        collapsed: w.collapsed === true,
         tabs: w.tabs
           .filter((t: any) => typeof t?.id === "string" && valid(t.tree))
           .map((t: any) => ({
@@ -991,10 +1000,16 @@
           <!-- svelte-ignore a11y_autofocus -->
           <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama workspace" />
         {:else}
+          <button class="chev" aria-expanded={!w.collapsed} aria-label="{w.collapsed ? 'Buka' : 'Ciutkan'} workspace {w.name}" onclick={() => (w.collapsed = !w.collapsed)}>{w.collapsed ? "▸" : "▾"}</button>
           <span class="wsname" role="button" tabindex="-1" title={w.root} ondblclick={() => (editing = { kind: "ws", id: w.id, value: w.name })}>{w.name}</span>
+          {#if w.collapsed}
+            <!-- FR-44: diciutkan tetap menampilkan jumlah tab dan status terberat -->
+            {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
+            <span class="wsum">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{STATUS[st]}</span> · {/if}{w.tabs.length} tab</span>
+          {/if}
         {/if}
       </div>
-      {#each w.tabs as t, ti (t.id)}
+      {#each w.collapsed ? [] : w.tabs as t, ti (t.id)}
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
         {@const st = tabStatus(t)}
@@ -1010,7 +1025,11 @@
             <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{title(t)}</span>
             <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
-            <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if STATUS[st]}<span class="st {st}">{STATUS[st]}</span> · {/if}{short(meta[t.focus]?.cwd)}{agents.length ? ` · ${agents.join(", ")}` : ""}</span>
+            {@const g = meta[t.focus]?.git}
+            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents].filter(Boolean).join(" · ")}
+            {#if STATUS[st] || rest}
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
+            {/if}
           {/if}
         </button>
       {/each}
@@ -1383,6 +1402,21 @@
   .wsname {
     color: var(--fg);
     font-weight: 600;
+  }
+  .chev {
+    width: 12px;
+    margin-left: -6px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font-size: 10px;
+    cursor: pointer;
+  }
+  .wsum {
+    margin-left: auto;
+    text-transform: none;
+    letter-spacing: 0;
   }
   .x {
     border: 0;
