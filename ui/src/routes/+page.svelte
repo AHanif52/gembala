@@ -1241,7 +1241,11 @@
   <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging}>
     <!-- title bar transparan: area tombol jendela + geser jendela -->
     <div class="drag" data-tauri-drag-region></div>
-    <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
+    <div class="toprow">
+      <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
+      <!-- FR-44: selalu terlihat walau daftar tab panjang -->
+      <button class="add wsnew" title="Workspace baru" aria-label="Workspace baru" onclick={addWorkspace}>+</button>
+    </div>
     {#each wss as w, wi (w.id)}
       <!-- FR-44: klik judul = buka/ciutkan; ganti nama lewat klik kanan atau palet -->
       <div class="ws" data-wi={wi} class:over={dragging?.over?.wi === wi && dragging.over.ti < 0} class:lift={dragging?.kind === "ws" && dragging.wi === wi}
@@ -1295,9 +1299,6 @@
         </button>
       {/each}
     {/each}
-    <div class="adds">
-      <button class="add" onclick={addWorkspace}>+ Workspace</button>
-    </div>
   </aside>
   <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label="Lebar sidebar"></div>
 {/if}
@@ -1955,12 +1956,6 @@
     color: var(--muted);
     font-size: 11px;
   }
-  .adds {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-top: 10px;
-  }
   .add {
     display: flex;
     justify-content: space-between;
@@ -1976,9 +1971,22 @@
     color: var(--fg);
   }
   /* pintu ke palet ⌘P, bentuk kotak cari supaya mudah ditemukan */
-  .add.find {
+  .toprow {
+    display: flex;
+    gap: 6px;
     margin-bottom: 4px;
+  }
+  .add.find {
+    flex: 1;
+    min-width: 0;
     border: 1px solid var(--line);
+  }
+  .add.wsnew {
+    justify-content: center;
+    width: 30px;
+    padding: 0;
+    border: 1px solid var(--line);
+    font-size: 16px;
   }
   .body {
     position: absolute;
