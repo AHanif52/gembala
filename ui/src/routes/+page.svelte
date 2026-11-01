@@ -982,6 +982,7 @@
 
 {#if sidebar}
   <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging}>
+    <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
     {#each wss as w, wi (w.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="ws" data-wi={wi} class:over={dragging?.over?.wi === wi && dragging.over.ti < 0} class:lift={dragging?.kind === "ws" && dragging.wi === wi}
@@ -1499,6 +1500,11 @@
   }
   .add:hover {
     color: var(--fg);
+  }
+  /* pintu ke palet ⌘P, bentuk kotak cari supaya mudah ditemukan */
+  .add.find {
+    margin-bottom: 4px;
+    border: 1px solid var(--line);
   }
   .body {
     position: absolute;
