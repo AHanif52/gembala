@@ -23,6 +23,7 @@
     online,
     onkey,
     onprompt,
+    ontype,
   }: {
     pane: number;
     focused: boolean;
@@ -34,6 +35,7 @@
     online: (line: string) => void; // FR-57: teks yang diketik sejak Enter terakhir
     onkey: (key: string) => boolean; // FR-57: true = tombol dipakai daftar @, tidak diteruskan ke terminal
     onprompt: (at: boolean) => void; // FR-59: shell menunggu di prompt (penanda OSC 133 B sampai C)
+    ontype: (text: string) => boolean; // FR-59: true = huruf diambil input editor, tidak diteruskan ke shell
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -290,6 +292,8 @@
       return false;
     });
     term.onData((d) => {
+      // FR-59: editor tampil = huruf biasa ke editor (fokus bisa tertinggal di terminal, mis. setelah TUI keluar)
+      if (!/[\x00-\x1f\x7f]/.test(d) && ontype(d)) return;
       track(d);
       call("pane.write", { pane, data: b64(enc.encode(d)) });
     });

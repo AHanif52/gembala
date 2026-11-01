@@ -128,12 +128,15 @@
     const body = clean ? `\x1b[200~${clean}\x1b[201~` : "";
     call("pane.write", { pane, data: b64(new TextEncoder().encode(body + (enter ? "\r" : ""))) });
   }
+  let editorErr = $state<Record<number, string>>({});
   async function runDraft(pane: number) {
     const text = draft[pane] ?? "";
-    // `@nama pesan` = lempar ke agent itu (FR-57), bukan perintah shell
-    const m = /^@([\w.-]+)\s+([\s\S]+)$/.exec(text);
-    const to = m && targets.find((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].includes(m[1]));
-    if (m && to) {
+    // `@nama pesan` = lempar ke agent itu (FR-57); teks berawalan `@` tidak pernah dijalankan shell
+    const m = /^@([\w.-]*)\s*([\s\S]*)$/.exec(text);
+    if (m) {
+      const to = targets.find((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].includes(m[1]));
+      if (!to) return void (editorErr[pane] = `Tidak ada agent "${m[1]}" di workspace ini`);
+      if (!m[2].trim()) return void (editorErr[pane] = `Tulis pesan untuk ${to.name} setelah nama`);
       const error = await sendMsg(to.pane, m[2], false);
       if (error) return void (lempar = { pane, to: to.pane, name: to.name, body: m[2], error });
       draft[pane] = "";
@@ -156,8 +159,17 @@
   }
   function editorKey(pane: number, e: KeyboardEvent) {
     const ta = e.currentTarget as HTMLTextAreaElement;
+    editorErr[pane] = "";
+    // daftar @ terbuka: Tab/Enter pilih, panah geser, Esc tutup
+    if (mention?.editor && mention.pane === pane && mentionItems.length && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key)) {
+      e.preventDefault();
+      if (e.key === "Tab" || e.key === "Enter") chooseMention(mention.sel);
+      else onMentionKey(pane, e.key);
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.altKey) return void (e.preventDefault(), runDraft(pane));
-    if (e.key === "Tab" && !e.shiftKey) return void (e.preventDefault(), handOff(pane, true));
+    // teks `@…` milik lempar ke agent, tidak pernah dioper ke shell
+    if (e.key === "Tab" && !e.shiftKey) return void (e.preventDefault(), !ta.value.startsWith("@") && handOff(pane, true));
     if (e.key === "Escape") return void (e.preventDefault(), handOff(pane, false));
     if (e.key === "c" && e.ctrlKey) return void (e.preventDefault(), (draft[pane] = ""));
     const first = !ta.value.slice(0, ta.selectionStart).includes("\n");
@@ -180,14 +192,16 @@
   });
 
   // FR-57: `@` di awal prompt pane = daftar agent lain; pilih = bar kirim di pane itu
-  let mention = $state<{ pane: number; q: string; sel: number } | null>(null);
+  // editor = daftar dipicu dari input editor (FR-59), bukan dari ketikan di terminal
+  let mention = $state<{ pane: number; q: string; sel: number; editor?: boolean; inline?: boolean } | null>(null);
   let lempar = $state<{ pane: number; to: number; name: string; body: string; error: string } | null>(null);
   const mentionItems = $derived(
     mention ? targets.filter((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].some((s) => s.toLowerCase().startsWith(mention!.q.toLowerCase()))) : [],
   );
+  /// `@` di awal baris = bar kirim; `@` di tengah kalimat (mis. prompt Claude "cek buat @") = nama pane dilengkapi
   function onLine(pane: number, line: string) {
-    const m = /^@([\w.-]*)$/.exec(line);
-    mention = m ? { pane, q: m[1], sel: 0 } : null;
+    const m = /(?:^|\s)@([\w.-]*)$/.exec(line);
+    mention = m ? { pane, q: m[1], sel: 0, inline: !line.startsWith("@") } : null;
   }
   function onMentionKey(pane: number, key: string): boolean {
     if (!mention || mention.pane !== pane || !mentionItems.length) return false;
@@ -198,10 +212,27 @@
     else mention = null; // Escape: tutup daftar, ketikan `@…` tetap di prompt
     return true;
   }
+  function onEditorInput(pane: number) {
+    const m = /^@([\w.-]*)$/.exec(draft[pane] ?? "");
+    mention = m ? { pane, q: m[1], sel: 0, editor: true } : mention?.editor ? null : mention;
+  }
   function chooseMention(i: number) {
     const r = mentionItems[i];
     if (!mention || !r) return;
     const { pane, q } = mention;
+    if (mention.editor) {
+      // di editor: nama dilengkapi, pesan ditulis di kotak yang sama, Enter kirim
+      draft[pane] = `@${r.name} `;
+      mention = null;
+      return;
+    }
+    if (mention.inline) {
+      // di tengah kalimat prompt agent: `@…` diganti nama pane lengkap; agent memakai `gembala send` (petunjuk FR-9)
+      call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length) + r.name + " ")) });
+      tiles[pane]?.resetLine();
+      mention = null;
+      return;
+    }
     // `@…` yang sudah terkirim ke TUI dihapus lagi dengan backspace
     call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length + 1))) });
     tiles[pane]?.resetLine();
@@ -1228,7 +1259,14 @@
               <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
-                onprompt={(on: boolean) => (atPrompt[pane] = on)} />
+                onprompt={(on: boolean) => (atPrompt[pane] = on)}
+                ontype={(text: string) => {
+                  if (!editorShown(pane)) return false;
+                  draft[pane] = (draft[pane] ?? "") + text;
+                  onEditorInput(pane);
+                  document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus();
+                  return true;
+                }} />
             </div>
             {#if ed}
               <!-- FR-59: input editor; kursor dan seleksi pakai mouse, Enter jalan, Tab/Esc ke terminal -->
@@ -1246,12 +1284,13 @@
                 <textarea bind:value={draft[pane]} rows={Math.min(6, (draft[pane] ?? "").split("\n").length)} data-editor={pane}
                   aria-label="Perintah untuk {meta[pane]?.name}" spellcheck="false" autocapitalize="off" autocomplete="off"
                   placeholder="Ketik perintah · Enter jalankan · Shift+Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan"
-                  onkeydown={(e) => editorKey(pane, e)} onfocus={() => (t.focus = pane)}></textarea>
+                  onkeydown={(e) => editorKey(pane, e)} oninput={() => onEditorInput(pane)} onfocus={() => (t.focus = pane)}></textarea>
+                {#if editorErr[pane]}<span class="err">{editorErr[pane]}</span>{/if}
               </div>
             {/if}
             {#if mention?.pane === pane && mentionItems.length}
               <!-- FR-57: daftar @; Tab pilih, ↑↓ geser, Esc tutup, terus mengetik = @ milik agent -->
-              <div class="mention" class:withbar={bar} role="listbox" aria-label="Lempar ke agent">
+              <div class="mention" class:withbar={bar} class:withedit={mention.editor} role="listbox" aria-label="Lempar ke agent">
                 {#each mentionItems as r, i (r.pane)}
                   <button class="opt" class:on={i === mention.sel} role="option" aria-selected={i === mention.sel}
                     onpointerdown={(e) => e.preventDefault()} onclick={() => chooseMention(i)}>
@@ -1260,7 +1299,7 @@
                     <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {STATUS[r.status ?? ""] ?? r.status ?? "?"}</span>
                   </button>
                 {/each}
-                <span class="keys">Tab lempar · ↑↓ pilih · Esc tutup</span>
+                <span class="keys">{mention.inline ? "Tab lengkapi nama" : "Tab lempar"} · ↑↓ pilih · Esc tutup</span>
               </div>
             {/if}
             {#if lempar?.pane === pane}
@@ -2075,6 +2114,13 @@
   .mention.withbar,
   .lempar.withbar {
     bottom: 34px;
+  }
+  /* daftar @ dari input editor: di atas kotak editor */
+  .mention.withedit {
+    bottom: 80px;
+  }
+  .mention.withedit.withbar {
+    bottom: 106px;
   }
   .lempar .to {
     font-weight: 600;
