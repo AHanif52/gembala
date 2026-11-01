@@ -3,7 +3,7 @@
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { Terminal, type ITheme } from "@xterm/xterm";
+  import { Terminal, type IMarker, type ITheme } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { SearchAddon } from "@xterm/addon-search";
   import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -120,6 +120,63 @@
   }
   export const focus = () => term.focus();
 
+  /// FR-58: blok per perintah dari penanda OSC 133 shell (A prompt, C perintah jalan + teks base64, D selesai + exit code).
+  /// Hanya blok dari stream sejak attach; snapshot attach tidak memuat penanda.
+  type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; code?: number };
+  let blocks: Block[] = [];
+  function onMark(data: string) {
+    const [k, arg = ""] = data.split(";", 2);
+    const last = blocks.at(-1);
+    if (k === "A") {
+      const a = term.registerMarker(0);
+      if (a) blocks.push({ a, cmd: "" });
+      if (blocks.length > 1000) blocks.shift()?.a.dispose(); // ponytail: 1000 blok terakhir, sisanya ikut scrollback
+    } else if (k === "C" && last && !last.c) {
+      last.c = term.registerMarker(0);
+      try {
+        last.cmd = new TextDecoder().decode(unb64(arg));
+      } catch {}
+    } else if (k === "D" && last?.c && !last.d) {
+      last.d = term.registerMarker(0);
+      last.code = Number(arg) || 0;
+      decorate(last);
+    }
+    return true; // penanda tidak menggambar apa pun
+  }
+  /// garis tipis di atas tiap blok; gagal = garis kiri merah + latar tipis
+  function decorate(b: Block) {
+    const height = Math.max(1, (b.d?.line ?? b.a.line) - b.a.line);
+    const d = term.registerDecoration({ marker: b.a, width: term.cols, height, layer: "bottom" });
+    d?.onRender((el) => {
+      el.classList.add("blk");
+      el.classList.toggle("fail", b.code !== 0);
+      el.title = b.code ? `keluar ${b.code}` : "";
+    });
+  }
+  const outputOf = (b: Block) => {
+    if (!b.c || !b.d) return "";
+    const buf = term.buffer.active;
+    const rows: string[] = [];
+    for (let y = b.c.line; y < Math.max(b.c.line + 1, b.d.line); y++) rows.push(buf.getLine(y)?.translateToString(true) ?? "");
+    return rows.join("\n").replace(/\n+$/, "");
+  };
+  /// blok di baris layar `clientY` (klik kanan), atau null
+  export function blockAt(clientY: number): { cmd: string; output: string; code?: number } | null {
+    const rowsEl = el.querySelector(".xterm-rows");
+    if (!rowsEl) return null;
+    const r = rowsEl.getBoundingClientRect();
+    const y = Math.floor(((clientY - r.top) / r.height) * term.rows) + term.buffer.active.viewportY;
+    const b = blocks.findLast((b) => b.a.line <= y && b.d && y < Math.max(b.d.line, b.a.line + 1));
+    return b ? { cmd: b.cmd, output: outputOf(b), code: b.code } : null;
+  }
+  /// FR-58: ⌘↑/⌘↓ lompat ke awal blok sebelum/sesudah baris teratas layar
+  export function jump(dir: -1 | 1) {
+    const top = term.buffer.active.viewportY;
+    const b = dir < 0 ? blocks.findLast((b) => b.a.line < top) : blocks.find((b) => b.a.line > top);
+    if (b) term.scrollToLine(b.a.line);
+    else if (dir > 0) term.scrollToBottom();
+  }
+
   /// FR-37: menu klik kanan
   export const selection = () => term.getSelection();
   export const paste = (text: string) => term.paste(text); // bracketed paste bila TUI memintanya
@@ -149,6 +206,7 @@
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11"; // FR-41: lebar emoji dan CJK
     term.open(el);
+    term.parser.registerOscHandler(133, onMark);
     ready = true;
     fit.fit();
 
@@ -267,6 +325,16 @@
   .term {
     position: absolute;
     inset: 10px 8px 6px 14px;
+  }
+  /* FR-58: dekorasi blok (dibuat xterm di luar komponen, jadi :global) */
+  .term :global(.blk) {
+    box-sizing: border-box;
+    border-top: 1px solid var(--line);
+    pointer-events: none;
+  }
+  .term :global(.blk.fail) {
+    border-left: 3px solid #dc2626;
+    background: rgba(220, 38, 38, 0.07);
   }
   .find {
     position: absolute;

@@ -228,11 +228,39 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
     }
 }
 
-/// File hook OpenCode dan Oh My Pi, ditulis daemon saat start ke folder config Gembala (`0700`/`0600`).
+/// FR-58: folder hook dipakai sebagai `ZDOTDIR` pane zsh. Tiap file membaca file pengguna yang sama apa adanya
+/// (dengan `ZDOTDIR` pengguna selama dibaca), `.zshrc` menambah penanda blok OSC 133, `.zlogin` mengembalikan
+/// `ZDOTDIR` supaya agent dan subshell tidak ikut. File pengguna tidak diubah.
+fn zsh_file(name: &str, extra: &str) -> String {
+    format!(
+        "# dibuat Gembala (FR-58); {name} pengguna dibaca apa adanya\n\
+         GEMBALA_ZDOTDIR=$ZDOTDIR\nZDOTDIR=${{GEMBALA_USER_ZDOTDIR:-$HOME}}\n\
+         [[ -f \"$ZDOTDIR/{name}\" ]] && builtin source \"$ZDOTDIR/{name}\"\n\
+         GEMBALA_USER_ZDOTDIR=$ZDOTDIR\nZDOTDIR=$GEMBALA_ZDOTDIR\n{extra}"
+    )
+}
+
+const ZSH_MARKS: &str = r#"__gembala_precmd() {
+  local s=$?
+  builtin print -n "\e]133;D;$s\a\e]133;A\a"
+  [[ $PS1 == *'133;B'* ]] || PS1="$PS1%{"$'\e]133;B\a'"%}"
+}
+__gembala_preexec() { builtin print -rn -- $'\e]133;C;'"$(builtin print -rn -- "$1" | /usr/bin/base64)"$'\a'; }
+autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hook preexec __gembala_preexec
+"#;
+
+const ZSH_RESTORE: &str = "ZDOTDIR=$GEMBALA_USER_ZDOTDIR\n[[ -f \"$ZDOTDIR/.zlogin\" ]] && builtin source \"$ZDOTDIR/.zlogin\"\n\
+if [[ $ZDOTDIR == $HOME ]]; then unset ZDOTDIR; else export ZDOTDIR; fi\nunset GEMBALA_USER_ZDOTDIR GEMBALA_ZDOTDIR\n";
+
+/// File hook OpenCode dan Oh My Pi, plus file zsh blok perintah, ditulis daemon saat start ke folder config Gembala (`0700`/`0600`).
 pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
     let exe = json!(h.exe);
     let plugin = h.dir.join("opencode-gembala.js").to_string_lossy().into_owned();
     vec![
+        (".zshenv", zsh_file(".zshenv", "")),
+        (".zprofile", zsh_file(".zprofile", "")),
+        (".zshrc", zsh_file(".zshrc", ZSH_MARKS)),
+        (".zlogin", format!("# dibuat Gembala (FR-58); .zlogin pengguna dibaca apa adanya, lalu ZDOTDIR dikembalikan\n{ZSH_RESTORE}")),
         ("opencode.json", json!({"$schema": "https://opencode.ai/config.json", "plugin": [format!("file://{plugin}")]}).to_string()),
         (
             "opencode-gembala.js",

@@ -474,6 +474,7 @@
     else if (id === "pane.proc.close") askClose(tab.focus);
     else if (id === "term.find") tiles[tab.focus]?.openFind();
     else if (id === "term.clear") tiles[tab.focus]?.clearScreen();
+    else if (id === "term.block.prev" || id === "term.block.next") tiles[tab.focus]?.jump(arg === "prev" ? -1 : 1);
     else if (id === "term.zoom.in") zoom = Math.min(16, zoom + 1);
     else if (id === "term.zoom.out") zoom = Math.max(-6, zoom - 1);
     else if (id === "term.zoom.reset") zoom = 0;
@@ -557,9 +558,13 @@
   /// FR-37: klik kanan terminal
   function paneMenu(e: MouseEvent, pane: number) {
     const tile = tiles[pane];
+    const blk = tile?.blockAt(e.clientY); // FR-58: blok perintah di bawah kursor
     popup(e, [
       ["Salin", () => copy(tile?.selection()), !!tile?.selection()],
       ["Tempel", async () => tile?.paste(await invoke<string>("paste_text").catch(() => ""))],
+      "-",
+      ["Salin perintah blok ini", () => copy(blk?.cmd), !!blk?.cmd],
+      ["Salin output blok ini", () => copy(blk?.output), !!blk?.output],
       "-",
       ["Split kanan", () => splitFocused("row")],
       ["Split bawah", () => splitFocused("col")],

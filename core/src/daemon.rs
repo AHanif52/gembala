@@ -512,6 +512,12 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let bin = std::path::Path::new(&st.hooks.exe).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
             let path = format!("{bin}:{}", std::env::var("PATH").unwrap_or_default());
             let mut env = vec![("GEMBALA_SOCKET", st.pane_sock.as_str()), ("PATH", path.as_str())];
+            // FR-58: pane zsh membaca file startup lewat folder hook (penanda blok OSC 133), lalu ZDOTDIR pengguna kembali
+            let zdot = st.hooks.dir.to_string_lossy().into_owned();
+            let user_zdot = std::env::var("ZDOTDIR").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+            if pty::login_shell().ends_with("/zsh") {
+                env.extend([("ZDOTDIR", zdot.as_str()), ("GEMBALA_USER_ZDOTDIR", user_zdot.as_str())]);
+            }
             if let Some(t) = &token {
                 env.push(("GEMBALA_TOKEN", t.as_str()));
             }

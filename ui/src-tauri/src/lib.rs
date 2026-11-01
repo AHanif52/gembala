@@ -61,6 +61,8 @@ const MSG_KEYS: &[(&str, &str, &str)] = &[
 const VIEW_KEYS: &[(&str, &str, &str)] = &[
     ("term.find", "Cari…", "Cmd+F"),
     ("term.clear", "Bersihkan layar", "Cmd+K"),
+    ("term.block.prev", "Blok perintah sebelumnya", "Cmd+Up"),
+    ("term.block.next", "Blok perintah berikutnya", "Cmd+Down"),
     ("term.zoom.in", "Perbesar", "Cmd+="),
     ("term.zoom.out", "Perkecil", "Cmd+-"),
     ("term.zoom.reset", "Ukuran asli", "Cmd+0"),

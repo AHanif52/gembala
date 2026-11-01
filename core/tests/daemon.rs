@@ -584,6 +584,23 @@ fn ringkas_agent_manual() {
     assert!(snap.contains("\x1b[?2004h"), "bracketed paste prompt hilang: {snap}");
 }
 
+/// FR-58: pane zsh memancarkan penanda blok OSC 133 (C + perintah base64, D + exit code); ZDOTDIR pengguna kembali.
+#[test]
+fn penanda_blok_zsh() {
+    let d = start("blok");
+    let mut ui = Cli::ui(&d);
+    let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.attach", json!({"pane": p})); // penanda hanya ada di stream, snapshot grid tidak memuatnya
+    std::thread::sleep(Duration::from_secs(1));
+    ui.call("pane.write", json!({"pane": p, "data": B64.encode("(exit 3)\r")}));
+    std::thread::sleep(Duration::from_millis(300));
+    ui.call("pane.write", json!({"pane": p, "data": B64.encode("echo ZD-${ZDOTDIR:-kosong}-$((1+1))\r")}));
+    let zd = std::env::var("ZDOTDIR").ok().filter(|z| Some(z) != std::env::var("HOME").ok().as_ref()).unwrap_or("kosong".into());
+    let out = ui.attach_until(p, &[&format!("ZD-{zd}-2")]);
+    assert!(out.contains(&format!("\x1b]133;C;{}\x07", B64.encode("(exit 3)"))), "{out:?}");
+    assert!(out.contains("\x1b]133;D;3\x07"), "{out:?}");
+}
+
 /// FR-9: perintah `gembala` bisa dipanggil tanpa path lengkap dari pane (login shell).
 #[test]
 fn gembala_ada_di_path_pane() {
