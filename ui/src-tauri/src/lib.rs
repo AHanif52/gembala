@@ -289,6 +289,22 @@ fn list_commands(prefix: String) -> Vec<String> {
     out
 }
 
+/// FR-59 autocomplete argumen git: branch lokal dan remote (tanpa `origin/HEAD`). Baca saja.
+#[tauri::command]
+fn git_branches(dir: String) -> Vec<String> {
+    let out = std::process::Command::new("git").args(["-C", &dir, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).output();
+    let Ok(out) = out else { return vec![] };
+    String::from_utf8_lossy(&out.stdout).lines().filter(|b| !b.ends_with("/HEAD") && !b.is_empty()).map(String::from).collect()
+}
+
+/// FR-59 autocomplete `npm run`: nama script di package.json folder itu.
+#[tauri::command]
+fn npm_scripts(dir: String) -> Vec<String> {
+    let text = std::fs::read_to_string(std::path::Path::new(&dir).join("package.json")).unwrap_or_default();
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    v["scripts"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
+}
+
 /// FR-59 saran abu-abu: riwayat zsh pengguna, terbaru dulu, tanpa duplikat (format extended `: ts:0;cmd` atau polos).
 #[tauri::command]
 fn shell_history() -> Vec<String> {
@@ -472,7 +488,7 @@ pub fn run() {
                 w.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history, git_branches, npm_scripts])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -493,6 +509,10 @@ mod tests {
         assert_eq!(super::list_dir(dir.clone(), "".into()), vec![("alpha".into(), true), ("Beta".into(), true), ("aku.txt".into(), false)]);
         assert_eq!(super::list_dir(dir.clone(), "a".into()), vec![("alpha".into(), true), ("aku.txt".into(), false)]);
         assert_eq!(super::list_dir(dir.clone(), ".".into()), vec![(".git".into(), true)]);
+        // package.json tanpa scripts = kosong; dengan scripts = namanya
+        assert!(super::npm_scripts(dir.clone()).is_empty());
+        std::fs::write(d.join("package.json"), r#"{"scripts":{"dev":"vite","test":"node --test"}}"#).unwrap();
+        assert_eq!(super::npm_scripts(dir), vec!["dev".to_string(), "test".to_string()]);
         std::fs::remove_dir_all(d).unwrap();
     }
 

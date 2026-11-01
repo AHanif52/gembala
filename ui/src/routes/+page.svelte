@@ -103,6 +103,7 @@
     try {
       await call("msg.send", { to, body, force });
       refreshMsgs();
+      say(`Pesan terkirim ke ${meta[to]?.name ?? "agent"}`);
       return "";
     } catch (e) {
       return e === "target_blocked" ? "Target sedang butuh izin; jawab langsung di pane itu" : e === "target_busy" ? "Target sedang bekerja; kirim paksa bila yakin" : String(e);
@@ -174,14 +175,20 @@
     const token = /(\S*)$/.exec(text)![1];
     const before = text.slice(0, text.length - token.length);
     let items: Comp[];
-    if (!before.trim() && !token.includes("/")) {
+    const cwd = meta[pane]?.cwd ?? homePath;
+    const pick = (names: string[], kind: string) =>
+      names.filter((n) => n.startsWith(token)).map((n) => ({ label: n, kind, insert: `${before}${n} ` }));
+    if (/^\s*git\s+(checkout|switch|merge|rebase|diff|log|branch\s+-[dD]|push\s+\S+|pull\s+\S+)\s+$/.test(before)) {
+      items = pick(await invoke<string[]>("git_branches", { dir: cwd }).catch(() => [] as string[]), "Branch");
+    } else if (/^\s*(npm|pnpm|yarn|bun)\s+run\s+$/.test(before)) {
+      items = pick(await invoke<string[]>("npm_scripts", { dir: cwd }).catch(() => [] as string[]), "Script");
+    } else if (!before.trim() && !token.includes("/")) {
       const cmds = await invoke<string[]>("list_commands", { prefix: token }).catch(() => [] as string[]);
       items = cmds.map((c) => ({ label: c, kind: "Perintah", insert: `${before}${c} ` }));
     } else {
       const tok = token.replace(/^~(?=\/|$)/, homePath);
       const cut = tok.lastIndexOf("/") + 1;
       const [dirPart, prefix] = [tok.slice(0, cut), tok.slice(cut)];
-      const cwd = meta[pane]?.cwd ?? homePath;
       const dir = dirPart.startsWith("/") ? dirPart : `${cwd}/${dirPart}`;
       const onlyDirs = before.trim() === "cd";
       const entries = await invoke<[string, boolean][]>("list_dir", { dir, prefix }).catch(() => [] as [string, boolean][]);
@@ -228,14 +235,16 @@
     if (e.key === "c" && e.ctrlKey) return void (e.preventDefault(), (draft[pane] = ""));
     const first = !ta.value.slice(0, ta.selectionStart).includes("\n");
     const last = !ta.value.slice(ta.selectionEnd).includes("\n");
-    if (e.key === "ArrowUp" && first && history.length) {
+    // ↑↓ = riwayat sesi app (terbaru) lalu riwayat zsh pengguna; hi 0 = paling baru
+    const h = [...history].reverse().concat(zhist);
+    if (e.key === "ArrowUp" && first && h.length) {
       e.preventDefault();
-      hi = hi < 0 ? history.length - 1 : Math.max(0, hi - 1);
-      draft[pane] = history[hi];
+      hi = Math.min(h.length - 1, hi + 1);
+      draft[pane] = h[hi];
     } else if (e.key === "ArrowDown" && last && hi >= 0) {
       e.preventDefault();
-      hi = hi + 1 < history.length ? hi + 1 : -1;
-      draft[pane] = hi < 0 ? "" : history[hi];
+      hi -= 1;
+      draft[pane] = hi < 0 ? "" : h[hi];
     }
   }
 
@@ -679,7 +688,17 @@
     e.stopPropagation();
     (await Menu.new({ items: opts(items) })).popup().catch(() => {});
   }
-  const copy = (text: string | null | undefined) => text && invoke("copy_text", { text }).catch(() => {});
+  const copy = (text: string | null | undefined) =>
+    text && invoke("copy_text", { text }).then(() => say("Tersalin"), () => say("Gagal menyalin"));
+
+  // umpan balik singkat untuk aksi tanpa hasil yang terlihat (bagian 11 BRD); role=status = dibacakan VoiceOver
+  let toast = $state("");
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  function say(msg: string) {
+    toast = msg;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast = ""), 1800);
+  }
 
   function tabMenu(e: MouseEvent, wi: number, t: Tab) {
     const ti = wss[wi].tabs.indexOf(t);
@@ -1363,7 +1382,7 @@
                     {#each comp.items as it, i (it.label)}
                       <button class="opt" class:on={i === comp.sel} role="option" aria-selected={i === comp.sel}
                         onpointerdown={(e) => e.preventDefault()} onclick={() => ((draft[pane] = it.insert), (comp = null))}>
-                        <span class="ico" aria-hidden="true">{it.kind === "Folder" ? "▸" : it.kind === "Perintah" ? "›" : "·"}</span>
+                        <span class="ico" aria-hidden="true">{({ Folder: "▸", Perintah: "›", Branch: "⎇", Script: "▶" } as Record<string, string>)[it.kind] ?? "·"}</span>
                         <span>{it.label}</span>
                         <span class="keys">{it.kind}</span>
                       </button>
@@ -1622,6 +1641,7 @@
     <Settings {cfg} {meta} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} />
   {/if}
   {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
+  <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
 </div>
 
 <style>
@@ -2034,6 +2054,32 @@
     color: transparent;
   }
   /* daftar Tab: di atas kotak editor */
+  .toast {
+    position: absolute;
+    left: 50%;
+    bottom: 96px;
+    z-index: 7;
+    padding: 6px 14px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    opacity: 0;
+    transform: translate(-50%, 6px);
+    transition: opacity 150ms, transform 150ms;
+    pointer-events: none;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .toast {
+      transition: none;
+    }
+  }
   .complist {
     left: 8px;
     bottom: calc(100% + 6px);
