@@ -10,6 +10,7 @@
   import { Unicode11Addon } from "@xterm/addon-unicode11";
   import "@xterm/xterm/css/xterm.css";
   import { call, b64, unb64 } from "./daemon";
+  import { encodeKey, onCsi } from "./kitty";
   import type { Ui } from "./config";
 
   let {
@@ -135,12 +136,14 @@
   /// Hanya blok dari stream sejak attach; snapshot attach tidak memuat penanda.
   type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; code?: number };
   let blocks: Block[] = [];
+  let kitty: number[] = []; // tumpukan flag protokol keyboard kitty yang diminta app di pane ini
   function onMark(data: string) {
     const [k, arg = ""] = data.split(";", 2);
     const last = blocks.at(-1);
     if (k === "B") onprompt(true);
     if (k === "C") onprompt(false);
     if (k === "A") {
+      kitty = []; // shell kembali ke prompt: flag keyboard app yang crash tidak ikut ke shell
       const a = term.registerMarker(0);
       if (a) blocks.push({ a, cmd: "" });
       if (blocks.length > 1000) blocks.shift()?.a.dispose(); // ponytail: 1000 blok terakhir, sisanya ikut scrollback
@@ -237,6 +240,13 @@
     term.unicode.activeVersion = "11"; // FR-41: lebar emoji dan CJK
     term.open(el);
     term.parser.registerOscHandler(133, onMark);
+    // protokol keyboard kitty (flag 1): jawaban tanya dikirim ke pane seperti jawaban DA milik xterm
+    for (const prefix of ["?", ">", "<", "="])
+      term.parser.registerCsiHandler({ prefix, final: "u" }, (params) => {
+        const reply = onCsi(kitty, prefix, params.map((p) => (Array.isArray(p) ? p[0] : p)));
+        if (reply) call("pane.write", { pane, data: b64(enc.encode(reply)) });
+        return true;
+      });
     term.textarea?.addEventListener("focus", () => onfocusin());
     // pendengar di induk: tombol blok berada di luar elemen xterm, kursor boleh pindah ke tombol
     const host = el.parentElement!;
@@ -319,6 +329,11 @@
     term.attachCustomKeyEventHandler((e) => {
       // FR-57: daftar @ terbuka = Tab/panah/Esc milik daftar
       if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && !e.shiftKey && onkey(e.key)) return false;
+      const ku = (kitty.at(-1) ?? 0) & 1 ? encodeKey(e, !!term.options.macOptionIsMeta) : null;
+      if (ku) {
+        if (e.type === "keydown") (track(ku), call("pane.write", { pane, data: b64(enc.encode(ku)) }));
+        return false;
+      }
       if (e.key !== "Enter" || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return true;
       if (e.type === "keydown") call("pane.write", { pane, data: b64(enc.encode("\x1b\r")) });
       return false;
