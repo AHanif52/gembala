@@ -151,6 +151,26 @@
     atPrompt[pane] = false; // muncul lagi di prompt berikutnya
     toShell(pane, text, true);
   }
+  /// FR-59: lampiran di editor = path ber-quote disisipkan ke teks (tombol +, seret file, ⌘V gambar)
+  function insertPaths(pane: number, paths: string[]) {
+    if (!paths.length) return;
+    const d = draft[pane] ?? "";
+    draft[pane] = d + (d && !d.endsWith(" ") ? " " : "") + paths.map(quote).join(" ") + " ";
+    document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus();
+  }
+  const IMG: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+  /// ⌘V gambar di editor: disimpan ke folder sementara Gembala (SEC-34) lalu path-nya disisipkan, seperti di terminal (FR-54)
+  async function pasteToEditor(pane: number, e: ClipboardEvent) {
+    const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === "file" && IMG[i.type]);
+    const file = item?.getAsFile();
+    if (!item || !file) return; // teks biasa: textarea yang menangani
+    e.preventDefault();
+    const path = await invoke<string>("save_paste", { data: b64(new Uint8Array(await file.arrayBuffer())), ext: IMG[item.type] }).catch(() => "");
+    if (!path) return say("Gagal menyimpan gambar");
+    if (meta[pane]) meta[pane].pastes = [...(meta[pane].pastes ?? []), path];
+    insertPaths(pane, [path]);
+  }
+
   /// Tab/Esc: teks pindah ke baris zsh, kendali ke terminal (autocomplete zsh tetap jalan)
   function handOff(pane: number, tab: boolean) {
     toShell(pane, draft[pane] ?? "", false);
@@ -1182,7 +1202,10 @@
     // FR-15: seret file ke jendela = path ber-quote ditempel ke pane yang fokus (bracketed paste, tanpa Enter)
     const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type !== "drop" || !tab || dead[tab.focus] || !payload.paths.length) return;
-      attach(tab.focus, payload.paths);
+      const pane = tab.focus;
+      // FR-59: editor tampil = path masuk ke editor, bukan langsung ke shell
+      if (editorShown(pane)) invoke<string[]>("resolve_paths", { paths: payload.paths }).then((p) => insertPaths(pane, p)).catch(() => {});
+      else attach(pane, payload.paths);
     });
     const onFocus = () => {
       seen = true;
@@ -1221,19 +1244,31 @@
   });
 </script>
 
+{#snippet icon(name: string)}
+  <!-- ikon garis 12px gaya Warp; currentColor ikut warna chip -->
+  <svg class="ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+    {#if name === "plus"}<path d="M8 3v10M3 8h10" />
+    {:else if name === "file"}<path d="M4 1.5h5l3 3v10H4zM9 1.5v3h3" />
+    {:else if name === "rich"}<path d="M2 3.5h12v7H2zM5 13.5h6M5 6h4" />
+    {:else if name === "folder"}<path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" />
+    {:else if name === "branch"}<path d="M5 2.5v11M5 9c0-3 6-2 6-5.5M11 2.5v1" /><circle cx="11" cy="4" r="1.3" /><circle cx="5" cy="13" r="1.3" />
+    {:else if name === "sliders"}<path d="M2 5h7M12 5h2M2 11h2M7 11h7" /><circle cx="10.5" cy="5" r="1.5" /><circle cx="5.5" cy="11" r="1.5" />{/if}
+  </svg>
+{/snippet}
+
 {#snippet chip(c: string, pane: number, g: any)}
   {#if c === "attach"}
-    <button class="chip" title="Pilih file, atau seret file ke pane" onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>Lampirkan</button>
+    <button class="chip box" title="Lampirkan file (atau seret file ke pane)" aria-label="Lampirkan file" onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
   {:else if c === "diff" && g?.repo && g.files}
-    <button class="chip" onclick={() => openChanges(pane)}>{g.files} file <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+    <button class="chip box" title="Panel perubahan ⌘⇧+" onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
-    <button class="chip" onclick={() => (rich = { pane, text: "" })}>Rich Input <span class="n">⌘G</span></button>
+    <button class="chip box" onclick={() => (rich = { pane, text: "" })}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
   {:else if c === "cwd"}
-    <span class="chip quiet" title={meta[pane]?.cwd ?? ""}>{base(meta[pane]?.cwd) || "~"}</span>
+    <span class="chip box quiet" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{home(meta[pane]?.cwd) || "~"}</span>
   {:else if c === "branch" && g?.repo && g.branch}
-    <span class="chip quiet">{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
+    <span class="chip box quiet">{@render icon("branch")}{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
   {:else if c === "settings"}
-    <button class="chip" aria-label="Pengaturan profil" onclick={() => (settingsOpen = true)}>⚙</button>
+    <button class="chip box" title="Pengaturan" aria-label="Pengaturan profil" onclick={() => (settingsOpen = true)}>{@render icon("sliders")}</button>
   {/if}
 {/snippet}
 
@@ -1241,11 +1276,9 @@
   <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging}>
     <!-- title bar transparan: area tombol jendela + geser jendela -->
     <div class="drag" data-tauri-drag-region></div>
-    <div class="toprow">
-      <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
-      <!-- FR-44: selalu terlihat walau daftar tab panjang -->
-      <button class="add wsnew" title="Workspace baru" aria-label="Workspace baru" onclick={addWorkspace}>+</button>
-    </div>
+    <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
+    <!-- FR-44: di bawah kotak cari, selalu terlihat walau daftar tab panjang -->
+    <button class="add wsnew" onclick={addWorkspace}>+ Workspace</button>
     {#each wss as w, wi (w.id)}
       <!-- FR-44: klik judul = buka/ciutkan; ganti nama lewat klik kanan atau palet -->
       <div class="ws" data-wi={wi} class:over={dragging?.over?.wi === wi && dragging.over.ti < 0} class:lift={dragging?.kind === "ws" && dragging.wi === wi}
@@ -1319,7 +1352,8 @@
       {#each [...rects(t.tree)] as [pane, r] (pane)}
         {@const hidden = !active || (zoomed && pane !== t.focus)}
         {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
-        {@const bar = !dead[pane] && [...AGENTS, "custom"].includes(meta[pane]?.agent ?? "")}
+        <!-- FR-55: toolbar untuk pane agent dari profil, dan agent yang diketik sendiri selama jalan -->
+        {@const bar = !dead[pane] && ([...AGENTS, "custom"].includes(meta[pane]?.agent ?? "") || AGENTS.includes(meta[pane]?.busy ?? ""))}
         {@const head = !zoomed && panes(t.tree).length > 1}
         {@const g = meta[pane]?.git}
         <div
@@ -1371,6 +1405,8 @@
               <div class="editor" class:withbar={bar}>
                 <!-- konteks ala Warp: folder dan branch, menggantikan prompt shell -->
                 <div class="ctx">
+                  <button class="cchip" title="Lampirkan file · bisa juga seret file atau ⌘V gambar" aria-label="Lampirkan file"
+                    onclick={async () => insertPaths(pane, await invoke<string[]>("pick_files").catch(() => [] as string[]))}>{@render icon("plus")}</button>
                   <span class="cchip" title={meta[pane]?.cwd ?? ""}>
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" fill="none" stroke="currentColor" /></svg>
                     {home(meta[pane]?.cwd) || "~"}
@@ -1399,6 +1435,7 @@
                   aria-label="Perintah untuk {meta[pane]?.name}" spellcheck="false" autocapitalize="off" autocomplete="off"
                   placeholder="Ketik perintah · Enter jalankan · Shift+Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan"
                   onkeydown={(e) => editorKey(pane, e)} oninput={() => onEditorInput(pane)} onfocus={() => (t.focus = pane)}
+                  onpaste={(e) => pasteToEditor(pane, e)}
                   oncopy={(e) => {
                     // ⌘C tanpa seleksi di editor = salin seleksi terminal (fokus selalu di editor saat editor tampil)
                     const ta = e.currentTarget;
@@ -1971,22 +2008,12 @@
     color: var(--fg);
   }
   /* pintu ke palet ⌘P, bentuk kotak cari supaya mudah ditemukan */
-  .toprow {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 4px;
-  }
   .add.find {
-    flex: 1;
-    min-width: 0;
     border: 1px solid var(--line);
   }
   .add.wsnew {
-    justify-content: center;
-    width: 30px;
-    padding: 0;
-    border: 1px solid var(--line);
-    font-size: 16px;
+    margin-bottom: 2px;
+    font-size: 12px;
   }
   .body {
     position: absolute;
@@ -2038,6 +2065,14 @@
     color: var(--fg);
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  button.cchip {
+    background: none;
+    font: inherit;
+    cursor: pointer;
+  }
+  button.cchip:hover {
+    background: var(--line);
   }
   .cchip svg {
     flex: none;
@@ -2213,6 +2248,24 @@
     color: var(--muted);
     font: inherit;
     white-space: nowrap;
+  }
+  /* chip berbingkai + ikon ala toolbar CLI agent Warp */
+  .chip.box {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 20px;
+    padding: 0 7px;
+    border: 1px solid var(--line);
+    color: var(--fg);
+  }
+  .chip.box.quiet {
+    max-width: 40%;
+  }
+  .ic {
+    flex: none;
+    width: 12px;
+    height: 12px;
   }
   button.chip:hover {
     background: var(--line);
