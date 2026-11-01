@@ -507,7 +507,11 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             };
             let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
             let token = if prof.as_ref().is_some_and(|x| x.token) { Some(new_secret().map_err(|_| "io")?[..32].to_string()) } else { None };
-            let mut env = vec![("GEMBALA_SOCKET", st.pane_sock.as_str())];
+            // FR-9: perintah `gembala` bisa dipanggil langsung dari pane (folder binary daemon di PATH;
+            // login shell mempertahankannya lewat path_helper)
+            let bin = std::path::Path::new(&st.hooks.exe).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+            let path = format!("{bin}:{}", std::env::var("PATH").unwrap_or_default());
+            let mut env = vec![("GEMBALA_SOCKET", st.pane_sock.as_str()), ("PATH", path.as_str())];
             if let Some(t) = &token {
                 env.push(("GEMBALA_TOKEN", t.as_str()));
             }
@@ -1122,7 +1126,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
     let resume = match agent {
         "claude" => pane.session.clone().or_else(|| printed_resume(&log)).map(|s| format!("claude --resume {s}")),
-        "codex" => Some("codex resume --last".into()),
+        "codex" => Some(printed_resume(&log).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
         "opencode" => Some("opencode --continue".into()),
         "omp" => Some(agent_dir.or(dir).and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),
         _ => None,
@@ -1140,9 +1144,10 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     send_all(v, line(json!({"event": "pane.replace", "params": {"pane": id, "data": B64.encode(&text)}})));
 }
 
-/// FR-56: id sesi dari baris `claude --resume <uuid>` yang dicetak Claude Code sendiri saat keluar.
+/// FR-56: id sesi dari baris yang dicetak agent sendiri saat keluar: `claude --resume <uuid>` (Claude Code)
+/// atau `codex resume <uuid>` (Codex).
 fn printed_resume(log: &[u8]) -> Option<String> {
-    let re = regex_lite::Regex::new(r"--resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})").unwrap();
+    let re = regex_lite::Regex::new(r"(?:--resume|codex resume) ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})").unwrap();
     re.captures_iter(&String::from_utf8_lossy(log)).last().map(|c| c[1].to_string())
 }
 
@@ -1278,6 +1283,8 @@ mod tests {
         let log = b"\x1b[2mResume this session with:\x1b[0m\r\nclaude --resume 87cc338d-d5dc-45c7-8adc-99937a7d18a5\r\n";
         assert_eq!(printed_resume(log).as_deref(), Some("87cc338d-d5dc-45c7-8adc-99937a7d18a5"));
         assert_eq!(printed_resume(b"claude --resume x; rm -rf /"), None);
+        let codex = b"To continue this session, run:\r\n\x1b[1mcodex resume 0199a213-81c0-7800-8aa1-bbab2a035a53\x1b[0m";
+        assert_eq!(printed_resume(codex).as_deref(), Some("0199a213-81c0-7800-8aa1-bbab2a035a53"));
     }
 
     #[test]

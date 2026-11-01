@@ -583,6 +583,18 @@ fn ringkas_agent_manual() {
     assert!(snap.contains("\x1b[?2004h"), "bracketed paste prompt hilang: {snap}");
 }
 
+/// FR-9: perintah `gembala` bisa dipanggil tanpa path lengkap dari pane (login shell).
+#[test]
+fn gembala_ada_di_path_pane() {
+    let d = start("path");
+    let mut ui = Cli::ui(&d);
+    let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    ui.call("pane.write", json!({"pane": p, "data": B64.encode("command -v gembala; echo SELESAI-P\r")}));
+    let out = ui.attach_until(p, &["SELESAI-P\r\n"]);
+    assert!(out.contains(env!("CARGO_BIN_EXE_gembala")), "{out}");
+}
+
 /// Agent yang diketik manual di pane shell terlihat oleh agent lain lewat `status` (jalur antar agent).
 #[test]
 fn agent_manual_terlihat_di_status() {
