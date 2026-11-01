@@ -10,6 +10,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { pretty, UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { Menu } from "@tauri-apps/api/menu";
+  import { homeDir } from "@tauri-apps/api/path";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { call, b64 } from "$lib/daemon";
@@ -157,9 +158,62 @@
     atPrompt[pane] = false;
     tiles[pane]?.focus();
   }
+  // FR-59 autocomplete ala Warp: saran abu-abu dari riwayat (→ terima), Tab = daftar folder/file/perintah
+  let zhist: string[] = []; // riwayat zsh, dimuat sekali saat app dibuka
+  let homePath = "";
+  type Comp = { label: string; kind: string; insert: string };
+  let comp = $state<{ pane: number; items: Comp[]; sel: number } | null>(null);
+  const ghost = (pane: number) => {
+    const d = draft[pane] ?? "";
+    if (!d || d.includes("\n") || d.startsWith("@")) return "";
+    const hit = [...history].reverse().concat(zhist).find((h) => h.startsWith(d) && h.length > d.length && !h.includes("\n"));
+    return hit ? hit.slice(d.length) : "";
+  };
+  async function complete(pane: number) {
+    const text = draft[pane] ?? "";
+    const token = /(\S*)$/.exec(text)![1];
+    const before = text.slice(0, text.length - token.length);
+    let items: Comp[];
+    if (!before.trim() && !token.includes("/")) {
+      const cmds = await invoke<string[]>("list_commands", { prefix: token }).catch(() => [] as string[]);
+      items = cmds.map((c) => ({ label: c, kind: "Perintah", insert: `${before}${c} ` }));
+    } else {
+      const tok = token.replace(/^~(?=\/|$)/, homePath);
+      const cut = tok.lastIndexOf("/") + 1;
+      const [dirPart, prefix] = [tok.slice(0, cut), tok.slice(cut)];
+      const cwd = meta[pane]?.cwd ?? homePath;
+      const dir = dirPart.startsWith("/") ? dirPart : `${cwd}/${dirPart}`;
+      const onlyDirs = before.trim() === "cd";
+      const entries = await invoke<[string, boolean][]>("list_dir", { dir, prefix }).catch(() => [] as [string, boolean][]);
+      const keep = token.slice(0, token.length - prefix.length);
+      items = entries
+        .filter(([, isDir]) => isDir || !onlyDirs)
+        .map(([n, isDir]) => ({ label: n + (isDir ? "/" : ""), kind: isDir ? "Folder" : "File", insert: before + keep + n.replace(/ /g, "\\ ") + (isDir ? "/" : " ") }));
+    }
+    if (!items.length) return;
+    if (items.length === 1) return void ((draft[pane] = items[0].insert), (comp = null));
+    comp = { pane, items, sel: 0 };
+  }
+
   function editorKey(pane: number, e: KeyboardEvent) {
     const ta = e.currentTarget as HTMLTextAreaElement;
     editorErr[pane] = "";
+    // daftar autocomplete terbuka: ↑↓ geser, Tab/Enter pilih, Esc tutup, tombol lain = daftar ditutup
+    if (comp?.pane === pane) {
+      const n = comp.items.length;
+      if (["ArrowDown", "ArrowUp", "Tab", "Enter", "Escape"].includes(e.key)) e.preventDefault();
+      if (e.key === "ArrowDown") return void (comp.sel = (comp.sel + 1) % n);
+      if (e.key === "ArrowUp") return void (comp.sel = (comp.sel + n - 1) % n);
+      if (e.key === "Tab" || e.key === "Enter") return void ((draft[pane] = comp.items[comp.sel].insert), (comp = null));
+      comp = null;
+      if (e.key === "Escape") return;
+    }
+    // saran abu-abu: → di ujung teks = terima
+    if (e.key === "ArrowRight" && ta.selectionStart === ta.value.length && ghost(pane)) {
+      e.preventDefault();
+      draft[pane] = (draft[pane] ?? "") + ghost(pane);
+      return;
+    }
     // daftar @ terbuka: Tab/Enter pilih, panah geser, Esc tutup
     if (mention?.editor && mention.pane === pane && mentionItems.length && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key)) {
       e.preventDefault();
@@ -168,8 +222,8 @@
       return;
     }
     if (e.key === "Enter" && !e.shiftKey && !e.altKey) return void (e.preventDefault(), runDraft(pane));
-    // teks `@…` milik lempar ke agent, tidak pernah dioper ke shell
-    if (e.key === "Tab" && !e.shiftKey) return void (e.preventDefault(), !ta.value.startsWith("@") && handOff(pane, true));
+    // Tab = autocomplete di editor (teks `@…` milik lempar ke agent, tidak dilengkapi)
+    if (e.key === "Tab" && !e.shiftKey) return void (e.preventDefault(), !ta.value.startsWith("@") && complete(pane));
     if (e.key === "Escape") return void (e.preventDefault(), handOff(pane, false));
     if (e.key === "c" && e.ctrlKey) return void (e.preventDefault(), (draft[pane] = ""));
     const first = !ta.value.slice(0, ta.selectionStart).includes("\n");
@@ -642,6 +696,15 @@
     ]);
   }
 
+  /// FR-52: tab baru dari profil di workspace tertentu (tombol + di kepala workspace)
+  async function profileMenu(e: MouseEvent, wi: number) {
+    e.preventDefault();
+    e.stopPropagation();
+    const agents: Agent[] = await call("agents.detect", {}).catch(() => []);
+    const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
+    popup(e, (cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? " (tidak terpasang)" : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem));
+  }
+
   function wsMenu(e: MouseEvent, wi: number) {
     const w = wss[wi];
     popup(e, [
@@ -1110,6 +1173,9 @@
     (async () => {
       try {
         cfg = await call("config.get");
+        // FR-59: bahan autocomplete
+        homePath = (await homeDir().catch(() => "")).replace(/\/$/, "");
+        invoke<string[]>("shell_history").then((h) => (zhist = h)).catch(() => {});
         await restore();
         // pane yang hidup dari run sebelumnya: daemon diberi tahu workspace-nya (aturan akses SEC-4/21)
         for (const p of Object.keys(meta).map(Number).filter((p) => !dead[p])) call("pane.workspace", { pane: p, workspace: wsIdOf(p) }).catch(() => {});
@@ -1173,8 +1239,16 @@
             {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
             <span class="wsum">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{STATUS[st]}</span> · {/if}{w.tabs.length} tab</span>
           {/if}
+          <!-- FR-52: tab baru di workspace INI; klik kanan/Option = pilih profil -->
+          <button class="wsadd" title="Tab baru di {w.name} · klik kanan: pilih profil" aria-label="Tab baru di workspace {w.name}"
+            onpointerdown={(e) => e.stopPropagation()}
+            onclick={(e) => (e.stopPropagation(), e.altKey ? profileMenu(e, wi) : newTab(undefined, wi))}
+            oncontextmenu={(e) => profileMenu(e, wi)}>+</button>
         {/if}
       </div>
+      {#if !w.collapsed && !w.tabs.length}
+        <button class="add empty-ws" onclick={() => newTab(undefined, wi)}>+ Tab</button>
+      {/if}
       {#each w.collapsed ? [] : w.tabs as t, ti (t.id)}
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
@@ -1201,7 +1275,6 @@
       {/each}
     {/each}
     <div class="adds">
-      <button class="add" onclick={openPicker}>+ Tab <span class="n">⌘T</span></button>
       <button class="add" onclick={addWorkspace}>+ Workspace</button>
     </div>
   </aside>
@@ -1247,7 +1320,7 @@
           {:else}
             {#if head}
               <!-- FR-37: kepala tipis saat tab punya lebih dari satu pane -->
-              <div class="head">
+              <div class="head" class:on={pane === t.focus}>
                 <span class="hname">{meta[pane]?.name}{meta[pane]?.busy ? ` · ${meta[pane].busy}` : ""}</span>
                 <span class="hcwd">{home(meta[pane]?.cwd)}</span>
                 <span class="grow"></span>
@@ -1284,6 +1357,22 @@
                     <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${meta[pane].git.files} file` : ""}</span>
                   {/if}
                 </div>
+                {#if comp?.pane === pane}
+                  <!-- FR-59: daftar Tab ala Warp -->
+                  <div class="mention complist" role="listbox" aria-label="Pilihan lengkapi">
+                    {#each comp.items as it, i (it.label)}
+                      <button class="opt" class:on={i === comp.sel} role="option" aria-selected={i === comp.sel}
+                        onpointerdown={(e) => e.preventDefault()} onclick={() => ((draft[pane] = it.insert), (comp = null))}>
+                        <span class="ico" aria-hidden="true">{it.kind === "Folder" ? "▸" : it.kind === "Perintah" ? "›" : "·"}</span>
+                        <span>{it.label}</span>
+                        <span class="keys">{it.kind}</span>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+                <div class="ghostwrap">
+                  <!-- saran abu-abu dari riwayat; → terima -->
+                  <div class="ghost" aria-hidden="true"><span class="typed">{draft[pane] ?? ""}</span>{ghost(pane)}</div>
                 <textarea bind:value={draft[pane]} rows={Math.min(6, (draft[pane] ?? "").split("\n").length)} data-editor={pane}
                   aria-label="Perintah untuk {meta[pane]?.name}" spellcheck="false" autocapitalize="off" autocomplete="off"
                   placeholder="Ketik perintah · Enter jalankan · Shift+Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan"
@@ -1294,6 +1383,7 @@
                     const sel = tiles[pane]?.selection();
                     if (ta.selectionStart === ta.selectionEnd && sel) (e.preventDefault(), e.clipboardData?.setData("text/plain", sel));
                   }}></textarea>
+                </div>
                 {#if editorErr[pane]}<span class="err">{editorErr[pane]}</span>{/if}
               </div>
             {/if}
@@ -1696,6 +1786,31 @@
   .ws:hover {
     color: var(--fg);
   }
+  .wsadd {
+    margin-left: auto;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+    font: 15px/1.2 system-ui, -apple-system, sans-serif;
+    visibility: hidden;
+    cursor: pointer;
+  }
+  .wsum + .wsadd {
+    margin-left: 4px;
+  }
+  .ws:hover .wsadd,
+  .wsadd:focus-visible {
+    visibility: visible;
+  }
+  .wsadd:hover {
+    background: var(--line);
+    color: var(--fg);
+  }
+  .empty-ws {
+    margin-left: 4px;
+  }
   .chev {
     width: 12px;
     margin-left: -6px;
@@ -1885,14 +2000,53 @@
     width: 12px;
     height: 12px;
   }
-  .editor textarea {
+  .ghostwrap {
+    position: relative;
+  }
+  .editor textarea,
+  .ghost {
+    box-sizing: border-box;
+    width: 100%;
+    margin: 0;
     padding: 0;
     border: 0;
+    font: 13px/1.5 "SF Mono", Menlo, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .editor textarea {
+    position: relative;
+    display: block;
     background: transparent;
     color: var(--fg);
-    font: 13px/1.5 "SF Mono", Menlo, monospace;
     resize: none;
     outline: none;
+  }
+  /* saran abu-abu di belakang teks: bagian yang sudah diketik transparan, sisanya samar */
+  .ghost {
+    position: absolute;
+    inset: 0;
+    color: var(--muted);
+    opacity: 0.6;
+    pointer-events: none;
+  }
+  .ghost .typed {
+    color: transparent;
+  }
+  /* daftar Tab: di atas kotak editor */
+  .complist {
+    left: 8px;
+    bottom: calc(100% + 6px);
+    min-width: 320px;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .complist .opt {
+    grid-template-columns: 14px 1fr auto;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  .complist .ico {
+    color: var(--muted);
   }
   /* FR-37: kepala pane; tombol muncul saat kursor di atas pane */
   .head {
@@ -1907,6 +2061,10 @@
     color: var(--muted);
     font: 11px system-ui, -apple-system, sans-serif;
     white-space: nowrap;
+  }
+  /* pane yang fokus di tab ber-split: garis bawah biru tipis */
+  .head.on {
+    border-bottom-color: rgba(59, 130, 246, 0.6);
   }
   .hname {
     color: var(--fg);

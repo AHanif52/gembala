@@ -247,6 +247,64 @@ fn copy_text(text: String) -> Result<(), String> {
     c.wait().map(drop).map_err(|e| e.to_string())
 }
 
+/// FR-59 autocomplete: isi folder yang diawali `prefix` (nama + folder?), folder dulu, maks 200.
+/// Berkas tersembunyi hanya bila awalan diawali titik. Baca saja.
+#[tauri::command]
+fn list_dir(dir: String, prefix: String) -> Vec<(String, bool)> {
+    let Ok(rd) = std::fs::read_dir(&dir) else { return vec![] };
+    let mut out: Vec<(String, bool)> = rd
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().into_string().ok()?;
+            (n.starts_with(&prefix) && (prefix.starts_with('.') || !n.starts_with('.'))).then(|| (n, e.path().is_dir()))
+        })
+        .take(2000)
+        .collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    out.truncate(200);
+    out
+}
+
+/// FR-59 autocomplete kata pertama: perintah di PATH (app dari Finder punya PATH minim, jadi folder umum ditambah).
+#[tauri::command]
+fn list_commands(prefix: String) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(String::from);
+    let mut out: Vec<String> = path
+        .split(':')
+        .map(String::from)
+        .chain(extra)
+        .chain([format!("{home}/.local/bin"), format!("{home}/.cargo/bin")])
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|rd| rd.flatten())
+        .filter(|e| e.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with(&prefix))
+        .collect();
+    out.sort();
+    out.dedup();
+    out.truncate(200);
+    out
+}
+
+/// FR-59 saran abu-abu: riwayat zsh pengguna, terbaru dulu, tanpa duplikat (format extended `: ts:0;cmd` atau polos).
+#[tauri::command]
+fn shell_history() -> Vec<String> {
+    let path = std::env::var("HISTFILE").unwrap_or_else(|_| format!("{}/.zsh_history", std::env::var("HOME").unwrap_or_default()));
+    let Ok(bytes) = std::fs::read(path) else { return vec![] };
+    let text = String::from_utf8_lossy(&bytes);
+    let mut seen = std::collections::HashSet::new();
+    text.lines()
+        .rev()
+        .map(|l| if l.starts_with(": ") { l.split_once(';').map_or(l, |(_, c)| c) } else { l })
+        .filter(|c| !c.trim().is_empty() && !c.ends_with('\\') && seen.insert(c.to_string()))
+        .take(3000)
+        .map(String::from)
+        .collect()
+}
+
 /// FR-37: Tempel dari menu klik kanan terminal (teks saja; gambar tetap lewat ⌘V, FR-54).
 #[tauri::command]
 fn paste_text() -> Result<String, String> {
@@ -414,7 +472,7 @@ pub fn run() {
                 w.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -422,6 +480,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    /// FR-59: folder dulu, saring awalan, tersembunyi hanya bila awalan diawali titik
+    #[test]
+    fn list_dir_saring_dan_urut() {
+        let d = std::env::temp_dir().join(format!("gbl-lsdir-{}", std::process::id()));
+        for sub in ["Beta", "alpha", ".git"] {
+            std::fs::create_dir_all(d.join(sub)).unwrap();
+        }
+        std::fs::write(d.join("aku.txt"), "").unwrap();
+        let dir = d.to_string_lossy().to_string();
+        assert_eq!(super::list_dir(dir.clone(), "".into()), vec![("alpha".into(), true), ("Beta".into(), true), ("aku.txt".into(), false)]);
+        assert_eq!(super::list_dir(dir.clone(), "a".into()), vec![("alpha".into(), true), ("aku.txt".into(), false)]);
+        assert_eq!(super::list_dir(dir.clone(), ".".into()), vec![(".git".into(), true)]);
+        std::fs::remove_dir_all(d).unwrap();
+    }
 
     #[test]
     fn path_symlink_diselesaikan() {
