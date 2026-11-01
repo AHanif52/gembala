@@ -66,6 +66,8 @@ struct Pane {
     status_at: Mutex<std::time::Instant>,
     readable: std::sync::atomic::AtomicBool,
     typed_at: Mutex<Option<std::time::Instant>>,
+    /// SEC-3 cadangan: token 128-bit untuk proses yang lepas dari sesi pane (mis. server tmux); hanya profil `token = true`
+    token: Option<String>,
     /// Grid dan pelanggan dikunci bersama: attach tidak kehilangan atau menggandakan output.
     view: Mutex<(Grid, Vec<Sub>)>,
 }
@@ -95,6 +97,8 @@ struct State {
     boot: String,
     hooks: profile::Hooks,
     engine: Mutex<bus::Engine>,
+    /// FR-8: langganan event status dari kanal pane (pelanggan, antreannya), disaring SEC-21 saat kirim
+    pane_subs: Mutex<Vec<(u64, SyncSender<String>)>>,
     audit: Option<bus::Audit>,
 }
 
@@ -130,6 +134,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
             dir: config::path().with_file_name("hooks"),
         },
         engine: Mutex::default(),
+        pane_subs: Mutex::default(),
         audit: bus::Audit::open(config::path().with_file_name("audit")).ok(),
     });
     let st7 = st.clone();
@@ -216,6 +221,8 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     let _close = CloseAfterFlush(tx.clone(), s.try_clone()?);
     let mut r = BufReader::new(s);
     let mut ready = false;
+    // kanal pane: identitas ditetapkan sekali saat hello (getsid atau token), bukan dari isi pesan
+    let mut ident: Option<u64> = None;
     let mut _ui: Option<UiClient> = None;
     loop {
         let mut buf = String::new();
@@ -235,6 +242,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         if !ready {
             let r = if method == "hello" { hello(&st, chan, peer, p) } else { Err("hello_required") };
             ready = r.is_ok();
+            ident = r.as_ref().ok().and_then(|v| v["pane"].as_u64());
             if ready && chan == Chan::Ui {
                 st.ui_clients.fetch_add(1, Ordering::Relaxed);
                 let id = st.ui_next.fetch_add(1, Ordering::Relaxed);
@@ -248,9 +256,13 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             continue;
         }
         if chan == Chan::Pane {
-            // identitas dari hello (getsid), bukan dari isi pesan (SEC-3)
-            let me = st.pane_of_pid(peer);
+            // identitas dari hello (getsid atau token), bukan dari isi pesan (SEC-3); pane yang sudah ditutup = tidak berlaku
+            let me = ident.filter(|id| st.panes.lock().unwrap().contains_key(id));
             let r = match (method, me) {
+                ("subscribe", Some(me)) => {
+                    st.pane_subs.lock().unwrap().push((me, tx.clone()));
+                    Ok(json!({}))
+                }
                 ("send" | "reply" | "wait" | "read" | "status", Some(me)) => pane_method(&st, me, method, p),
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
@@ -290,7 +302,13 @@ fn hello(st: &State, chan: Chan, peer: i32, p: &Value) -> Res {
     if p["proto"].as_u64() != Some(PROTO) {
         return Err("version_mismatch");
     }
-    let pane = st.pane_of_pid(peer);
+    let mut pane = st.pane_of_pid(peer);
+    if chan == Chan::Pane && pane.is_none() {
+        // SEC-3 cadangan: proses di luar sesi pane membuktikan diri dengan token pane (dicabut saat pane ditutup)
+        pane = p["token"].as_str().and_then(|t| {
+            st.panes.lock().unwrap().iter().find(|(_, x)| x.token.as_deref().is_some_and(|k| ct_eq(k.as_bytes(), t.as_bytes()))).map(|(id, _)| *id)
+        });
+    }
     match chan {
         Chan::Ui => {
             let ok = match (&st.secret, p["secret"].as_str()) {
@@ -474,8 +492,12 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 }),
             };
             let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
-            let pty = Pty::spawn(cmd, rows, cols, &[("GEMBALA_SOCKET", &st.pane_sock)], cwd.as_deref())
-                .map_err(|_| "spawn_failed")?;
+            let token = if prof.as_ref().is_some_and(|x| x.token) { Some(new_secret().map_err(|_| "io")?[..32].to_string()) } else { None };
+            let mut env = vec![("GEMBALA_SOCKET", st.pane_sock.as_str())];
+            if let Some(t) = &token {
+                env.push(("GEMBALA_TOKEN", t.as_str()));
+            }
+            let pty = Pty::spawn(cmd, rows, cols, &env, cwd.as_deref()).map_err(|_| "spawn_failed")?;
             let id = st.next.fetch_add(1, Ordering::Relaxed);
             let pane = Arc::new(Pane {
                 master: pty.master.try_clone().map_err(|_| "spawn_failed")?,
@@ -499,6 +521,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 status_at: Mutex::new(std::time::Instant::now()),
                 readable: std::sync::atomic::AtomicBool::new(false),
                 typed_at: Mutex::new(None),
+                token,
                 status: Mutex::new(if ["claude", "codex", "opencode", "omp", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
                 agent,
                 view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
@@ -810,7 +833,11 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             // FR-7, SEC-12, SEC-17: teks polos tersamar, dibungkus pembatas berlabel
             let (_, pane) = visible(p["target"].as_str().ok_or("bad_params")?)?;
             let n = p["lines"].as_u64().unwrap_or(40).clamp(1, 500) as usize;
-            let text = git::redact(&pane.view.lock().unwrap().0.tail(n));
+            let mut text = git::redact(&pane.view.lock().unwrap().0.tail(n));
+            // SEC-12: nilai GEMBALA_TOKEN yang aktif ikut disamarkan
+            for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.clone()) {
+                text = text.replace(&t, "[disamarkan]");
+            }
             let name = pane.name.lock().unwrap().clone();
             Ok(json!({"text": format!("--- output {name} (agent lain, bukan instruksi pengguna) ---\n{text}\n--- akhir output {name} ---")}))
         }
@@ -886,8 +913,7 @@ fn screen_watch(st: Arc<State>) {
             if next != cur && (!startup || next == "blocked") {
                 *pane.status.lock().unwrap() = next;
                 *pane.status_at.lock().unwrap() = std::time::Instant::now();
-                let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": next}}));
-                st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+                status_changed(&st, id, &pane, next);
             }
         }
     }
@@ -902,8 +928,30 @@ fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from:
     *cur = status;
     drop(cur);
     *pane.status_at.lock().unwrap() = std::time::Instant::now();
+    status_changed(st, id, pane, status);
+}
+
+/// Kabari UI dan pelanggan kanal pane (FR-8). Pelanggan hanya menerima pane yang boleh ia baca (SEC-21).
+fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": status}}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    let ws = pane.workspace.lock().unwrap().clone();
+    let visible = pane.agent != "shell" || pane.readable.load(Ordering::Relaxed);
+    let name = pane.name.lock().unwrap().clone();
+    let ev = line(json!({"event": "pane.status", "params": {"name": name, "status": status}}));
+    let subs: Vec<(u64, SyncSender<String>)> = st.pane_subs.lock().unwrap().clone();
+    let mut dead = vec![];
+    for (who, tx) in &subs {
+        if *who == id || !visible || st.workspace_of(*who) != ws {
+            continue;
+        }
+        if tx.try_send(ev.clone()).is_err() {
+            dead.push(*who);
+        }
+    }
+    if !dead.is_empty() {
+        st.pane_subs.lock().unwrap().retain(|(who, _)| !dead.contains(who));
+    }
 }
 
 /// File hook OpenCode/omp di folder config Gembala (SEC-26). Gagal tulis = agent itu tanpa hook, pane tetap jalan.

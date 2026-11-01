@@ -18,14 +18,15 @@ const USAGE: &str = "pakai: gembala daemon [--secret-fd N]
        gembala wait [<pane>] [--reply <msg_id>] [--pattern <regex>] [--timeout <detik>]
        gembala read <pane> [-n <baris>]
        gembala reply <msg_id> <teks…>
-       gembala status";
+       gembala status
+       gembala watch";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str).unwrap_or_default() {
         "daemon" => daemon(&args[1..]),
         "hook" => hook(&args[1..]),
-        cmd @ ("send" | "wait" | "read" | "reply" | "status") => agent_cli(cmd, &args[1..]),
+        cmd @ ("send" | "wait" | "read" | "reply" | "status" | "watch") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -122,7 +123,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
             "target": rest.first(), "reply": opt.get("reply"), "pattern": opt.get("pattern"),
             "timeout_ms": opt.get("timeout").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok()).map(|s| s * 1000),
         }),
-        "status" => json!({}),
+        "status" | "watch" => json!({}),
         _ => return usage(),
     };
     let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else {
@@ -134,11 +135,23 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
         let mut s = std::os::unix::net::UnixStream::connect(sock)?;
         let mut r = BufReader::new(s.try_clone()?);
         let mut l = String::new();
-        writeln!(s, "{}", json!({"id": 1, "method": "hello", "params": {"proto": daemon::PROTO, "client": "cli"}}))?;
+        let token = std::env::var("GEMBALA_TOKEN").ok();
+        writeln!(s, "{}", json!({"id": 1, "method": "hello", "params": {"proto": daemon::PROTO, "client": "cli", "token": token}}))?;
         r.read_line(&mut l)?;
         let hello: Value = serde_json::from_str(&l).unwrap_or_default();
         if hello.get("result").is_none() {
             return Ok(hello);
+        }
+        if cmd == "watch" {
+            // FR-8: satu baris JSON per perubahan status pane yang boleh dibaca, sampai dihentikan
+            writeln!(s, "{}", json!({"id": 2, "method": "subscribe", "params": {}}))?;
+            for line in r.lines() {
+                let v: Value = serde_json::from_str(&line?).unwrap_or_default();
+                if v.get("event").is_some() {
+                    println!("{}", v["params"]);
+                }
+            }
+            return Ok(json!({"result": {"closed": true}}));
         }
         writeln!(s, "{}", json!({"id": 2, "method": cmd, "params": params}))?;
         l.clear();

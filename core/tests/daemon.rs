@@ -765,3 +765,53 @@ fn kriteria_7_key_tidak_ke_disk() {
         assert!(!String::from_utf8_lossy(&bytes).contains("PALSU1234567890"), "key bocor ke {}", f.display());
     }
 }
+
+/// FR-8 + SEC-21: langganan status hanya untuk pane di workspace yang sama.
+#[test]
+fn langganan_status_per_workspace() {
+    let d = start("sub");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let toml = sh_profile("lihat", &format!("'{g}' watch"))
+        + &sh_profile("sini", "sleep 5; printf 'Lanjut? (y/n) '; sleep 60")
+        + &sh_profile("sana", "sleep 5; printf 'Lanjut? (y/n) '; sleep 60");
+    profiles(&d, &mut ui, &toml, "watch");
+    let w = ui.call("pane.create", json!({"profile": "lihat", "workspace": "w1"}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.create", json!({"profile": "sini", "workspace": "w1"}));
+    ui.call("pane.create", json!({"profile": "sana", "workspace": "w2"}));
+    let out = ui.attach_until(w, &["\"name\":\"sini-1\",\"status\":\"blocked\""]);
+    assert!(out.contains("\"name\":\"sini-1\",\"status\":\"blocked\""), "{out}");
+    std::thread::sleep(Duration::from_secs(1));
+    let mut ui2 = Cli::ui(&d);
+    let all = ui2.attach_until(w, &["tidak-ada"]);
+    assert!(!all.contains("sana-1"), "workspace lain tidak boleh terlihat: {all}");
+}
+
+/// SEC-3 cadangan: proses yang lepas dari sesi pane hanya dikenali lewat token profil `token = true`;
+/// token tersamar di `read` (SEC-12).
+#[test]
+fn token_cadangan() {
+    let d = start("token");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    // perl POSIX::setsid = proses keluar dari sesi pane, seperti server tmux
+    let lepas = format!("sleep 1; perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' '{g}' status; echo; echo TOKEN=$GEMBALA_TOKEN; echo SELESAI-T; sleep 30");
+    let toml = sh_profile("bertoken", &lepas) + "token = true\n" + &sh_profile("tanpa", &lepas);
+    profiles(&d, &mut ui, &toml, "SELESAI-T");
+    let a = ui.call("pane.create", json!({"profile": "bertoken", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let b = ui.call("pane.create", json!({"profile": "tanpa", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out_a = ui.attach_until(a, &["SELESAI-T"]);
+    let mut ui2 = Cli::ui(&d);
+    let out_b = ui2.attach_until(b, &["SELESAI-T"]);
+    assert!(out_a.contains("\"me\":\"bertoken-1\""), "{out_a}");
+    assert!(out_b.contains("not_a_pane"), "{out_b}");
+    // token tidak ikut terbaca agent lain
+    let token: String = out_a.split("TOKEN=").nth(1).unwrap_or_default().chars().take(32).collect();
+    assert_eq!(token.len(), 32, "{out_a}");
+    let read_script = format!("sleep 1; '{g}' read bertoken-1 -n 50; echo SELESAI-R; sleep 30");
+    profiles(&d, &mut ui, &(sh_profile("bertoken", &lepas) + "token = true\n" + &sh_profile("baca", &read_script)), "SELESAI-R");
+    let r = ui.call("pane.create", json!({"profile": "baca", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let mut ui3 = Cli::ui(&d);
+    let read = ui3.attach_until(r, &["SELESAI-R"]);
+    assert!(read.contains("TOKEN=[disamarkan]") && !read.contains(&token), "{read}");
+}

@@ -25,6 +25,8 @@ pub struct Profile {
     pub notify: bool,
     /// SEC-5: kebijakan penerima `auto` | `confirm` | `deny`
     pub policy: String,
+    /// SEC-3 cadangan: beri `GEMBALA_TOKEN` (mis. agent yang jalan di dalam tmux)
+    pub token: bool,
 }
 
 /// (agent, nama, perintah, perintah instal yang ditampilkan bila tidak ada, versi teruji major.minor)
@@ -49,6 +51,7 @@ pub fn builtin() -> Vec<Profile> {
         summarize: true,
         notify: true,
         policy: "auto".into(),
+        token: false,
     };
     let agents = AGENTS.iter().map(|(agent, name, cmd, _, _)| Profile {
         id: agent.to_string(),
@@ -113,7 +116,7 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
                 Some(_) => errors.push(format!("{}: teks tidak sah, memakai bawaan", at(key))),
             }
         }
-        for (key, field) in [("summarize", &mut p.summarize), ("notify", &mut p.notify)] {
+        for (key, field) in [("summarize", &mut p.summarize), ("notify", &mut p.notify), ("token", &mut p.token)] {
             match t.get(key).map(|v| v.as_bool()) {
                 None => {}
                 Some(Some(b)) => *field = b,
@@ -310,7 +313,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
 
 pub fn to_json(p: &Profile) -> Value {
     json!({
-        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy,
+        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy, "token": p.token,
         "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
         "secret_env": p.secret_env.iter().map(|(k, r)| json!({"name": k, "ref": r})).collect::<Vec<_>>(),
     })
