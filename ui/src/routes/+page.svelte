@@ -1038,15 +1038,18 @@
   <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging}>
     <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
     {#each wss as w, wi (w.id)}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- FR-44: klik judul = buka/ciutkan; ganti nama lewat klik kanan atau palet -->
       <div class="ws" data-wi={wi} class:over={dragging?.over?.wi === wi && dragging.over.ti < 0} class:lift={dragging?.kind === "ws" && dragging.wi === wi}
+        role="button" tabindex="0" aria-expanded={!w.collapsed} title={w.root}
+        onclick={() => editing?.id !== w.id && (w.collapsed = !w.collapsed)}
+        onkeydown={(e) => e.key === "Enter" && e.target === e.currentTarget && (w.collapsed = !w.collapsed)}
         onpointerdown={(e) => startDrag(e, "ws", wi)} oncontextmenu={(e) => wsMenu(e, wi)}>
         {#if editing?.kind === "ws" && editing.id === w.id}
           <!-- svelte-ignore a11y_autofocus -->
           <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama workspace" />
         {:else}
-          <button class="chev" aria-expanded={!w.collapsed} aria-label="{w.collapsed ? 'Buka' : 'Ciutkan'} workspace {w.name}" onclick={() => (w.collapsed = !w.collapsed)}>{w.collapsed ? "▸" : "▾"}</button>
-          <span class="wsname" role="button" tabindex="-1" title={w.root} ondblclick={() => (editing = { kind: "ws", id: w.id, value: w.name })}>{w.name}</span>
+          <span class="chev" aria-hidden="true">{w.collapsed ? "▸" : "▾"}</span>
+          <span class="wsname">{w.name}</span>
           {#if w.collapsed}
             <!-- FR-44: diciutkan tetap menampilkan jumlah tab dan status terberat -->
             {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
@@ -1479,15 +1482,18 @@
     color: var(--fg);
     font-weight: 600;
   }
+  .ws {
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .ws:hover {
+    color: var(--fg);
+  }
   .chev {
     width: 12px;
     margin-left: -6px;
-    padding: 0;
-    border: 0;
-    background: none;
     color: var(--muted);
     font-size: 10px;
-    cursor: pointer;
   }
   .wsum {
     margin-left: auto;
