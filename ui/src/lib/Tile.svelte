@@ -263,9 +263,10 @@
 {/if}
 
 <style>
+  /* jarak tepi ala Warp: teks tidak menempel ke pemisah */
   .term {
     position: absolute;
-    inset: 6px 4px 2px 8px;
+    inset: 10px 8px 6px 14px;
   }
   .find {
     position: absolute;

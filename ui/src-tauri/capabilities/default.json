@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Izin minimal jendela utama (SEC-24). Tambah per perintah yang benar-benar dipakai.",
+  "description": "Izin minimal jendela utama (SEC-24). Tambah per perintah yang benar-benar dipakai. start-dragging: title bar transparan, jendela digeser dari strip atas (data-tauri-drag-region).",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

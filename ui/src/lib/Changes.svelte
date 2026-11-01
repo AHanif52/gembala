@@ -1,14 +1,32 @@
 <script lang="ts">
-  // Panel perubahan ala Warp (FR-22): baca saja. Diff sudah disamarkan daemon (SEC-12).
+  // Panel perubahan ala Warp (FR-22): baca saja, menempel di kanan (terminal menyempit). Diff disamarkan daemon (SEC-12).
+  import { invoke } from "@tauri-apps/api/core";
   let {
     status,
     diff,
+    width,
     onclose,
+    onreload,
+    onwidth,
   }: {
     status: any;
     diff: { repo: boolean; diff?: string; truncated?: boolean; untracked?: string[] } | null;
+    width: number;
     onclose: () => void;
+    onreload: () => void;
+    onwidth: (w: number) => void;
   } = $props();
+
+  function grip(e: PointerEvent) {
+    const move = (m: PointerEvent) => onwidth(Math.min(innerWidth * 0.7, Math.max(320, innerWidth - m.clientX)));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    e.preventDefault();
+  }
 
   type File = { path: string; lines: string[]; add: number; del: number };
 
@@ -50,10 +68,11 @@
 
   let copied = $state("");
   const copy = (text: string, what: string) =>
-    navigator.clipboard.writeText(text).then(() => (copied = `${what} tersalin`), () => (copied = "Gagal menyalin"));
+    invoke("copy_text", { text }).then(() => (copied = `${what} tersalin`), () => (copied = "Gagal menyalin"));
 </script>
 
-<aside class="panel" aria-label="Panel perubahan">
+<aside class="panel" aria-label="Panel perubahan" style:width="{width}px">
+  <div class="grip" onpointerdown={grip} role="separator" aria-orientation="vertical" aria-label="Lebar panel"></div>
   <header>
     {#if status?.repo}
       <span class="repo">{status.root?.split("/").at(-1)}</span>
@@ -62,7 +81,8 @@
       <span class="repo">Perubahan</span>
     {/if}
     <span class="m">{copied}</span>
-    <button class="mini" onclick={onclose} aria-label="Tutup panel">Esc</button>
+    <button class="mini" onclick={onreload} title="Muat ulang" aria-label="Muat ulang diff">↻</button>
+    <button class="mini" onclick={onclose} title="Tutup ⌘⇧G atau Esc" aria-label="Tutup panel">×</button>
   </header>
   <div class="body">
     {#if !diff}
@@ -99,9 +119,8 @@
 
 <style>
   .panel {
-    position: absolute;
+    position: fixed;
     inset: 0 0 0 auto;
-    width: min(46%, 640px);
     z-index: 4;
     display: flex;
     flex-direction: column;
@@ -109,6 +128,15 @@
     background: var(--card);
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
+  }
+  .grip {
+    position: absolute;
+    inset: 0 auto 0 -3px;
+    width: 7px;
+    cursor: col-resize;
+  }
+  .grip:hover {
+    background: linear-gradient(to right, transparent 3px, var(--muted) 3px, var(--muted) 4px, transparent 4px);
   }
   header {
     display: flex;
@@ -162,6 +190,18 @@
   }
   .del {
     color: #dc2626;
+  }
+  /* baris diff berlatar penuh ala Warp */
+  pre span.add,
+  pre span.del {
+    display: inline-block;
+    min-width: 100%;
+  }
+  pre span.add {
+    background: rgba(22, 163, 74, 0.12);
+  }
+  pre span.del {
+    background: rgba(220, 38, 38, 0.12);
   }
   .mini {
     padding: 2px 8px;

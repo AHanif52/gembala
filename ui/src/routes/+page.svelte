@@ -233,12 +233,22 @@
   }
 
   async function openChanges(pane: number) {
-    if (changes?.pane === pane) return void (changes = null);
-    changes = { pane, diff: null };
+    if (changes) return void (changes = null);
+    loadChanges(pane);
+  }
+
+  /// FR-22: panel menempel ikut pane yang fokus; diff lama tetap tampil sampai yang baru datang
+  async function loadChanges(pane: number) {
+    changes = { pane, diff: changes?.pane === pane ? changes.diff : null };
     refreshGit(pane);
     const diff = await call("git.diff", { pane }).catch(() => ({ repo: false }));
     if (changes?.pane === pane) changes.diff = diff;
   }
+  let panelW = $state(460); // FR-22: lebar panel perubahan, disimpan di layout
+  $effect(() => {
+    const f = tab?.focus;
+    if (changes && f !== undefined && f !== changes.pane && !dead[f]) loadChanges(f);
+  });
 
   /// FR-14: teks dikirim sebagai bracketed paste + satu Enter. ESC, kontrol C0 selain baris baru/tab,
   /// dan kontrol C1 dibuang supaya isi tidak bisa menutup paste lebih awal.
@@ -858,6 +868,7 @@
       const a = saved.at ?? {};
       at = wss[a.ws]?.tabs[a.tab] ? { ws: a.ws, tab: a.tab } : { ws: 0, tab: 0 };
       if (typeof saved.side === "number") sideW = Math.min(480, Math.max(160, saved.side));
+      if (typeof saved.panel === "number") panelW = Math.min(1600, Math.max(320, saved.panel));
       return;
     }
     wss = [{ id: uid(), name: "default", root: "~", tabs: [] }];
@@ -918,7 +929,10 @@
   function onStatus(pane: number, status: string) {
     if (!meta[pane]) return;
     meta[pane].status = status;
-    if (status === "done" || status === "idle") refreshGit(pane); // toolbar diperbarui per giliran (TECH 7a)
+    if (status === "done" || status === "idle") {
+      refreshGit(pane); // toolbar diperbarui per giliran (TECH 7a)
+      if (changes?.pane === pane) loadChanges(pane); // FR-22: panel ikut diperbarui
+    }
     if (status === "blocked") alert(pane, "blocked", "butuh izin");
     if (status === "done") alert(pane, "done", "selesai");
   }
@@ -926,7 +940,7 @@
   // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
-    const body = JSON.stringify({ version: 1, boot, at, side: sideW, workspaces: wss, panes: meta });
+    const body = JSON.stringify({ version: 1, boot, at, side: sideW, panel: panelW, workspaces: wss, panes: meta });
     if (!wss.length || !boot) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => call("layout.save", { layout: JSON.parse(body) }).catch(() => {}), 500);
@@ -1036,6 +1050,8 @@
 
 {#if sidebar}
   <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging}>
+    <!-- title bar transparan: area tombol jendela + geser jendela -->
+    <div class="drag" data-tauri-drag-region></div>
     <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
     {#each wss as w, wi (w.id)}
       <!-- FR-44: klik judul = buka/ciutkan; ganti nama lewat klik kanan atau palet -->
@@ -1090,7 +1106,9 @@
   <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label="Lebar sidebar"></div>
 {/if}
 
-<div class="grid" style:left={sidebar ? `${sideW}px` : "0"} bind:this={box}>
+{#if !sidebar}<div class="drag top" data-tauri-drag-region></div>{/if}
+
+<div class="grid" style:left={sidebar ? `${sideW}px` : "0"} style:top={sidebar ? "0" : "28px"} style:right={changes ? `${panelW}px` : "0"} bind:this={box}>
   {#if ws && !tab}
     <div class="empty">
       <span>Workspace {ws.name} kosong</span>
@@ -1299,7 +1317,8 @@
     </div>
   {/if}
   {#if changes}
-    <Changes status={meta[changes.pane]?.git} diff={changes.diff} onclose={() => (changes = null)} />
+    <Changes status={meta[changes.pane]?.git} diff={changes.diff} width={panelW} onwidth={(w: number) => (panelW = w)}
+      onreload={() => changes && loadChanges(changes.pane)} onclose={() => (changes = null)} />
   {/if}
   {#if renameError}
     <div class="confirm" role="alert">
@@ -1450,11 +1469,61 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 10px 8px;
+    padding: 40px 8px 10px; /* atas: tombol jendela macOS (title bar transparan) */
     border-right: 1px solid var(--line);
     overflow-y: auto;
     font: 13px system-ui, -apple-system, sans-serif;
     color: var(--fg);
+  }
+  .drag {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 36px;
+  }
+  .drag.top {
+    position: fixed;
+    height: 28px;
+    z-index: 5;
+  }
+  /* polish ala Warp: huruf halus, scrollbar tipis, hover lembut */
+  :global(body) {
+    -webkit-font-smoothing: antialiased;
+  }
+  :global(::-webkit-scrollbar) {
+    width: 8px;
+    height: 8px;
+  }
+  :global(::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+  :global(::-webkit-scrollbar-thumb) {
+    border: 2px solid transparent;
+    border-radius: 4px;
+    background: var(--line) padding-box;
+  }
+  :global(::-webkit-scrollbar-thumb:hover) {
+    background: var(--muted) padding-box;
+  }
+  .tab,
+  .add,
+  .opt,
+  .chip,
+  .hb,
+  .ws {
+    transition: background-color 120ms, color 120ms;
+  }
+  .tab:hover:not(.on) {
+    background: color-mix(in srgb, var(--line) 55%, transparent);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tab,
+    .add,
+    .opt,
+    .chip,
+    .hb,
+    .ws {
+      transition: none;
+    }
   }
   .edit {
     width: 100%;
@@ -1949,6 +2018,16 @@
     height: 7px !important;
     cursor: row-resize;
     background: linear-gradient(to bottom, transparent 3px, var(--line) 3px, var(--line) 4px, transparent 4px);
+  }
+  /* pemisah menyala saat disentuh: jelas bisa diseret */
+  .divider.row:hover {
+    background: linear-gradient(to right, transparent 3px, var(--muted) 3px, var(--muted) 4px, transparent 4px);
+  }
+  .divider.col:hover {
+    background: linear-gradient(to bottom, transparent 3px, var(--muted) 3px, var(--muted) 4px, transparent 4px);
+  }
+  .sidegrip:hover {
+    background: linear-gradient(to right, transparent 3px, var(--muted) 3px, var(--muted) 4px, transparent 4px);
   }
   .confirm {
     position: absolute;
