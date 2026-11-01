@@ -94,6 +94,15 @@
   let failed = $state("");
   let keys = $state<[string, string, string][]>([]);
   let keyErrors = $state<string[]>([]);
+  let keyEdit = $state<{ id: string; combo: string } | null>(null);
+
+  /// FR-39: kombinasi ditulis sebagai teks (WKWebView tidak meneruskan semua kombinasi ⌘ ke halaman)
+  async function saveKey(id: string, combo: string) {
+    failed = "";
+    keyEdit = null;
+    const r = await call("keys.set", { action: id, combo: combo.trim() }).catch((e) => ({ error: String(e) }));
+    if (r.error) failed = r.error;
+  }
   let version = $state("");
   let agents = $state<Agent[]>([]);
   let detecting = $state(false);
@@ -321,15 +330,31 @@
         {/if}
         <section>
           {#each keys as [id, label, key]}
-            <div class="row"><span>{label}<small class="m">{id}</small></span><kbd>{key ? pretty(key) : "—"}</kbd></div>
+            <div class="row">
+              <span class="grow">{label}<small class="m">{id}</small></span>
+              {#if keyEdit?.id === id}
+                <!-- svelte-ignore a11y_autofocus -->
+                <input class="keyin" bind:value={keyEdit.combo} autofocus aria-label="Kombinasi untuk {label}" spellcheck="false" placeholder="mis. cmd+shift+d"
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") saveKey(id, keyEdit?.combo ?? "");
+                    if (e.key === "Escape") (e.stopPropagation(), (keyEdit = null));
+                  }} />
+              {:else}
+                <kbd>{key ? pretty(key) : "—"}</kbd>
+              {/if}
+              <span class="acts">
+                <button class="mini" onclick={() => (keyEdit = { id, combo: key.toLowerCase() })}>Ubah</button>
+                <button class="mini" title="Kembali ke pintasan bawaan" onclick={() => saveKey(id, "")}>Bawaan</button>
+              </span>
+            </div>
           {/each}
           <div class="row"><span>Salin / tempel</span><kbd>⌘C ⌘V</kbd></div>
           <div class="row"><span>Pengaturan</span><kbd>⌘,</kbd></div>
           <div class="row"><span>Shift+Tab, Ctrl, dan tombol lain</span><span class="m">diteruskan ke terminal</span></div>
         </section>
         <p class="note">
-          ⌘ milik aplikasi; tombol lain milik terminal. Ubah lewat bagian <code>[keys]</code> di config.toml, mis.
-          <code>"cmd+t" = "pane.split.right"</code>; berlaku tanpa restart.
+          ⌘ milik aplikasi; tombol lain milik terminal, jadi kombinasi wajib memakai <code>cmd</code>. "Ubah" menulis ke bagian
+          <code>[keys]</code> di config.toml (mis. <code>"cmd+t" = "pane.split.right"</code>); berlaku tanpa restart, bentrok ditandai di atas.
         </p>
       {:else if sec === "keamanan"}
         <section>
@@ -491,6 +516,15 @@
   }
   .seg button.on {
     background: var(--line);
+  }
+  .keyin {
+    width: 150px;
+    padding: 3px 6px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 12px "SF Mono", Menlo, monospace;
   }
   .grow {
     min-width: 0;

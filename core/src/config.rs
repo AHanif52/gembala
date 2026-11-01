@@ -274,6 +274,28 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), String> {
     commit(path, &doc, &before)
 }
 
+/// FR-39: pintasan dari Pengaturan. Kombinasi lama untuk aksi itu dibuang; `combo` kosong = kembali ke bawaan.
+/// Kombinasi dan nama aksi diperiksa lagi (wajib cmd, bentrok) oleh sisi Rust app yang membangun menu.
+pub fn set_key(path: &Path, action: &str, combo: &str) -> Result<(), String> {
+    let ok = |s: &str, extra: &str| s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
+    if action.is_empty() || !ok(action, "._") || !ok(combo, "+.,=-;'/[]\\`") {
+        return Err("kombinasi atau aksi tidak sah".into());
+    }
+    let (mut doc, before) = read_doc(path)?;
+    if doc.get("keys").is_none() {
+        doc["keys"] = toml_edit::table();
+    }
+    let keys = doc["keys"].as_table_like_mut().ok_or("keys: harus tabel")?;
+    let old: Vec<String> = keys.iter().filter(|(_, v)| v.as_str() == Some(action)).map(|(k, _)| k.to_string()).collect();
+    for k in old {
+        keys.remove(&k);
+    }
+    if !combo.is_empty() {
+        keys.insert(&combo.to_lowercase(), toml_edit::value(action));
+    }
+    commit(path, &doc, &before)
+}
+
 /// FR-29: profil bawaan kembali ke asal / profil tambahan dihapus = semua `[[profile]]` dengan id itu dibuang.
 pub fn reset_profile(path: &Path, id: &str) -> Result<(), String> {
     let (mut doc, before) = read_doc(path)?;
@@ -334,6 +356,18 @@ mod tests {
         let p = scratch("toolbar");
         set(&p, "toolbar", "left", &json!(["diff"])).unwrap();
         assert_eq!(load(Some(&fs::read_to_string(&p).unwrap())).values["toolbar"]["left"], json!(["diff"]));
+    }
+
+    #[test]
+    fn pintasan_dari_pengaturan() {
+        let p = scratch("keys");
+        set_key(&p, "pane.split.right", "Cmd+T").unwrap();
+        set_key(&p, "pane.split.right", "cmd+e").unwrap(); // menggantikan, bukan menambah
+        let c = load(Some(&fs::read_to_string(&p).unwrap()));
+        assert_eq!(c.values["keys"], json!({"cmd+e": "pane.split.right"}));
+        set_key(&p, "pane.split.right", "").unwrap();
+        assert_eq!(load(Some(&fs::read_to_string(&p).unwrap())).values["keys"], json!({}));
+        assert!(set_key(&p, "x\ny", "cmd+a").is_err());
     }
 
     #[test]

@@ -356,7 +356,9 @@
       return stop(e);
     }
     if (settingsOpen && !quitAsk) {
-      if (e.key === "Escape") {
+      // Esc di kotak isian Pengaturan = batal isian, bukan tutup Pengaturan
+      const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+      if (e.key === "Escape" && !typing) {
         settingsOpen = false;
         e.preventDefault();
       }
