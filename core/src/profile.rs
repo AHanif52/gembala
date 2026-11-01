@@ -266,6 +266,19 @@ __gembala_preexec() { builtin print -rn -- $'\e]133;C;'"$(builtin print -rn -- "
 autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hook preexec __gembala_preexec
 "#;
 
+/// FR-9: agent yang diketik manual di pane juga menerima petunjuk `gembala` (flag yang sama dengan profil).
+/// `function name` (bukan `name()`) supaya alias pengguna bernama sama tidak merusak definisi; alias tetap jalan
+/// lewat fungsi ini. Claude/OMP hanya saat membuka TUI (tanpa argumen atau argumen pertama opsi), bukan subperintah.
+/// ponytail: `claude "prompt"` positional tidak diberi petunjuk; OpenCode manual belum.
+fn zsh_agents(petunjuk: &str) -> String {
+    let f = q(petunjuk);
+    format!(
+        "function claude {{ if (( ! $# )) || [[ $1 == -* ]]; then command claude --append-system-prompt \"$(<{f})\" \"$@\"; else command claude \"$@\"; fi }}\n\
+         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp \"--append-system-prompt=$(<{f})\" \"$@\"; else command omp \"$@\"; fi }}\n\
+         function codex {{ command codex -c \"$(<{f}.codex)\" \"$@\" }}\n"
+    )
+}
+
 const ZSH_RESTORE: &str = "ZDOTDIR=$GEMBALA_USER_ZDOTDIR\n[[ -f \"$ZDOTDIR/.zlogin\" ]] && builtin source \"$ZDOTDIR/.zlogin\"\n\
 if [[ $ZDOTDIR == $HOME ]]; then unset ZDOTDIR; else export ZDOTDIR; fi\nunset GEMBALA_USER_ZDOTDIR GEMBALA_ZDOTDIR\n";
 
@@ -276,7 +289,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
     vec![
         (".zshenv", zsh_file(".zshenv", "")),
         (".zprofile", zsh_file(".zprofile", "")),
-        (".zshrc", zsh_file(".zshrc", ZSH_MARKS)),
+        (".zshrc", zsh_file(".zshrc", &format!("{ZSH_MARKS}{}", zsh_agents(&h.dir.join("gembala.md").to_string_lossy())))),
         (".zlogin", format!("# dibuat Gembala (FR-58); .zlogin pengguna dibaca apa adanya, lalu ZDOTDIR dikembalikan\n{ZSH_RESTORE}")),
         (
             "opencode.json",
@@ -285,6 +298,8 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
             .to_string(),
         ),
         ("gembala.md", format!("{PETUNJUK}\n")),
+        // nilai `-c` Codex untuk agent manual (string TOML = string JSON tanpa karakter khusus)
+        ("gembala.md.codex", format!("developer_instructions={}", json!(PETUNJUK))),
         (
             "opencode-gembala.js",
             format!(
@@ -518,6 +533,8 @@ mod tests {
         let oc: serde_json::Value = serde_json::from_str(&files.iter().find(|f| f.0 == "opencode.json").unwrap().1).unwrap();
         assert_eq!(oc["instructions"][0], "/cfg/hooks/gembala.md");
         assert!(files.iter().any(|f| f.0 == "gembala.md" && f.1.contains(PETUNJUK)));
+        let rc = &files.iter().find(|f| f.0 == ".zshrc").unwrap().1;
+        assert!(rc.contains("function claude {") && rc.contains("'/cfg/hooks/gembala.md'"), "{rc}");
         assert!(launch(&by("opencode"), Some(&h), None).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
         assert!(launch(&by("omp"), Some(&h), None).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
         assert_eq!(launch(&by("shell"), Some(&h), None), None);
