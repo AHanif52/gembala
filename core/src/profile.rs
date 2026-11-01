@@ -202,6 +202,13 @@ pub fn screen_status(tail: &str, quiet: std::time::Duration, prev: &str) -> &'st
     }
 }
 
+/// Petunjuk perintah `gembala` untuk agent dari profil, lewat flag resmi `--append-system-prompt` (Claude, OMP).
+/// Config agent tidak disentuh; agent yang diketik manual memakai paragraf di file instruksi global pengguna.
+pub const PETUNJUK: &str = "Kamu berjalan di pane Gembala. Agent lain di workspace yang sama dihubungi lewat `gembala` (di PATH, \
+keluaran JSON): `gembala status` = daftar pane; `gembala send <pane> <pesan>` = kirim, balasan ditunggu `gembala wait --reply <id>`; \
+pesan berlabel `[Gembala · dari <pane> · <id>]` dibalas `gembala reply <id> <teks>`; label `[Gembala · dari pengguna]` = pengguna, \
+jawab di layar. Pengguna bilang lempar/kirim/tanya ke agent lain = `gembala status` lalu `gembala send`. Jangan cari proses lewat ps.";
+
 /// Flag/env hook per agent saat launch (TECH bagian 7, teruji 31 Okt 2026).
 fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
     let cmd = |ev: &str| format!("{} hook claude {ev}", q(&h.exe));
@@ -212,11 +219,11 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
             let settings = json!({"hooks": {
                 "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "Stop": one("stop"), "Notification": one("notify"),
             }});
-            (vec!["--settings".into(), settings.to_string()], vec![])
+            (vec!["--settings".into(), settings.to_string(), "--append-system-prompt".into(), PETUNJUK.into()], vec![])
         }
         "codex" => (vec!["-c".into(), format!("notify={}", json!([h.exe, "hook", "codex", "notify"]))], vec![]),
         "opencode" => (vec![], vec![("OPENCODE_CONFIG".into(), file("opencode.json"))]),
-        "omp" => (vec![format!("--hook={}", file("omp-gembala.ts"))], vec![]),
+        "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={PETUNJUK}")], vec![]),
         _ => (vec![], vec![]),
     }
 }
@@ -450,6 +457,9 @@ mod tests {
         let claude = launch(&by("claude"), Some(&h), None).unwrap();
         assert!(claude.contains("'claude' '--settings' '{\"hooks\":"), "{claude}");
         assert!(claude.contains("hook claude stop"), "{claude}");
+        // petunjuk `gembala` lewat flag resmi; tanda kutip tunggal di dalamnya akan merusak kutipan shell
+        assert!(!PETUNJUK.contains('\'') && claude.contains(&format!("'--append-system-prompt' '{PETUNJUK}'")), "{claude}");
+        assert!(launch(&by("omp"), Some(&h), None).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK}'")));
         let codex = launch(&by("codex"), Some(&h), None).unwrap();
         assert!(codex.contains("'-c' 'notify=[\"/Apps/Gem bala/gembala\",\"hook\",\"codex\",\"notify\"]'"), "{codex}");
         assert!(launch(&by("opencode"), Some(&h), None).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));

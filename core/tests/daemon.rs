@@ -591,8 +591,9 @@ fn gembala_ada_di_path_pane() {
     let mut ui = Cli::ui(&d);
     let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     std::thread::sleep(Duration::from_secs(1));
-    ui.call("pane.write", json!({"pane": p, "data": B64.encode("command -v gembala; echo SELESAI-P\r")}));
-    let out = ui.attach_until(p, &["SELESAI-P\r\n"]);
+    // penanda dihitung shell: gema ketikan (`SELESAI-$((1+1))`) tidak ikut cocok, hanya output perintah
+    ui.call("pane.write", json!({"pane": p, "data": B64.encode("command -v gembala; echo SELESAI-$((1+1))\r")}));
+    let out = ui.attach_until(p, &["SELESAI-2"]);
     assert!(out.contains(env!("CARGO_BIN_EXE_gembala")), "{out}");
 }
 

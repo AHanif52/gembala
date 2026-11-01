@@ -433,7 +433,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 return Err("target_busy");
             }
             let id = st.engine.lock().unwrap().new_id(&st.boot);
-            (&to.master).write_all(&msg::wrap("pengguna", &id, &body)).map_err(|_| "io")?;
+            (&to.master).write_all(&msg::wrap("pengguna", "", &body)).map_err(|_| "io")?;
             Ok(json!({"result": "accepted", "id": id}))
         }
         "pane.policy" => {

@@ -29,7 +29,9 @@ pub fn sanitize(body: &str) -> Result<String, &'static str> {
 
 /// SEC-8: label asal di baris pertama, isi sebagai bracketed paste, lalu tepat satu Enter.
 pub fn wrap(from: &str, id: &str, clean_body: &str) -> Vec<u8> {
-    format!("\x1b[200~[Gembala · dari {from} · {id}]\n{clean_body}\x1b[201~\r").into_bytes()
+    // id kosong = kiriman pengguna: tanpa id supaya agent menjawab di layar, bukan `reply` (tidak ada di mesin pesan)
+    let id = if id.is_empty() { String::new() } else { format!(" · {id}") };
+    format!("\x1b[200~[Gembala · dari {from}{id}]\n{clean_body}\x1b[201~\r").into_bytes()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -162,6 +164,12 @@ mod tests {
             queue_len: 0,
             approved: false,
         }
+    }
+
+    #[test]
+    fn label_pengguna_tanpa_id() {
+        assert_eq!(wrap("pengguna", "", "hai"), b"\x1b[200~[Gembala \xc2\xb7 dari pengguna]\nhai\x1b[201~\r");
+        assert!(String::from_utf8(wrap("claude-1", "msg_1", "hai")).unwrap().contains("[Gembala · dari claude-1 · msg_1]"));
     }
 
     #[test]
