@@ -96,6 +96,10 @@ Keluaran satu baris JSON; kode keluar 0 diterima, 1 ditolak/timeout, 2 salah pak
 - App dibuka dari dalam sesi agent mewarisi env sesi itu: dibuang di `pty::scrub_env` (SEC-35).
 - Lock `Mutex` std tidak reentrant: jangan memegang `panes` sambil memanggil fungsi yang menguncinya lagi.
 - RAM: renderer DOM xterm lebih hemat dan datar per pane daripada WebGL (TECH catatan M1).
+- Daemon tetap hidup setelah UI ditutup. UI build baru yang tersambung ke daemon build lama menampilkan
+  `gagal sambung ke daemon: unknown_method`. Tiap rebuild release: matikan daemon lama
+  (`pkill -f 'Gembala.app/Contents/MacOS/gembala daemon'`, pane yang hidup ikut mati), ganti
+  `/Applications/Gembala.app` dengan `target/release/bundle/macos/Gembala.app`, buka dari `/Applications` saja.
 
 ## Cara kerja di repo ini
 
