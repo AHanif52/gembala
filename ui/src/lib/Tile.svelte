@@ -25,6 +25,7 @@
     onprompt,
     ontype,
     onfocusin,
+    onused,
   }: {
     pane: number;
     focused: boolean;
@@ -38,6 +39,7 @@
     onprompt: (at: boolean) => void; // FR-59: shell menunggu di prompt (penanda OSC 133 B sampai C)
     ontype: (text: string) => boolean; // FR-59: true = huruf diambil input editor, tidak diteruskan ke shell
     onfocusin: () => void; // FR-59: terminal dapat fokus keyboard (halaman memindahkannya ke editor bila tampil)
+    onused: () => void; // FR-59: layar saat attach sudah berisi teks (pane bukan baru)
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -277,8 +279,10 @@
         await call("pane.resize", { pane, rows: term.rows, cols: term.cols });
         // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
         const a = await call("pane.attach", { pane });
-        term.write(unb64(a.snapshot));
+        const snap = unb64(a.snapshot);
+        term.write(snap);
         if (a.prompt) onprompt(true); // FR-59: penanda B sebelum attach tidak ikut snapshot
+        if (/\S/.test(new TextDecoder().decode(snap).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
         attached = true;
         early.splice(0).forEach(onEvent);
       } catch (e) {

@@ -46,6 +46,10 @@
   const STATUS: Record<string, string> = { blocked: "butuh izin", done: "selesai", working: "bekerja" };
   // FR-52: warna tab pilihan pengguna (garis tipis kiri)
   const COLORS: [string, string][] = [["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"], ["purple", "Ungu"]];
+  // FR-52: tanda per agent (bukan logo merek), warna mendekati warna khas agent
+  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇" };
+  /// agent yang sedang jalan di pane (dari profil atau diketik sendiri); "" = tidak ada
+  const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
   const SWATCH: Record<string, string> = { red: "🔴", orange: "🟠", yellow: "🟡", green: "🟢", blue: "🔵", purple: "🟣" };
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   const worst = (ps: number[]): string => ps.reduce((a, p) => (rank(meta[p]?.status) > rank(a) ? (meta[p]?.status ?? "") : a), "");
@@ -152,6 +156,29 @@
     atPrompt[pane] = false; // muncul lagi di prompt berikutnya
     toShell(pane, text, true);
   }
+  // FR-59: panel "Mulai" di pane shell yang belum menjalankan apa pun
+  let ran = $state<Record<number, boolean>>({});
+  let installed = $state<string[]>([]); // agent terpasang (agents.detect), diisi saat app dibuka
+  const startProfiles = $derived((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell" && installed.includes(p.agent)));
+  /// pane shell diganti pane profil di posisi yang sama (agent jalan dengan hook resmi, FR-4)
+  async function swapToProfile(old: number, profile: string) {
+    const m = meta[old];
+    if (!m) return;
+    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old) });
+    for (const w of wss)
+      for (const t of w.tabs)
+        if (panes(t.tree).includes(old)) {
+          t.tree = replace(t.tree, old, id);
+          if (t.focus === old) t.focus = id;
+        }
+    delete meta[old];
+    call("pane.close", { pane: old }).catch(() => {}); // pane.exit-nya tidak menemukan tab lagi: diabaikan
+  }
+  async function startInFolder(pane: number) {
+    const path = await invoke<string | null>("pick_folder").catch(() => null);
+    if (path) toShell(pane, `cd ${quote(path)}`, true);
+  }
+
   /// FR-59: lampiran di editor = path ber-quote disisipkan ke teks (tombol +, seret file, ⌘V gambar)
   function insertPaths(pane: number, paths: string[]) {
     if (!paths.length) return;
@@ -685,8 +712,28 @@
       { label: "Keluar dan hentikan semua agent…", hint: "", go: askQuitAll },
     ];
     const words = pal.q.toLowerCase().split(/\s+/).filter(Boolean);
-    return items.filter((it) => words.every((w) => `${it.label} ${it.hint}`.toLowerCase().includes(w)));
+    const hay = (it: PalItem) => `${it.label} ${it.hint}`.toLowerCase();
+    // urutan: cocok persis dulu, lalu yang terakhir dipakai; sort stabil = urutan asal untuk sisanya
+    const rank = (it: PalItem) => {
+      const r = recent.indexOf(it.label);
+      return (words.every((w) => hay(it).includes(w)) ? 0 : 1000) + (r < 0 ? 100 : r);
+    };
+    return items.filter((it) => words.every((w) => fuzzy(hay(it), w))).sort((a, b) => rank(a) - rank(b));
   });
+  /// huruf kata dicari berurutan (boleh berjarak): "spl kn" cocok "split ke kanan"
+  const fuzzy = (hay: string, w: string) => {
+    let i = 0;
+    for (const c of hay) if (c === w[i]) i++;
+    return i === w.length;
+  };
+  // aksi palet yang terakhir dipakai (kenyamanan per pengguna; storage bisa gagal = diabaikan)
+  let recent: string[] = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("gembala.palet.terakhir") ?? "[]");
+    } catch {
+      return [];
+    }
+  })();
   $effect(() => {
     if (pal) void pal.sel, document.querySelector(".pallist .on")?.scrollIntoView({ block: "nearest" });
   });
@@ -694,6 +741,10 @@
     const it = palItems[i];
     pal = null;
     if (!it) return;
+    recent = [it.label, ...recent.filter((l) => l !== it.label)].slice(0, 20);
+    try {
+      localStorage.setItem("gembala.palet.terakhir", JSON.stringify(recent));
+    } catch {}
     it.go();
     if (editing) sidebar = true; // ganti nama terjadi di sidebar
   }
@@ -1225,6 +1276,7 @@
         cfg = await call("config.get");
         // FR-59: bahan autocomplete
         homePath = (await homeDir().catch(() => "")).replace(/\/$/, "");
+        call("agents.detect", {}).then((a: Agent[]) => (installed = a.filter((x) => x.installed).map((x) => x.agent))).catch(() => {});
         invoke<string[]>("shell_history").then((h) => (zhist = h)).catch(() => {});
         await restore();
         // pane yang hidup dari run sebelumnya: daemon diberi tahu workspace-nya (aturan akses SEC-4/21)
@@ -1326,7 +1378,8 @@
             <!-- svelte-ignore a11y_autofocus -->
             <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama tab" />
           {:else}
-            <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{title(t)}</span>
+            {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
+            <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{title(t)}</span>
             <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
@@ -1396,7 +1449,8 @@
               <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
-                onprompt={(on: boolean) => (atPrompt[pane] = on)}
+                onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
+                onused={() => (ran[pane] = true)}
                 onfocusin={() => editorShown(pane) && setTimeout(() => document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus(), 0)}
                 ontype={(text: string) => {
                   if (!editorShown(pane)) return false;
@@ -1406,6 +1460,18 @@
                   return true;
                 }} />
             </div>
+            {#if ed && !ran[pane] && !draft[pane]}
+              <!-- FR-59: panel Mulai: hilang begitu ada perintah jalan atau mulai mengetik -->
+              <div class="start" class:withhead={head}>
+                <span class="m">Mulai di {home(meta[pane]?.cwd) || "~"}</span>
+                <div class="starts">
+                  {#each startProfiles as p (p.id)}
+                    <button class="sbtn" onclick={() => swapToProfile(pane, p.id)}><span class="aico {p.agent}">{GLYPH[p.agent] ?? "›"}</span>{p.name}</button>
+                  {/each}
+                  <button class="sbtn" onclick={() => startInFolder(pane)}>{@render icon("folder")} Buka folder…</button>
+                </div>
+              </div>
+            {/if}
             {#if ed}
               <!-- FR-59: input editor; kursor dan seleksi pakai mouse, Enter jalan, Tab/Esc ke terminal -->
               <div class="editor" class:withbar={bar}>
@@ -1508,7 +1574,7 @@
                   <!-- svelte-ignore a11y_autofocus -->
                   <input class="edit pname" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama pane" />
                 {:else}
-                  <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{meta[pane]?.name}</button>
+                  <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
                 {/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
@@ -1574,6 +1640,8 @@
       style:width={d.dir === "row" ? "0" : pct(d.rect.w)}
       style:height={d.dir === "row" ? pct(d.rect.h) : "0"}
       onpointerdown={(e) => drag(d, e)}
+      ondblclick={() => tab && (tab.tree = setRatio(tab.tree, d.path, 0.5))}
+      title="Seret untuk ubah ukuran · klik dua kali = sama rata"
       role="separator"
       aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
     ></div>
@@ -1983,6 +2051,37 @@
   }
   .dot.working {
     background: #3b82f6;
+    animation: pulse 1.4s ease-in-out infinite; /* FR-52: bekerja = berdenyut */
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.3;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dot.working {
+      animation: none;
+    }
+  }
+  /* FR-52: tanda agent di tab dan toolbar */
+  .aico {
+    display: inline-block;
+    width: 1.1em;
+    margin-right: 3px;
+    font-weight: 700;
+    text-align: center;
+  }
+  .aico.claude {
+    color: #d97757;
+  }
+  .aico.omp {
+    color: #a855f7;
+  }
+  .aico.codex {
+    color: #10a37f;
+  }
+  .aico.opencode {
+    color: #3b82f6;
   }
   .st.blocked {
     color: #d97706;
@@ -2126,6 +2225,44 @@
     color: transparent;
   }
   /* daftar Tab: di atas kotak editor */
+  /* FR-59: panel Mulai di tengah pane shell baru; klik di luar tombol tembus ke terminal */
+  .start {
+    position: absolute;
+    inset: 0 0 72px 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font: 13px system-ui, -apple-system, sans-serif;
+    pointer-events: none;
+  }
+  .start.withhead {
+    top: 22px;
+  }
+  .starts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    max-width: 80%;
+    pointer-events: auto;
+  }
+  .sbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 7px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+  }
+  .sbtn:hover {
+    border-color: var(--muted);
+  }
   .toast {
     position: absolute;
     left: 50%;
