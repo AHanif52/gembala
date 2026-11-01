@@ -917,21 +917,20 @@ fn screen_watch(st: Arc<State>) {
         thread::sleep(Duration::from_secs(1));
         let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.clone())).collect();
         for (id, pane) in panes {
-            let found = (pane.agent == "shell")
-                .then(|| pty::busy(&pane.master, pane.sid))
-                .flatten()
-                .and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?)))
-                .filter(|(_, n)| AGENTS.contains(&n.as_str()));
-            let manual = found.is_some();
+            let fg = (pane.agent == "shell").then(|| pty::busy(&pane.master, pane.sid)).flatten();
+            let found = fg.and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?))).filter(|(_, n)| AGENTS.contains(&n.as_str()));
             // FR-56: agent manual mulai = catat log sesi. Keluar biasanya ditangani `pump` begitu shell menulis prompt;
             // di sini cadangan bila shell diam, prompt yang sudah tampil ditulis lagi di bawah blok.
             let active = pane.manual.lock().unwrap().is_some();
-            match (active, found) {
-                (false, Some((pid, name))) => {
+            // proses lain di depan selagi agent aktif = anak agent (mis. `brew` dari omp): agent belum keluar
+            let manual = found.is_some() || (active && fg.is_some());
+            match (active, found, fg) {
+                (false, Some((pid, name)), _) => {
                     *pane.manual.lock().unwrap() = Some((name, pty::args_of(pid).join(" "), pty::cwd_of(pid)));
                     *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
                 }
-                (true, None) => {
+                // keluar = shell kembali di depan (sama dengan cek di `pump`)
+                (true, None, None) => {
                     let mut v = pane.view.lock().unwrap();
                     let prompt = v.0.cursor_line();
                     manual_done(&mut v, &pane, id, &prompt);

@@ -1597,7 +1597,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 8px 6px 12px;
+    padding: 4px 6px 4px 10px;
     border: 1px solid var(--line);
     border-radius: 6px;
     background: var(--card);
@@ -1606,6 +1606,10 @@
   }
   .ended.withhead {
     top: 28px;
+  }
+  .ended .mini {
+    padding: 2px 8px;
+    white-space: nowrap;
   }
   .ended code {
     overflow: hidden;
