@@ -120,6 +120,12 @@
   const uid = () => Math.random().toString(36).slice(2, 10);
   const base = (p: string | null | undefined) => (p ? p.split("/").filter(Boolean).at(-1) ?? "/" : "");
   const home = (p: string | null | undefined) => (p ?? "").replace(/^\/Users\/[^/]+/, "~");
+  /// sidebar sempit: folder perantara disingkat ke huruf awal, dua terakhir utuh (`~/P/m/gembala/app`)
+  const short = (p: string | null | undefined) =>
+    home(p)
+      .split("/")
+      .map((s, i, a) => (i === 0 || i >= a.length - 2 ? s : [...s].slice(0, s.startsWith(".") ? 2 : 1).join("")))
+      .join("/");
   /// FR-52: judul bawaan = agent yang sedang jalan di pane fokus, lalu folder (`~` untuk home)
   const title = (t: Tab) => {
     const m = meta[t.focus];
@@ -984,8 +990,7 @@
           <!-- svelte-ignore a11y_autofocus -->
           <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama workspace" />
         {:else}
-          <span class="wsname" role="button" tabindex="-1" ondblclick={() => (editing = { kind: "ws", id: w.id, value: w.name })}>{w.name}</span>
-          <span class="root" title={w.root}>{home(w.root)}</span>
+          <span class="wsname" role="button" tabindex="-1" title={w.root} ondblclick={() => (editing = { kind: "ws", id: w.id, value: w.name })}>{w.name}</span>
         {/if}
       </div>
       {#each w.tabs as t, ti (t.id)}
@@ -1004,7 +1009,7 @@
             <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{title(t)}</span>
             <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
-            <span class="sub">{#if STATUS[st]}<span class="st {st}">{STATUS[st]}</span> · {/if}{home(meta[t.focus]?.cwd)}{agents.length ? ` · ${agents.join(", ")}` : ""}</span>
+            <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if STATUS[st]}<span class="st {st}">{STATUS[st]}</span> · {/if}{short(meta[t.focus]?.cwd)}{agents.length ? ` · ${agents.join(", ")}` : ""}</span>
           {/if}
         </button>
       {/each}
@@ -1377,14 +1382,6 @@
   .wsname {
     color: var(--fg);
     font-weight: 600;
-  }
-  .root {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    text-transform: none;
-    letter-spacing: 0;
   }
   .x {
     border: 0;
