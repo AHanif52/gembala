@@ -26,6 +26,7 @@
     ontype,
     onfocusin,
     onused,
+    onblock,
   }: {
     pane: number;
     focused: boolean;
@@ -40,6 +41,7 @@
     ontype: (text: string) => boolean; // FR-59: true = huruf diambil input editor, tidak diteruskan ke shell
     onfocusin: () => void; // FR-59: terminal dapat fokus keyboard (halaman memindahkannya ke editor bila tampil)
     onused: () => void; // FR-59: layar saat attach sudah berisi teks (pane bukan baru)
+    onblock: (kind: "cmd" | "out" | "reuse", text: string) => void; // FR-58: tombol aksi blok
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -180,6 +182,23 @@
     const b = blocks.findLast((b) => b.a.line <= y && b.d && y < Math.max(b.d.line, b.a.line + 1));
     return b ? { cmd: b.cmd, output: outputOf(b), code: b.code } : null;
   }
+  // FR-58: tombol aksi blok saat kursor di atasnya, dan kepala blok menempel saat perintahnya tergulir keluar layar
+  let hover = $state<{ top: number; b: Block } | null>(null);
+  let sticky = $state<Block | null>(null);
+  const rowHeight = () => (el.querySelector(".xterm-rows")?.getBoundingClientRect().height ?? 0) / term.rows;
+  const blockOn = (y: number) => blocks.findLast((b) => b.cmd && b.a.line <= y && (!b.d || y < Math.max(b.d.line, b.a.line + 1)));
+  function onHover(e: MouseEvent) {
+    const rows = el.querySelector(".xterm-rows")?.getBoundingClientRect();
+    if (!rows || term.buffer.active.type === "alternate") return void (hover = null);
+    const vy = term.buffer.active.viewportY;
+    const b = blockOn(Math.floor((e.clientY - rows.top) / rowHeight()) + vy);
+    hover = b ? { top: (b.a.line - vy) * rowHeight(), b } : null;
+  }
+  function updateSticky() {
+    const top = term.buffer.active.viewportY;
+    sticky = term.buffer.active.type === "alternate" ? null : (blocks.findLast((b) => b.cmd && b.a.line < top && (!b.d || b.d.line > top)) ?? null);
+  }
+
   /// FR-58: ⌘↑/⌘↓ lompat ke awal blok sebelum/sesudah baris teratas layar
   export function jump(dir: -1 | 1) {
     const top = term.buffer.active.viewportY;
@@ -219,6 +238,12 @@
     term.open(el);
     term.parser.registerOscHandler(133, onMark);
     term.textarea?.addEventListener("focus", () => onfocusin());
+    // pendengar di induk: tombol blok berada di luar elemen xterm, kursor boleh pindah ke tombol
+    const host = el.parentElement!;
+    const leave = () => (hover = null);
+    host.addEventListener("mousemove", onHover);
+    host.addEventListener("mouseleave", leave);
+    term.onScroll(updateSticky);
     ready = true;
     fit.fit();
 
@@ -311,6 +336,8 @@
     if (focused) term.focus();
 
     return () => {
+      host.removeEventListener("mousemove", onHover);
+      host.removeEventListener("mouseleave", leave);
       ro.disconnect();
       light.removeEventListener("change", onTheme);
       el.removeEventListener("keydown", onAlt, true);
@@ -321,7 +348,26 @@
   });
 </script>
 
+{#snippet acts(b: Block)}
+  <span class="bacts-in">
+    <button title="Salin perintah" onclick={() => onblock("cmd", b.cmd)}>⧉ perintah</button>
+    <button title="Salin output" onclick={() => onblock("out", outputOf(b))} disabled={!b.d}>⧉ output</button>
+    <button title="Masukkan ke editor untuk diubah lalu jalankan lagi" onclick={() => onblock("reuse", b.cmd)}>↻ pakai lagi</button>
+  </span>
+{/snippet}
+
 <div class="term" bind:this={el}></div>
+{#if sticky}
+  <!-- FR-58: kepala blok menempel -->
+  <div class="sticky" class:fail={!!sticky.code}>
+    <span class="scmd">{sticky.cmd}</span>
+    {#if sticky.code}<span class="scode">keluar {sticky.code}</span>{/if}
+    {@render acts(sticky)}
+  </div>
+{/if}
+{#if hover && hover.b !== sticky && hover.top >= 0}
+  <div class="bacts" style:top="{hover.top + 10}px">{@render acts(hover.b)}</div>
+{/if}
 {#if finding}
   <div class="find">
     <input
@@ -352,6 +398,66 @@
   .term :global(.blk.fail) {
     border-left: 3px solid #dc2626;
     background: rgba(220, 38, 38, 0.07);
+  }
+  /* FR-58: tombol aksi blok (kanan baris perintah) dan kepala blok menempel (atas pane) */
+  .bacts,
+  .sticky {
+    position: absolute;
+    z-index: 2;
+    font: 11px system-ui, -apple-system, sans-serif;
+  }
+  .bacts {
+    right: 14px;
+  }
+  .sticky {
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 12px 5px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+  }
+  .sticky.fail {
+    border-left: 3px solid #dc2626;
+  }
+  .scmd {
+    flex: 1;
+    overflow: hidden;
+    color: var(--fg);
+    font: 600 12px "SF Mono", Menlo, monospace;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .scode {
+    color: #ef4444;
+  }
+  .bacts-in {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--card);
+  }
+  .bacts-in button {
+    padding: 1px 6px;
+    border: 0;
+    border-radius: 3px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+  }
+  .bacts-in button:hover:not(:disabled) {
+    background: var(--line);
+    color: var(--fg);
+  }
+  .bacts-in button:disabled {
+    opacity: 0.4;
   }
   .find {
     position: absolute;

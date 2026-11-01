@@ -1451,6 +1451,12 @@
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
                 onused={() => (ran[pane] = true)}
+                onblock={(kind: string, text: string) => {
+                  if (kind !== "reuse") return void copy(text);
+                  if (!editorShown(pane)) return void copy(text); // editor tidak tampil (mis. TUI jalan): salin saja
+                  draft[pane] = text;
+                  document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus();
+                }}
                 onfocusin={() => editorShown(pane) && setTimeout(() => document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus(), 0)}
                 ontype={(text: string) => {
                   if (!editorShown(pane)) return false;
