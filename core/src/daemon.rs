@@ -53,6 +53,9 @@ struct Pane {
     /// FR-56: output sesi agent yang sedang jalan (sejak penanda mulai) dan sesi terakhir yang sudah selesai; RAM saja (SEC-13)
     agent_log: Mutex<Option<(std::time::Instant, Vec<u8>)>>,
     last_output: Mutex<Vec<u8>>,
+    /// FR-4 cadangan: kapan output terakhir datang; profil `custom` dilacak dari layar
+    last_out: Mutex<std::time::Instant>,
+    screen: bool,
     /// Grid dan pelanggan dikunci bersama: attach tidak kehilangan atau menggandakan output.
     view: Mutex<(Grid, Vec<Sub>)>,
 }
@@ -122,6 +125,8 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     thread::spawn(move || idle_exit(st3));
     let st4 = st.clone();
     thread::spawn(move || watch_config(st4));
+    let st6 = st.clone();
+    thread::spawn(move || screen_watch(st6));
     let st5 = st.clone();
     thread::spawn(move || *st5.agents.lock().unwrap() = profile::detect()); // FR-28: saat pertama dibuka
     let st2 = st.clone();
@@ -394,7 +399,9 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 session: session.id.clone().filter(|s| profile::valid_uuid(s)),
                 agent_log: Mutex::new(None),
                 last_output: Mutex::new(Vec::new()),
-                status: Mutex::new(if ["claude", "codex", "opencode", "omp"].contains(&agent.as_str()) { "idle" } else { "" }),
+                last_out: Mutex::new(std::time::Instant::now()),
+                screen: agent == "custom",
+                status: Mutex::new(if ["claude", "codex", "opencode", "omp", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
                 agent,
                 view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
             });
@@ -513,6 +520,33 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
     }
 }
 
+/// FR-4 cadangan tiap 1 detik: profil `custom`, dan agent yang diketik manual di pane shell (tanpa hook).
+fn screen_watch(st: Arc<State>) {
+    const AGENTS: &[&str] = &["claude", "codex", "opencode", "omp"];
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.clone())).collect();
+        for (id, pane) in panes {
+            let manual = pane.agent == "shell"
+                && pty::busy(&pane.master, pane.sid).and_then(|(pid, _)| pty::proc_name(pid)).is_some_and(|n| AGENTS.contains(&n.as_str()));
+            let cur = *pane.status.lock().unwrap();
+            let next = if pane.screen || manual {
+                let tail = pane.view.lock().unwrap().0.tail(12);
+                profile::screen_status(&tail, pane.last_out.lock().unwrap().elapsed(), cur)
+            } else if pane.agent == "shell" {
+                "" // agent manual sudah keluar: pane shell kembali tidak dilacak
+            } else {
+                continue;
+            };
+            if next != cur {
+                *pane.status.lock().unwrap() = next;
+                let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": next}}));
+                st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+            }
+        }
+    }
+}
+
 /// Ubah status pane dan beri tahu semua UI (`pane.status`). `only_from` = ubah hanya bila status sekarang itu.
 fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from: Option<&str>) {
     let mut cur = pane.status.lock().unwrap();
@@ -597,6 +631,7 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
         return;
     }
     v.0.feed(bytes);
+    *pane.last_out.lock().unwrap() = std::time::Instant::now();
     if let Some((_, log)) = pane.agent_log.lock().unwrap().as_mut() {
         log.extend_from_slice(bytes);
         let over = log.len().saturating_sub(AGENT_LOG_MAX);

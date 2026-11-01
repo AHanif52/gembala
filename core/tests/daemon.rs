@@ -572,3 +572,25 @@ fn deteksi_menunggu_password() {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+
+/// FR-4 cadangan: agent tanpa hook (profil custom) dibaca dari layar.
+#[test]
+fn status_dari_pola_layar() {
+    let d = start("screen");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(cfg.join("config.toml"), "[[profile]]\nid = \"tanya\"\ncommand = \"sh\"\nargs = [\"-c\", \"sleep 2; printf 'Hapus folder build? (y/n) '; sleep 30\"]\n").unwrap();
+    let mut ui = Cli::ui(&d);
+    let t0 = Instant::now();
+    while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("tanya") {
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let pane = ui.call("pane.create", json!({"profile": "tanya"}))["result"]["pane"].as_u64().unwrap();
+    let t0 = Instant::now();
+    while ui.call("pane.info", json!({"pane": pane}))["result"]["status"] != "blocked" {
+        assert!(t0.elapsed() < Duration::from_secs(10), "status blocked tidak terdeteksi dari layar");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}

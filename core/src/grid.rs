@@ -40,9 +40,15 @@ impl Grid {
         (r.get(), c.get())
     }
 
-    #[allow(dead_code)] // dipakai `read` (FR-7) di Fase 2
     pub fn text(&self) -> String {
         self.0.screen().contents()
+    }
+
+    /// Baris terbawah layar yang berisi teks (FR-4 pola layar).
+    pub fn tail(&self, n: usize) -> String {
+        let all = self.text();
+        let lines: Vec<&str> = all.lines().filter(|l| !l.trim().is_empty()).collect();
+        lines[lines.len().saturating_sub(n)..].join("\n")
     }
 }
 

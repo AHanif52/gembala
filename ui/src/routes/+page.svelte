@@ -122,7 +122,7 @@
   }
 
   async function refreshGit(pane: number) {
-    if (!meta[pane] || dead[pane] || !AGENTS.includes(meta[pane].agent)) return;
+    if (!meta[pane] || dead[pane] || ![...AGENTS, "custom"].includes(meta[pane].agent)) return;
     const g = await call("git.status", { pane }).catch(() => null);
     if (g && meta[pane]) meta[pane].git = g;
   }
@@ -637,8 +637,9 @@
       }
       const busy = i.busy ? (i.name ?? "proses") : null;
       const m = meta[p];
-      if (AGENTS.includes(m.agent)) {
-        if (m.status !== i.status) m.status = i.status; // status agent dari hook (daemon)
+      if (AGENTS.includes(m.agent) || m.agent === "custom" || i.status) {
+        // status dari daemon: hook resmi, atau pola layar untuk profil custom dan agent yang diketik manual (FR-4)
+        if (m.status !== i.status) m.status = i.status;
       } else {
         // FR-40 untuk pane shell: perintah lebih dari 30 detik lalu selesai = done; menunggu password = blocked
         if (busy && !m.busy) m.since = Date.now();
@@ -788,7 +789,7 @@
       {#each [...rects(t.tree)] as [pane, r] (pane)}
         {@const hidden = !active || (zoomed && pane !== t.focus)}
         {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
-        {@const bar = !dead[pane] && AGENTS.includes(meta[pane]?.agent ?? "")}
+        {@const bar = !dead[pane] && [...AGENTS, "custom"].includes(meta[pane]?.agent ?? "")}
         {@const g = meta[pane]?.git}
         <div
           class="tile"

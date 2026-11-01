@@ -173,6 +173,24 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
     })
 }
 
+/// Teks di layar yang berarti agent menunggu jawaban manusia (huruf kecil).
+const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to", "approve", "allow once", "permission to"];
+
+/// FR-4 cadangan: status dari layar untuk agent tanpa hook. `tail` = beberapa baris terbawah layar,
+/// `quiet` = lama tanpa output, `prev` = status sebelumnya.
+pub fn screen_status(tail: &str, quiet: std::time::Duration, prev: &str) -> &'static str {
+    let t = tail.to_lowercase();
+    if PROMPTS.iter().any(|p| t.contains(p)) {
+        "blocked"
+    } else if quiet < std::time::Duration::from_millis(1500) {
+        "working"
+    } else if matches!(prev, "working" | "done" | "blocked") {
+        "done"
+    } else {
+        "idle"
+    }
+}
+
 /// Flag/env hook per agent saat launch (TECH bagian 7, teruji 31 Okt 2026).
 fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
     let cmd = |ev: &str| format!("{} hook claude {ev}", q(&h.exe));
@@ -456,6 +474,17 @@ mod tests {
         assert_eq!(hook_status("opencode", "permission", ""), Some("blocked"));
         assert_eq!(hook_status("omp", "end", ""), Some("done"));
         assert_eq!(hook_status("x", "y", ""), None);
+    }
+
+    #[test]
+    fn status_dari_layar() {
+        use std::time::Duration;
+        let s = |t: &str, q: u64, p: &str| screen_status(t, Duration::from_millis(q), p);
+        assert_eq!(s("Run rm -rf build? (y/N)", 5000, "working"), "blocked");
+        assert_eq!(s("menulis file…", 200, "idle"), "working");
+        assert_eq!(s("selesai", 4000, "working"), "done");
+        assert_eq!(s("selesai", 4000, "idle"), "idle");
+        assert_eq!(s("Do you want to proceed?", 100, "working"), "blocked");
     }
 
     #[test]

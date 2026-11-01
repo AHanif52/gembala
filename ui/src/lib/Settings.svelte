@@ -379,7 +379,7 @@
         <section>
           {#each Object.values(meta) as m}
             <div class="row">
-              <span>{m.name || m.profile}<small>{["claude", "codex", "opencode", "omp"].includes(m.agent) ? "hook resmi" : "tanpa hook, status tidak dilacak"}</small></span>
+              <span>{m.name || m.profile}<small>{["claude", "codex", "opencode", "omp"].includes(m.agent) ? "status dari hook resmi" : m.agent === "custom" ? "status dari pola layar" : "shell; agent yang diketik manual dibaca dari pola layar"}</small></span>
               <span class="m">{m.status || "-"}</span>
             </div>
           {:else}
