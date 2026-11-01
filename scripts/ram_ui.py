@@ -39,18 +39,18 @@ for i in range(n):
     call(i + 1, "pane.create", {"cmd": FILL + "; exec $SHELL -l", "rows": 40, "cols": 100})
 s.close()
 
-before_ui = pids("Gembala.app/Contents/MacOS/ui")
+before_ui = pids("Gembala.app/Contents/MacOS/gembala-ui")
 before_wk = pids("com.apple.WebKit")
 subprocess.run(["open", "-n", "--env", f"GEMBALA_RUNDIR={R}", "--env", f"GEMBALA_DEV_SECRET={secret}", app], check=True)
 series, last = [], {}
 t0 = time.time()
 time.sleep(1.5)
 # jendela tertutup jendela lain = WebKit berhenti menggambar; paksa ke depan supaya angka sebanding
-for p in pids("Gembala.app/Contents/MacOS/ui") - before_ui:
+for p in pids("Gembala.app/Contents/MacOS/gembala-ui") - before_ui:
     subprocess.run(["osascript", "-e", f'tell application "System Events" to set frontmost of (first process whose unix id is {p}) to true'], capture_output=True)
 for at in (5, 10, 20, 30):
     time.sleep(max(0, at - (time.time() - t0)))
-    ui = pids("Gembala.app/Contents/MacOS/ui") - before_ui
+    ui = pids("Gembala.app/Contents/MacOS/gembala-ui") - before_ui
     wk = pids("com.apple.WebKit") - before_wk
     last = footprint(ui | wk | {d.pid})
     series.append(sum(last.values()))

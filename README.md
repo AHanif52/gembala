@@ -108,6 +108,23 @@ gembala watch                                    # event status, satu baris JSON
 
 Keluaran satu baris JSON; kode keluar 0 diterima, 1 ditolak/timeout, 2 salah pakai.
 
+## Apa yang dijalankan Gembala (FR-60)
+
+| Nama di Activity Monitor | Peran |
+|---|---|
+| `gembala-ui` (atau "Gembala") | Jendela aplikasi |
+| `tauri://localhost` | Tampilan WebKit: terminal dan sidebar |
+| WebKit GPU dan Networking | Bagian bawaan WebKit untuk menggambar dan memuat tampilan dari dalam app |
+| `gembala` | Daemon penjaga pane: shell dan agent berjalan di bawahnya |
+| `zsh`, `claude`, `codex`, … | Proses yang kamu jalankan di pane |
+
+- Tidak ada koneksi internet: CSP di `ui/src-tauri/tauri.conf.json` hanya mengizinkan kanal internal app, dan daemon
+  hanya membuka socket Unix di folder `0700` milik akunmu. Tidak ada telemetri dan tidak ada pembaruan otomatis.
+- Daemon tetap hidup setelah jendela ditutup hanya bila ada pane yang masih menjalankan proses (FR-20); notifikasi
+  macOS menyebut alasannya. Tanpa itu, daemon berhenti sendiri dalam beberapa detik.
+- Daftar langsung beserta RAM dan CPU ada di Pengaturan › Proses, lengkap dengan tombol "Hentikan semua". Cek sendiri
+  lewat Activity Monitor › View › All Processes, Hierarchically.
+
 ## Jebakan yang sudah ketemu
 
 - WKWebView tidak meneruskan banyak kombinasi ⌘ ke keydown JS: semua pintasan lewat menu native; `⌘⇧↩` justru

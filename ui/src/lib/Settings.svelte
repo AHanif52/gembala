@@ -89,8 +89,40 @@
     ["pintasan", "Pintasan"],
     ["toolbar", "Toolbar"],
     ["keamanan", "Keamanan"],
+    ["proses", "Proses"],
     ["diagnostik", "Diagnostik"],
   ] as const;
+  // FR-60: proses milik Gembala, diperbarui tiap 2 detik selama bagian ini terbuka
+  type Proc = { pid: number; ppid: number; rss_kb: number; cpu: number; role: string; name: string };
+  const ROLE: Record<string, [string, string]> = {
+    ui: ["Jendela Gembala", "Proses utama aplikasi"],
+    "webkit-content": ["Tampilan", "Menggambar terminal dan sidebar; di Activity Monitor bernama tauri://localhost"],
+    "webkit-gpu": ["Grafis", "Bagian WebKit yang menggambar ke layar"],
+    "webkit-net": ["Pemuat tampilan", "Bagian bawaan WebKit untuk memuat tampilan dari dalam app; koneksi ke internet ditolak CSP"],
+    daemon: ["Penjaga pane", "Menjalankan shell dan agent; tetap hidup saat jendela ditutup hanya bila masih ada yang jalan"],
+  };
+  let procs = $state<Proc[]>([]);
+  let panePid = $state<Record<number, string>>({});
+  let stopAsk = $state(false);
+  async function loadProcs() {
+    procs = await invoke<Proc[]>("proc_list").catch(() => []);
+    const ids: number[] = await call("pane.list").catch(() => []);
+    const infos = await Promise.all(ids.map((pane) => call("pane.info", { pane }).catch(() => null)));
+    panePid = Object.fromEntries(infos.filter((i) => i?.pid).map((i) => [i.pid, i.pane_name]));
+  }
+  $effect(() => {
+    if (sec !== "proses") return;
+    loadProcs();
+    const t = setInterval(loadProcs, 2000);
+    return () => clearInterval(t);
+  });
+  /// nama pane dari shell induk terdekat
+  function paneOf(p: Proc): string {
+    const by = new Map(procs.map((x) => [x.pid, x]));
+    for (let q: Proc | undefined = p; q; q = by.get(q.ppid)) if (panePid[q.pid]) return panePid[q.pid];
+    return "";
+  }
+  const mb = (kb: number) => `${Math.round(kb / 1024)} MB`;
   let sec = $state<(typeof SECTIONS)[number][0]>("tampilan");
   let failed = $state("");
   let keys = $state<[string, string, string][]>([]);
@@ -435,6 +467,49 @@
           Chip yang datanya tidak ada (mis. bukan repo git) disembunyikan di toolbar.
           <button class="link" onclick={() => saveTb(TB_DEFAULT)}>Kembalikan bawaan</button>
         </p>
+      {:else if sec === "proses"}
+        <p class="note">
+          Ini semua proses yang dijalankan Gembala. Gembala tidak menghubungi internet (CSP hanya mengizinkan kanal internal app),
+          dan socket-nya hanya bisa dibuka akun macOS ini. Cek sendiri di Activity Monitor › View › All Processes, Hierarchically.
+        </p>
+        <section>
+          {#each procs.filter((p) => p.role !== "pane") as p (p.pid)}
+            <div class="row">
+              <span>{ROLE[p.role]?.[0] ?? p.role} · <code>{p.name}</code><small>{ROLE[p.role]?.[1] ?? ""}</small></span>
+              <span class="m">PID {p.pid} · {mb(p.rss_kb)} · CPU {p.cpu.toFixed(1)}%</span>
+            </div>
+          {:else}
+            <div class="row"><span>Memuat…</span></div>
+          {/each}
+          <div class="row">
+            <span>Total Gembala<small>Tanpa proses di pane</small></span>
+            <span class="m">{mb(procs.filter((p) => p.role !== "pane").reduce((s, p) => s + p.rss_kb, 0))}</span>
+          </div>
+        </section>
+        <h4>Proses di pane</h4>
+        <section>
+          {#each procs.filter((p) => p.role === "pane") as p (p.pid)}
+            <div class="row">
+              <span><code>{p.name}</code><small>{paneOf(p) ? `di ${paneOf(p)}` : "di pane"}</small></span>
+              <span class="m">PID {p.pid} · {mb(p.rss_kb)} · CPU {p.cpu.toFixed(1)}%</span>
+            </div>
+          {:else}
+            <div class="row"><span>Belum ada pane</span></div>
+          {/each}
+        </section>
+        <section>
+          {#if stopAsk}
+            <div class="row" role="alert">
+              <span>Hentikan daemon, semua pane, dan agent di dalamnya, lalu tutup Gembala?</span>
+              <span><button class="mini" onclick={() => (stopAsk = false)}>Batal</button> <button class="mini" onclick={async () => (await call("daemon.stop").catch(() => {}), await invoke("quit"))}>Hentikan</button></span>
+            </div>
+          {:else}
+            <div class="row">
+              <span>Hentikan semua<small>Tidak ada proses Gembala yang tersisa setelah ini</small></span>
+              <button class="mini" onclick={() => (stopAsk = true)}>Hentikan…</button>
+            </div>
+          {/if}
+        </section>
       {:else if sec === "keamanan"}
         <section>
           <div class="row"><span>Folder socket<small>Bukan symlink, milik kamu, izin 0700</small></span><span class="m">$TMPDIR/gembala</span></div>

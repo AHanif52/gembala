@@ -1,7 +1,7 @@
 // UI hanya klien daemon (BRD R-5): jangan buka PTY di sini.
 mod daemon;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
@@ -239,6 +239,67 @@ fn notify_pane(app: tauri::AppHandle, body: String, sound: bool) {
         n = n.sound("default");
     }
     let _ = n.show();
+}
+
+/// FR-60: proses milik Gembala untuk Pengaturan > Proses: UI ini, WebKit-nya, daemon, dan semua turunan daemon.
+/// Dibaca dari `ps` tanpa argumen proses (argumen proses lain bisa memuat rahasia).
+#[tauri::command]
+fn proc_list() -> Vec<Value> {
+    let Ok(out) = std::process::Command::new("/bin/ps").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,comm="]).output() else {
+        return vec![];
+    };
+    let daemon = std::env::current_exe().ok().and_then(|p| Some(p.parent()?.join("gembala").to_string_lossy().into_owned()));
+    procs_of(&String::from_utf8_lossy(&out.stdout), std::process::id(), daemon.as_deref().unwrap_or(""))
+}
+
+/// `[[dd-]hh:]mm:ss` → detik
+fn etime_secs(s: &str) -> u64 {
+    let (days, rest) = s.split_once('-').map_or((0, s), |(d, r)| (d.parse().unwrap_or(0), r));
+    rest.split(':').fold(0, |acc, p| acc * 60 + p.parse::<u64>().unwrap_or(0)) + days * 86400
+}
+
+fn procs_of(ps: &str, me: u32, daemon_exe: &str) -> Vec<Value> {
+    struct P<'a> { pid: u32, ppid: u32, rss: u64, cpu: f64, age: u64, comm: &'a str }
+    let all: Vec<P> = ps
+        .lines()
+        .filter_map(|l| {
+            // lima kolom angka, sisanya comm (boleh berisi spasi)
+            let mut rest = l.trim_start();
+            let mut f = [""; 5];
+            for x in f.iter_mut() {
+                let (a, b) = rest.split_once(char::is_whitespace)?;
+                (*x, rest) = (a, b.trim_start());
+            }
+            let [pid, ppid, rss, cpu, age] = f;
+            Some(P { pid: pid.parse().ok()?, ppid: ppid.parse().ok()?, rss: rss.parse().ok()?, cpu: cpu.parse().ok()?, age: etime_secs(age), comm: rest.trim_end() })
+        })
+        .collect();
+    let row = |p: &P, role: &str| json!({"pid": p.pid, "ppid": p.ppid, "rss_kb": p.rss, "cpu": p.cpu, "role": role,
+        "name": p.comm.rsplit('/').next().unwrap_or(p.comm)});
+    let mut rows = vec![];
+    let Some(ui) = all.iter().find(|p| p.pid == me) else { return rows };
+    rows.push(row(ui, "ui"));
+    // WebKit milik UI dijalankan launchd, bukan anak UI: dikenali dari waktu mulai yang hampir sama
+    // ponytail: dua app WebKit yang dibuka di detik yang sama bisa tertukar; pakai audit token XPC kalau perlu pasti
+    for (svc, role) in [("WebContent", "webkit-content"), ("GPU", "webkit-gpu"), ("Networking", "webkit-net")] {
+        let name = format!("com.apple.WebKit.{svc}");
+        if let Some(p) = all.iter().filter(|p| p.comm.ends_with(&name) && p.age <= ui.age && ui.age - p.age <= 10).min_by_key(|p| ui.age - p.age) {
+            rows.push(row(p, role));
+        }
+    }
+    let mut tree: Vec<u32> = all.iter().filter(|p| p.comm == daemon_exe).map(|p| p.pid).collect();
+    let mut i = 0;
+    while i < tree.len() {
+        let parent = tree[i];
+        tree.extend(all.iter().filter(|p| p.ppid == parent).map(|p| p.pid));
+        i += 1;
+    }
+    for pid in tree {
+        if let Some(p) = all.iter().find(|p| p.pid == pid) {
+            rows.push(row(p, if p.comm == daemon_exe { "daemon" } else { "pane" }));
+        }
+    }
+    rows
 }
 
 /// FR-37/52: salin dari menu klik kanan (teks pilihan pengguna, folder tab) lewat pbcopy;
@@ -492,14 +553,72 @@ pub fn run() {
                 w.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history, git_branches, npm_scripts])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list])
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, ev| {
+            if let tauri::RunEvent::ExitRequested { .. } = ev {
+                notify_background(app);
+            }
+        });
+}
+
+/// FR-60: app ditutup tapi daemon tetap hidup karena pane masih menjalankan proses (FR-20) = beri tahu pengguna
+/// alasannya, supaya proses latar tidak dikira diam-diam. "Hentikan semua" menghentikan daemon dulu, jadi tidak muncul.
+fn notify_background(app: &tauri::AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    let Some(c) = app.state::<Daemon>().0.lock().unwrap().clone() else { return };
+    let Ok(ids) = c.call("pane.list", json!({})) else { return };
+    let busy: Vec<String> = ids
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| c.call("pane.info", json!({"pane": id})).ok())
+        .filter(|i| i["busy"] == true)
+        .map(|i| i["name"].as_str().unwrap_or("proses").to_string())
+        .collect();
+    if busy.is_empty() {
+        return;
+    }
+    let body = format!(
+        "Gembala tetap berjalan di latar karena {} pane masih menjalankan proses ({}). Buka Gembala untuk melihat atau menghentikannya.",
+        busy.len(),
+        busy.join(", ")
+    );
+    let _ = app.notification().builder().title("Gembala masih berjalan").body(body).show();
+    std::thread::sleep(std::time::Duration::from_millis(300)); // beri waktu notifikasi terkirim sebelum proses keluar
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    /// FR-60: UI, WebKit yang mulai bersamaan, daemon, dan turunannya; proses lain tidak ikut
+    #[test]
+    fn proses_milik_gembala() {
+        let d = "/Apps/Gembala.app/Contents/MacOS/gembala";
+        let ps = format!(
+            "  10     1  100000   2.0    05:00 /Apps/Gembala.app/Contents/MacOS/gembala-ui\n\
+             \x20 11     1  300000  10.5    04:58 /S/WebKit/com.apple.WebKit.WebContent\n\
+             \x20 12     1  300000   0.0 01-02:00:00 /S/WebKit/com.apple.WebKit.WebContent\n\
+             \x20 13     1   12000   0.0    04:59 /S/WebKit/com.apple.WebKit.Networking\n\
+             \x20 20     1   13000   0.1 02:00:00 {d}\n\
+             \x20 21    20    4000   0.0    10:00 /bin/zsh\n\
+             \x20 22    21  500000  30.0    09:00 /opt/bin/claude\n\
+             \x20 30     1  800000   1.0    09:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
+        );
+        let rows = super::procs_of(&ps, 10, d);
+        let got: Vec<(u64, &str, &str)> = rows.iter().map(|r| (r["pid"].as_u64().unwrap(), r["role"].as_str().unwrap(), r["name"].as_str().unwrap())).collect();
+        assert_eq!(got, vec![
+            (10, "ui", "gembala-ui"),
+            (11, "webkit-content", "com.apple.WebKit.WebContent"),
+            (13, "webkit-net", "com.apple.WebKit.Networking"),
+            (20, "daemon", "gembala"),
+            (21, "pane", "zsh"),
+            (22, "pane", "claude"),
+        ]);
+        assert_eq!(super::etime_secs("01-02:03:04"), 93784);
+    }
 
     /// FR-59: folder dulu, saring awalan, tersembunyi hanya bila awalan diawali titik
     #[test]

@@ -33,14 +33,14 @@ def start_daemon(n):
     return d, secret
 
 def ui_session(secret, wait=8):
-    before = pids("Gembala.app/Contents/MacOS/ui")
+    before = pids("Gembala.app/Contents/MacOS/gembala-ui")
     mtime = os.path.getmtime(LAYOUT) if os.path.exists(LAYOUT) else 0
     subprocess.run(["open", "-n", "--env", f"GEMBALA_RUNDIR={R}", "--env", f"GEMBALA_DEV_SECRET={secret}", app], check=True)
     t0 = time.time()
     while time.time() - t0 < wait and not (os.path.exists(LAYOUT) and os.path.getmtime(LAYOUT) > mtime):
         time.sleep(0.2)
     time.sleep(1.5)
-    for p in pids("Gembala.app/Contents/MacOS/ui") - before:
+    for p in pids("Gembala.app/Contents/MacOS/gembala-ui") - before:
         os.kill(p, 15)
     time.sleep(1)
     with open(LAYOUT) as fh:
