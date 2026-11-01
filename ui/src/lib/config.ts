@@ -40,6 +40,7 @@ export type Config = {
     ui: Ui;
     limits: { max_panes: number };
     notify: { on_blocked: boolean; on_done: boolean; long_command_secs: number; sound: boolean };
+    toolbar: { left: string[]; right: string[] };
     keys: Record<string, string>;
     profiles: Profile[];
   };

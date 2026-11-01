@@ -572,6 +572,8 @@
 
   // FR-40: badge Dock dan Dock melompat hanya saat jendela tidak sedang dilihat
   let seen = $state(document.hasFocus());
+  // FR-55: isi dan urutan chip toolbar dari [toolbar]
+  const toolbar = $derived(cfg?.values.toolbar ?? { left: ["attach", "diff", "rich_input"], right: ["cwd", "branch", "settings"] });
   const notify = $derived(cfg?.values.notify ?? { on_blocked: true, on_done: true, long_command_secs: 30, sound: true });
 
   /// FR-40: banner + Dock melompat saat jendela tidak dilihat; isi nama pane + status saja (SEC-33)
@@ -695,6 +697,22 @@
   });
 </script>
 
+{#snippet chip(c: string, pane: number, g: any)}
+  {#if c === "attach"}
+    <button class="chip" title="Pilih file, atau seret file ke pane" onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>Lampirkan</button>
+  {:else if c === "diff" && g?.repo && g.files}
+    <button class="chip" onclick={() => openChanges(pane)}>{g.files} file <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+  {:else if c === "rich_input"}
+    <button class="chip" onclick={() => (rich = { pane, text: "" })}>Rich Input <span class="n">⌘G</span></button>
+  {:else if c === "cwd"}
+    <span class="chip quiet" title={meta[pane]?.cwd ?? ""}>{base(meta[pane]?.cwd) || "~"}</span>
+  {:else if c === "branch" && g?.repo && g.branch}
+    <span class="chip quiet">{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
+  {:else if c === "settings"}
+    <button class="chip" aria-label="Pengaturan profil" onclick={() => (settingsOpen = true)}>⚙</button>
+  {/if}
+{/snippet}
+
 {#if sidebar}
   <aside class="side" aria-label="Tab">
     <input class="search" placeholder="Cari tab  ⌘P" aria-label="Cari tab" bind:this={search} bind:value={filter} spellcheck="false"
@@ -801,21 +819,13 @@
                 {:else}
                   <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{meta[pane]?.name}</button>
                 {/if}
-                <button class="chip" title="Pilih file, atau seret file ke pane" onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>Lampirkan</button>
-                {#if g?.repo && g.files}
-                  <button class="chip" onclick={() => openChanges(pane)}>{g.files} file <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
-                {/if}
-                <button class="chip" onclick={() => (rich = { pane, text: "" })}>Rich Input <span class="n">⌘G</span></button>
+                {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
                 {#if meta[pane]?.sig && meta[pane].sig !== sig(meta[pane].profile)}
                   <button class="chip changed" onclick={() => relaunch(pane)}>Profil berubah · jalankan ulang</button>
                 {/if}
                 <span class="grow"></span>
-                <span class="chip quiet" title={meta[pane]?.cwd ?? ""}>{base(meta[pane]?.cwd) || "~"}</span>
-                {#if g?.repo && g.branch}
-                  <span class="chip quiet">{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
-                {/if}
-                <button class="chip" aria-label="Pengaturan profil" onclick={() => (settingsOpen = true)}>⚙</button>
+                {#each toolbar.right as c}{@render chip(c, pane, g)}{/each}
               </div>
             {/if}
             {#if outputOf === pane}

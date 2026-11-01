@@ -14,6 +14,8 @@ enum Kind {
     Bool(bool),
     Enum(&'static [&'static str], &'static str),
     Str(&'static str),
+    /// Daftar id dari pilihan tetap, urutan = tampilan (bawaan)
+    List(&'static [&'static str], &'static [&'static str]),
 }
 
 use Kind::*;
@@ -31,11 +33,14 @@ const UI: &[(&str, Kind)] = &[
     ("scrollback_lines", Int(0, 100_000, 5_000)),
     ("screen_reader", Bool(false)),
 ];
+const CHIPS: &[&str] = &["attach", "diff", "rich_input", "cwd", "branch", "settings"];
+/// FR-55: isi dan urutan chip toolbar agent
+const TOOLBAR: &[(&str, Kind)] = &[("left", List(CHIPS, &["attach", "diff", "rich_input"])), ("right", List(CHIPS, &["cwd", "branch", "settings"]))];
 const LIMITS: &[(&str, Kind)] = &[("max_panes", Int(1, 256, 32))];
 /// FR-40: banner macOS + badge Dock + Dock melompat
 const NOTIFY: &[(&str, Kind)] =
     &[("on_blocked", Bool(true)), ("on_done", Bool(true)), ("long_command_secs", Int(5, 3600, 30)), ("sound", Bool(true))];
-const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY)];
+const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY), ("toolbar", TOOLBAR)];
 
 pub struct Config {
     /// Profil bawaan + `[[profile]]` yang lolos validasi (FR-29). Rujukan rahasia ikut, nilainya tidak.
@@ -66,6 +71,7 @@ fn default(kind: &Kind) -> Value {
         Float(_, _, d) => json!(d),
         Bool(d) => json!(d),
         Enum(_, d) | Str(d) => json!(d),
+        List(_, d) => json!(d),
     }
 }
 
@@ -75,6 +81,11 @@ fn check(kind: &Kind, v: &Value) -> Result<Value, String> {
         Float(lo, hi, _) => v.as_f64().filter(|n| (*lo..=*hi).contains(n)).map(|n| json!(n)).ok_or(format!("harus angka {lo}–{hi}")),
         Bool(_) => v.as_bool().map(|b| json!(b)).ok_or("harus true atau false".into()),
         Enum(opts, _) => v.as_str().filter(|s| opts.contains(s)).map(|s| json!(s)).ok_or(format!("harus salah satu dari {}", opts.join(", "))),
+        List(opts, _) => v
+            .as_array()
+            .filter(|a| a.len() <= opts.len() && a.iter().all(|x| x.as_str().is_some_and(|s| opts.contains(&s))))
+            .map(|a| Value::Array(a.clone()))
+            .ok_or(format!("harus daftar dari {}", opts.join(", "))),
         Str(_) => v
             .as_str()
             .filter(|s| !s.is_empty() && s.len() <= 200 && !s.chars().any(char::is_control))
@@ -92,6 +103,8 @@ fn to_json(item: &toml_edit::Item) -> Value {
         json!(b)
     } else if let Some(s) = item.as_str() {
         json!(s)
+    } else if let Some(a) = item.as_array() {
+        Value::Array(a.iter().map(|v| v.as_str().map_or(Value::Null, |s| json!(s))).collect())
     } else {
         Value::Null
     }
@@ -186,7 +199,8 @@ pub fn set(path: &Path, section: &str, key: &str, value: &Value) -> Result<(), S
         Value::Number(n) if n.is_i64() => toml_edit::value(n.as_i64().unwrap()),
         Value::Number(n) => toml_edit::value(n.as_f64().unwrap_or_default()),
         Value::String(s) => toml_edit::value(s),
-        _ => unreachable!("check hanya menghasilkan skalar"),
+        Value::Array(a) => toml_edit::value(a.iter().filter_map(Value::as_str).collect::<toml_edit::Array>()),
+        _ => unreachable!("check hanya menghasilkan skalar atau daftar teks"),
     };
     write_atomic(path, doc.to_string().as_bytes()).map_err(|e| e.to_string())
 }
@@ -309,6 +323,17 @@ mod tests {
         for want in ["ui.font_size", "ui.theme", "ui.warna", "cmd+y"] {
             assert!(all.contains(want), "{want} tidak ditandai: {all}");
         }
+    }
+
+    #[test]
+    fn toolbar_dari_config() {
+        let c = load(Some("[toolbar]\nleft = [\"rich_input\", \"diff\"]\nright = [\"branch\", \"jam\"]\n"));
+        assert_eq!(c.values["toolbar"]["left"], json!(["rich_input", "diff"]));
+        assert_eq!(c.values["toolbar"]["right"], json!(["cwd", "branch", "settings"]), "rusak = bawaan");
+        assert!(c.errors.join("").contains("toolbar.right"));
+        let p = scratch("toolbar");
+        set(&p, "toolbar", "left", &json!(["diff"])).unwrap();
+        assert_eq!(load(Some(&fs::read_to_string(&p).unwrap())).values["toolbar"]["left"], json!(["diff"]));
     }
 
     #[test]
