@@ -1,5 +1,5 @@
 # Uji FR-45 dengan app debug asli: tata letak bertahan saat UI dibuka ulang, dan pane dari daemon lama
-# jadi pane mati (id negatif) saat daemon dijalankan ulang. Folder run dan config terpisah dari milik pengguna.
+# langsung diganti shell baru saat daemon dijalankan ulang. Folder run dan config terpisah dari milik pengguna.
 # pakai: npm run tauri build -- --debug && python3 -I scripts/restore_check.py target/debug/bundle/macos/Gembala.app
 import json, os, shutil, socket, subprocess, sys, time
 
@@ -65,8 +65,8 @@ time.sleep(1.5)
 d2, secret2 = start_daemon(0)
 third = ui_session(secret2)
 print("setelah daemon baru:", ids(third), "boot sama:", third["boot"] == second["boot"])
-if not ids(third) or any(p >= 0 for p in ids(third)) or third["boot"] == second["boot"]:
-    print("GAGAL: pane daemon lama harus jadi pane mati (id negatif)"); fail = 1
+if len(ids(third)) != 2 or any(p < 0 for p in ids(third)) or third["boot"] == second["boot"]:
+    print("GAGAL: pane daemon lama harus langsung diganti shell baru (id positif, jumlah sama)"); fail = 1
 d2.kill()
 shutil.rmtree(R, ignore_errors=True)
 print("LOLOS" if not fail else "ADA YANG GAGAL")

@@ -33,6 +33,7 @@
     output?: boolean; // FR-56: ada output sesi agent sebelumnya
     since?: number; // FR-40: kapan proses di pane shell mulai jalan
     sig?: string; // FR-51: sidik profil saat pane dibuat
+    prev?: { profile: string; agent: string; session?: string }; // FR-45: agent pane lama yang bisa dilanjutkan
     zoom?: number; // FR-34: zoom pane ini di atas zoom global
     policy?: string; // SEC-5
     readable?: boolean; // SEC-21
@@ -255,16 +256,18 @@
     }
   }
 
-  /// FR-45: pane mati diganti pane baru dari profil dan folder yang sama
-  async function restart(old: number) {
+  /// FR-45: pane mati diganti pane baru dari profil dan folder yang sama; `shell` = shell saja,
+  /// agent lamanya dicatat di `prev` untuk chip "Lanjutkan sesi"
+  async function restart(old: number, shell = false) {
     const m = meta[old];
     const id = await createPane({
-      profile: m?.profile === "shell" ? undefined : m?.profile,
+      profile: shell || m?.profile === "shell" ? undefined : m?.profile,
       cwd: m?.cwd ?? undefined,
-      session: m?.session,
-      resume: AGENTS.includes(m?.agent ?? ""), // FR-53: lanjutkan percakapan pane ini
+      session: shell ? undefined : m?.session,
+      resume: !shell && AGENTS.includes(m?.agent ?? ""), // FR-53: lanjutkan percakapan pane ini
       workspace: wsIdOf(old),
     });
+    if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session };
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {
@@ -273,6 +276,14 @@
         }
     delete meta[old];
     delete dead[old];
+  }
+
+  /// FR-45: chip "Lanjutkan sesi": shell diganti agent lamanya dengan id sesi yang sama (FR-53)
+  function resumePrev(pane: number) {
+    const { prev, ...m } = meta[pane];
+    if (!prev) return;
+    meta[pane] = { ...m, ...prev };
+    relaunch(pane);
   }
 
   /// Kriteria 17: daemon mati paksa = semua pane tampil sebagai pane mati (tombol jalankan ulang),
@@ -610,6 +621,8 @@
             dead[id] = true;
           }
       wss = restored;
+      // FR-45: pane mati langsung diganti shell baru (id negatif dulu supaya tidak bentrok dengan id run baru)
+      for (const d of Object.keys(dead).map(Number)) await restart(d, true);
       // pane hidup yang tidak ada di layout (mis. layout gagal tersimpan) tetap tampil
       for (const p of alive) wss[0].tabs.push({ id: uid(), title: "", tree: { pane: p }, focus: p });
       const a = saved.at ?? {};
@@ -898,6 +911,7 @@
                 {/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
+                {#if meta[pane]?.prev}<button class="chip" onclick={() => resumePrev(pane)}>Lanjutkan sesi {meta[pane].prev.agent}</button>{/if}
                 {#if meta[pane]?.sig && meta[pane].sig !== sig(meta[pane].profile)}
                   <button class="chip changed" onclick={() => relaunch(pane)}>Profil berubah · jalankan ulang</button>
                 {/if}
