@@ -198,10 +198,11 @@
   const mentionItems = $derived(
     mention ? targets.filter((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].some((s) => s.toLowerCase().startsWith(mention!.q.toLowerCase()))) : [],
   );
-  /// `@` di awal baris = bar kirim; `@` di tengah kalimat (mis. prompt Claude "cek buat @") = nama pane dilengkapi
+  /// Di terminal pemicunya `@@` (`@` tunggal milik agent: pilih file di Claude/OMP). `@@` di awal baris = bar kirim;
+  /// di tengah kalimat (mis. "cek buat @@om") = diganti `@<nama pane>` untuk agent itu
   function onLine(pane: number, line: string) {
-    const m = /(?:^|\s)@([\w.-]*)$/.exec(line);
-    mention = m ? { pane, q: m[1], sel: 0, inline: !line.startsWith("@") } : null;
+    const m = /(?:^|\s)@@([\w.-]*)$/.exec(line);
+    mention = m ? { pane, q: m[1], sel: 0, inline: !line.startsWith("@@") } : null;
   }
   function onMentionKey(pane: number, key: string): boolean {
     if (!mention || mention.pane !== pane || !mentionItems.length) return false;
@@ -228,13 +229,14 @@
     }
     if (mention.inline) {
       // di tengah kalimat prompt agent: `@…` diganti nama pane lengkap; agent memakai `gembala send` (petunjuk FR-9)
-      call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length) + r.name + " ")) });
+      // `@@q` → `@nama ` (satu `@` tersisa)
+      call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length + 1) + r.name + " ")) });
       tiles[pane]?.resetLine();
       mention = null;
       return;
     }
-    // `@…` yang sudah terkirim ke TUI dihapus lagi dengan backspace
-    call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length + 1))) });
+    // `@@…` yang sudah terkirim ke TUI dihapus lagi dengan backspace
+    call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length + 2))) });
     tiles[pane]?.resetLine();
     mention = null;
     lempar = { pane, to: r.pane, name: r.name, body: "", error: "" };
