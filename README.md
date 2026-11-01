@@ -124,7 +124,9 @@ Keluaran satu baris JSON; kode keluar 0 diterima, 1 ditolak/timeout, 2 salah pak
   `gagal sambung ke daemon: unknown_method`. Tiap rebuild release: matikan daemon lama
   (`pkill -f 'Gembala.app/Contents/MacOS/gembala daemon'`, pane yang hidup ikut mati), ganti
   `/Applications/Gembala.app` dengan `target/release/bundle/macos/Gembala.app`, buka dari `/Applications` saja.
-  Bila hanya UI yang berubah (core dan PROTO sama), cukup matikan proses `ui`; pane tetap hidup.
+  Bila hanya UI yang berubah (core dan PROTO sama), cukup matikan proses `ui`; pane tetap hidup, kecuali semua pane
+  diam: daemon tanpa UI berhenti sendiri 5–10 detik kemudian (FR-20). UI yang tersambung tepat saat daemon berhenti
+  dapat "Broken pipe" di tengah hello; sekarang UI menunggu 0,5 detik lalu sambung/jalankan daemon lagi sekali.
   Pasang dari folder mana pun: `G=…/app/target/release/bundle/macos/Gembala.app; [ -d "$G" ] && rm -rf
   /Applications/Gembala.app && cp -R "$G" /Applications/` (cek dulu supaya app lama tidak terhapus bila build gagal).
 - Tool Bash Claude Code membuat sesi proses baru (setsid): identitas pane harus lewat rantai proses induk, bukan

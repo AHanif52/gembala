@@ -37,6 +37,10 @@ pub type OnEvent = Arc<dyn Fn(Value) + Send + Sync>;
 
 /// Sambung ke daemon; jalankan daemon bila belum ada. `on_event` menerima event daemon.
 pub fn connect(on_event: OnEvent) -> io::Result<Client> {
+    connect_try(on_event, true)
+}
+
+fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     let dir = rundir();
     let sock = dir.join("ui.sock");
     // satu rahasia per folder run: dev, uji, dan app terpasang tidak saling tindih
@@ -68,8 +72,15 @@ pub fn connect(on_event: OnEvent) -> io::Result<Client> {
     let kc = security_framework::passwords::get_generic_password(KC_SERVICE, &account).ok();
     match kc.and_then(|s| String::from_utf8(s).ok()) {
         // ponytail: daemon hidup tapi rahasia Keychain basi/tidak ada; reset otomatis di FR-49 (Fase 1)
-        Some(secret) => Client::open(s, &secret, on_event)
-            .map_err(|e| err(format!("{e}; hentikan daemon lama dengan: pkill -f 'gembala daemon'"))),
+        Some(secret) => match Client::open(s, &secret, on_event.clone()) {
+            // daemon yang sedang berhenti sendiri (FR-20: tanpa UI, pane diam) menutup socket di tengah hello:
+            // tunggu dia keluar, lalu sambung atau jalankan daemon baru
+            Err(e) if retry && matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof) => {
+                thread::sleep(std::time::Duration::from_millis(500));
+                connect_try(on_event, false)
+            }
+            r => r.map_err(|e| err(format!("{e}; hentikan daemon lama dengan: pkill -f 'gembala daemon'"))),
+        },
         None => Err(err("daemon jalan tapi rahasia tidak ada di Keychain; hentikan dengan: pkill -f 'gembala daemon'")),
     }
 }
@@ -114,7 +125,9 @@ impl Client {
         let hello = json!({"id": 0, "method": "hello", "params": {"proto": 1, "client": "ui", "secret": secret}});
         writeln!(w, "{hello}")?;
         let mut l = String::new();
-        r.read_line(&mut l)?;
+        if r.read_line(&mut l)? == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into()); // daemon menutup socket sebelum menjawab
+        }
         let v: Value = serde_json::from_str(&l).unwrap_or(Value::Null);
         if v.get("result").is_none() {
             return Err(err(format!("hello ditolak: {}", v["error"]["code"])));
@@ -158,5 +171,23 @@ impl Client {
             Some(r) => Ok(r.clone()),
             None => Err(v["error"]["code"].as_str().unwrap_or("error").to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Daemon yang sedang berhenti menutup socket sebelum menjawab hello: error harus jenis yang memicu sambung ulang.
+    #[test]
+    fn hello_putus_bisa_diulang() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let t = thread::spawn(move || {
+            let mut l = String::new();
+            let _ = BufReader::new(&b).read_line(&mut l); // terima hello, lalu tutup tanpa jawab
+        });
+        let e = Client::open(a, "x", Arc::new(|_| {})).err().unwrap();
+        t.join().unwrap();
+        assert!(matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof), "{e:?}");
     }
 }
