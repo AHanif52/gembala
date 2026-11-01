@@ -13,8 +13,8 @@ catatan per milestone, dan tabel "Sisa Fase 1").
 | 2 Orkestrasi (O1–O4) | Kode selesai. Kriteria 1, 3–11, 17 punya uji otomatis yang lolos |
 | 3 Lanjutan | Belum. Menurut BRD bagian 16 ditentukan setelah Fase 2 dipakai sendiri 2 minggu |
 
-Keputusan yang masih menunggu pengguna: pintasan Fase 2 (`⌘⇧K` kirim, `⌘J` laci, `⌘⇧.` henti; usulan Claude),
-sertifikat tanda tangan "Gembala Dev", hapus trailer Co-Authored-By di commit lama (perlu force-push).
+Diputus 1 Nov 2026: pintasan Fase 2 tetap (`⌘⇧K` kirim, `⌘J` laci, `⌘⇧.` henti); app ditandatangani sertifikat
+self-signed "Gembala Dev" di keychain login; trailer Co-Authored-By dihapus dari riwayat (force-push).
 
 ## Struktur
 
@@ -91,8 +91,11 @@ Keluaran satu baris JSON; kode keluar 0 diterima, 1 ditolak/timeout, 2 salah pak
 
 - WKWebView tidak meneruskan banyak kombinasi ⌘ ke keydown JS: semua pintasan lewat menu native; `⌘⇧↩` justru
   dimakan WebKit sebelum menu, jadi ditangkap keydown (dengan penjaga 150 ms).
-- Build tanpa tanda tangan tetap = dialog Keychain "ui" sekali tiap build baru (tanpa Always Allow). Item Keychain
-  dari CLI `security -A` tetap ditanya (partition list). Alat uji pakai build debug + `GEMBALA_DEV_SECRET`.
+- Build rilis ditandatangani "Gembala Dev" (`bundle.macOS.signingIdentity`, sertifikat self-signed di keychain login,
+  tidak perlu dipercaya untuk codeSign): designated requirement = identifier + hash sertifikat, sama tiap build, jadi
+  "Always Allow" di dialog Keychain "ui" bertahan. Mesin tanpa sertifikat itu: build gagal tanda tangan; buat dengan
+  `openssl req -x509` (extendedKeyUsage=codeSigning) lalu `security import`. Item Keychain dari CLI `security -A`
+  tetap ditanya (partition list). Alat uji pakai build debug + `GEMBALA_DEV_SECRET`.
 - App dibuka dari dalam sesi agent mewarisi env sesi itu: dibuang di `pty::scrub_env` (SEC-35).
 - Lock `Mutex` std tidak reentrant: jangan memegang `panes` sambil memanggil fungsi yang menguncinya lagi.
 - RAM: renderer DOM xterm lebih hemat dan datar per pane daripada WebGL (TECH catatan M1).
