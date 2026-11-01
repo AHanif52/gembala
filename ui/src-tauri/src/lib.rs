@@ -209,6 +209,14 @@ async fn pick_files(app: tauri::AppHandle) -> Vec<String> {
     canonical(picked.unwrap_or_default().into_iter().filter_map(|f| f.into_path().ok()))
 }
 
+/// FR-44: dialog pilih folder akar workspace.
+#[tauri::command]
+async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_folder()).await.ok().flatten();
+    canonical(picked.and_then(|f| f.into_path().ok())).pop()
+}
+
 /// FR-15: file yang diseret ke pane juga diselesaikan symlink-nya.
 #[tauri::command]
 fn resolve_paths(paths: Vec<String>) -> Vec<String> {
@@ -381,7 +389,7 @@ pub fn run() {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, resolve_paths])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

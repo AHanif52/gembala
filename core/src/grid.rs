@@ -44,6 +44,19 @@ impl Grid {
         self.0.screen().contents()
     }
 
+    /// Baris kursor berwarna lalu kolom kursor: prompt shell tetap tampil setelah layar diganti (FR-56 agent manual).
+    /// Mode bracketed paste prompt ikut dipulihkan, supaya tempelan banyak baris tidak langsung dijalankan.
+    pub fn cursor_line(&self) -> Vec<u8> {
+        let s = self.0.screen();
+        let (row, col) = s.cursor_position();
+        let mut out = s.rows_formatted(0, s.size().1.get()).nth(row as usize).unwrap_or_default();
+        out.push_str(&format!("\x1b[{}G", col + 1));
+        if s.bracketed_paste() {
+            out.push_str("\x1b[?2004h");
+        }
+        out.into_bytes()
+    }
+
     /// Baris terbawah layar yang berisi teks (FR-4 pola layar).
     pub fn tail(&self, n: usize) -> String {
         let all = self.text();

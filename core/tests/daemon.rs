@@ -544,13 +544,39 @@ fn ringkas_output_saat_agent_keluar() {
     ui.call("pane.attach", json!({"pane": pane}));
     let e = next_event(&mut ui, "pane.replace", Duration::from_secs(10));
     let text = String::from_utf8(B64.decode(e["params"]["data"].as_str().unwrap()).unwrap()).unwrap();
-    assert!(text.contains("palsu-1 selesai") && text.contains("keluar 3"), "{text}");
+    assert!(text.contains("palsu-1") && text.contains("keluar 3"), "{text}");
     let mut ui2 = Cli::ui(&d);
     let snap = ui2.call("pane.attach", json!({"pane": pane}))["result"]["snapshot"].as_str().unwrap().to_string();
     let snap = String::from_utf8(B64.decode(snap).unwrap()).unwrap();
-    assert!(snap.contains("selesai") && !snap.contains("OUTPUT-AGENT-PANJANG"), "{snap}");
+    assert!(snap.contains("palsu-1") && !snap.contains("OUTPUT-AGENT-PANJANG"), "{snap}");
     let full = ui.call("pane.agent_output", json!({"pane": pane}))["result"]["data"].as_str().unwrap().to_string();
     assert!(String::from_utf8_lossy(&B64.decode(full).unwrap()).contains("OUTPUT-AGENT-PANJANG"));
+}
+
+/// FR-56: agent yang diketik sendiri di pane shell juga diringkas (perintah + cara lanjut), prompt shell tetap ada.
+#[test]
+fn ringkas_agent_manual() {
+    let d = start("manual");
+    let omp = d.dir.join("omp");
+    // salinan binary gembala bernama "omp" (agent dikenali dari nama proses); /bin/sleep salinan ditolak macOS
+    std::fs::copy(env!("CARGO_BIN_EXE_gembala"), &omp).unwrap();
+    let mut ui = Cli::ui(&d);
+    let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.attach", json!({"pane": pane}));
+    std::thread::sleep(Duration::from_secs(1));
+    ui.call("pane.write", json!({"pane": pane, "data": B64.encode(format!("'{}' watch\r", omp.display()))}));
+    std::thread::sleep(Duration::from_secs(3));
+    ui.call("pane.write", json!({"pane": pane, "data": B64.encode("\x03")}));
+    let e = next_event(&mut ui, "pane.replace", Duration::from_secs(15));
+    let Some(data) = e["params"]["data"].as_str() else {
+        let snap = Cli::ui(&d).call("pane.attach", json!({"pane": pane}))["result"]["snapshot"].as_str().unwrap().to_string();
+        panic!("tanpa pane.replace; layar: {}", String::from_utf8_lossy(&B64.decode(snap).unwrap()));
+    };
+    let text = String::from_utf8(B64.decode(data).unwrap()).unwrap();
+    assert!(text.contains("omp watch") && text.contains("Resume this session with:") && text.contains("omp --continue"), "{text}");
+    assert!(!text.trim_end().ends_with("--continue"), "prompt shell harus ditulis lagi di bawah blok: {text}");
+    let snap = Cli::ui(&d).call("pane.attach", json!({"pane": pane}))["result"]["snapshot"].as_str().unwrap().to_string();
+    assert!(String::from_utf8_lossy(&B64.decode(snap).unwrap()).contains("\x1b[?2004h"), "bracketed paste prompt hilang");
 }
 
 /// FR-40: pane yang menunggu password (kanonik + echo mati) terdeteksi; proses biasa tidak.

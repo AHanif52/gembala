@@ -55,6 +55,8 @@ struct Pane {
     /// FR-56: output sesi agent yang sedang jalan (sejak penanda mulai) dan sesi terakhir yang sudah selesai; RAM saja (SEC-13)
     agent_log: Mutex<Option<(std::time::Instant, Vec<u8>)>>,
     last_output: Mutex<Vec<u8>>,
+    /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap)
+    manual: Mutex<Option<(String, String)>>,
     /// FR-4 cadangan: kapan output terakhir datang; profil `custom` dilacak dari layar
     last_out: Mutex<std::time::Instant>,
     screen: bool,
@@ -511,6 +513,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 session: session.id.clone().filter(|s| profile::valid_uuid(s)),
                 agent_log: Mutex::new(None),
                 last_output: Mutex::new(Vec::new()),
+                manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
                 screen: agent == "custom",
                 started: std::time::Instant::now(),
@@ -897,8 +900,28 @@ fn screen_watch(st: Arc<State>) {
         thread::sleep(Duration::from_secs(1));
         let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.clone())).collect();
         for (id, pane) in panes {
-            let manual = pane.agent == "shell"
-                && pty::busy(&pane.master, pane.sid).and_then(|(pid, _)| pty::proc_name(pid)).is_some_and(|n| AGENTS.contains(&n.as_str()));
+            let found = (pane.agent == "shell")
+                .then(|| pty::busy(&pane.master, pane.sid))
+                .flatten()
+                .and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?)))
+                .filter(|(_, n)| AGENTS.contains(&n.as_str()));
+            let manual = found.is_some();
+            // FR-56: agent manual mulai = catat log sesi; keluar = blok ringkas, prompt shell ditulis lagi di bawahnya
+            let mut m = pane.manual.lock().unwrap();
+            match (m.is_some(), found) {
+                (false, Some((pid, name))) => {
+                    *m = Some((name, pty::args_of(pid).join(" ")));
+                    *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
+                }
+                (true, None) => {
+                    let (agent, cmd) = m.take().unwrap();
+                    let mut v = pane.view.lock().unwrap();
+                    let prompt = v.0.cursor_line();
+                    agent_done(&mut v, &pane, id, &agent, &cmd, "0", &prompt);
+                }
+                _ => {}
+            }
+            drop(m);
             let cur = *pane.status.lock().unwrap();
             let next = if pane.screen || manual {
                 let tail = pane.view.lock().unwrap().0.tail(12);
@@ -1056,8 +1079,15 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
         return;
     }
     let Some(code) = mark.strip_prefix("agent-exit;") else { return };
+    let name = pane.name.lock().unwrap().clone();
+    agent_done(v, pane, id, &pane.agent, &name, code, &[]);
+}
+
+/// FR-56: blok ringkas ala Warp: `<folder> (<durasi>)`, perintah, lalu perintah untuk melanjutkan sesi.
+/// `prompt` = baris prompt shell yang sudah tampil (agent manual), ditulis lagi di bawah blok.
+fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, code: &str, prompt: &[u8]) {
     let Some((started, log)) = pane.agent_log.lock().unwrap().take() else { return };
-    *pane.last_output.lock().unwrap() = log;
+    let since = std::time::SystemTime::now() - started.elapsed();
     let secs = started.elapsed().as_secs();
     let dur = match secs {
         0..60 => format!("{secs} dtk"),
@@ -1065,23 +1095,55 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
         _ => format!("{} jam {} mnt", secs / 3600, secs % 3600 / 60),
     };
     let home = std::env::var("HOME").unwrap_or_default();
-    let cwd = pty::cwd_of(pane.sid).map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
+    let dir = pty::cwd_of(pane.sid);
+    let cwd = dir.as_ref().map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
+    let omp = |d: std::path::PathBuf| omp_session(std::path::Path::new(&home), &d, since);
     let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
-    let resume = match (pane.agent.as_str(), pane.session.as_deref()) {
-        ("claude", Some(sid)) => format!("claude --resume {sid}"),
-        ("codex", _) => "codex resume --last".into(),
-        ("opencode", _) => "opencode --continue".into(),
-        ("omp", _) => "omp --continue".into(),
-        _ => String::new(),
+    let resume = match agent {
+        "claude" => pane.session.clone().or_else(|| printed_resume(&log)).map(|s| format!("claude --resume {s}")),
+        "codex" => Some("codex resume --last".into()),
+        "opencode" => Some("opencode --continue".into()),
+        "omp" => Some(dir.and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),
+        _ => None,
     };
-    let mut text = format!("\x1b[2m─ {} selesai · {dur} · {cwd}{exit}\x1b[0m\r\n", pane.name.lock().unwrap());
-    if !resume.is_empty() {
-        text += &format!("\x1b[2m  lanjutkan: {resume}\x1b[0m\r\n");
+    *pane.last_output.lock().unwrap() = log;
+    let mut text = format!("\x1b[2m{cwd} ({dur}){exit}\x1b[0m\r\n\x1b[1m{}\x1b[0m\r\n", msg::sanitize(cmd).unwrap_or_default());
+    if let Some(r) = resume {
+        text += &format!("\r\nResume this session with:\r\n{r}\r\n");
     }
+    let mut text = text.into_bytes();
+    text.extend_from_slice(prompt);
     let (rows, cols) = v.0.size();
     v.0 = Grid::new(rows, cols, SCROLLBACK);
-    v.0.feed(text.as_bytes());
+    v.0.feed(&text);
     send_all(v, line(json!({"event": "pane.replace", "params": {"pane": id, "data": B64.encode(&text)}})));
+}
+
+/// FR-56: id sesi dari baris `claude --resume <uuid>` yang dicetak Claude Code sendiri saat keluar.
+fn printed_resume(log: &[u8]) -> Option<String> {
+    let re = regex_lite::Regex::new(r"--resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})").unwrap();
+    re.captures_iter(&String::from_utf8_lossy(log)).last().map(|c| c[1].to_string())
+}
+
+/// FR-56, pengecualian SEC-15: id sesi Oh My Pi = nama file sesi terbaru di folder sesinya; isi file tidak dibuka.
+// ponytail: aturan nama folder ditiru dari omp 18.13 (home = "----", di dalam home "-a-b", di luar "--a-b--");
+// bila omp mengubahnya, blok kembali ke `omp --continue`
+fn omp_session(home: &std::path::Path, cwd: &std::path::Path, since: std::time::SystemTime) -> Option<String> {
+    let slug = |p: &std::path::Path| p.to_string_lossy().trim_matches('/').replace('/', "-");
+    let dir = match cwd.strip_prefix(&home) {
+        Ok(r) if r.as_os_str().is_empty() => "----".to_string(),
+        Ok(r) => format!("-{}", slug(r)),
+        Err(_) => format!("--{}--", slug(cwd)),
+    };
+    let newest = std::fs::read_dir(home.join(".omp/agent/sessions").join(dir))
+        .ok()?
+        .flatten()
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.file_name().into_string().ok()?)))
+        .filter(|(t, n)| *t >= since && n.ends_with(".jsonl"))
+        .max()?;
+    let id = newest.1.strip_suffix(".jsonl")?.split_once('_')?.1;
+    // nama file ditulis ke terminal: hanya karakter id yang lolos
+    id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-').then(|| id.to_string())
 }
 
 /// Output PTY → grid + semua pelanggan. Selesai saat shell pane keluar.
@@ -1179,4 +1241,34 @@ pub fn new_secret() -> io::Result<String> {
 
 pub fn default_dir() -> PathBuf {
     std::env::var_os("GEMBALA_RUNDIR").map(PathBuf::from).unwrap_or_else(crate::rundir::default_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn id_resume_dari_output_claude() {
+        let log = b"\x1b[2mResume this session with:\x1b[0m\r\nclaude --resume 87cc338d-d5dc-45c7-8adc-99937a7d18a5\r\n";
+        assert_eq!(printed_resume(log).as_deref(), Some("87cc338d-d5dc-45c7-8adc-99937a7d18a5"));
+        assert_eq!(printed_resume(b"claude --resume x; rm -rf /"), None);
+    }
+
+    #[test]
+    fn id_sesi_omp_dari_nama_file() {
+        let home = std::env::temp_dir().join(format!("gomp-{}", std::process::id()));
+        let since = std::time::SystemTime::now() - Duration::from_secs(5);
+        for (cwd, dir) in [(home.clone(), "----"), (home.join("a/b c"), "-a-b c"), ("/private/tmp".into(), "--private-tmp--")] {
+            let d = home.join(".omp/agent/sessions").join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("2026-11-01T01-09-10-679Z_01a194a7-3d97-72f7-b2ce-1499a5f0dbee.jsonl"), "").unwrap();
+            assert_eq!(omp_session(&home, &cwd, since).as_deref(), Some("01a194a7-3d97-72f7-b2ce-1499a5f0dbee"), "{dir}");
+        }
+        // file lama (sebelum agent mulai) dan nama berisi karakter kendali tidak dipakai
+        let later = std::time::SystemTime::now() + Duration::from_secs(60);
+        assert_eq!(omp_session(&home, &home, later), None);
+        std::fs::write(home.join(".omp/agent/sessions/----/2026-11-02T00-00-00-000Z_\x1b[2J.jsonl"), "").unwrap();
+        assert_eq!(omp_session(&home, &home, since), None);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 }

@@ -62,7 +62,6 @@
   let search = $state<HTMLInputElement>();
   let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
   let renameError = $state("");
-  let newWs = $state<{ name: string; root: string } | null>(null);
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
   let upgrade = $state<{ daemon: string; app: string; panes: number } | null>(null); // FR-21
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
@@ -364,7 +363,7 @@
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen || picker || editing || newWs || rich) return;
+    if (settingsOpen || picker || editing || rich) return;
     if (!tab || confirm || quitAsk || linkAsk || wsAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
@@ -444,10 +443,9 @@
       changes = null;
       return stop(e);
     }
-    if (editing || newWs) {
+    if (editing) {
       if (e.key === "Escape") {
         editing = null;
-        newWs = null;
         stop(e);
       }
       return; // kotak isian di sidebar menerima tombol seperti biasa
@@ -530,13 +528,13 @@
     at = { ws: wss.findIndex((w) => w.id === cur), tab: at.tab };
   }
 
-  /// FR-44: workspace = satu folder project; tab barunya mulai di folder itu
+  /// FR-44: workspace = satu folder project dipilih lewat dialog; nama = nama folder (ganti dengan klik dua kali);
+  /// tab barunya mulai di folder itu
   async function addWorkspace() {
-    if (!newWs) return;
-    const name = newWs.name.trim().slice(0, 60) || base(newWs.root) || "workspace";
-    const root = newWs.root.trim() || "~";
-    newWs = null;
-    wss.push({ id: uid(), name, root, tabs: [] });
+    const path = await invoke<string | null>("pick_folder");
+    if (!path) return;
+    const root = home(path);
+    wss.push({ id: uid(), name: base(path).slice(0, 60) || "workspace", root, tabs: [] });
     await newTab(undefined, wss.length - 1);
   }
 
@@ -855,15 +853,7 @@
     {/each}
     <div class="adds">
       <button class="add" onclick={openPicker}>+ Tab <span class="n">⌘T</span></button>
-      {#if newWs}
-        <div class="newws">
-          <input class="edit" placeholder="Nama" aria-label="Nama workspace baru" bind:value={newWs.name} />
-          <input class="edit" placeholder="Folder, mis. ~/Programming/app" aria-label="Folder workspace baru" bind:value={newWs.root}
-            onkeydown={(e) => e.key === "Enter" && addWorkspace()} />
-        </div>
-      {:else}
-        <button class="add" onclick={() => (newWs = { name: "", root: "" })}>+ Workspace</button>
-      {/if}
+      <button class="add" onclick={addWorkspace}>+ Workspace</button>
     </div>
   </aside>
 {/if}
@@ -1240,11 +1230,6 @@
   }
   .add:hover {
     color: var(--fg);
-  }
-  .newws {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
   }
   .body {
     position: absolute;
