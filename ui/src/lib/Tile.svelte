@@ -24,6 +24,7 @@
     onkey,
     onprompt,
     ontype,
+    onfocusin,
   }: {
     pane: number;
     focused: boolean;
@@ -36,6 +37,7 @@
     onkey: (key: string) => boolean; // FR-57: true = tombol dipakai daftar @, tidak diteruskan ke terminal
     onprompt: (at: boolean) => void; // FR-59: shell menunggu di prompt (penanda OSC 133 B sampai C)
     ontype: (text: string) => boolean; // FR-59: true = huruf diambil input editor, tidak diteruskan ke shell
+    onfocusin: () => void; // FR-59: terminal dapat fokus keyboard (halaman memindahkannya ke editor bila tampil)
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -214,6 +216,7 @@
     term.unicode.activeVersion = "11"; // FR-41: lebar emoji dan CJK
     term.open(el);
     term.parser.registerOscHandler(133, onMark);
+    term.textarea?.addEventListener("focus", () => onfocusin());
     ready = true;
     fit.fit();
 

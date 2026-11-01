@@ -1262,6 +1262,7 @@
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
                 onprompt={(on: boolean) => (atPrompt[pane] = on)}
+                onfocusin={() => editorShown(pane) && setTimeout(() => document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus(), 0)}
                 ontype={(text: string) => {
                   if (!editorShown(pane)) return false;
                   draft[pane] = (draft[pane] ?? "") + text;
@@ -1286,7 +1287,13 @@
                 <textarea bind:value={draft[pane]} rows={Math.min(6, (draft[pane] ?? "").split("\n").length)} data-editor={pane}
                   aria-label="Perintah untuk {meta[pane]?.name}" spellcheck="false" autocapitalize="off" autocomplete="off"
                   placeholder="Ketik perintah · Enter jalankan · Shift+Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan"
-                  onkeydown={(e) => editorKey(pane, e)} oninput={() => onEditorInput(pane)} onfocus={() => (t.focus = pane)}></textarea>
+                  onkeydown={(e) => editorKey(pane, e)} oninput={() => onEditorInput(pane)} onfocus={() => (t.focus = pane)}
+                  oncopy={(e) => {
+                    // ⌘C tanpa seleksi di editor = salin seleksi terminal (fokus selalu di editor saat editor tampil)
+                    const ta = e.currentTarget;
+                    const sel = tiles[pane]?.selection();
+                    if (ta.selectionStart === ta.selectionEnd && sel) (e.preventDefault(), e.clipboardData?.setData("text/plain", sel));
+                  }}></textarea>
                 {#if editorErr[pane]}<span class="err">{editorErr[pane]}</span>{/if}
               </div>
             {/if}
