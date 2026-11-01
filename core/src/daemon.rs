@@ -55,8 +55,9 @@ struct Pane {
     /// FR-56: output sesi agent yang sedang jalan (sejak penanda mulai) dan sesi terakhir yang sudah selesai; RAM saja (SEC-13)
     agent_log: Mutex<Option<(std::time::Instant, Vec<u8>)>>,
     last_output: Mutex<Vec<u8>>,
-    /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap)
-    manual: Mutex<Option<(String, String)>>,
+    /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap, folder kerja agent).
+    /// Urutan kunci: `view` lalu `manual`.
+    manual: Mutex<Option<(String, String, Option<std::path::PathBuf>)>>,
     /// FR-4 cadangan: kapan output terakhir datang; profil `custom` dilacak dari layar
     last_out: Mutex<std::time::Instant>,
     screen: bool,
@@ -906,22 +907,21 @@ fn screen_watch(st: Arc<State>) {
                 .and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?)))
                 .filter(|(_, n)| AGENTS.contains(&n.as_str()));
             let manual = found.is_some();
-            // FR-56: agent manual mulai = catat log sesi; keluar = blok ringkas, prompt shell ditulis lagi di bawahnya
-            let mut m = pane.manual.lock().unwrap();
-            match (m.is_some(), found) {
+            // FR-56: agent manual mulai = catat log sesi. Keluar biasanya ditangani `pump` begitu shell menulis prompt;
+            // di sini cadangan bila shell diam, prompt yang sudah tampil ditulis lagi di bawah blok.
+            let active = pane.manual.lock().unwrap().is_some();
+            match (active, found) {
                 (false, Some((pid, name))) => {
-                    *m = Some((name, pty::args_of(pid).join(" ")));
+                    *pane.manual.lock().unwrap() = Some((name, pty::args_of(pid).join(" "), pty::cwd_of(pid)));
                     *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
                 }
                 (true, None) => {
-                    let (agent, cmd) = m.take().unwrap();
                     let mut v = pane.view.lock().unwrap();
                     let prompt = v.0.cursor_line();
-                    agent_done(&mut v, &pane, id, &agent, &cmd, "0", &prompt);
+                    manual_done(&mut v, &pane, id, &prompt);
                 }
                 _ => {}
             }
-            drop(m);
             let cur = *pane.status.lock().unwrap();
             let next = if pane.screen || manual {
                 let tail = pane.view.lock().unwrap().0.tail(12);
@@ -1080,14 +1080,23 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     }
     let Some(code) = mark.strip_prefix("agent-exit;") else { return };
     let name = pane.name.lock().unwrap().clone();
-    agent_done(v, pane, id, &pane.agent, &name, code, &[]);
+    agent_done(v, pane, id, &pane.agent, &name, None, code, &[]);
+}
+
+/// FR-56: agent manual sudah keluar = blok ringkas (sekali; `pump` dan `screen_watch` bisa sama-sama memanggil).
+fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8]) {
+    let Some((agent, cmd, dir)) = pane.manual.lock().unwrap().take() else { return };
+    agent_done(v, pane, id, &agent, &cmd, dir, "0", prompt);
 }
 
 /// FR-56: blok ringkas ala Warp: `<folder> (<durasi>)`, perintah, lalu perintah untuk melanjutkan sesi.
+/// `agent_dir` = folder kerja agent (bisa beda dari shell; dipakai mencari sesi omp).
 /// `prompt` = baris prompt shell yang sudah tampil (agent manual), ditulis lagi di bawah blok.
-fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, code: &str, prompt: &[u8]) {
+#[allow(clippy::too_many_arguments)]
+fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_dir: Option<std::path::PathBuf>, code: &str, prompt: &[u8]) {
     let Some((started, log)) = pane.agent_log.lock().unwrap().take() else { return };
-    let since = std::time::SystemTime::now() - started.elapsed();
+    // 2 detik cadangan: agent manual baru terdeteksi sampai 1 detik setelah mulai
+    let since = std::time::SystemTime::now() - started.elapsed() - Duration::from_secs(2);
     let secs = started.elapsed().as_secs();
     let dur = match secs {
         0..60 => format!("{secs} dtk"),
@@ -1103,7 +1112,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, code: 
         "claude" => pane.session.clone().or_else(|| printed_resume(&log)).map(|s| format!("claude --resume {s}")),
         "codex" => Some("codex resume --last".into()),
         "opencode" => Some("opencode --continue".into()),
-        "omp" => Some(dir.and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),
+        "omp" => Some(agent_dir.or(dir).and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),
         _ => None,
     };
     *pane.last_output.lock().unwrap() = log;
@@ -1157,6 +1166,11 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
             Err(_) => break, // EIO: slave tertutup
         };
         let mut v = pane.view.lock().unwrap();
+        // FR-56: agent manual sudah keluar = blok ringkas dulu, lalu output shell (prompt) tampil di bawahnya
+        // ponytail: output terakhir agent yang terbaca bersama prompt dalam satu baca tidak ikut ke log sesi
+        if pane.manual.lock().unwrap().is_some() && pty::busy(&pane.master, pane.sid).is_none() {
+            manual_done(&mut v, &pane, id, &[]);
+        }
         // FR-56: penanda sesi agent dari skrip launch dipotong dari stream; sisanya diteruskan apa adanya
         let mut rest = &buf[..n];
         while let Some((pos, len, mark)) = find_marker(rest) {
