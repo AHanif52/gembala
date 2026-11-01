@@ -60,6 +60,8 @@ struct Pane {
     manual: Mutex<Option<(String, String, Option<std::path::PathBuf>)>>,
     /// FR-4 cadangan: kapan output terakhir datang; profil `custom` dilacak dari layar
     last_out: Mutex<std::time::Instant>,
+    /// FR-59: shell sedang di prompt (penanda OSC 133 B terakhir, belum C); ikut di attach karena snapshot tanpa OSC
+    at_prompt: std::sync::atomic::AtomicBool,
     screen: bool,
     started: std::time::Instant,
     /// Fase 2: workspace (aturan akses SEC-4/21), kebijakan penerima (SEC-5), kapan status terakhir berubah
@@ -95,6 +97,8 @@ struct State {
     panes: Mutex<HashMap<u64, Arc<Pane>>>,
     next: AtomicU64,
     secret: Option<String>,
+    /// SEC-20: requirement tanda tangan UI (dari sertifikat daemon sendiri); `None` = hanya rahasia
+    ui_req: Option<String>,
     pane_sock: String,
     /// Klien kanal UI yang sedang tersambung (FR-20: daemon berhenti bila 0 dan semua pane diam).
     ui_clients: AtomicUsize,
@@ -135,6 +139,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         panes: Mutex::default(),
         next: AtomicU64::new(1),
         secret,
+        ui_req: crate::sign::ui_requirement(),
         pane_sock: pane_path.to_string_lossy().into_owned(),
         ui_clients: AtomicUsize::new(0),
         ui_txs: Mutex::default(),
@@ -220,6 +225,8 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         return Ok(());
     }
     let peer = peer_pid(&s)?;
+    // SEC-20: UI bertanda tangan sama dengan daemon dikenali dari audit token saat connect, tanpa rahasia
+    let signed = chan == Chan::Ui && st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r));
     let (tx, rx) = sync_channel::<String>(QUEUE);
     let mut w = s.try_clone()?;
     let sock = s.try_clone()?;
@@ -254,7 +261,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         };
         let (id, method, p) = (&req["id"], req["method"].as_str().unwrap_or(""), &req["params"]);
         if !ready {
-            let r = if method == "hello" { hello(&st, chan, peer, p) } else { Err("hello_required") };
+            let r = if method == "hello" { hello(&st, chan, peer, signed, p) } else { Err("hello_required") };
             ready = r.is_ok();
             ident = r.as_ref().ok().and_then(|v| v["pane"].as_u64());
             if ready && chan == Chan::Ui {
@@ -299,7 +306,8 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                 Ok(pane) => {
                     let mut v = pane.view.lock().unwrap();
                     let (rows, cols) = v.0.size();
-                    reply(&tx, id, Ok(json!({"snapshot": B64.encode(v.0.snapshot()), "rows": rows, "cols": cols})));
+                    let prompt = pane.at_prompt.load(Ordering::Relaxed);
+                    reply(&tx, id, Ok(json!({"snapshot": B64.encode(v.0.snapshot()), "rows": rows, "cols": cols, "prompt": prompt})));
                     if let Ok(sock) = sock.try_clone() {
                         v.1.push(Sub { tx: tx.clone(), sock });
                     }
@@ -312,7 +320,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     }
 }
 
-fn hello(st: &State, chan: Chan, peer: i32, p: &Value) -> Res {
+fn hello(st: &State, chan: Chan, peer: i32, signed: bool, p: &Value) -> Res {
     if p["proto"].as_u64() != Some(PROTO) {
         return Err("version_mismatch");
     }
@@ -325,10 +333,11 @@ fn hello(st: &State, chan: Chan, peer: i32, p: &Value) -> Res {
     }
     match chan {
         Chan::Ui => {
-            let ok = match (&st.secret, p["secret"].as_str()) {
-                (Some(a), Some(b)) => ct_eq(a.as_bytes(), b.as_bytes()),
-                _ => false,
-            };
+            let ok = signed
+                || match (&st.secret, p["secret"].as_str()) {
+                    (Some(a), Some(b)) => ct_eq(a.as_bytes(), b.as_bytes()),
+                    _ => false,
+                };
             if pane.is_some() || !ok {
                 return Err("unauthorized");
             }
@@ -336,7 +345,7 @@ fn hello(st: &State, chan: Chan, peer: i32, p: &Value) -> Res {
         Chan::Pane if pane.is_none() => return Err("not_a_pane"),
         Chan::Pane => {}
     }
-    Ok(json!({"proto": PROTO, "daemon": env!("CARGO_PKG_VERSION"), "pane": pane, "boot": st.boot}))
+    Ok(json!({"proto": PROTO, "daemon": env!("CARGO_PKG_VERSION"), "pane": pane, "boot": st.boot, "signed": signed}))
 }
 
 fn dim(v: &Value, default: u16) -> u16 {
@@ -517,6 +526,10 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let user_zdot = std::env::var("ZDOTDIR").or_else(|_| std::env::var("HOME")).unwrap_or_default();
             if pty::login_shell().ends_with("/zsh") {
                 env.extend([("ZDOTDIR", zdot.as_str()), ("GEMBALA_USER_ZDOTDIR", user_zdot.as_str())]);
+                // FR-59: editor UI menggantikan prompt shell
+                if st.config.lock().unwrap()["values"]["ui"]["input_editor"].as_bool() != Some(false) {
+                    env.push(("GEMBALA_EDITOR", "1"));
+                }
             }
             if let Some(t) = &token {
                 env.push(("GEMBALA_TOKEN", t.as_str()));
@@ -537,6 +550,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 last_output: Mutex::new(Vec::new()),
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
+                at_prompt: std::sync::atomic::AtomicBool::new(false),
                 screen: agent == "custom",
                 started: std::time::Instant::now(),
                 workspace: Mutex::new(p["workspace"].as_str().unwrap_or_default().chars().take(64).collect()),
@@ -1072,6 +1086,9 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     }
     v.0.feed(bytes);
     *pane.last_out.lock().unwrap() = std::time::Instant::now();
+    if let Some(on) = prompt_mark(bytes) {
+        pane.at_prompt.store(on, Ordering::Relaxed);
+    }
     if let Some((_, log)) = pane.agent_log.lock().unwrap().as_mut() {
         log.extend_from_slice(bytes);
         let over = log.len().saturating_sub(AGENT_LOG_MAX);
@@ -1102,6 +1119,16 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     let Some(code) = mark.strip_prefix("agent-exit;") else { return };
     let name = pane.name.lock().unwrap().clone();
     agent_done(v, pane, id, &pane.agent, &name, None, code, &[]);
+}
+
+/// FR-59: penanda OSC 133 terakhir di potongan output: B = shell menunggu di prompt, C = perintah mulai jalan.
+// ponytail: penanda yang terpotong batas baca PTY tidak terlihat; prompt berikutnya membetulkan
+fn prompt_mark(b: &[u8]) -> Option<bool> {
+    let last = |m: &[u8]| b.windows(m.len()).rposition(|w| w == m);
+    match (last(b"\x1b]133;B"), last(b"\x1b]133;C")) {
+        (Some(x), Some(y)) => Some(x > y),
+        (x, y) => x.map(|_| true).or(y.map(|_| false)),
+    }
 }
 
 /// FR-56: agent manual sudah keluar = blok ringkas (sekali; `pump` dan `screen_watch` bisa sama-sama memanggil).

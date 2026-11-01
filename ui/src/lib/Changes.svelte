@@ -82,7 +82,7 @@
     {/if}
     <span class="m">{copied}</span>
     <button class="mini" onclick={onreload} title="Muat ulang" aria-label="Muat ulang diff">↻</button>
-    <button class="mini" onclick={onclose} title="Tutup ⌘⇧G atau Esc" aria-label="Tutup panel">×</button>
+    <button class="mini" onclick={onclose} title="Tutup ⌘⇧+ atau Esc" aria-label="Tutup panel">×</button>
   </header>
   <div class="body">
     {#if !diff}

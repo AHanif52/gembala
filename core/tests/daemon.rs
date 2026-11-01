@@ -561,6 +561,8 @@ fn ringkas_agent_manual() {
     // salinan binary gembala bernama "omp" (agent dikenali dari nama proses); /bin/sleep salinan ditolak macOS
     std::fs::copy(env!("CARGO_BIN_EXE_gembala"), &omp).unwrap();
     let mut ui = Cli::ui(&d);
+    // prompt shell harus terlihat di bawah blok; dengan input editor (FR-59) prompt zsh sengaja kosong
+    ui.call("config.set", json!({"section": "ui", "key": "input_editor", "value": false}));
     let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     ui.call("pane.attach", json!({"pane": pane}));
     std::thread::sleep(Duration::from_secs(1));
@@ -599,6 +601,9 @@ fn penanda_blok_zsh() {
     let out = ui.attach_until(p, &[&format!("ZD-{zd}-2")]);
     assert!(out.contains(&format!("\x1b]133;C;{}\x07", B64.encode("(exit 3)"))), "{out:?}");
     assert!(out.contains("\x1b]133;D;3\x07"), "{out:?}");
+    // FR-59: attach berikutnya tahu shell sedang di prompt (snapshot tidak memuat penanda)
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(Cli::ui(&d).call("pane.attach", json!({"pane": p}))["result"]["prompt"], true);
 }
 
 /// FR-9: perintah `gembala` bisa dipanggil tanpa path lengkap dari pane (login shell).

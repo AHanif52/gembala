@@ -116,7 +116,7 @@
   }
 
   // FR-59: input editor ala Warp di pane shell yang sedang menunggu di prompt (penanda OSC 133 dari FR-58)
-  let editorOn = $state(true); // disimpan di layout; matikan lewat palet
+  const editorOn = $derived(ui.input_editor); // [ui] input_editor: daemon juga menyembunyikan prompt zsh pane baru
   let atPrompt = $state<Record<number, boolean>>({});
   let draft = $state<Record<number, string>>({});
   const history: string[] = []; // ponytail: riwayat sesi app saja; riwayat zsh tetap di ↑ terminal
@@ -561,7 +561,7 @@
       ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
       { label: "Workspace baru…", hint: "", go: addWorkspace },
-      { label: editorOn ? "Matikan input editor" : "Nyalakan input editor", hint: "", go: () => (editorOn = !editorOn) },
+      { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
       { label: "Ganti nama tab", hint: "", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
       { label: "Ganti nama workspace", hint: "", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
       { label: "Pengaturan", hint: "⌘,", go: () => (settingsOpen = true) },
@@ -938,9 +938,7 @@
       const a = saved.at ?? {};
       at = wss[a.ws]?.tabs[a.tab] ? { ws: a.ws, tab: a.tab } : { ws: 0, tab: 0 };
       if (typeof saved.side === "number") sideW = Math.min(480, Math.max(160, saved.side));
-      if (typeof saved.panel === "number") panelW = Math.min(1600, Math.max(320, saved.panel));
-      if (saved.editor === false) editorOn = false;
-      return;
+      if (typeof saved.panel === "number") panelW = Math.min(1600, Math.max(320, saved.panel));      return;
     }
     wss = [{ id: uid(), name: "default", root: "~", tabs: [] }];
     const ids = [...alive];
@@ -1011,7 +1009,7 @@
   // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
-    const body = JSON.stringify({ version: 1, boot, at, side: sideW, panel: panelW, editor: editorOn, workspaces: wss, panes: meta });
+    const body = JSON.stringify({ version: 1, boot, at, side: sideW, panel: panelW, workspaces: wss, panes: meta });
     if (!wss.length || !boot) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => call("layout.save", { layout: JSON.parse(body) }).catch(() => {}), 500);
@@ -1235,11 +1233,19 @@
             {#if ed}
               <!-- FR-59: input editor; kursor dan seleksi pakai mouse, Enter jalan, Tab/Esc ke terminal -->
               <div class="editor" class:withbar={bar}>
-                <span class="ps">❯</span>
-                <!-- svelte-ignore a11y_autofocus -->
+                <!-- konteks ala Warp: folder dan branch, menggantikan prompt shell -->
+                <div class="ctx">
+                  <span class="cchip" title={meta[pane]?.cwd ?? ""}>
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" fill="none" stroke="currentColor" /></svg>
+                    {home(meta[pane]?.cwd) || "~"}
+                  </span>
+                  {#if meta[pane]?.git?.repo && meta[pane].git.branch}
+                    <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${meta[pane].git.files} file` : ""}</span>
+                  {/if}
+                </div>
                 <textarea bind:value={draft[pane]} rows={Math.min(6, (draft[pane] ?? "").split("\n").length)} data-editor={pane}
                   aria-label="Perintah untuk {meta[pane]?.name}" spellcheck="false" autocapitalize="off" autocomplete="off"
-                  placeholder="Ketik perintah · Enter jalankan · Shift+Enter baris baru · Tab lengkapi di terminal · Esc ke terminal"
+                  placeholder="Ketik perintah · Enter jalankan · Shift+Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan"
                   onkeydown={(e) => editorKey(pane, e)} onfocus={() => (t.focus = pane)}></textarea>
               </div>
             {/if}
@@ -1787,10 +1793,10 @@
   }
   /* FR-59: input editor menempel di bawah pane; baris tambahan tumbuh ke atas menutupi terminal */
   .body.withedit {
-    bottom: 44px;
+    bottom: 72px;
   }
   .body.withedit.withbar {
-    bottom: 70px;
+    bottom: 98px;
   }
   .editor {
     position: absolute;
@@ -1799,21 +1805,39 @@
     bottom: 0;
     z-index: 3;
     display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 9px 12px 9px 14px;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px 10px 14px;
     border-top: 1px solid var(--line);
     background: var(--bg);
   }
   .editor.withbar {
     bottom: 26px;
   }
-  .editor .ps {
-    color: #3b82f6;
-    font: 13px/1.5 "SF Mono", Menlo, monospace;
+  .ctx {
+    display: flex;
+    gap: 6px;
+    font: 11px system-ui, -apple-system, sans-serif;
+  }
+  .cchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 50%;
+    padding: 2px 7px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+    color: var(--fg);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .cchip svg {
+    flex: none;
+    width: 12px;
+    height: 12px;
   }
   .editor textarea {
-    flex: 1;
     padding: 0;
     border: 0;
     background: transparent;

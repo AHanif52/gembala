@@ -88,7 +88,7 @@ Instal npm selalu dengan `--ignore-scripts` (SEC-16).
 
 `⌘T` tab baru dari profil · `⌘D`/`⌘⇧D` split · `⌘⌥←→↑↓` fokus · `⌃⌘←→↑↓` geser pemisah · `⌘⇧↩` maksimalkan ·
 `⌘.` hentikan proses · `⌘W` tutup pane · `⌘1–9` tab · `⌘P` palet perintah · `⌘B` sidebar · `⌘F` cari · `⌘K` bersihkan ·
-`⌘=`/`⌘-`/`⌘0` zoom · `⌥⌘=`… zoom pane · `⌘G` Rich Input · `⌘⇧G` panel perubahan · `⌘,` Pengaturan ·
+`⌘=`/`⌘-`/`⌘0` zoom · `⌥⌘=`… zoom pane · `⌘G` Rich Input · `⌘⇧+` panel perubahan · `⌘,` Pengaturan ·
 `⌘⇧K` kirim ke agent · `⌘J` laci pesan · `⌘⇧.` henti semua pesan. Ganti di Pengaturan > Pintasan atau `[keys]`.
 
 ## CLI untuk agent (di dalam pane)
@@ -113,8 +113,10 @@ Keluaran satu baris JSON; kode keluar 0 diterima, 1 ditolak/timeout, 2 salah pak
 - WKWebView tidak meneruskan banyak kombinasi ⌘ ke keydown JS: semua pintasan lewat menu native; `⌘⇧↩` justru
   dimakan WebKit sebelum menu, jadi ditangkap keydown (dengan penjaga 150 ms).
 - Build rilis ditandatangani "Gembala Dev" (`bundle.macOS.signingIdentity`, sertifikat self-signed di keychain login,
-  tidak perlu dipercaya untuk codeSign): designated requirement = identifier + hash sertifikat, sama tiap build, jadi
-  "Always Allow" di dialog Keychain "ui" bertahan. Mesin tanpa sertifikat itu: build gagal tanda tangan; buat dengan
+  tidak perlu dipercaya untuk codeSign): designated requirement = identifier + hash sertifikat, sama tiap build.
+  Tetapi item Keychain app tanpa TeamIdentifier terikat ke cdhash build, jadi "Always Allow" TIDAK bertahan antar build
+  (uji langsung 1 Nov 2026). Karena itu kanal UI dikenali daemon dari tanda tangan peer (`core/src/sign.rs`, SEC-20);
+  Keychain hanya cadangan untuk daemon lama. Mesin tanpa sertifikat itu: build gagal tanda tangan; buat dengan
   `openssl req -x509` (extendedKeyUsage=codeSigning) lalu `security import`. Item Keychain dari CLI `security -A`
   tetap ditanya (partition list). Alat uji pakai build debug + `GEMBALA_DEV_SECRET`.
 - App dibuka dari dalam sesi agent mewarisi env sesi itu: dibuang di `pty::scrub_env` (SEC-35).

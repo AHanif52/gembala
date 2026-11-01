@@ -27,7 +27,7 @@ const PANE_KEYS: &[(&str, &str, &str)] = &[
     ("pane.zoom.toggle", "Maksimalkan pane", "Cmd+Shift+Enter"),
     ("pane.move.newtab", "Pindahkan pane ke tab baru", ""),
     ("pane.input.rich", "Rich Input", "Cmd+G"),
-    ("pane.diff.toggle", "Panel perubahan", "Cmd+Shift+G"),
+    ("pane.diff.toggle", "Panel perubahan", "Cmd+Shift+="), // = Cmd+Shift++ bawaan Warp (tombol yang sama)
     ("pane.proc.kill", "Hentikan proses", "Cmd+."),
     ("pane.proc.close", "Tutup pane", "Cmd+W"),
 ];

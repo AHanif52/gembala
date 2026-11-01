@@ -243,7 +243,11 @@ fn zsh_file(name: &str, extra: &str) -> String {
 const ZSH_MARKS: &str = r#"__gembala_precmd() {
   local s=$?
   builtin print -n "\e]133;D;$s\a\e]133;A\a"
-  [[ $PS1 == *'133;B'* ]] || PS1="$PS1%{"$'\e]133;B\a'"%}"
+  if [[ -n $GEMBALA_EDITOR ]]; then
+    PS1="%{"$'\e]133;B\a'"%}" RPROMPT=  # FR-59: editor Gembala menggantikan prompt
+  else
+    [[ $PS1 == *'133;B'* ]] || PS1="$PS1%{"$'\e]133;B\a'"%}"
+  fi
 }
 __gembala_preexec() { builtin print -rn -- $'\e]133;C;'"$(builtin print -rn -- "$1" | /usr/bin/base64)"$'\a'; }
 autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hook preexec __gembala_preexec

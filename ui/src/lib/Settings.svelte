@@ -264,6 +264,10 @@
             <span>Mode pembaca layar<small>Untuk VoiceOver</small></span>
             <input type="checkbox" role="switch" aria-label="Mode pembaca layar" checked={ui.screen_reader} onchange={(e) => set("screen_reader", e.currentTarget.checked)} />
           </div>
+          <div class="row">
+            <span>Input editor<small>Kotak ketik ala Warp menggantikan prompt shell (zsh); berlaku untuk pane baru</small></span>
+            <input type="checkbox" role="switch" aria-label="Input editor" checked={ui.input_editor} onchange={(e) => set("input_editor", e.currentTarget.checked)} />
+          </div>
         </section>
       {:else if sec === "agent"}
         <section>

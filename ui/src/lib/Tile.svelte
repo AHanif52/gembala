@@ -74,6 +74,7 @@
     o.lineHeight = ui.line_height;
     o.cursorStyle = ui.cursor;
     o.cursorBlink = ui.cursor_blink;
+    o.cursorInactiveStyle = "none"; // ala Warp: terminal yang tidak fokus (atau saat input editor dipakai) tanpa kursor
     o.scrollback = ui.scrollback_lines;
     o.screenReaderMode = ui.screen_reader;
     o.macOptionIsMeta = ui.option_as_meta === "left" || ui.option_as_meta === "both";
@@ -272,6 +273,7 @@
         // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
         const a = await call("pane.attach", { pane });
         term.write(unb64(a.snapshot));
+        if (a.prompt) onprompt(true); // FR-59: penanda B sebelum attach tidak ikut snapshot
         attached = true;
         early.splice(0).forEach(onEvent);
       } catch (e) {

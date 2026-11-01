@@ -7,6 +7,7 @@ mod msg;
 mod profile;
 mod pty;
 mod rundir;
+mod sign;
 
 use std::fs::File;
 use std::io::Write;

@@ -10,6 +10,7 @@ export type Ui = {
   option_as_meta: "none" | "left" | "right" | "both";
   scrollback_lines: number;
   screen_reader: boolean;
+  input_editor: boolean;
 };
 
 export type Profile = {
@@ -59,6 +60,7 @@ export const UI_DEFAULT: Ui = {
   option_as_meta: "left",
   scrollback_lines: 5000,
   screen_reader: false,
+  input_editor: true,
 };
 
 // tampilkan pintasan dengan simbol Mac

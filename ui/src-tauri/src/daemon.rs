@@ -18,6 +18,8 @@ pub const KC_SERVICE: &str = "dev.gembala.app";
 pub struct Client {
     /// Daemon putus = false; pemanggil membuat klien baru (kriteria 17: daemon dijalankan lagi).
     pub alive: Arc<std::sync::atomic::AtomicBool>,
+    /// SEC-20: daemon mengenali UI ini dari tanda tangan kodenya (rahasia tidak dipakai)
+    pub signed: bool,
     w: Mutex<UnixStream>,
     pending: Arc<Mutex<HashMap<u64, Sender<Value>>>>,
     next: Mutex<u64>,
@@ -54,28 +56,41 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     if let (Some(secret), Ok(s)) = (&dev, UnixStream::connect(&sock)) {
         return Client::open(s, secret, on_event);
     }
-    // socket dulu: Keychain hanya dibaca bila daemon hidup. Build tanpa tanda tangan berganti identitas
-    // tiap build, dan membaca item build lama memunculkan dialog izin macOS.
+    // socket dulu: Keychain hanya disentuh bila perlu. Item Keychain app self-signed terikat ke cdhash build,
+    // jadi membaca/menulis item build lama memunculkan dialog izin macOS tiap update.
     let Ok(s) = UnixStream::connect(&sock) else {
         let secret = spawn_daemon()?;
-        // gagal simpan (izin ditolak) tidak menggagalkan sesi ini; hanya sambung ulang nanti yang tidak bisa.
+        let c = Client::open(UnixStream::connect(&sock)?, &secret, on_event)?;
+        // SEC-20: daemon mengenali UI dari tanda tangannya = Keychain tidak perlu. Build tanpa sertifikat:
+        // rahasia disimpan untuk sambung ulang; gagal simpan tidak menggagalkan sesi ini.
         // Alat ukur/uji (build debug + GEMBALA_DEV_SECRET) tidak menulis Keychain pengguna.
-        let saved = match dev {
-            None => security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes()),
-            Some(_) => Ok(()),
-        };
-        if let Err(e) = saved {
+        if !c.signed
+            && dev.is_none()
+            && let Err(e) = security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes())
+        {
             eprintln!("simpan rahasia ke Keychain: {e}");
         }
-        return Client::open(UnixStream::connect(&sock)?, &secret, on_event);
+        return Ok(c);
     };
+    // daemon yang sedang berhenti sendiri (FR-20: tanpa UI, pane diam) menutup socket di tengah hello:
+    // tunggu dia keluar, lalu sambung atau jalankan daemon baru
+    let closing = |e: &io::Error| matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof);
+    // SEC-20: tanpa rahasia dulu (dikenali dari tanda tangan); Keychain hanya cadangan untuk daemon lama/tanpa sertifikat
+    match Client::open(s, "", on_event.clone()) {
+        Ok(c) => return Ok(c),
+        Err(e) if closing(&e) && retry => {
+            thread::sleep(std::time::Duration::from_millis(500));
+            return connect_try(on_event, false);
+        }
+        Err(e) if closing(&e) => return Err(e),
+        Err(_) => {} // ditolak: coba rahasia dari Keychain
+    }
+    let s = UnixStream::connect(&sock)?;
     let kc = security_framework::passwords::get_generic_password(KC_SERVICE, &account).ok();
     match kc.and_then(|s| String::from_utf8(s).ok()) {
         // ponytail: daemon hidup tapi rahasia Keychain basi/tidak ada; reset otomatis di FR-49 (Fase 1)
         Some(secret) => match Client::open(s, &secret, on_event.clone()) {
-            // daemon yang sedang berhenti sendiri (FR-20: tanpa UI, pane diam) menutup socket di tengah hello:
-            // tunggu dia keluar, lalu sambung atau jalankan daemon baru
-            Err(e) if retry && matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof) => {
+            Err(e) if retry && closing(&e) => {
                 thread::sleep(std::time::Duration::from_millis(500));
                 connect_try(on_event, false)
             }
@@ -153,7 +168,8 @@ impl Client {
             p2.lock().unwrap().clear();
             on_event(json!({"event": "daemon.lost"}));
         });
-        Ok(Client { alive, w: Mutex::new(w), pending, next: Mutex::new(1) })
+        let signed = v["result"]["signed"].as_bool() == Some(true);
+        Ok(Client { alive, signed, w: Mutex::new(w), pending, next: Mutex::new(1) })
     }
 
     pub fn call(&self, method: &str, params: Value) -> Result<Value, String> {

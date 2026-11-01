@@ -32,6 +32,8 @@ const UI: &[(&str, Kind)] = &[
     // xterm sekitar 12 byte per sel: 5.000 baris × 200 kolom ≈ 12 MB per pane bila penuh
     ("scrollback_lines", Int(0, 100_000, 5_000)),
     ("screen_reader", Bool(false)),
+    // FR-59: input editor di prompt zsh; prompt shell disembunyikan (berlaku untuk pane baru)
+    ("input_editor", Bool(true)),
 ];
 const CHIPS: &[&str] = &["attach", "diff", "rich_input", "cwd", "branch", "settings"];
 /// FR-55: isi dan urutan chip toolbar agent
