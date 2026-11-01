@@ -15,7 +15,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { call, b64 } from "$lib/daemon";
   import {
-    dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, valid,
+    dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, swap, valid,
     type Arrow, type Dir, type Divider, type Node,
   } from "$lib/layout";
 
@@ -674,6 +674,11 @@
     if (group === "split") splitFocused(arg === "down" ? "col" : "row");
     else if (group === "focus" && !zoomed) tab.focus = neighbor(tab.tree, tab.focus, arg as Arrow) ?? tab.focus;
     else if (group === "resize" && !zoomed) tab.tree = nudge(tab.tree, tab.focus, arg as Arrow);
+    else if (group === "swap" && !zoomed) {
+      // FR-37: pane fokus bertukar tempat dengan tetangganya; fokus ikut pane yang dipindah
+      const other = neighbor(tab.tree, tab.focus, arg as Arrow);
+      if (other !== null) tab.tree = swap(tab.tree, tab.focus, other);
+    }
     else if (id === "pane.zoom.toggle") zoomed = !zoomed;
     else if (id === "pane.move.newtab") moveToNewTab();
     else if (id === "pane.input.rich") rich = { pane: tab.focus, text: "" };
@@ -1492,6 +1497,7 @@
                   {#if meta[pane]?.git?.repo && meta[pane].git.branch}
                     <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${meta[pane].git.files} file` : ""}</span>
                   {/if}
+                  <span class="ehint">Enter jalankan · ⇧Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan</span>
                 </div>
                 {#if comp?.pane === pane}
                   <!-- FR-59: daftar Tab ala Warp -->
@@ -1506,12 +1512,15 @@
                     {/each}
                   </div>
                 {/if}
+                <!-- kotak input yang jelas: bingkai + ❯, bingkai biru saat fokus -->
+                <div class="ebox">
+                <span class="ps" aria-hidden="true">❯</span>
                 <div class="ghostwrap">
                   <!-- saran abu-abu dari riwayat; → terima -->
                   <div class="ghost" aria-hidden="true"><span class="typed">{draft[pane] ?? ""}</span>{ghost(pane)}</div>
                 <textarea bind:value={draft[pane]} rows={Math.min(6, (draft[pane] ?? "").split("\n").length)} data-editor={pane}
                   aria-label="Perintah untuk {meta[pane]?.name}" spellcheck="false" autocapitalize="off" autocomplete="off"
-                  placeholder="Ketik perintah · Enter jalankan · Shift+Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan"
+                  placeholder="Ketik perintah…"
                   onkeydown={(e) => editorKey(pane, e)} oninput={() => onEditorInput(pane)} onfocus={() => (t.focus = pane)}
                   onpaste={(e) => pasteToEditor(pane, e)}
                   oncopy={(e) => {
@@ -1520,6 +1529,7 @@
                     const sel = tiles[pane]?.selection();
                     if (ta.selectionStart === ta.selectionEnd && sel) (e.preventDefault(), e.clipboardData?.setData("text/plain", sel));
                   }}></textarea>
+                </div>
                 </div>
                 {#if editorErr[pane]}<span class="err">{editorErr[pane]}</span>{/if}
               </div>
@@ -2145,10 +2155,40 @@
   }
   /* FR-59: input editor menempel di bawah pane; baris tambahan tumbuh ke atas menutupi terminal */
   .body.withedit {
-    bottom: 72px;
+    bottom: 86px;
   }
   .body.withedit.withbar {
-    bottom: 98px;
+    bottom: 112px;
+  }
+  /* FR-59: kotak input jelas (bukan teks polos yang mirip output) */
+  .ebox {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    transition: border-color 120ms;
+  }
+  .ebox:focus-within {
+    border-color: rgba(59, 130, 246, 0.7);
+  }
+  .ebox .ps {
+    color: #3b82f6;
+    font: 13px/1.5 "SF Mono", Menlo, monospace;
+  }
+  .ebox .ghostwrap {
+    flex: 1;
+    min-width: 0;
+  }
+  .ehint {
+    margin-left: auto;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 10.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .editor {
     position: absolute;
@@ -2234,7 +2274,7 @@
   /* FR-59: panel Mulai di tengah pane shell baru; klik di luar tombol tembus ke terminal */
   .start {
     position: absolute;
-    inset: 0 0 72px 0;
+    inset: 0 0 86px 0;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -2574,10 +2614,10 @@
   }
   /* daftar @ dari input editor: di atas kotak editor */
   .mention.withedit {
-    bottom: 80px;
+    bottom: 94px;
   }
   .mention.withedit.withbar {
-    bottom: 106px;
+    bottom: 120px;
   }
   .lempar .to {
     font-weight: 600;

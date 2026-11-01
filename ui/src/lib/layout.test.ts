@@ -1,7 +1,7 @@
 // @ts-nocheck -- dijalankan `npm test` (node --test), bukan bagian build app
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, valid, type Node } from "./layout.ts";
+import { dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, swap, valid, type Node } from "./layout.ts";
 
 // [1 | 2/3] : 1 kiri, 2 kanan atas, 3 kanan bawah
 const t3 = (): Node => split(split({ pane: 1 }, 1, "row", 2), 2, "col", 3);
@@ -50,4 +50,10 @@ test("replace menukar id pane, valid menolak bentuk salah", () => {
   assert.ok(!valid({ dir: "x", ratio: 0.5, a: { pane: 1 }, b: { pane: 2 } }));
   assert.ok(!valid({ pane: "1" }));
   assert.ok(!valid(null));
+});
+
+test("swap menukar posisi dua pane, rasio tetap", () => {
+  const n = swap(t3(), 1, 3);
+  assert.deepEqual(panes(n), [3, 2, 1]);
+  assert.equal((n as any).ratio, (t3() as any).ratio);
 });

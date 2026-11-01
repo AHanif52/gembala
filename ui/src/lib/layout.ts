@@ -46,6 +46,12 @@ export function replace(n: Node, old: number, pane: number): Node {
   return { ...n, a: replace(n.a, old, pane), b: replace(n.b, old, pane) };
 }
 
+/// FR-37: tukar posisi dua pane; ukuran pemisah tetap.
+export function swap(n: Node, a: number, b: number): Node {
+  if (isLeaf(n)) return n.pane === a ? { pane: b } : n.pane === b ? { pane: a } : n;
+  return { ...n, a: swap(n.a, a, b), b: swap(n.b, a, b) };
+}
+
 /// Pohon dari file layout dianggap tidak tepercaya: bentuk salah = null.
 export function valid(n: unknown, depth = 0): n is Node {
   if (depth > 32 || typeof n !== "object" || n === null) return false;
