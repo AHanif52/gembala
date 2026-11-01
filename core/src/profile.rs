@@ -206,7 +206,8 @@ pub fn screen_status(tail: &str, quiet: std::time::Duration, prev: &str) -> &'st
 /// Config agent tidak disentuh; agent yang diketik manual memakai paragraf di file instruksi global pengguna.
 pub const PETUNJUK: &str = "You run in a Gembala pane. Reach other agents in the same workspace with `gembala` (on PATH, \
 JSON output): `gembala status` = list panes; `gembala send <pane> <message>` = send, wait for the reply with `gembala wait --reply <id>`; \
-a message labeled `[Gembala · dari <pane> · <id>]` is answered with `gembala reply <id> <text>`; label `[Gembala · dari pengguna]` = the user, \
+a message labeled `[Gembala · dari <pane> · <id>]` is answered with `gembala reply <id> <text>` when done, in 1-2 sentences: what was executed and how (files, commit, \
+test result), longer only if the sender asked; label `[Gembala · dari pengguna]` = the user, \
 answer on screen. The recipient cannot see your conversation: write every send as a full handover (goal, context and user decisions, \
 files/paths, what was tried or is forbidden, constraints, reply format), never a one-line summary; multi-line is fine. \
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. Do not look for processes via ps.";
