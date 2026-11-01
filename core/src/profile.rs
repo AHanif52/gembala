@@ -224,7 +224,16 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
             }});
             (vec!["--settings".into(), settings.to_string(), "--append-system-prompt".into(), PETUNJUK.into()], vec![])
         }
-        "codex" => (vec!["-c".into(), format!("notify={}", json!([h.exe, "hook", "codex", "notify"]))], vec![]),
+        // ponytail: developer_instructions milik config pengguna tertimpa; gabungkan kalau ada yang memakainya
+        "codex" => (
+            vec![
+                "-c".into(),
+                format!("notify={}", json!([h.exe, "hook", "codex", "notify"])),
+                "-c".into(),
+                format!("developer_instructions={}", json!(PETUNJUK)),
+            ],
+            vec![],
+        ),
         "opencode" => (vec![], vec![("OPENCODE_CONFIG".into(), file("opencode.json"))]),
         "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={PETUNJUK}")], vec![]),
         _ => (vec![], vec![]),
@@ -269,7 +278,13 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
         (".zprofile", zsh_file(".zprofile", "")),
         (".zshrc", zsh_file(".zshrc", ZSH_MARKS)),
         (".zlogin", format!("# dibuat Gembala (FR-58); .zlogin pengguna dibaca apa adanya, lalu ZDOTDIR dikembalikan\n{ZSH_RESTORE}")),
-        ("opencode.json", json!({"$schema": "https://opencode.ai/config.json", "plugin": [format!("file://{plugin}")]}).to_string()),
+        (
+            "opencode.json",
+            json!({"$schema": "https://opencode.ai/config.json", "plugin": [format!("file://{plugin}")],
+                "instructions": [h.dir.join("gembala.md").to_string_lossy()]})
+            .to_string(),
+        ),
+        ("gembala.md", format!("{PETUNJUK}\n")),
         (
             "opencode-gembala.js",
             format!(
@@ -498,6 +513,11 @@ mod tests {
         assert!(launch(&by("omp"), Some(&h), None).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK}'")));
         let codex = launch(&by("codex"), Some(&h), None).unwrap();
         assert!(codex.contains("'-c' 'notify=[\"/Apps/Gem bala/gembala\",\"hook\",\"codex\",\"notify\"]'"), "{codex}");
+        assert!(codex.contains(&format!("'-c' 'developer_instructions=\"{PETUNJUK}\"'")), "{codex}");
+        let files = hook_files(&h);
+        let oc: serde_json::Value = serde_json::from_str(&files.iter().find(|f| f.0 == "opencode.json").unwrap().1).unwrap();
+        assert_eq!(oc["instructions"][0], "/cfg/hooks/gembala.md");
+        assert!(files.iter().any(|f| f.0 == "gembala.md" && f.1.contains(PETUNJUK)));
         assert!(launch(&by("opencode"), Some(&h), None).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
         assert!(launch(&by("omp"), Some(&h), None).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
         assert_eq!(launch(&by("shell"), Some(&h), None), None);
