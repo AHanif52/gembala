@@ -389,6 +389,12 @@ pub fn run() {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
+        // FR-46: tutup jendela = UI keluar (tidak tinggal di latar tanpa jendela); agent tetap jalan di daemon (FR-20)
+        .on_window_event(|w, ev| {
+            if let tauri::WindowEvent::Destroyed = ev {
+                w.app_handle().exit(0);
+            }
+        })
         .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
