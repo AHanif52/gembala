@@ -14,7 +14,20 @@ catatan per milestone, dan tabel "Sisa Fase 1").
 | 3 Lanjutan | Belum. Menurut BRD bagian 16 ditentukan setelah Fase 2 dipakai sendiri 2 minggu |
 
 Diputus 1 Nov 2026: pintasan Fase 2 tetap (`⌘⇧K` kirim, `⌘J` laci, `⌘⇧.` henti); app ditandatangani sertifikat
-self-signed "Gembala Dev" di keychain login; trailer Co-Authored-By dihapus dari riwayat (force-push).
+self-signed "Gembala Dev" di keychain login; trailer Co-Authored-By dihapus dari riwayat (force-push; cadangan
+lokal di branch `cadangan/sebelum-hapus-trailer`, tidak di-push).
+
+**Uji langsung 1 Nov 2026 (pengguna, app rilis):** jalan: Shift+Enter baris baru, × tutup tab, konfirmasi ⌘W,
+kirim ⌘⇧K, split, panel perubahan, ⌘F, dialog folder workspace, blok ringkas saat agent keluar dengan id sesi
+(Claude, OMP; Codex ditambahkan setelahnya), pesan antar agent dua arah (`send` + `reply`). Diperbaiki di sesi itu:
+`not_a_pane` dari tool Bash Claude (SEC-3 rantai induk), ⌘K merusak TUI, autokoreksi textarea, pane mati saat app
+dibuka (FR-45 jadi shell baru), agent manual tak terlihat di `status`, `gembala` belum di PATH pane, tutup jendela
+tidak keluar dari app. Pengguna menilai UI/UX belum cukup untuk pemakaian 2 minggu: backlog di TECH bagian 17.
+
+**Menunggu:** (1) pilihan paket backlog UI/UX (TECH 17); (2) id pesan dari pengguna dibuang dari label supaya agent
+tidak mencoba `reply` (opsi a, dikerjakan sesi lain di pane, cek BRD/daemon sebelum lanjut); (3) agent belum tahu
+perintah `gembala`: usulan paragraf petunjuk di `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, dan setara OMP
+(ditulis atas izin pengguna; Gembala sendiri tidak boleh, SEC-15); (4) ukur RAM dengan agent jalan (`footprint`).
 
 ## Struktur
 
@@ -76,6 +89,10 @@ Instal npm selalu dengan `--ignore-scripts` (SEC-16).
 
 ## CLI untuk agent (di dalam pane)
 
+`gembala` ada di PATH tiap pane (folder binary daemon). Agent yang diketik sendiri di pane shell (claude, codex,
+opencode, omp; dikenali dari nama proses) ikut terlihat di `status` dan bisa dikirimi. Nama pane-nya tetap
+`shell-<n>`; label tujuan di ⌘⇧K menampilkan nama agentnya.
+
 ```
 gembala status                                   # agent lain di workspace ini
 gembala send <pane> <pesan…> [--queue] [--reply-to <msg_id>]
@@ -103,6 +120,20 @@ Keluaran satu baris JSON; kode keluar 0 diterima, 1 ditolak/timeout, 2 salah pak
   `gagal sambung ke daemon: unknown_method`. Tiap rebuild release: matikan daemon lama
   (`pkill -f 'Gembala.app/Contents/MacOS/gembala daemon'`, pane yang hidup ikut mati), ganti
   `/Applications/Gembala.app` dengan `target/release/bundle/macos/Gembala.app`, buka dari `/Applications` saja.
+  Bila hanya UI yang berubah (core dan PROTO sama), cukup matikan proses `ui`; pane tetap hidup.
+  Pasang dari folder mana pun: `G=…/app/target/release/bundle/macos/Gembala.app; [ -d "$G" ] && rm -rf
+  /Applications/Gembala.app && cp -R "$G" /Applications/` (cek dulu supaya app lama tidak terhapus bila build gagal).
+- Tool Bash Claude Code membuat sesi proses baru (setsid): identitas pane harus lewat rantai proses induk, bukan
+  `getsid` peer saja (SEC-3, `pane_of_pid`).
+- Deteksi agent manual memakai nama file proses (`proc_pidpath`); agent yang dibungkus interpreter (nama proses
+  `node`/`bun`) tidak terdeteksi. Claude (Homebrew Cask), Codex 0.166, dan OMP terdeteksi.
+- Salinan `/bin/sleep` dibunuh macOS (tanda tangan platform): agent palsu di uji = salinan biner `gembala` bernama
+  `omp` menjalankan `watch`.
+- Sebelum commit kode Rust: `cargo clippy --workspace --all-targets -- -D warnings` (TECH bagian 16), bukan cuma
+  `cargo test`.
+- Push lewat OMP kadang ditolak OMP ("tunjukkan diff dulu"): sertakan daftar commit + diff stat di prompt.
+- Codex yang baru di-update menolak hook plugin pihak ketiga ("plugin contents changed; hook approval required"):
+  bukan dari Gembala; setujui ulang hook di Codex.
 
 ## Cara kerja di repo ini
 
