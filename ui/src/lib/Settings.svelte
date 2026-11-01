@@ -95,6 +95,8 @@
   let keys = $state<[string, string, string][]>([]);
   let keyErrors = $state<string[]>([]);
   let keyEdit = $state<{ id: string; combo: string } | null>(null);
+  // urutan dan nama sama dengan menu app (lib.rs)
+  const GROUPS: [string, string][] = [["tab.", "Tab"], ["pane.", "Pane"], ["term.", "Tampilan"], ["msg.", "Pesan"]];
 
   /// FR-39: kombinasi ditulis sebagai teks (WKWebView tidak meneruskan semua kombinasi ⌘ ke halaman)
   async function saveKey(id: string, combo: string) {
@@ -322,29 +324,38 @@
             {#each keyErrors as e}<span>{e}</span>{/each}
           </div>
         {/if}
+        <!-- FR-39: dikelompokkan seperti menu; Tab 1–9 satu baris; id aksi di tooltip -->
+        {#each GROUPS as [prefix, title]}
+          <h4 class="khead">{title}</h4>
+          <section>
+            {#each keys.filter(([id]) => id.startsWith(prefix) && !/^tab\.goto\.[2-9]$/.test(id)) as [id, label, key] (id)}
+              {@const goto = id === "tab.goto.1"}
+              {@const custom = Object.values(cfg.values.keys ?? {}).includes(id)}
+              <div class="krow" title={id}>
+                <span class="klabel">{goto ? "Pindah ke tab 1–9" : label}</span>
+                {#if keyEdit?.id === id}
+                  <!-- svelte-ignore a11y_autofocus -->
+                  <input class="keyin" bind:value={keyEdit.combo} autofocus aria-label="Kombinasi untuk {label}" spellcheck="false" placeholder="mis. cmd+shift+d · Enter simpan"
+                    onkeydown={(e) => {
+                      if (e.key === "Enter") saveKey(id, keyEdit?.combo ?? "");
+                      if (e.key === "Escape") (e.stopPropagation(), (keyEdit = null));
+                    }} />
+                {:else}
+                  <span class="kacts">
+                    {#if custom}<button class="link" title="Kembali ke pintasan bawaan" onclick={() => saveKey(id, "")}>Bawaan</button>{/if}
+                    {#if !goto}<button class="link" onclick={() => (keyEdit = { id, combo: key.toLowerCase() })}>Ubah</button>{/if}
+                  </span>
+                  <kbd class:custom>{goto ? "⌘1 … ⌘9" : key ? pretty(key) : "—"}</kbd>
+                {/if}
+              </div>
+            {/each}
+          </section>
+        {/each}
+        <h4 class="khead">Lainnya</h4>
         <section>
-          {#each keys as [id, label, key]}
-            <div class="row">
-              <span class="grow">{label}<small class="m">{id}</small></span>
-              {#if keyEdit?.id === id}
-                <!-- svelte-ignore a11y_autofocus -->
-                <input class="keyin" bind:value={keyEdit.combo} autofocus aria-label="Kombinasi untuk {label}" spellcheck="false" placeholder="mis. cmd+shift+d"
-                  onkeydown={(e) => {
-                    if (e.key === "Enter") saveKey(id, keyEdit?.combo ?? "");
-                    if (e.key === "Escape") (e.stopPropagation(), (keyEdit = null));
-                  }} />
-              {:else}
-                <kbd>{key ? pretty(key) : "—"}</kbd>
-              {/if}
-              <span class="acts">
-                <button class="mini" onclick={() => (keyEdit = { id, combo: key.toLowerCase() })}>Ubah</button>
-                <button class="mini" title="Kembali ke pintasan bawaan" onclick={() => saveKey(id, "")}>Bawaan</button>
-              </span>
-            </div>
-          {/each}
-          <div class="row"><span>Salin / tempel</span><kbd>⌘C ⌘V</kbd></div>
-          <div class="row"><span>Pengaturan</span><kbd>⌘,</kbd></div>
-          <div class="row"><span>Shift+Tab, Ctrl, dan tombol lain</span><span class="m">diteruskan ke terminal</span></div>
+          <div class="krow"><span class="klabel">Salin / tempel</span><kbd>⌘C ⌘V</kbd></div>
+          <div class="krow"><span class="klabel">Pengaturan</span><kbd>⌘,</kbd></div>
+          <div class="krow"><span class="klabel">Shift+Tab, Ctrl, dan tombol lain</span><span class="m">diteruskan ke terminal</span></div>
         </section>
         <p class="note">
           ⌘ milik aplikasi; tombol lain milik terminal, jadi kombinasi wajib memakai <code>cmd</code>. "Ubah" menulis ke bagian
@@ -414,7 +425,69 @@
     z-index: 10;
     display: grid;
     place-items: center;
-    background: var(--dim);
+    background: rgba(0, 0, 0, 0.5); /* terminal di belakang benar-benar mundur */
+  }
+  /* FR-39: daftar pintasan rapi: nama kiri, aksi muncul saat hover, kombinasi rata kanan di kolom tetap */
+  .khead {
+    margin: 14px 0 6px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .khead:first-of-type {
+    margin-top: 0;
+  }
+  .krow {
+    display: grid;
+    grid-template-columns: 1fr auto 110px;
+    align-items: center;
+    gap: 10px;
+    min-height: 32px;
+    padding: 0 12px;
+  }
+  .krow + .krow {
+    border-top: 1px solid var(--line);
+  }
+  .klabel {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .krow kbd,
+  .krow > .m,
+  .krow .keyin {
+    grid-column: 3;
+    justify-self: end;
+  }
+  .krow .keyin {
+    grid-column: 2 / 4;
+    width: 220px;
+  }
+  .krow kbd.custom {
+    border-color: #3b82f6;
+  }
+  .kacts {
+    display: flex;
+    gap: 8px;
+    visibility: hidden;
+  }
+  .krow:hover .kacts,
+  .kacts:focus-within {
+    visibility: visible;
+  }
+  .link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: 12px system-ui, -apple-system, sans-serif;
+    cursor: pointer;
+  }
+  .link:hover {
+    color: var(--fg);
+    text-decoration: underline;
   }
   .modal {
     display: grid;
