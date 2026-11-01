@@ -9,7 +9,8 @@ struct Daemon(Mutex<Option<Arc<daemon::Client>>>);
 
 /// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
 const ALLOWED: &[&str] =
-    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset", "git.status", "git.diff", "pane.rename", "pane.agent_output", "profile.save", "profile.reset", "keys.set"];
+    &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset", "git.status", "git.diff", "pane.rename", "pane.agent_output", "profile.save", "profile.reset", "keys.set",
+      "msg.list", "msg.approve", "msg.reject", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace"];
 
 /// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview.
 const PANE_KEYS: &[(&str, &str, &str)] = &[
@@ -47,6 +48,13 @@ const TAB_KEYS: &[(&str, &str, &str)] = &[
     ("tab.goto.9", "Tab 9", "Cmd+9"),
     ("tab.sidebar", "Tampilkan/sembunyikan sidebar", "Cmd+B"),
     ("tab.search", "Cari tab", "Cmd+P"),
+];
+
+/// Menu "Pesan" (Fase 2: FR-10 sampai 12, SEC-10). ⌘K dan ⌘. sudah dipakai Fase 1 (TECH, keputusan Fase 2).
+const MSG_KEYS: &[(&str, &str, &str)] = &[
+    ("msg.compose", "Kirim ke agent lain…", "Cmd+Shift+K"),
+    ("msg.drawer", "Laci pesan", "Cmd+J"),
+    ("msg.stop", "Henti / lanjutkan semua pesan", "Cmd+Shift+."),
 ];
 
 /// Menu "View" (FR-34, FR-36).
@@ -264,7 +272,7 @@ fn canon_key(raw: &str) -> Result<String, String> {
 /// lawannya kehilangan pintasan dan ditandai.
 fn resolve_keys(overrides: &serde_json::Map<String, Value>) -> (Vec<Shortcut>, Vec<String>) {
     let mut items: Vec<(Shortcut, bool)> =
-        TAB_KEYS.iter().chain(PANE_KEYS).chain(VIEW_KEYS).map(|(id, label, key)| ((*id, *label, canon_key(key).unwrap_or_default()), false)).collect();
+        TAB_KEYS.iter().chain(PANE_KEYS).chain(VIEW_KEYS).chain(MSG_KEYS).map(|(id, label, key)| ((*id, *label, canon_key(key).unwrap_or_default()), false)).collect();
     let mut errors = Vec::new();
     for (raw, action) in overrides {
         let Some(action) = action.as_str() else { continue };
@@ -319,6 +327,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut]) -
     let mut view = SubmenuBuilder::new(app, "View");
     let mut tab = SubmenuBuilder::new(app, "Tab");
     let mut pane = SubmenuBuilder::new(app, "Pane");
+    let mut msgs = SubmenuBuilder::new(app, "Pesan");
     let mut group = "";
     for k in keys {
         if k.0.starts_with("term.") {
@@ -329,6 +338,10 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut]) -
             tab = tab.item(&item(k)?);
             continue;
         }
+        if k.0.starts_with("msg.") {
+            msgs = msgs.item(&item(k)?);
+            continue;
+        }
         let g = k.0.split('.').nth(1).unwrap_or("");
         if !group.is_empty() && g != group {
             pane = pane.separator();
@@ -337,7 +350,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut]) -
         pane = pane.item(&item(k)?);
     }
     let window = SubmenuBuilder::new(app, "Window").minimize().fullscreen().build()?;
-    MenuBuilder::new(app).items(&[&main, &edit, &view.build()?, &tab.build()?, &pane.build()?, &window]).build()
+    MenuBuilder::new(app).items(&[&main, &edit, &view.build()?, &tab.build()?, &pane.build()?, &msgs.build()?, &window]).build()
 }
 
 /// `[keys]` dari config → menu baru (FR-39, berlaku tanpa restart).
@@ -364,7 +377,7 @@ pub fn run() {
         // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
         .menu(|app| build_menu(app, &resolve_keys(&serde_json::Map::new()).0))
         .on_menu_event(|app, ev| {
-            if ["pane.", "app.", "term.", "tab."].iter().any(|p| ev.id().0.starts_with(p)) {
+            if ["pane.", "app.", "term.", "tab.", "msg."].iter().any(|p| ev.id().0.starts_with(p)) {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })

@@ -5,6 +5,7 @@
   import Settings from "$lib/Settings.svelte";
   import Changes from "$lib/Changes.svelte";
   import OutputView from "$lib/OutputView.svelte";
+  import Messages from "$lib/Messages.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { invoke } from "@tauri-apps/api/core";
@@ -32,6 +33,8 @@
     since?: number; // FR-40: kapan proses di pane shell mulai jalan
     sig?: string; // FR-51: sidik profil saat pane dibuat
     zoom?: number; // FR-34: zoom pane ini di atas zoom global
+    policy?: string; // SEC-5
+    readable?: boolean; // SEC-21
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
@@ -63,9 +66,37 @@
   let rich = $state<{ pane: number; text: string } | null>(null); // FR-14
   let changes = $state<{ pane: number; diff: any } | null>(null); // FR-22
   let outputOf = $state<number | null>(null); // FR-56
+
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
   const ws = $derived(wss[at.ws]);
   const tab = $derived(ws?.tabs[at.tab]);
+  // Fase 2: laci pesan, kirim manual, data mesin pesan dari daemon
+  let drawer = $state(false);
+  let msgData = $state<any>(null);
+  let compose = $state<{ to: number | null; body: string; force: boolean; error: string } | null>(null);
+  async function refreshMsgs() {
+    msgData = await call("msg.list").catch(() => msgData);
+  }
+  const pendingFor = (pane: number) => (msgData?.pending ?? []).filter((m: any) => m.to === meta[pane]?.name);
+  const wsIdOf = (pane: number) => wss.find((w) => w.tabs.some((t) => panes(t.tree).includes(pane)))?.id ?? ws?.id;
+  /// panel status (FR-10): semua pane di workspace aktif
+  const rows = $derived(
+    (ws?.tabs ?? [])
+      .flatMap((t) => panes(t.tree))
+      .filter((p) => !dead[p] && meta[p])
+      .map((p) => ({ pane: p, name: meta[p].name, agent: meta[p].agent || "shell", status: meta[p].status, policy: meta[p].policy, readable: meta[p].readable })),
+  );
+
+  async function sendCompose() {
+    if (!compose || compose.to === null) return;
+    try {
+      await call("msg.send", { to: compose.to, body: compose.body, force: compose.force });
+      compose = null;
+      refreshMsgs();
+    } catch (e) {
+      if (compose) compose.error = e === "target_blocked" ? "Target sedang butuh izin; jawab langsung di pane itu" : e === "target_busy" ? "Target sedang bekerja; centang paksa bila yakin" : String(e);
+    }
+  }
 
   $effect(() => {
     const r = document.documentElement;
@@ -89,7 +120,7 @@
     const agent = cfg?.values.profiles.find((p) => p.id === profile)?.agent ?? "shell";
     // FR-53: Claude Code menerima id sesi dari luar; dipakai lagi saat pane dijalankan ulang
     const session = (opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined);
-    const r = await call("pane.create", { ...opts, session });
+    const r = await call("pane.create", { workspace: ws?.id, ...opts, session });
     meta[r.pane] = { profile, cwd: null, agent, name: r.name, session, sig: sig(profile) };
     return r.pane;
   }
@@ -106,6 +137,7 @@
     await call("pane.close", { pane: old }).catch(() => {});
     await new Promise((r) => setTimeout(r, 400));
     const id = await createPane({
+      workspace: wsIdOf(old),
       profile: m.profile === "shell" ? undefined : m.profile,
       cwd: m.cwd ?? undefined,
       session: m.session,
@@ -158,7 +190,7 @@
   async function newTab(profile?: string, wi = at.ws) {
     const w = wss[wi];
     const from = wi === at.ws ? tab?.focus : undefined;
-    const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined });
+    const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined, workspace: w.id });
     w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id });
     at = { ws: wi, tab: w.tabs.length - 1 };
     zoomed = false;
@@ -214,6 +246,7 @@
       cwd: m?.cwd ?? undefined,
       session: m?.session,
       resume: AGENTS.includes(m?.agent ?? ""), // FR-53: lanjutkan percakapan pane ini
+      workspace: wsIdOf(old),
     });
     for (const w of wss)
       for (const t of w.tabs)
@@ -310,6 +343,13 @@
     last = { id, at: performance.now() };
     const [, group, arg] = id.split(".");
     const cur = order.findIndex((o) => o.wi === at.ws && o.ti === at.tab);
+    if (id === "msg.drawer") return void ((drawer = !drawer), drawer && refreshMsgs());
+    if (id === "msg.stop") return void call("msg.pause", { on: !msgData?.paused }).then(refreshMsgs);
+    if (id === "msg.compose") {
+      const others = rows.filter((r) => r.pane !== tab.focus && r.agent !== "shell");
+      compose = { to: others[0]?.pane ?? null, body: "", force: false, error: "" };
+      return;
+    }
     if (id === "tab.new") openPicker();
     else if (id === "tab.sidebar") sidebar = !sidebar;
     else if (id === "tab.prev") goto((cur + order.length - 1) % order.length);
@@ -365,6 +405,14 @@
       return; // kontrol di Pengaturan menerima tombol seperti biasa
     }
     if (rich) return; // textarea Rich Input menangani tombolnya sendiri
+    if (compose) {
+      if (e.key === "Escape") (compose = null), stop(e);
+      return;
+    }
+    if (drawer && e.key === "Escape") {
+      drawer = false;
+      return stop(e);
+    }
     if (changes && e.key === "Escape") {
       changes = null;
       return stop(e);
@@ -654,6 +702,8 @@
       }
       if (m.busy !== busy) m.busy = busy;
       if (i.pane_name && meta[p].name !== i.pane_name) meta[p].name = i.pane_name;
+      if (meta[p].policy !== i.policy) meta[p].policy = i.policy;
+      if (meta[p].readable !== i.readable) meta[p].readable = i.readable;
     }
   }
 
@@ -665,6 +715,7 @@
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
       if (payload.event === "pane.replace" && meta[payload.params.pane]) meta[payload.params.pane].output = true;
       if (payload.event === "daemon.lost") onLost();
+      if (payload.event === "msg.event") refreshMsgs();
     });
     const timer = setInterval(poll, 2000);
     // FR-15: seret file ke jendela = path ber-quote ditempel ke pane yang fokus (bracketed paste, tanpa Enter)
@@ -683,6 +734,9 @@
       try {
         cfg = await call("config.get");
         await restore();
+        // pane yang hidup dari run sebelumnya: daemon diberi tahu workspace-nya (aturan akses SEC-4/21)
+        for (const p of Object.keys(meta).map(Number).filter((p) => !dead[p])) call("pane.workspace", { pane: p, workspace: wsIdOf(p) }).catch(() => {});
+        refreshMsgs();
         poll();
       } catch (e) {
         error = `gagal sambung ke daemon: ${e}`;
@@ -851,6 +905,17 @@
               </div>
             {/if}
           {/if}
+          {#each pendingFor(pane) as m (m.id)}
+            <!-- FR-12: kartu di dekat pane target; hanya klik (Enter tidak menyetujui tanpa sengaja) -->
+            <div class="card" role="alertdialog" aria-label="Pesan menunggu persetujuan">
+              <span><b>{m.from}</b> ingin mengirim ke pane ini <span class="keys">{m.id}</span></span>
+              <pre>{m.body}</pre>
+              <span class="acts">
+                <button class="mini" onclick={() => call("msg.reject", { id: m.id }).then(refreshMsgs)}>Tolak</button>
+                <button class="mini" onclick={() => call("msg.approve", { id: m.id }).then(refreshMsgs)}>Setujui</button>
+              </span>
+            </div>
+          {/each}
           {#if confirm?.pane === pane}
             <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
               <span><b>{confirm?.name}</b> masih jalan. Tutup pane?</span>
@@ -873,6 +938,26 @@
       aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
     ></div>
   {/each}
+  {#if msgData?.paused}
+    <div class="paused" role="status">Pesan antar agent dijeda · ⌘⇧. untuk lanjut</div>
+  {/if}
+  {#if drawer}
+    <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} />
+  {/if}
+  {#if compose}
+    <div class="confirm compose" role="dialog" aria-label="Kirim ke agent lain">
+      <b>Kirim ke agent lain</b>
+      <select aria-label="Pane tujuan" bind:value={compose.to}>
+        {#each rows.filter((r) => r.pane !== tab?.focus && r.agent !== "shell") as r (r.pane)}<option value={r.pane}>{r.name} · {r.status || "?"}</option>{/each}
+      </select>
+      <!-- svelte-ignore a11y_autofocus -->
+      <textarea bind:value={compose.body} rows="5" autofocus aria-label="Isi pesan" placeholder="Isi pesan; dikirim dengan label dari pengguna"
+        onkeydown={(e) => e.key === "Enter" && e.metaKey && sendCompose()}></textarea>
+      <label class="inline"><input type="checkbox" bind:checked={compose.force} /> Paksa bila status target tidak diketahui</label>
+      {#if compose.error}<span class="err">{compose.error}</span>{/if}
+      <span class="acts"><button class="mini" onclick={() => (compose = null)}>Batal</button> <button class="mini" onclick={sendCompose}>Kirim ⌘↩</button></span>
+    </div>
+  {/if}
   {#if changes}
     <Changes status={meta[changes.pane]?.git} diff={changes.diff} onclose={() => (changes = null)} />
   {/if}
@@ -1195,6 +1280,68 @@
     background: var(--card);
     color: var(--fg);
     font: inherit;
+  }
+  .card {
+    position: absolute;
+    inset: auto 12px 34px 12px;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid #d97706;
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    font: 13px system-ui, -apple-system, sans-serif;
+  }
+  .card pre {
+    margin: 0;
+    max-height: 120px;
+    overflow: auto;
+    white-space: pre-wrap;
+    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .acts {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .paused {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 6;
+    padding: 4px 12px;
+    border: 1px solid #d97706;
+    border-radius: 999px;
+    background: var(--card);
+    color: #d97706;
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .compose {
+    min-width: 420px;
+  }
+  .compose textarea,
+  .compose select {
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .err {
+    color: #dc2626;
+    font-size: 12px;
   }
   .welcome {
     min-width: 280px;

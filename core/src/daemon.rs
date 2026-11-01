@@ -554,6 +554,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)),
                 "password": busy.is_some() && pty::wants_password(&pane.master),
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
+                "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
@@ -819,7 +820,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             let reply = p["reply"].as_str().map(String::from);
             let pattern = match p["pattern"].as_str() {
                 Some(pat) if pat.len() > 256 => return Err("bad_params"),
-                Some(pat) => Some(regex::Regex::new(pat).map_err(|_| "bad_params")?),
+                Some(pat) => Some(regex_lite::Regex::new(pat).map_err(|_| "bad_params")?),
                 None => None,
             };
             let target = match p["target"].as_str() {
