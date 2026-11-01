@@ -583,6 +583,25 @@ fn ringkas_agent_manual() {
     assert!(snap.contains("\x1b[?2004h"), "bracketed paste prompt hilang: {snap}");
 }
 
+/// Agent yang diketik manual di pane shell terlihat oleh agent lain lewat `status` (jalur antar agent).
+#[test]
+fn agent_manual_terlihat_di_status() {
+    let d = start("manualst");
+    let omp = d.dir.join("omp");
+    std::fs::copy(env!("CARGO_BIN_EXE_gembala"), &omp).unwrap();
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let mut ui = Cli::ui(&d);
+    let b = ui.call("pane.create", json!({"workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    ui.call("pane.write", json!({"pane": b, "data": B64.encode(format!("'{}' watch\r", omp.display()))}));
+    std::thread::sleep(Duration::from_secs(3)); // screen_watch mengenali agent manual tiap 1 detik
+    let a = ui.call("pane.create", json!({"workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    ui.call("pane.write", json!({"pane": a, "data": B64.encode(format!("'{g}' status; echo SELESAI-S\r"))}));
+    let out = ui.attach_until(a, &["SELESAI-S\r\n"]);
+    assert!(out.contains("\"agent\":\"omp\""), "{out}");
+}
+
 /// FR-40: pane yang menunggu password (kanonik + echo mati) terdeteksi; proses biasa tidak.
 #[test]
 fn deteksi_menunggu_password() {

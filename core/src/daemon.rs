@@ -75,6 +75,17 @@ struct Pane {
     view: Mutex<(Grid, Vec<Sub>)>,
 }
 
+impl Pane {
+    /// Agent dari profil, atau agent yang diketik manual di pane shell (FR-56): terlihat di `status`, boleh dikirimi
+    /// dan dibaca seperti agent lain. Pane shell biasa tetap tunduk SEC-21.
+    fn agent_name(&self) -> Option<String> {
+        if self.agent != "shell" {
+            return Some(self.agent.clone());
+        }
+        self.manual.lock().unwrap().as_ref().map(|m| m.0.clone())
+    }
+}
+
 struct Sub {
     tx: SyncSender<String>,
     sock: UnixStream,
@@ -773,7 +784,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
     // SEC-21: baca/tunggu hanya dalam workspace yang sama; pane shell hanya bila pengguna mengizinkan
     let visible = |name: &str| -> Result<(u64, Arc<Pane>), &'static str> {
         let (id, pane) = st.by_name(name).ok_or("no_such_pane")?;
-        if *pane.workspace.lock().unwrap() != my_ws || (pane.agent == "shell" && !pane.readable.load(Ordering::Relaxed)) {
+        if *pane.workspace.lock().unwrap() != my_ws || (pane.agent_name().is_none() && !pane.readable.load(Ordering::Relaxed)) {
             return Err("acl_denied");
         }
         Ok((id, pane))
@@ -785,8 +796,9 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|(id, x)| **id != me && *x.workspace.lock().unwrap() == my_ws && x.agent != "shell")
-                .map(|(_, x)| json!({"name": *x.name.lock().unwrap(), "agent": x.agent, "status": *x.status.lock().unwrap(), "policy": x.policy.lock().unwrap().name()}))
+                .filter(|(id, x)| **id != me && *x.workspace.lock().unwrap() == my_ws)
+                .filter_map(|(_, x)| Some((x, x.agent_name()?)))
+                .map(|(x, agent)| json!({"name": *x.name.lock().unwrap(), "agent": agent, "status": *x.status.lock().unwrap(), "policy": x.policy.lock().unwrap().name()}))
                 .collect();
             Ok(json!({"me": my_name, "panes": list}))
         }
@@ -960,7 +972,7 @@ fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": status}}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
     let ws = pane.workspace.lock().unwrap().clone();
-    let visible = pane.agent != "shell" || pane.readable.load(Ordering::Relaxed);
+    let visible = pane.agent_name().is_some() || pane.readable.load(Ordering::Relaxed);
     let name = pane.name.lock().unwrap().clone();
     let ev = line(json!({"event": "pane.status", "params": {"name": name, "status": status}}));
     let subs: Vec<(u64, SyncSender<String>)> = st.pane_subs.lock().unwrap().clone();
