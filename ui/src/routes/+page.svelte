@@ -49,7 +49,7 @@
   let dead = $state<Record<number, true>>({}); // pane dari run daemon lain atau sudah keluar (id negatif)
   let boot = $state(""); // state: layout disimpan ulang saat daemon baru dijalankan
   let zoomed = $state(false);
-  let confirm = $state<{ pane: number; name: string } | null>(null);
+  let confirm = $state<{ pane: number; name: string; close: number[] } | null>(null);
   let quitAsk = $state(0); // jumlah pane yang masih menjalankan proses (FR-46)
   let linkAsk = $state(""); // SEC-14: URL asli ditampilkan sebelum dibuka
   let zoom = $state(0); // FR-34 ⌘=/⌘- sementara di atas ukuran config; ponytail: zoom per pane menyusul
@@ -210,8 +210,21 @@
   async function askClose(pane: number) {
     if (dead[pane]) return onexit(pane);
     const info = await call("pane.info", { pane });
-    if (info.busy) confirm = { pane, name: info.name ?? "proses" };
+    if (info.busy) confirm = { pane, name: info.name ?? "proses", close: [pane] };
     else await call("pane.close", { pane });
+  }
+
+  /// FR-38: tutup tab = tutup semua pane-nya, satu konfirmasi berisi nama proses yang masih jalan
+  async function closeTab(wi: number, t: Tab) {
+    const ps = panes(t.tree);
+    const live = ps.filter((p) => !dead[p]);
+    ps.filter((p) => dead[p]).forEach(onexit);
+    const infos = await Promise.all(live.map((p) => call("pane.info", { pane: p })));
+    const busy = infos.filter((i) => i.busy).map((i) => i.name ?? "proses");
+    if (!busy.length) return live.forEach((p) => call("pane.close", { pane: p }).catch(() => {}));
+    at = { ws: wi, tab: wss[wi].tabs.indexOf(t) };
+    zoomed = false;
+    confirm = { pane: t.focus, name: busy.join(", "), close: live };
   }
 
   /// Pane keluar: hilang dari tabnya; tab kosong ditutup; workspace tanpa tab dapat shell baru.
@@ -456,7 +469,7 @@
       return stop(e);
     }
     if (!confirm) return;
-    if (e.key === "Enter") call("pane.close", { pane: confirm.pane });
+    if (e.key === "Enter") confirm.close.forEach((pane) => call("pane.close", { pane }).catch(() => {}));
     if (e.key === "Enter" || e.key === "Escape") confirm = null;
     stop(e);
   }
@@ -818,7 +831,8 @@
             {:else}
               {@const st = tabStatus(t)}
               <span class="tt">{#if MARK[st]}<span class="mark {st}" title={MARK[st][1]} aria-label={MARK[st][1]}>{MARK[st][0]}</span>{/if}{title(t)}</span>
-              <span class="n">{n < 9 ? `⌘${n + 1}` : ""}</span>
+              <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
+                  onclick={(e) => (e.stopPropagation(), closeTab(wi, t))} onkeydown={(e) => e.key === "Enter" && closeTab(wi, t)}>×</span></span>
               <span class="sub">{home(meta[t.focus]?.cwd)}{agents.length ? ` · ${agents.join(", ")}` : ""}</span>
             {/if}
           </button>
@@ -923,7 +937,7 @@
           {/each}
           {#if confirm?.pane === pane}
             <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
-              <span><b>{confirm?.name}</b> masih jalan. Tutup pane?</span>
+              <span><b>{confirm?.name}</b> masih jalan. Tutup {confirm?.close.length > 1 ? "tab" : "pane"}?</span>
               <span class="keys">Enter tutup · Esc batal</span>
             </div>
           {/if}
@@ -1132,6 +1146,16 @@
   }
   .ws:hover .x {
     visibility: visible;
+  }
+  .tab .x {
+    display: none;
+  }
+  .tab:hover .x {
+    display: inline;
+    visibility: visible;
+  }
+  .tab:hover .k {
+    display: none;
   }
   .tab {
     display: grid;

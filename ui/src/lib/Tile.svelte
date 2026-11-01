@@ -192,6 +192,12 @@
       }
     })();
 
+    // Shift+Enter = ESC CR (sama dengan /terminal-setup Claude Code di iTerm2): baris baru di TUI agent
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.key !== "Enter" || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return true;
+      if (e.type === "keydown") call("pane.write", { pane, data: b64(enc.encode("\x1b\r")) });
+      return false;
+    });
     term.onData((d) => call("pane.write", { pane, data: b64(enc.encode(d)) }));
     term.onBinary((d) => call("pane.write", { pane, data: btoa(d) }));
     term.onResize(({ rows, cols }) => call("pane.resize", { pane, rows, cols }));
