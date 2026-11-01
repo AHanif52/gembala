@@ -22,6 +22,7 @@
     onpasted,
     online,
     onkey,
+    onprompt,
   }: {
     pane: number;
     focused: boolean;
@@ -32,6 +33,7 @@
     onpasted: (path: string) => void;
     online: (line: string) => void; // FR-57: teks yang diketik sejak Enter terakhir
     onkey: (key: string) => boolean; // FR-57: true = tombol dipakai daftar @, tidak diteruskan ke terminal
+    onprompt: (at: boolean) => void; // FR-59: shell menunggu di prompt (penanda OSC 133 B sampai C)
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -127,6 +129,8 @@
   function onMark(data: string) {
     const [k, arg = ""] = data.split(";", 2);
     const last = blocks.at(-1);
+    if (k === "B") onprompt(true);
+    if (k === "C") onprompt(false);
     if (k === "A") {
       const a = term.registerMarker(0);
       if (a) blocks.push({ a, cmd: "" });

@@ -115,6 +115,70 @@
     else if (compose) compose.error = error;
   }
 
+  // FR-59: input editor ala Warp di pane shell yang sedang menunggu di prompt (penanda OSC 133 dari FR-58)
+  let editorOn = $state(true); // disimpan di layout; matikan lewat palet
+  let atPrompt = $state<Record<number, boolean>>({});
+  let draft = $state<Record<number, string>>({});
+  const history: string[] = []; // ponytail: riwayat sesi app saja; riwayat zsh tetap di ↑ terminal
+  let hi = -1;
+  const editorShown = (pane: number) => editorOn && atPrompt[pane] && !dead[pane] && lempar?.pane !== pane;
+  /// teks dikirim sebagai bracketed paste (baris banyak tidak jalan satu per satu); ESC/C0/C1 dibuang seperti FR-14
+  function toShell(pane: number, text: string, enter: boolean) {
+    const clean = text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+    const body = clean ? `\x1b[200~${clean}\x1b[201~` : "";
+    call("pane.write", { pane, data: b64(new TextEncoder().encode(body + (enter ? "\r" : ""))) });
+  }
+  async function runDraft(pane: number) {
+    const text = draft[pane] ?? "";
+    // `@nama pesan` = lempar ke agent itu (FR-57), bukan perintah shell
+    const m = /^@([\w.-]+)\s+([\s\S]+)$/.exec(text);
+    const to = m && targets.find((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].includes(m[1]));
+    if (m && to) {
+      const error = await sendMsg(to.pane, m[2], false);
+      if (error) return void (lempar = { pane, to: to.pane, name: to.name, body: m[2], error });
+      draft[pane] = "";
+      return;
+    }
+    if (text.trim() && history.at(-1) !== text) history.push(text);
+    if (history.length > 200) history.shift();
+    hi = -1;
+    draft[pane] = "";
+    atPrompt[pane] = false; // muncul lagi di prompt berikutnya
+    toShell(pane, text, true);
+  }
+  /// Tab/Esc: teks pindah ke baris zsh, kendali ke terminal (autocomplete zsh tetap jalan)
+  function handOff(pane: number, tab: boolean) {
+    toShell(pane, draft[pane] ?? "", false);
+    if (tab) call("pane.write", { pane, data: b64(new Uint8Array([9])) });
+    draft[pane] = "";
+    atPrompt[pane] = false;
+    tiles[pane]?.focus();
+  }
+  function editorKey(pane: number, e: KeyboardEvent) {
+    const ta = e.currentTarget as HTMLTextAreaElement;
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey) return void (e.preventDefault(), runDraft(pane));
+    if (e.key === "Tab" && !e.shiftKey) return void (e.preventDefault(), handOff(pane, true));
+    if (e.key === "Escape") return void (e.preventDefault(), handOff(pane, false));
+    if (e.key === "c" && e.ctrlKey) return void (e.preventDefault(), (draft[pane] = ""));
+    const first = !ta.value.slice(0, ta.selectionStart).includes("\n");
+    const last = !ta.value.slice(ta.selectionEnd).includes("\n");
+    if (e.key === "ArrowUp" && first && history.length) {
+      e.preventDefault();
+      hi = hi < 0 ? history.length - 1 : Math.max(0, hi - 1);
+      draft[pane] = history[hi];
+    } else if (e.key === "ArrowDown" && last && hi >= 0) {
+      e.preventDefault();
+      hi = hi + 1 < history.length ? hi + 1 : -1;
+      draft[pane] = hi < 0 ? "" : history[hi];
+    }
+  }
+
+  // FR-59: pane yang difokus dengan editor tampil = kursor ke editor
+  $effect(() => {
+    const f = tab?.focus;
+    if (f !== undefined && editorShown(f)) setTimeout(() => document.querySelector<HTMLTextAreaElement>(`[data-editor="${f}"]`)?.focus(), 0);
+  });
+
   // FR-57: `@` di awal prompt pane = daftar agent lain; pilih = bar kirim di pane itu
   let mention = $state<{ pane: number; q: string; sel: number } | null>(null);
   let lempar = $state<{ pane: number; to: number; name: string; body: string; error: string } | null>(null);
@@ -497,6 +561,7 @@
       ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
       { label: "Workspace baru…", hint: "", go: addWorkspace },
+      { label: editorOn ? "Matikan input editor" : "Nyalakan input editor", hint: "", go: () => (editorOn = !editorOn) },
       { label: "Ganti nama tab", hint: "", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
       { label: "Ganti nama workspace", hint: "", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
       { label: "Pengaturan", hint: "⌘,", go: () => (settingsOpen = true) },
@@ -874,6 +939,7 @@
       at = wss[a.ws]?.tabs[a.tab] ? { ws: a.ws, tab: a.tab } : { ws: 0, tab: 0 };
       if (typeof saved.side === "number") sideW = Math.min(480, Math.max(160, saved.side));
       if (typeof saved.panel === "number") panelW = Math.min(1600, Math.max(320, saved.panel));
+      if (saved.editor === false) editorOn = false;
       return;
     }
     wss = [{ id: uid(), name: "default", root: "~", tabs: [] }];
@@ -945,7 +1011,7 @@
   // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
-    const body = JSON.stringify({ version: 1, boot, at, side: sideW, panel: panelW, workspaces: wss, panes: meta });
+    const body = JSON.stringify({ version: 1, boot, at, side: sideW, panel: panelW, editor: editorOn, workspaces: wss, panes: meta });
     if (!wss.length || !boot) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => call("layout.save", { layout: JSON.parse(body) }).catch(() => {}), 500);
@@ -1159,11 +1225,24 @@
                 <button class="hb" title="Tutup pane ⌘W" aria-label="Tutup pane" onclick={() => askClose(pane)}>×</button>
               </div>
             {/if}
-            <div class="body" class:withbar={bar} class:withhead={head} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
-              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
+            {@const ed = editorShown(pane)}
+            <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
+              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
-                online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)} />
+                online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
+                onprompt={(on: boolean) => (atPrompt[pane] = on)} />
             </div>
+            {#if ed}
+              <!-- FR-59: input editor; kursor dan seleksi pakai mouse, Enter jalan, Tab/Esc ke terminal -->
+              <div class="editor" class:withbar={bar}>
+                <span class="ps">❯</span>
+                <!-- svelte-ignore a11y_autofocus -->
+                <textarea bind:value={draft[pane]} rows={Math.min(6, (draft[pane] ?? "").split("\n").length)} data-editor={pane}
+                  aria-label="Perintah untuk {meta[pane]?.name}" spellcheck="false" autocapitalize="off" autocomplete="off"
+                  placeholder="Ketik perintah · Enter jalankan · Shift+Enter baris baru · Tab lengkapi di terminal · Esc ke terminal"
+                  onkeydown={(e) => editorKey(pane, e)} onfocus={() => (t.focus = pane)}></textarea>
+              </div>
+            {/if}
             {#if mention?.pane === pane && mentionItems.length}
               <!-- FR-57: daftar @; Tab pilih, ↑↓ geser, Esc tutup, terus mengetik = @ milik agent -->
               <div class="mention" class:withbar={bar} role="listbox" aria-label="Lempar ke agent">
@@ -1705,6 +1784,43 @@
   }
   .body.withhead {
     top: 22px;
+  }
+  /* FR-59: input editor menempel di bawah pane; baris tambahan tumbuh ke atas menutupi terminal */
+  .body.withedit {
+    bottom: 44px;
+  }
+  .body.withedit.withbar {
+    bottom: 70px;
+  }
+  .editor {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 12px 9px 14px;
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+  }
+  .editor.withbar {
+    bottom: 26px;
+  }
+  .editor .ps {
+    color: #3b82f6;
+    font: 13px/1.5 "SF Mono", Menlo, monospace;
+  }
+  .editor textarea {
+    flex: 1;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--fg);
+    font: 13px/1.5 "SF Mono", Menlo, monospace;
+    resize: none;
+    outline: none;
   }
   /* FR-37: kepala pane; tombol muncul saat kursor di atas pane */
   .head {
