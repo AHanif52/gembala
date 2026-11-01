@@ -87,6 +87,7 @@
     ["tampilan", "Tampilan"],
     ["agent", "Agent"],
     ["pintasan", "Pintasan"],
+    ["toolbar", "Toolbar"],
     ["keamanan", "Keamanan"],
     ["diagnostik", "Diagnostik"],
   ] as const;
@@ -95,6 +96,47 @@
   let keys = $state<[string, string, string][]>([]);
   let keyErrors = $state<string[]>([]);
   let keyEdit = $state<{ id: string; combo: string } | null>(null);
+  // FR-55: editor toolbar agent ala Warp (seret antar sisi, × buang, daftar tersedia); ditulis ke [toolbar]
+  const CHIP_NAME: Record<string, string> = {
+    attach: "＋ Lampirkan file",
+    diff: "▤ Statistik diff",
+    rich_input: "▭ Rich Input",
+    cwd: "▢ Folder kerja",
+    branch: "⎇ Branch git",
+    settings: "⚙ Pengaturan",
+  };
+  const TB_DEFAULT = { left: ["attach", "diff", "rich_input"], right: ["cwd", "branch", "settings"] };
+  type Zone = "left" | "right";
+  const tb = $derived({ left: [...(cfg.values.toolbar?.left ?? TB_DEFAULT.left)], right: [...(cfg.values.toolbar?.right ?? TB_DEFAULT.right)] });
+  const spare = $derived(Object.keys(CHIP_NAME).filter((c) => !tb.left.includes(c) && !tb.right.includes(c)));
+  async function saveTb(next: Record<Zone, string[]>) {
+    failed = "";
+    for (const z of ["left", "right"] as Zone[]) {
+      const r = await call("config.set", { section: "toolbar", key: z, value: next[z] }).catch((e) => ({ error: String(e) }));
+      if (r.error) failed = r.error;
+    }
+  }
+  let tbDrag = $state<{ z: Zone; i: number } | null>(null);
+  /// seret chip: pointer (drag HTML bentrok dengan drop file Tauri), target = chip atau zona di bawah kursor
+  function tbStart(e: PointerEvent, z: Zone, i: number) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest(".tbx")) return;
+    tbDrag = { z, i };
+    const up = (u: PointerEvent) => {
+      window.removeEventListener("pointerup", up);
+      const from = tbDrag;
+      tbDrag = null;
+      const hit = document.elementFromPoint(u.clientX, u.clientY)?.closest<HTMLElement>("[data-tbz]");
+      if (!from || !hit) return;
+      const to = hit.dataset.tbz as Zone;
+      const at = hit.dataset.tbi ? +hit.dataset.tbi : tb[to].length;
+      const next = { left: [...tb.left], right: [...tb.right] };
+      const [chip] = next[from.z].splice(from.i, 1);
+      next[to].splice(from.z === to && at > from.i ? at - 1 : at, 0, chip);
+      saveTb(next);
+    };
+    window.addEventListener("pointerup", up);
+  }
+
   // urutan dan nama sama dengan menu app (lib.rs)
   const GROUPS: [string, string][] = [["tab.", "Tab"], ["pane.", "Pane"], ["term.", "Tampilan"], ["msg.", "Pesan"]];
 
@@ -361,6 +403,38 @@
           ⌘ milik aplikasi; tombol lain milik terminal, jadi kombinasi wajib memakai <code>cmd</code>. "Ubah" menulis ke bagian
           <code>[keys]</code> di config.toml (mis. <code>"cmd+t" = "pane.split.right"</code>); berlaku tanpa restart, bentrok ditandai di atas.
         </p>
+      {:else if sec === "toolbar"}
+        <!-- FR-55: seret chip untuk ubah urutan atau pindah sisi; × buang; chip tersedia bisa ditambah lagi -->
+        <div class="tbzones">
+          {#each [["left", "Kiri"], ["right", "Kanan"]] as [z, title] (z)}
+            <div class="tbzone-wrap">
+              <h4 class="khead">{title}</h4>
+              <div class="tbzone" data-tbz={z} role="list" aria-label="Chip sisi {title}">
+                {#each tb[z as Zone] as c, i (c)}
+                  <span class="tbchip" class:lift={tbDrag?.z === z && tbDrag.i === i} data-tbz={z} data-tbi={i} role="listitem"
+                    onpointerdown={(e) => tbStart(e, z as Zone, i)}>
+                    {CHIP_NAME[c] ?? c}
+                    <button class="tbx" aria-label="Buang {CHIP_NAME[c] ?? c}" onclick={() => saveTb({ ...tb, [z]: tb[z as Zone].filter((x) => x !== c) })}>×</button>
+                  </span>
+                {:else}
+                  <span class="m">Kosong · seret chip ke sini</span>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
+        <h4 class="khead">Tersedia</h4>
+        <div class="tbzone spare">
+          {#each spare as c (c)}
+            <button class="tbchip" onclick={() => saveTb({ ...tb, left: [...tb.left, c] })}>{CHIP_NAME[c]} <span class="m">＋</span></button>
+          {:else}
+            <span class="m">Semua chip sudah dipakai</span>
+          {/each}
+        </div>
+        <p class="note">
+          Chip yang datanya tidak ada (mis. bukan repo git) disembunyikan di toolbar.
+          <button class="link" onclick={() => saveTb(TB_DEFAULT)}>Kembalikan bawaan</button>
+        </p>
       {:else if sec === "keamanan"}
         <section>
           <div class="row"><span>Folder socket<small>Bukan symlink, milik kamu, izin 0700</small></span><span class="m">$TMPDIR/gembala</span></div>
@@ -428,6 +502,49 @@
     background: rgba(0, 0, 0, 0.5); /* terminal di belakang benar-benar mundur */
   }
   /* FR-39: daftar pintasan rapi: nama kiri, aksi muncul saat hover, kombinasi rata kanan di kolom tetap */
+  /* FR-55: editor toolbar */
+  .tbzones {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .tbzone {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 6px;
+    min-height: 40px;
+    padding: 8px;
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+  }
+  .tbzone.spare {
+    border-style: solid;
+  }
+  .tbchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px 3px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+    cursor: grab;
+    user-select: none;
+  }
+  .tbchip.lift {
+    opacity: 0.4;
+  }
+  .tbx {
+    padding: 0 2px;
+    border: 0;
+    background: none;
+    color: #ef4444;
+    font: 13px system-ui, -apple-system, sans-serif;
+    cursor: pointer;
+  }
   .khead {
     margin: 14px 0 6px;
     color: var(--muted);
