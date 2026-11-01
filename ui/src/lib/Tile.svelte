@@ -63,7 +63,7 @@
   $effect(() => {
     if (!ready) return;
     const o = term.options;
-    o.fontFamily = `'${ui.font_family.replace(/['"\\]/g, "")}', 'SF Mono', Menlo, monospace`;
+    o.fontFamily = `'${ui.font_family.replace(/['"\\]/g, "")}', 'SF Mono', Menlo, 'Symbols Nerd Font Mono', monospace`;
     o.fontSize = Math.max(6, ui.font_size + zoom);
     o.lineHeight = ui.line_height;
     o.cursorStyle = ui.cursor;
@@ -100,6 +100,10 @@
     if (e.key === "Enter") find(e.shiftKey);
     if (e.key === "Escape") closeFind();
   }
+
+  /// FR-37: menu klik kanan
+  export const selection = () => term.getSelection();
+  export const paste = (text: string) => term.paste(text); // bracketed paste bila TUI memintanya
 
   /// FR-36: bersihkan layar dan scrollback. Shell diam juga diminta menggambar ulang prompt (Ctrl+L);
   /// bila ada proses jalan (agent), hanya scrollback yang dibuang: layar milik TUI digambar ulang per bagian,

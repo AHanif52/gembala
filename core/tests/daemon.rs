@@ -574,6 +574,7 @@ fn ringkas_agent_manual() {
     };
     let text = String::from_utf8(B64.decode(data).unwrap()).unwrap();
     assert!(text.contains("omp watch") && text.contains("Resume this session with:") && text.contains("omp --continue"), "{text}");
+    assert_eq!(e["params"]["resume"], "omp --continue"); // tombol Lanjutkan di UI
     std::thread::sleep(Duration::from_millis(500));
     let snap = Cli::ui(&d).call("pane.attach", json!({"pane": pane}))["result"]["snapshot"].as_str().unwrap().to_string();
     let snap = String::from_utf8_lossy(&B64.decode(snap).unwrap()).into_owned();

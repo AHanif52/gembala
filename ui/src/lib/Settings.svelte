@@ -5,7 +5,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { call } from "./daemon";
-  import type { Agent, Config, Profile, Ui } from "./config";
+  import { pretty, type Agent, type Config, type Profile, type Ui } from "./config";
 
   let {
     cfg,
@@ -137,16 +137,6 @@
   }
   const setNotify = (key: string, value: boolean | number) => set(key as keyof Ui, value as never, "notify");
 
-  // tampilkan pintasan dengan simbol Mac
-  const pretty = (k: string) =>
-    k
-      .replace("Cmd", "⌘")
-      .replace("Shift", "⇧")
-      .replace("Alt", "⌥")
-      .replace("Ctrl", "⌃")
-      .replace("Enter", "↩")
-      .replace(/Left|Right|Up|Down/, (d) => ({ Left: "←", Right: "→", Up: "↑", Down: "↓" })[d]!)
-      .replaceAll("+", "");
 </script>
 
 {#snippet editor()}

@@ -47,7 +47,7 @@ const TAB_KEYS: &[(&str, &str, &str)] = &[
     ("tab.goto.8", "Tab 8", "Cmd+8"),
     ("tab.goto.9", "Tab 9", "Cmd+9"),
     ("tab.sidebar", "Tampilkan/sembunyikan sidebar", "Cmd+B"),
-    ("tab.search", "Cari tab", "Cmd+P"),
+    ("tab.search", "Palet perintah", "Cmd+P"),
 ];
 
 /// Menu "Pesan" (Fase 2: FR-10 sampai 12, SEC-10). ⌘K dan ⌘. sudah dipakai Fase 1 (TECH, keputusan Fase 2).
@@ -235,6 +235,23 @@ fn notify_pane(app: tauri::AppHandle, body: String, sound: bool) {
     let _ = n.show();
 }
 
+/// FR-37/52: salin dari menu klik kanan (teks pilihan pengguna, folder tab) lewat pbcopy;
+/// clipboard web butuh gesture yang tidak ada di callback menu native.
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    use std::io::Write;
+    let mut c = std::process::Command::new("/usr/bin/pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    c.stdin.take().ok_or("stdin")?.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    c.wait().map(drop).map_err(|e| e.to_string())
+}
+
+/// FR-37: Tempel dari menu klik kanan terminal (teks saja; gambar tetap lewat ⌘V, FR-54).
+#[tauri::command]
+fn paste_text() -> Result<String, String> {
+    let o = std::process::Command::new("/usr/bin/pbpaste").output().map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     app.exit(0);
@@ -395,7 +412,7 @@ pub fn run() {
                 w.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

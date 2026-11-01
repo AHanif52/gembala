@@ -24,7 +24,11 @@ kirim ⌘⇧K, split, panel perubahan, ⌘F, dialog folder workspace, blok ringk
 dibuka (FR-45 jadi shell baru), agent manual tak terlihat di `status`, `gembala` belum di PATH pane, tutup jendela
 tidak keluar dari app. Pengguna menilai UI/UX belum cukup untuk pemakaian 2 minggu: backlog di TECH bagian 17.
 
-**Menunggu:** (1) pilihan paket backlog UI/UX (TECH 17); (2) id pesan dari pengguna dibuang dari label supaya agent
+**UI/UX (TECH 17, 1 Nov 2026):** 14 butir dikerjakan: palet `⌘P`, menu klik kanan tab/workspace/terminal, seret tab
+dan workspace, workspace kosong, status bertulisan, warna tab, lebar sidebar, kepala pane, kartu agent selesai, huruf
+ikon Nerd Font, pemilih tujuan kirim. Uji otomatis lolos; menu native dan seret belum diuji tangan.
+
+**Menunggu:** (1) uji langsung UI/UX di atas; (2) id pesan dari pengguna dibuang dari label supaya agent
 tidak mencoba `reply` (opsi a, dikerjakan sesi lain di pane, cek BRD/daemon sebelum lanjut); (3) agent belum tahu
 perintah `gembala`: usulan paragraf petunjuk di `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, dan setara OMP
 (ditulis atas izin pengguna; Gembala sendiri tidak boleh, SEC-15); (4) ukur RAM dengan agent jalan (`footprint`).
@@ -83,7 +87,7 @@ Instal npm selalu dengan `--ignore-scripts` (SEC-16).
 ## Pintasan bawaan
 
 `⌘T` tab baru dari profil · `⌘D`/`⌘⇧D` split · `⌘⌥←→↑↓` fokus · `⌃⌘←→↑↓` geser pemisah · `⌘⇧↩` maksimalkan ·
-`⌘.` hentikan proses · `⌘W` tutup pane · `⌘1–9` tab · `⌘P` cari tab · `⌘B` sidebar · `⌘F` cari · `⌘K` bersihkan ·
+`⌘.` hentikan proses · `⌘W` tutup pane · `⌘1–9` tab · `⌘P` palet perintah · `⌘B` sidebar · `⌘F` cari · `⌘K` bersihkan ·
 `⌘=`/`⌘-`/`⌘0` zoom · `⌥⌘=`… zoom pane · `⌘G` Rich Input · `⌘⇧G` panel perubahan · `⌘,` Pengaturan ·
 `⌘⇧K` kirim ke agent · `⌘J` laci pesan · `⌘⇧.` henti semua pesan. Ganti di Pengaturan > Pintasan atau `[keys]`.
 

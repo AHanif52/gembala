@@ -1133,7 +1133,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     };
     *pane.last_output.lock().unwrap() = log;
     let mut text = format!("\x1b[2m{cwd} ({dur}){exit}\x1b[0m\r\n\x1b[1m{}\x1b[0m\r\n", msg::sanitize(cmd).unwrap_or_default());
-    if let Some(r) = resume {
+    if let Some(r) = &resume {
         text += &format!("\r\nResume this session with:\r\n{r}\r\n");
     }
     let mut text = text.into_bytes();
@@ -1141,7 +1141,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let (rows, cols) = v.0.size();
     v.0 = Grid::new(rows, cols, SCROLLBACK);
     v.0.feed(&text);
-    send_all(v, line(json!({"event": "pane.replace", "params": {"pane": id, "data": B64.encode(&text)}})));
+    send_all(v, line(json!({"event": "pane.replace", "params": {"pane": id, "data": B64.encode(&text), "resume": resume}})));
 }
 
 /// FR-56: id sesi dari baris yang dicetak agent sendiri saat keluar: `claude --resume <uuid>` (Claude Code)

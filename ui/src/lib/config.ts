@@ -60,3 +60,14 @@ export const UI_DEFAULT: Ui = {
   scrollback_lines: 5000,
   screen_reader: false,
 };
+
+// tampilkan pintasan dengan simbol Mac
+export const pretty = (k: string) =>
+  k
+    .replace("Cmd", "⌘")
+    .replace("Shift", "⇧")
+    .replace("Alt", "⌥")
+    .replace("Ctrl", "⌃")
+    .replace("Enter", "↩")
+    .replace(/Left|Right|Up|Down/, (d) => ({ Left: "←", Right: "→", Up: "↑", Down: "↓" })[d]!)
+    .replaceAll("+", "");

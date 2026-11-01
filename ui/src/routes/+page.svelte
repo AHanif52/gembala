@@ -8,7 +8,8 @@
   import Messages from "$lib/Messages.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getVersion } from "@tauri-apps/api/app";
-  import { UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
+  import { pretty, UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
+  import { Menu } from "@tauri-apps/api/menu";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { call, b64 } from "$lib/daemon";
@@ -17,7 +18,7 @@
     type Arrow, type Dir, type Divider, type Node,
   } from "$lib/layout";
 
-  type Tab = { id: string; title: string; tree: Node; focus: number };
+  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
   type Ws = { id: string; name: string; root: string; tabs: Tab[] };
   /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
   type Meta = {
@@ -37,10 +38,13 @@
     zoom?: number; // FR-34: zoom pane ini di atas zoom global
     policy?: string; // SEC-5
     readable?: boolean; // SEC-21
+    ended?: { resume: string | null }; // FR-56: blok agent selesai dengan tombol, hilang saat proses baru jalan
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
-  // FR-4/52: tanda status tab, tidak hanya warna (bagian 11 BRD)
-  const MARK: Record<string, [string, string]> = { blocked: ["!", "butuh izin"], done: ["✓", "selesai"], working: ["•", "bekerja"] };
+  // FR-4/52: titik status + keterangan teks, tidak hanya warna (bagian 11 BRD)
+  const STATUS: Record<string, string> = { blocked: "butuh izin", done: "selesai", working: "bekerja" };
+  // FR-52: warna tab pilihan pengguna (garis tipis kiri)
+  const COLORS: [string, string][] = [["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"], ["purple", "Ungu"]];
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   const tabStatus = (t: Tab): string => panes(t.tree).reduce((a, p) => (rank(meta[p]?.status) > rank(a) ? (meta[p]?.status ?? "") : a), "");
 
@@ -50,7 +54,7 @@
   let dead = $state<Record<number, true>>({}); // pane dari run daemon lain atau sudah keluar (id negatif)
   let boot = $state(""); // state: layout disimpan ulang saat daemon baru dijalankan
   let zoomed = $state(false);
-  let confirm = $state<{ pane: number; name: string; close: number[] } | null>(null);
+  let confirm = $state<{ pane: number; name: string; close: number[]; what: string } | null>(null);
   let quitAsk = $state(0); // jumlah pane yang masih menjalankan proses (FR-46)
   let linkAsk = $state(""); // SEC-14: URL asli ditampilkan sebelum dibuka
   let zoom = $state(0); // FR-34 ⌘=/⌘- sementara di atas ukuran config; ponytail: zoom per pane menyusul
@@ -58,8 +62,9 @@
   let settingsOpen = $state(false);
   let picker = $state<{ items: (Profile & { missing: boolean })[]; sel: number } | null>(null);
   let sidebar = $state(true);
-  let filter = $state("");
-  let search = $state<HTMLInputElement>();
+  let sideW = $state(220); // FR-52: lebar sidebar, disimpan di layout
+  let pal = $state<{ q: string; sel: number; keys: [string, string, string][] } | null>(null); // FR-39 palet
+  let dragging = $state<{ kind: "tab" | "ws"; wi: number; ti: number; over?: { wi: number; ti: number } } | null>(null);
   let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
   let renameError = $state("");
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
@@ -115,7 +120,13 @@
   const uid = () => Math.random().toString(36).slice(2, 10);
   const base = (p: string | null | undefined) => (p ? p.split("/").filter(Boolean).at(-1) ?? "/" : "");
   const home = (p: string | null | undefined) => (p ?? "").replace(/^\/Users\/[^/]+/, "~");
-  const title = (t: Tab) => t.title || base(meta[t.focus]?.cwd) || "~";
+  /// FR-52: judul bawaan = agent yang sedang jalan di pane fokus, lalu folder (`~` untuk home)
+  const title = (t: Tab) => {
+    const m = meta[t.focus];
+    if (t.title) return t.title;
+    if (m?.busy && AGENTS.includes(m.busy)) return m.busy;
+    return home(m?.cwd) === "~" ? "~" : base(m?.cwd) || "~";
+  };
   /// Urutan global tab untuk ⌘1–⌘9
   const order = $derived(wss.flatMap((w, wi) => w.tabs.map((t, ti) => ({ wi, ti, t }))));
 
@@ -212,24 +223,25 @@
   async function askClose(pane: number) {
     if (dead[pane]) return onexit(pane);
     const info = await call("pane.info", { pane });
-    if (info.busy) confirm = { pane, name: info.name ?? "proses", close: [pane] };
+    if (info.busy) confirm = { pane, name: info.name ?? "proses", close: [pane], what: "pane" };
     else await call("pane.close", { pane });
   }
 
   /// FR-38: tutup tab = tutup semua pane-nya, satu konfirmasi berisi nama proses yang masih jalan
-  async function closeTab(wi: number, t: Tab) {
-    const ps = panes(t.tree);
+  async function closeTabs(wi: number, ts: Tab[]) {
+    const ps = ts.flatMap((t) => panes(t.tree));
     const live = ps.filter((p) => !dead[p]);
     ps.filter((p) => dead[p]).forEach(onexit);
-    const infos = await Promise.all(live.map((p) => call("pane.info", { pane: p })));
-    const busy = infos.filter((i) => i.busy).map((i) => i.name ?? "proses");
+    const infos = await Promise.all(live.map((p) => call("pane.info", { pane: p }).then((i) => ({ p, i }))));
+    const busy = infos.filter((x) => x.i.busy);
     if (!busy.length) return live.forEach((p) => call("pane.close", { pane: p }).catch(() => {}));
+    const t = ts.find((t) => panes(t.tree).includes(busy[0].p))!;
     at = { ws: wi, tab: wss[wi].tabs.indexOf(t) };
     zoomed = false;
-    confirm = { pane: t.focus, name: busy.join(", "), close: live };
+    confirm = { pane: t.focus, name: busy.map((x) => x.i.name ?? "proses").join(", "), close: live, what: ts.length > 1 ? `${ts.length} tab` : "tab" };
   }
 
-  /// Pane keluar: hilang dari tabnya; tab kosong ditutup; workspace tanpa tab dapat shell baru.
+  /// Pane keluar: hilang dari tabnya; tab kosong ditutup; workspace boleh kosong (FR-44).
   async function onexit(pane: number) {
     if (relaunching.has(pane)) return;
     if (confirm?.pane === pane) confirm = null;
@@ -250,7 +262,6 @@
       if (meta[pane]?.pastes?.length) invoke("forget_paste", { paths: meta[pane].pastes }).catch(() => {});
       delete meta[pane];
       delete dead[pane];
-      if (!w.tabs.length) await newTab(undefined, wi);
       return;
     }
   }
@@ -363,8 +374,8 @@
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen || picker || editing || rich) return;
-    if (!tab || confirm || quitAsk || linkAsk || wsAsk) return;
+    if (settingsOpen || picker || editing || rich || pal) return;
+    if (confirm || quitAsk || linkAsk || wsAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
     last = { id, at: performance.now() };
@@ -376,12 +387,15 @@
       compose = { to: targets[0]?.pane ?? null, body: "", force: false, error: "" };
       return;
     }
-    if (id === "tab.new") openPicker();
-    else if (id === "tab.sidebar") sidebar = !sidebar;
-    else if (id === "tab.prev") goto((cur + order.length - 1) % order.length);
-    else if (id === "tab.next") goto((cur + 1) % order.length);
-    else if (group === "goto") goto(+arg - 1);
-    else if (group === "split") splitFocused(arg === "down" ? "col" : "row");
+    // aksi tanpa tab: workspace boleh kosong (FR-44)
+    if (id === "tab.new") return void openPicker();
+    if (id === "tab.sidebar") return void (sidebar = !sidebar);
+    if (id === "tab.search") return void openPalette();
+    if (id === "tab.prev") return goto((cur + order.length - 1) % order.length);
+    if (id === "tab.next") return goto((cur + 1) % order.length);
+    if (group === "goto") return goto(+arg - 1);
+    if (!tab) return;
+    if (group === "split") splitFocused(arg === "down" ? "col" : "row");
     else if (group === "focus" && !zoomed) tab.focus = neighbor(tab.tree, tab.focus, arg as Arrow) ?? tab.focus;
     else if (group === "resize" && !zoomed) tab.tree = nudge(tab.tree, tab.focus, arg as Arrow);
     else if (id === "pane.zoom.toggle") zoomed = !zoomed;
@@ -399,10 +413,169 @@
       const m = meta[tab.focus];
       m.zoom = arg === "pane_reset" ? 0 : Math.max(-6, Math.min(16, (m.zoom ?? 0) + (arg === "pane_in" ? 1 : -1)));
     }
-    else if (id === "tab.search") {
-      sidebar = true;
-      setTimeout(() => search?.focus(), 0);
-    }
+  }
+
+  /// FR-39: palet = semua tab + profil + semua aksi beserta pintasannya (sekaligus daftar pintasan)
+  type PalItem = { label: string; hint: string; go: () => void };
+  async function openPalette() {
+    const [keys] = await invoke<[[string, string, string][], string[]]>("shortcuts").catch(() => [[]] as any);
+    pal = { q: "", sel: 0, keys };
+  }
+  const palItems = $derived.by((): PalItem[] => {
+    if (!pal) return [];
+    const items: PalItem[] = [
+      ...order.map((o, i) => ({ label: title(o.t), hint: `${wss[o.wi].name}${i < 9 ? ` · ⌘${i + 1}` : ""}`, go: () => goto(i) })),
+      ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
+      ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
+      { label: "Workspace baru…", hint: "", go: addWorkspace },
+      { label: "Ganti nama tab", hint: "", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
+      { label: "Ganti nama workspace", hint: "", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
+      { label: "Pengaturan", hint: "⌘,", go: () => (settingsOpen = true) },
+      { label: "Keluar dan hentikan semua agent…", hint: "", go: askQuitAll },
+    ];
+    const words = pal.q.toLowerCase().split(/\s+/).filter(Boolean);
+    return items.filter((it) => words.every((w) => `${it.label} ${it.hint}`.toLowerCase().includes(w)));
+  });
+  $effect(() => {
+    if (pal) void pal.sel, document.querySelector(".pallist .on")?.scrollIntoView({ block: "nearest" });
+  });
+  function palRun(i: number) {
+    const it = palItems[i];
+    pal = null;
+    if (!it) return;
+    it.go();
+    if (editing) sidebar = true; // ganti nama terjadi di sidebar
+  }
+
+  /// Menu klik kanan native (FR-37, FR-44, FR-52). Item: [label, aksi, aktif?], "-" pemisah, [label, sub-item[]] submenu.
+  type MItem = "-" | [string, (() => void) | MItem[], boolean?];
+  const opts = (items: MItem[]): any[] =>
+    items.map((it) =>
+      it === "-" ? { item: "Separator" } : Array.isArray(it[1]) ? { text: it[0], items: opts(it[1]) } : { text: it[0], action: it[1], enabled: it[2] ?? true },
+    );
+  async function popup(e: MouseEvent, items: MItem[]) {
+    e.preventDefault();
+    e.stopPropagation();
+    (await Menu.new({ items: opts(items) })).popup().catch(() => {});
+  }
+  const copy = (text: string | null | undefined) => text && invoke("copy_text", { text }).catch(() => {});
+
+  function tabMenu(e: MouseEvent, wi: number, t: Tab) {
+    const ti = wss[wi].tabs.indexOf(t);
+    const others = wss.map((w, j) => [w.name, () => moveTab(wi, wss[wi].tabs.indexOf(t), j, w.tabs.length)] as MItem).filter((_, j) => j !== wi);
+    popup(e, [
+      ["Ganti nama", () => (editing = { kind: "tab", id: t.id, value: title(t) })],
+      ["Warna", [["Tanpa warna", () => (t.color = undefined)], "-", ...COLORS.map(([c, name]) => [name, () => (t.color = c)] as MItem)]],
+      others.length ? ["Pindah ke workspace", others] : ["Pindah ke workspace", () => {}, false],
+      ["Salin folder", () => copy(meta[t.focus]?.cwd)],
+      "-",
+      ["Tutup tab", () => closeTabs(wi, [t])],
+      ["Tutup tab lain", () => closeTabs(wi, wss[wi].tabs.filter((x) => x !== t)), wss[wi].tabs.length > 1],
+      ["Tutup tab di bawahnya", () => closeTabs(wi, wss[wi].tabs.slice(ti + 1)), ti < wss[wi].tabs.length - 1],
+    ]);
+  }
+
+  function wsMenu(e: MouseEvent, wi: number) {
+    const w = wss[wi];
+    popup(e, [
+      ["Ganti nama", () => (editing = { kind: "ws", id: w.id, value: w.name })],
+      ["Ganti folder…", () => changeRoot(w)],
+      "-",
+      ["Hapus workspace", () => askRemoveWorkspace(wss.indexOf(w)), wss.length > 1],
+    ]);
+  }
+
+  /// FR-37: klik kanan terminal
+  function paneMenu(e: MouseEvent, pane: number) {
+    const tile = tiles[pane];
+    popup(e, [
+      ["Salin", () => copy(tile?.selection()), !!tile?.selection()],
+      ["Tempel", async () => tile?.paste(await invoke<string>("paste_text").catch(() => ""))],
+      "-",
+      ["Split kanan", () => splitFocused("row")],
+      ["Split bawah", () => splitFocused("col")],
+      [zoomed ? "Kembalikan ukuran" : "Maksimalkan", () => (zoomed = !zoomed), zoomed || (!!tab && panes(tab.tree).length > 1)],
+      ["Bersihkan", () => tile?.clearScreen()],
+      "-",
+      ["Tutup pane", () => askClose(pane)],
+    ]);
+  }
+
+  /// FR-44: folder akar baru berlaku untuk tab baru; tab yang sudah ada tetap di foldernya
+  async function changeRoot(w: Ws) {
+    const path = await invoke<string | null>("pick_folder");
+    if (path) w.root = home(path);
+  }
+
+  /// `at` tetap menunjuk tab yang sama setelah urutan berubah
+  function keepAt(change: () => void) {
+    const tid = tab?.id;
+    const wid = ws?.id;
+    change();
+    const wi = wss.findIndex((w) => w.tabs.some((t) => t.id === tid));
+    at = wi >= 0 ? { ws: wi, tab: wss[wi].tabs.findIndex((t) => t.id === tid) } : { ws: Math.max(0, wss.findIndex((w) => w.id === wid)), tab: 0 };
+  }
+
+  /// FR-52: tab pindah posisi atau workspace; daemon diberi tahu workspace baru pane-nya (aturan akses SEC-4/21)
+  function moveTab(wi: number, ti: number, to: number, index: number) {
+    keepAt(() => {
+      const [t] = wss[wi].tabs.splice(ti, 1);
+      wss[to].tabs.splice(Math.min(index, wss[to].tabs.length), 0, t);
+      if (wi !== to) for (const p of panes(t.tree)) if (!dead[p]) call("pane.workspace", { pane: p, workspace: wss[to].id }).catch(() => {});
+    });
+  }
+
+  /// FR-44/52: seret tab dan workspace di sidebar (pointer, bukan drag HTML: WKWebView + drop file Tauri)
+  function startDrag(e: PointerEvent, kind: "tab" | "ws", wi: number, ti = -1) {
+    if (e.button !== 0 || editing) return;
+    const [x0, y0] = [e.clientX, e.clientY];
+    const move = (m: PointerEvent) => {
+      if (!dragging && Math.hypot(m.clientX - x0, m.clientY - y0) < 5) return;
+      const el = document.elementFromPoint(m.clientX, m.clientY)?.closest<HTMLElement>("[data-wi]");
+      dragging = { kind, wi, ti, over: el ? { wi: +el.dataset.wi!, ti: el.dataset.ti ? +el.dataset.ti : -1 } : undefined };
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      const d = dragging;
+      dragging = null;
+      if (!d) return;
+      // klik yang menutup seretan tidak ikut memindah tab (click datang tepat setelah pointerup, bila ada)
+      const eat = (c: MouseEvent) => c.stopPropagation();
+      window.addEventListener("click", eat, true);
+      setTimeout(() => window.removeEventListener("click", eat, true), 0);
+      if (!d.over) return;
+      if (d.kind === "ws") {
+        if (d.over.wi !== d.wi) keepAt(() => wss.splice(d.over!.wi, 0, ...wss.splice(d.wi, 1)));
+      } else if (d.over.ti < 0) moveTab(d.wi, d.ti, d.over.wi, Infinity);
+      else if (d.over.wi !== d.wi || d.over.ti !== d.ti) moveTab(d.wi, d.ti, d.over.wi, d.over.ti);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  /// FR-52: lebar sidebar diseret
+  function dragSide(e: PointerEvent) {
+    const move = (m: PointerEvent) => (sideW = Math.min(480, Math.max(160, m.clientX)));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    e.preventDefault();
+  }
+
+  /// FR-56: tombol Lanjutkan. Pane profil agent: jalankan ulang profilnya dengan id sesi (flag hook tetap);
+  /// agent yang diketik sendiri: perintah lanjut diketik ke shell yang sedang diam.
+  async function resumeEnded(pane: number) {
+    const m = meta[pane];
+    const cmd = m?.ended?.resume;
+    if (!m || !cmd) return;
+    delete m.ended;
+    if (AGENTS.includes(m.agent)) return relaunch(pane);
+    const info = await call("pane.info", { pane }).catch(() => ({ busy: true }));
+    if (!info.busy) call("pane.write", { pane, data: b64(new TextEncoder().encode(`${cmd}\r`)) });
   }
 
   const stop = (e: KeyboardEvent) => {
@@ -430,7 +603,7 @@
       }
       return; // kontrol di Pengaturan menerima tombol seperti biasa
     }
-    if (rich) return; // textarea Rich Input menangani tombolnya sendiri
+    if (rich || pal) return; // textarea Rich Input dan kotak palet menangani tombolnya sendiri
     if (compose) {
       if (e.key === "Escape") (compose = null), stop(e);
       return;
@@ -519,15 +692,6 @@
     zoomed = false;
   }
 
-  /// FR-44: urutkan workspace
-  function moveWs(wi: number, d: number) {
-    const j = wi + d;
-    if (j < 0 || j >= wss.length) return;
-    const cur = wss[at.ws].id;
-    [wss[wi], wss[j]] = [wss[j], wss[wi]];
-    at = { ws: wss.findIndex((w) => w.id === cur), tab: at.tab };
-  }
-
   /// FR-44: workspace = satu folder project dipilih lewat dialog; nama = nama folder (ganti dengan klik dua kali);
   /// tab barunya mulai di folder itu
   async function addWorkspace() {
@@ -589,7 +753,13 @@
         root: String(w.root ?? "~").slice(0, 500),
         tabs: w.tabs
           .filter((t: any) => typeof t?.id === "string" && valid(t.tree))
-          .map((t: any) => ({ id: t.id, title: String(t.title ?? "").slice(0, 60), tree: t.tree, focus: panes(t.tree).includes(t.focus) ? t.focus : panes(t.tree)[0] })),
+          .map((t: any) => ({
+            id: t.id,
+            title: String(t.title ?? "").slice(0, 60),
+            tree: t.tree,
+            focus: panes(t.tree).includes(t.focus) ? t.focus : panes(t.tree)[0],
+            color: COLORS.some(([c]) => c === t.color) ? t.color : undefined,
+          })),
       }));
   }
 
@@ -619,13 +789,15 @@
             dead[id] = true;
           }
       wss = restored;
+      // layout.json tidak tepercaya: perintah lanjut di blok FR-56 tidak boleh berasal dari file
+      for (const m of Object.values(meta)) delete m.ended;
       // FR-45: pane mati langsung diganti shell baru (id negatif dulu supaya tidak bentrok dengan id run baru)
       for (const d of Object.keys(dead).map(Number)) await restart(d, true);
       // pane hidup yang tidak ada di layout (mis. layout gagal tersimpan) tetap tampil
       for (const p of alive) wss[0].tabs.push({ id: uid(), title: "", tree: { pane: p }, focus: p });
       const a = saved.at ?? {};
       at = wss[a.ws]?.tabs[a.tab] ? { ws: a.ws, tab: a.tab } : { ws: 0, tab: 0 };
-      for (const w of wss) if (!w.tabs.length) await newTab(undefined, wss.indexOf(w));
+      if (typeof saved.side === "number") sideW = Math.min(480, Math.max(160, saved.side));
       return;
     }
     wss = [{ id: uid(), name: "default", root: "~", tabs: [] }];
@@ -694,7 +866,7 @@
   // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
-    const body = JSON.stringify({ version: 1, boot, at, workspaces: wss, panes: meta });
+    const body = JSON.stringify({ version: 1, boot, at, side: sideW, workspaces: wss, panes: meta });
     if (!wss.length || !boot) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => call("layout.save", { layout: JSON.parse(body) }).catch(() => {}), 500);
@@ -727,6 +899,7 @@
           alert(p, "done", "selesai menjalankan perintah lama");
         }
       }
+      if (busy && busy !== m.busy && m.ended) delete m.ended; // FR-56: blok selesai hilang begitu proses baru jalan
       if (m.busy !== busy) m.busy = busy;
       if (i.pane_name && meta[p].name !== i.pane_name) meta[p].name = i.pane_name;
       if (meta[p].policy !== i.policy) meta[p].policy = i.policy;
@@ -740,7 +913,8 @@
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
-      if (payload.event === "pane.replace" && meta[payload.params.pane]) meta[payload.params.pane].output = true;
+      if (payload.event === "pane.replace" && meta[payload.params.pane])
+        Object.assign(meta[payload.params.pane], { output: true, ended: { resume: payload.params.resume ?? null } });
       if (payload.event === "daemon.lost") onLost();
       if (payload.event === "msg.event") refreshMsgs();
     });
@@ -801,54 +975,38 @@
 {/snippet}
 
 {#if sidebar}
-  <aside class="side" aria-label="Tab">
-    <input class="search" placeholder="Cari tab  ⌘P" aria-label="Cari tab" bind:this={search} bind:value={filter} spellcheck="false"
-      onkeydown={(e) => {
-        // Enter = buka tab pertama yang cocok; Esc = kosongkan dan kembali ke terminal
-        if (e.key === "Enter") {
-          const i = order.findIndex((o) => title(o.t).toLowerCase().includes(filter.toLowerCase()));
-          if (i >= 0) goto(i);
-          filter = "";
-          search?.blur();
-        }
-        if (e.key === "Escape") {
-          filter = "";
-          search?.blur();
-        }
-      }} />
+  <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging}>
     {#each wss as w, wi (w.id)}
-      <div class="ws">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="ws" data-wi={wi} class:over={dragging?.over?.wi === wi && dragging.over.ti < 0} class:lift={dragging?.kind === "ws" && dragging.wi === wi}
+        onpointerdown={(e) => startDrag(e, "ws", wi)} oncontextmenu={(e) => wsMenu(e, wi)}>
         {#if editing?.kind === "ws" && editing.id === w.id}
           <!-- svelte-ignore a11y_autofocus -->
           <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama workspace" />
         {:else}
           <span class="wsname" role="button" tabindex="-1" ondblclick={() => (editing = { kind: "ws", id: w.id, value: w.name })}>{w.name}</span>
           <span class="root" title={w.root}>{home(w.root)}</span>
-          {#if wss.length > 1}
-            <button class="x" aria-label="Naikkan workspace {w.name}" onclick={() => moveWs(wi, -1)}>↑</button>
-            <button class="x" aria-label="Turunkan workspace {w.name}" onclick={() => moveWs(wi, 1)}>↓</button>
-            <button class="x" aria-label="Hapus workspace {w.name}" onclick={() => askRemoveWorkspace(wi)}>×</button>
-          {/if}
         {/if}
       </div>
       {#each w.tabs as t, ti (t.id)}
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
-        {#if !filter || title(t).toLowerCase().includes(filter.toLowerCase())}
-          <button class="tab" class:on={at.ws === wi && at.tab === ti} onclick={() => ((at = { ws: wi, tab: ti }), (zoomed = false))}
-            ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
-            {#if editing?.kind === "tab" && editing.id === t.id}
-              <!-- svelte-ignore a11y_autofocus -->
-              <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama tab" />
-            {:else}
-              {@const st = tabStatus(t)}
-              <span class="tt">{#if MARK[st]}<span class="mark {st}" title={MARK[st][1]} aria-label={MARK[st][1]}>{MARK[st][0]}</span>{/if}{title(t)}</span>
-              <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
-                  onclick={(e) => (e.stopPropagation(), closeTab(wi, t))} onkeydown={(e) => e.key === "Enter" && closeTab(wi, t)}>×</span></span>
-              <span class="sub">{home(meta[t.focus]?.cwd)}{agents.length ? ` · ${agents.join(", ")}` : ""}</span>
-            {/if}
-          </button>
-        {/if}
+        {@const st = tabStatus(t)}
+        <button class="tab {t.color ?? ''}" class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} data-wi={wi} data-ti={ti}
+          class:over={dragging?.over?.wi === wi && dragging.over.ti === ti} class:lift={dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti}
+          onpointerdown={(e) => startDrag(e, "tab", wi, ti)} oncontextmenu={(e) => tabMenu(e, wi, t)}
+          onclick={() => ((at = { ws: wi, tab: ti }), (zoomed = false))}
+          ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
+          {#if editing?.kind === "tab" && editing.id === t.id}
+            <!-- svelte-ignore a11y_autofocus -->
+            <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama tab" />
+          {:else}
+            <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{title(t)}</span>
+            <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
+                onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
+            <span class="sub">{#if STATUS[st]}<span class="st {st}">{STATUS[st]}</span> · {/if}{home(meta[t.focus]?.cwd)}{agents.length ? ` · ${agents.join(", ")}` : ""}</span>
+          {/if}
+        </button>
       {/each}
     {/each}
     <div class="adds">
@@ -856,9 +1014,16 @@
       <button class="add" onclick={addWorkspace}>+ Workspace</button>
     </div>
   </aside>
+  <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label="Lebar sidebar"></div>
 {/if}
 
-<div class="grid" class:full={!sidebar} bind:this={box}>
+<div class="grid" style:left={sidebar ? `${sideW}px` : "0"} bind:this={box}>
+  {#if ws && !tab}
+    <div class="empty">
+      <span>Workspace {ws.name} kosong</span>
+      <button class="mini" onclick={openPicker}>+ Tab <span class="keys">⌘T</span></button>
+    </div>
+  {/if}
   {#if error}<p class="error">{error}</p>{/if}
   {#each wss as w, wi (w.id)}
     {#each w.tabs as t, ti (t.id)}
@@ -867,6 +1032,7 @@
         {@const hidden = !active || (zoomed && pane !== t.focus)}
         {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
         {@const bar = !dead[pane] && [...AGENTS, "custom"].includes(meta[pane]?.agent ?? "")}
+        {@const head = !zoomed && panes(t.tree).length > 1}
         {@const g = meta[pane]?.git}
         <div
           class="tile"
@@ -886,10 +1052,36 @@
               <button class="mini" onclick={() => restart(pane)}>Jalankan ulang {meta[pane]?.profile ?? "shell"}</button>
             </div>
           {:else}
-            <div class="body" class:withbar={bar}>
+            {#if head}
+              <!-- FR-37: kepala tipis saat tab punya lebih dari satu pane -->
+              <div class="head">
+                <span class="hname">{meta[pane]?.name}{meta[pane]?.busy ? ` · ${meta[pane].busy}` : ""}</span>
+                <span class="hcwd">{home(meta[pane]?.cwd)}</span>
+                <span class="grow"></span>
+                <button class="hb" title="Split ke kanan ⌘D" aria-label="Split ke kanan" onclick={() => splitFocused("row")}>◫</button>
+                <button class="hb" title="Split ke bawah ⌘⇧D" aria-label="Split ke bawah" onclick={() => splitFocused("col")}>⊟</button>
+                <button class="hb" title="Tutup pane ⌘W" aria-label="Tutup pane" onclick={() => askClose(pane)}>×</button>
+              </div>
+            {/if}
+            <div class="body" class:withbar={bar} class:withhead={head} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
               <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])} />
             </div>
+            {#if meta[pane]?.ended}
+              {@const resume = meta[pane].ended.resume}
+              <!-- FR-56: blok agent selesai dengan tombol; hilang saat proses baru jalan atau ditutup -->
+              <div class="ended" class:withhead={head} role="status">
+                <span class="etitle">Sesi agent selesai</span>
+                {#if resume}<code>{resume}</code>{/if}
+                <span class="grow"></span>
+                {#if resume}
+                  <button class="mini" onclick={() => resumeEnded(pane)}>Lanjutkan</button>
+                  <button class="mini" onclick={() => copy(resume)}>Salin perintah</button>
+                {/if}
+                <button class="mini" onclick={() => (outputOf = pane)}>Output sesi</button>
+                <button class="hb" aria-label="Tutup blok" onclick={() => delete meta[pane].ended}>×</button>
+              </div>
+            {/if}
             {#if bar}
               <!-- FR-55: toolbar agent; chip tanpa data (bukan repo) disembunyikan -->
               <div class="bar">
@@ -944,7 +1136,7 @@
           {/each}
           {#if confirm?.pane === pane}
             <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
-              <span><b>{confirm?.name}</b> masih jalan. Tutup {confirm?.close.length > 1 ? "tab" : "pane"}?</span>
+              <span><b>{confirm?.name}</b> masih jalan. Tutup {confirm?.what}?</span>
               <span class="keys">Enter tutup · Esc batal</span>
             </div>
           {/if}
@@ -983,9 +1175,17 @@
   {#if compose}
     <div class="confirm compose" role="dialog" aria-label="Kirim ke agent lain">
       <b>Kirim ke agent lain</b>
-      <select aria-label="Pane tujuan" bind:value={compose.to}>
-        {#each targets as r (r.pane)}<option value={r.pane}>{r.name} · {r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {r.status || "?"}</option>{/each}
-      </select>
+      <div class="targets" role="listbox" aria-label="Pane tujuan">
+        {#each targets as r (r.pane)}
+          <button class="opt" class:on={compose.to === r.pane} role="option" aria-selected={compose.to === r.pane} onclick={() => compose && (compose.to = r.pane)}>
+            <span class="dot {r.status}"></span>
+            <span>{r.name}</span>
+            <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {STATUS[r.status ?? ""] ?? r.status ?? "?"}</span>
+          </button>
+        {:else}
+          <span class="keys">Belum ada agent lain di workspace ini</span>
+        {/each}
+      </div>
       <!-- svelte-ignore a11y_autofocus -->
       <textarea bind:value={compose.body} rows="5" autofocus aria-label="Isi pesan" placeholder="Isi pesan; dikirim dengan label dari pengguna" spellcheck="false" autocapitalize="off"
         onkeydown={(e) => e.key === "Enter" && e.metaKey && sendCompose()}></textarea>
@@ -1031,6 +1231,30 @@
       <span class="keys">Enter buka · Esc batal</span>
     </div>
   {/if}
+  {#if pal}
+    <!-- FR-39: palet perintah -->
+    <div class="confirm picker palette" role="dialog" aria-label="Palet perintah">
+      <!-- svelte-ignore a11y_autofocus -->
+      <input class="edit" bind:value={pal.q} autofocus placeholder="Cari tab atau aksi" aria-label="Cari tab atau aksi" spellcheck="false" autocapitalize="off"
+        oninput={() => pal && (pal.sel = 0)}
+        onkeydown={(e) => {
+          const n = palItems.length;
+          if (e.key === "ArrowDown" && n) (e.preventDefault(), pal && (pal.sel = (pal.sel + 1) % n));
+          if (e.key === "ArrowUp" && n) (e.preventDefault(), pal && (pal.sel = (pal.sel + n - 1) % n));
+          if (e.key === "Enter") (e.preventDefault(), palRun(pal?.sel ?? 0));
+          if (e.key === "Escape") (e.preventDefault(), (pal = null));
+        }} onblur={() => setTimeout(() => (pal = null), 150)} />
+      <div class="pallist" role="listbox" aria-label="Hasil">
+        {#each palItems as it, i (i)}
+          <button class="opt" class:on={i === pal.sel} role="option" aria-selected={i === pal.sel} onpointerdown={(e) => e.preventDefault()} onclick={() => palRun(i)}>
+            <span></span><span>{it.label}</span><span class="keys">{it.hint}</span>
+          </button>
+        {:else}
+          <span class="keys">Tidak ada yang cocok</span>
+        {/each}
+      </div>
+    </div>
+  {/if}
   {#if picker}
     <div class="confirm picker" role="listbox" aria-label="Pane baru dari profil">
       {#each picker.items as p, i (p.id)}
@@ -1050,6 +1274,12 @@
 </div>
 
 <style>
+  /* FR-34: huruf ikon cadangan (Nerd Fonts v3.4.0, MIT); dimuat hanya saat ada glyph PUA yang tidak ada di huruf utama */
+  @font-face {
+    font-family: "Symbols Nerd Font Mono";
+    src: url("/fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
+    font-display: block;
+  }
   :global(:root) {
     --bg: #101114;
     --fg: #d4d4d8;
@@ -1086,10 +1316,26 @@
   }
   .grid {
     position: fixed;
-    inset: 0 0 0 220px;
+    inset: 0;
   }
-  .grid.full {
-    left: 0;
+  .empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--muted);
+    font: 13px system-ui, -apple-system, sans-serif;
+  }
+  .sidegrip {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    z-index: 4;
+    cursor: col-resize;
   }
   /* FR-52: tab vertikal per workspace; tenang, hanya yang membantu kerja (memory: UI bersih ala Warp) */
   .side {
@@ -1106,7 +1352,6 @@
     font: 13px system-ui, -apple-system, sans-serif;
     color: var(--fg);
   }
-  .search,
   .edit {
     width: 100%;
     box-sizing: border-box;
@@ -1117,9 +1362,6 @@
     color: var(--fg);
     font: inherit;
     outline: none;
-  }
-  .search {
-    margin-bottom: 6px;
   }
   .ws {
     display: flex;
@@ -1151,8 +1393,17 @@
     visibility: hidden;
     cursor: pointer;
   }
-  .ws:hover .x {
-    visibility: visible;
+  /* seret tab/workspace: yang diangkat pudar, target bergaris */
+  .lift {
+    opacity: 0.4;
+  }
+  .over {
+    outline: 1px solid var(--muted);
+    outline-offset: -1px;
+    border-radius: 4px;
+  }
+  .side.dragging {
+    cursor: grabbing;
   }
   .tab .x {
     display: none;
@@ -1180,24 +1431,45 @@
   .tab.on {
     background: var(--line);
   }
+  /* FR-52: butuh izin paling mencolok */
+  .tab.blocked {
+    background: rgba(217, 119, 6, 0.14);
+  }
+  /* FR-52: warna tab = garis tipis kiri */
+  .tab.red { box-shadow: inset 3px 0 0 #ef4444; }
+  .tab.orange { box-shadow: inset 3px 0 0 #f97316; }
+  .tab.yellow { box-shadow: inset 3px 0 0 #eab308; }
+  .tab.green { box-shadow: inset 3px 0 0 #22c55e; }
+  .tab.blue { box-shadow: inset 3px 0 0 #3b82f6; }
+  .tab.purple { box-shadow: inset 3px 0 0 #a855f7; }
   .tt {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .mark {
+  .dot {
     display: inline-block;
-    width: 1.1em;
-    font-weight: 700;
+    width: 7px;
+    height: 7px;
+    margin: 0 7px 1px 0;
+    border-radius: 50%;
+    background: var(--line);
   }
-  .mark.blocked {
+  .dot.blocked {
+    background: #d97706;
+  }
+  .dot.done {
+    background: #16a34a;
+  }
+  .dot.working {
+    background: #3b82f6;
+  }
+  .st.blocked {
     color: #d97706;
+    font-weight: 600;
   }
-  .mark.done {
+  .st.done {
     color: #16a34a;
-  }
-  .mark.working {
-    color: var(--muted);
   }
   .n {
     color: var(--muted);
@@ -1237,6 +1509,77 @@
   }
   .body.withbar {
     bottom: 26px;
+  }
+  .body.withhead {
+    top: 22px;
+  }
+  /* FR-37: kepala pane; tombol muncul saat kursor di atas pane */
+  .head {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 6px 0 10px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font: 11px system-ui, -apple-system, sans-serif;
+    white-space: nowrap;
+  }
+  .hname {
+    color: var(--fg);
+  }
+  .hcwd {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .hb {
+    padding: 0 5px;
+    border: 0;
+    border-radius: 3px;
+    background: none;
+    color: var(--muted);
+    font: 13px system-ui, -apple-system, sans-serif;
+  }
+  .hb:hover {
+    background: var(--line);
+    color: var(--fg);
+  }
+  .head .hb {
+    visibility: hidden;
+  }
+  .tile:hover .head .hb {
+    visibility: visible;
+  }
+  /* FR-56: blok agent selesai */
+  .ended {
+    position: absolute;
+    inset: 6px 10px auto 10px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .ended.withhead {
+    top: 28px;
+  }
+  .ended code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .etitle {
+    font-weight: 600;
+    white-space: nowrap;
   }
   .bar {
     position: absolute;
@@ -1364,8 +1707,31 @@
   .compose {
     min-width: 420px;
   }
-  .compose textarea,
-  .compose select {
+  .targets {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .targets .opt {
+    grid-template-columns: 10px 1fr auto;
+  }
+  .palette {
+    top: 30%;
+    width: min(520px, 80%);
+  }
+  .pallist {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .palette .opt {
+    grid-template-columns: 0 1fr auto;
+  }
+  .compose textarea {
     padding: 6px 8px;
     border: 1px solid var(--line);
     border-radius: 4px;
