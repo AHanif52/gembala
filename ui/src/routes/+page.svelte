@@ -46,6 +46,7 @@
   const STATUS: Record<string, string> = { blocked: "butuh izin", done: "selesai", working: "bekerja" };
   // FR-52: warna tab pilihan pengguna (garis tipis kiri)
   const COLORS: [string, string][] = [["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"], ["purple", "Ungu"]];
+  const SWATCH: Record<string, string> = { red: "🔴", orange: "🟠", yellow: "🟡", green: "🟢", blue: "🔵", purple: "🟣" };
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   const worst = (ps: number[]): string => ps.reduce((a, p) => (rank(meta[p]?.status) > rank(a) ? (meta[p]?.status ?? "") : a), "");
   const tabStatus = (t: Tab) => worst(panes(t.tree));
@@ -725,7 +726,12 @@
     const others = wss.map((w, j) => [w.name, () => moveTab(wi, wss[wi].tabs.indexOf(t), j, w.tabs.length)] as MItem).filter((_, j) => j !== wi);
     popup(e, [
       ["Ganti nama", () => (editing = { kind: "tab", id: t.id, value: title(t) })],
-      ["Warna", [["Tanpa warna", () => (t.color = undefined)], "-", ...COLORS.map(([c, name]) => [name, () => (t.color = c)] as MItem)]],
+      // menu native tidak bisa diwarnai: bulatan emoji sebagai contoh warna, ✓ = warna sekarang
+      ["Warna", [
+        [`⚪ Tanpa warna${t.color ? "" : "  ✓"}`, () => (t.color = undefined)],
+        "-",
+        ...COLORS.map(([c, name]) => [`${SWATCH[c]} ${name}${t.color === c ? "  ✓" : ""}`, () => (t.color = c)] as MItem),
+      ]],
       others.length ? ["Pindah ke workspace", others] : ["Pindah ke workspace", () => {}, false],
       ["Salin folder", () => copy(meta[t.focus]?.cwd)],
       "-",
@@ -1446,9 +1452,13 @@
                 {#if editorErr[pane]}<span class="err">{editorErr[pane]}</span>{/if}
               </div>
             {/if}
-            {#if mention?.pane === pane && mentionItems.length}
+            {#if mention?.pane === pane}
               <!-- FR-57: daftar @; Tab pilih, ↑↓ geser, Esc tutup, terus mengetik = @ milik agent -->
               <div class="mention" class:withbar={bar} class:withedit={mention.editor} role="listbox" aria-label="Lempar ke agent">
+                {#if !mentionItems.length}
+                  <!-- kosong tetap tampil: tanpa ini @@ terlihat rusak -->
+                  <span class="keys">{targets.length ? `Tidak ada agent yang cocok dengan "${mention.q}"` : "Belum ada agent lain di workspace ini · jalankan agent di tab atau split lain"}</span>
+                {/if}
                 {#each mentionItems as r, i (r.pane)}
                   <button class="opt" class:on={i === mention.sel} role="option" aria-selected={i === mention.sel}
                     onpointerdown={(e) => e.preventDefault()} onclick={() => chooseMention(i)}>
@@ -1457,7 +1467,7 @@
                     <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {STATUS[r.status ?? ""] ?? r.status ?? "?"}</span>
                   </button>
                 {/each}
-                <span class="keys">{mention.inline ? "Tab lengkapi nama" : "Tab lempar"} · ↑↓ pilih · Esc tutup</span>
+                {#if mentionItems.length}<span class="keys">{mention.inline ? "Tab lengkapi nama" : "Tab lempar"} · ↑↓ pilih · Esc tutup</span>{/if}
               </div>
             {/if}
             {#if lempar?.pane === pane}
@@ -2012,8 +2022,11 @@
     border: 1px solid var(--line);
   }
   .add.wsnew {
-    margin-bottom: 2px;
     font-size: 12px;
+  }
+  /* kepala workspace pertama langsung di bawah "+ Workspace", tanpa celah ganda */
+  .add.wsnew + .ws {
+    margin-top: 2px;
   }
   .body {
     position: absolute;
