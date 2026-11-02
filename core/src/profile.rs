@@ -212,6 +212,24 @@ answer on screen. The recipient cannot see your conversation: write every send a
 files/paths, what was tried or is forbidden, constraints, reply format), never a one-line summary; multi-line is fine. \
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. Do not look for processes via ps.";
 
+/// FR-56: perintah agent manual untuk blok ringkas, tanpa flag sisipan Gembala (petunjuk, hook) yang
+/// ditambah fungsi zsh: yang tampil cukup yang diketik pengguna.
+pub fn shown_args(args: &[String]) -> String {
+    let ours = |a: &str| a.contains(PETUNJUK) || a.contains("omp-gembala.ts") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"");
+    let mut out: Vec<&str> = vec![];
+    for a in args {
+        if ours(a) {
+            // flag pemilik nilai ini (`--settings`, `-c`, `--append-system-prompt`) ikut dibuang
+            if !a.starts_with('-') && out.last().is_some_and(|f| f.starts_with('-') && !f.contains('=')) {
+                out.pop();
+            }
+        } else {
+            out.push(a);
+        }
+    }
+    out.join(" ")
+}
+
 /// Flag/env hook per agent saat launch (TECH bagian 7, teruji 31 Okt 2026).
 fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
     let cmd = |ev: &str| format!("{} hook claude {ev}", q(&h.exe));
@@ -516,6 +534,18 @@ mod tests {
         let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None, None).unwrap()).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("Claude Code tidak ditemukan") && text.contains("brew install"), "{text}");
+    }
+
+    #[test]
+    fn shown_args_tanpa_sisipan_gembala() {
+        let h = Hooks { exe: "/Apps/Gem bala/gembala".into(), dir: "/cfg/hooks".into() };
+        for (agent, user) in [("claude", vec!["--model", "opus"]), ("codex", vec!["resume", "--last"]), ("omp", vec!["--verbose"])] {
+            let p = builtin().into_iter().find(|p| p.id == agent).unwrap();
+            let mut args: Vec<String> = vec![agent.into()];
+            args.extend(hook_flags(&p, &h).0);
+            args.extend(user.iter().map(|s| s.to_string()));
+            assert_eq!(shown_args(&args), format!("{agent} {}", user.join(" ")));
+        }
     }
 
     #[test]

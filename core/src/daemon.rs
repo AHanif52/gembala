@@ -946,7 +946,7 @@ fn screen_watch(st: Arc<State>) {
             let manual = found.is_some() || (active && fg.is_some());
             match (active, found, fg) {
                 (false, Some((pid, name)), _) => {
-                    *pane.manual.lock().unwrap() = Some((name, pty::args_of(pid).join(" "), pty::cwd_of(pid)));
+                    *pane.manual.lock().unwrap() = Some((name, profile::shown_args(&pty::args_of(pid)), pty::cwd_of(pid)));
                     *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
                 }
                 // keluar = shell kembali di depan (sama dengan cek di `pump`)
