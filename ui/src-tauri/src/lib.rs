@@ -52,6 +52,7 @@ const TAB_KEYS: &[(&str, &str, &str)] = &[
     ("tab.goto.9", "Tab 9", "Cmd+9"),
     ("tab.sidebar", "Tampilkan/sembunyikan sidebar", "Cmd+B"),
     ("tab.search", "Palet perintah", "Cmd+P"),
+    ("pane.attention.next", "Pane berikutnya yang butuh izin", "Cmd+Shift+U"), // FR-65
 ];
 
 /// Menu "Pesan" (Fase 2: FR-10 sampai 12, SEC-10). ⌘K dan ⌘. sudah dipakai Fase 1 (TECH, keputusan Fase 2).

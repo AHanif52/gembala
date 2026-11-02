@@ -62,6 +62,8 @@
   let wss = $state<Ws[]>([]);
   let at = $state({ ws: 0, tab: 0 });
   let meta = $state<Record<number, Meta>>({});
+  let blockedAt = $state<Record<number, number>>({}); // FR-65: sejak kapan pane butuh izin
+  let now = $state(Date.now()); // FR-65: lama menunggu di antrean, diperbarui tiap poll
   let ack = $state<Record<number, true>>({}); // pane yang status "selesai"-nya sudah dilihat; hapus saat status berubah
   let dead = $state<Record<number, true>>({}); // pane dari run daemon lain atau sudah keluar (id negatif)
   let boot = $state(""); // state: layout disimpan ulang saat daemon baru dijalankan
@@ -686,6 +688,11 @@
     if (id === "tab.search") return void openPalette();
     if (id === "tab.prev") return goto((cur + order.length - 1) % order.length);
     if (id === "tab.next") return goto((cur + 1) % order.length);
+    if (id === "pane.attention.next") {
+      if (!queue.length) return;
+      const i = queue.findIndex((q) => q.p === tab?.focus);
+      return jumpTo(queue[(i + 1) % queue.length].p);
+    }
     if (group === "goto") return goto(+arg - 1);
     if (!tab) return;
     if (group === "split") splitFocused(arg === "down" ? "col" : "row");
@@ -1164,6 +1171,34 @@
     welcome = await call("agents.detect", {}).catch(() => []);
   }
 
+  // FR-65: antrean perhatian = semua pane yang butuh izin, paling lama menunggu dulu
+  $effect(() => {
+    for (const p of Object.keys(meta).map(Number)) {
+      if (meta[p]?.status === "blocked") blockedAt[p] ??= Date.now();
+      else if (blockedAt[p]) delete blockedAt[p];
+    }
+  });
+  const queue = $derived(
+    wss
+      .flatMap((w, wi) => w.tabs.flatMap((t, ti) => panes(t.tree).filter((p) => !dead[p] && meta[p]?.status === "blocked").map((p) => ({ p, wi, ti, t, w }))))
+      .sort((a, b) => (blockedAt[a.p] ?? 0) - (blockedAt[b.p] ?? 0)),
+  );
+  const ago = (ms: number) => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return s < 60 ? `${s} dtk` : s < 3600 ? `${Math.floor(s / 60)} mnt` : `${Math.floor(s / 3600)} jam`;
+  };
+  /// FR-65: pindah ke tab dan pane itu (klik baris antrean, Cmd+Shift+U)
+  function jumpTo(p: number) {
+    for (const [wi, w] of wss.entries())
+      for (const [ti, t] of w.tabs.entries())
+        if (panes(t.tree).includes(p)) {
+          at = { ws: wi, tab: ti };
+          t.focus = p;
+          zoomed = false;
+        }
+  }
+  const tabOf = (p: number) => wss.flatMap((w) => w.tabs).find((t) => panes(t.tree).includes(p));
+
   // FR-40: tanda selesai hilang begitu pane itu dilihat (agent maupun shell)
   $effect(() => {
     const f = tab?.focus;
@@ -1189,7 +1224,9 @@
     if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
     if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
     if (kind === "blocked") invoke("attention").catch(() => {}); // Dock melompat hanya bila perlu tindakan; selesai cukup badge
-    invoke("notify_pane", { body: `${m.name || m.profile} ${label}`, sound: notify.sound }).catch(() => {});
+    // SEC-33: nama pane, nama tab (FR-65), status; tanpa isi layar
+    const t = tabOf(pane);
+    invoke("notify_pane", { body: `${m.name || m.profile}${t ? ` di ${title(t)}` : ""} ${label}`, sound: notify.sound }).catch(() => {});
   }
   const attention = $derived(
     Object.keys(meta).map(Number).filter((p) => (stat(p) === "blocked" && notify.on_blocked) || (stat(p) === "done" && notify.on_done)).length,
@@ -1220,6 +1257,7 @@
 
   // folder dan proses tiap pane untuk judul tab, subjudul, dan ikon agent (FR-52)
   async function poll() {
+    now = Date.now();
     const ids = Object.keys(meta).map(Number).filter((p) => !dead[p]);
     for (const p of ids) {
       const i = await call("pane.info", { pane: p }).catch(() => null);
@@ -1346,6 +1384,21 @@
     <div class="drag" data-tauri-drag-region></div>
     <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
     <!-- FR-44: di bawah kotak cari, selalu terlihat walau daftar tab panjang -->
+    {#if queue.length}
+      <!-- FR-65: antrean perhatian; hilang bila tidak ada yang menunggu -->
+      <div class="queue" role="region" aria-label="Butuh izin">
+        <div class="qhead">Butuh lu <span>{queue.length}</span></div>
+        {#each queue as q (q.p)}
+          {@const ag = agentOf(q.p) || meta[q.p]?.agent || ""}
+          <button class="tab" onclick={() => jumpTo(q.p)}>
+            <span class="tt"><span class="dot blocked" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{GLYPH[ag] ? ` · ${ag}` : ""}</span>
+            <span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
+            <span class="sub">{title(q.t)}{wss.length > 1 ? ` · ${q.w.name}` : ""}</span>
+          </button>
+        {/each}
+        <div class="qhint">{pretty("Cmd+Shift+U")} ke pane berikutnya</div>
+      </div>
+    {/if}
     <button class="add wsnew" onclick={addWorkspace}>+ Workspace</button>
     {#each wss as w, wi (w.id)}
       <!-- FR-44: klik judul = buka/ciutkan; ganti nama lewat klik kanan atau palet -->
@@ -1449,7 +1502,8 @@
               <div class="head" class:on={pane === t.focus}>
                 <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{meta[pane]?.busy ? ` · ${meta[pane].busy}` : ""}</span>
                 {#if STATUS[hs]}<span class="st {hs}">{STATUS[hs]}</span>{/if}
-                <span class="hcwd">{home(meta[pane]?.cwd)}</span>
+                <!-- folder cukup sekali: toolbar agent sudah menampilkannya -->
+                {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd">{home(meta[pane]?.cwd)}</span>{/if}
                 <span class="grow"></span>
                 <button class="hb" title="Split ke kanan ⌘D" aria-label="Split ke kanan" onclick={() => splitFocused("row")}>◫</button>
                 <button class="hb" title="Split ke bawah ⌘⇧D" aria-label="Split ke bawah" onclick={() => splitFocused("col")}>⊟</button>
@@ -1565,7 +1619,7 @@
               <div class="lempar" class:withbar={bar}>
                 <span class="to">→ {lempar.name}</span>
                 <!-- svelte-ignore a11y_autofocus -->
-                <textarea bind:value={lempar.body} rows="2" autofocus aria-label="Pesan ke {lempar.name}" placeholder="Pesan · Enter kirim · Shift+Enter baris baru · Esc batal"
+                <textarea bind:value={lempar.body} rows="2" autofocus aria-label="Pesan ke {lempar.name}" placeholder="Pesan · Enter kirim · ⇧Enter baris baru · Esc batal"
                   spellcheck="false" autocapitalize="off"
                   onkeydown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), sendLempar());
@@ -1594,7 +1648,8 @@
             {/if}
             {#if bar}
               <!-- FR-55: toolbar agent; chip tanpa data (bukan repo) disembunyikan -->
-              <div class="bar">
+              <!-- pane tak fokus di tab ber-split: isi toolbar disembunyikan (tinggi tetap, terminal tidak reflow), tampil saat hover -->
+              <div class="bar" class:rest={head && pane !== t.focus}>
                 {#if editing?.kind === "pane" && editing.id === String(pane)}
                   <!-- svelte-ignore a11y_autofocus -->
                   <input class="edit pname" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama pane" />
@@ -1622,7 +1677,7 @@
                   autofocus
                   rows="4"
                   aria-label="Rich Input"
-                  placeholder="Tulis prompt · Enter kirim · Shift+Enter baris baru · Esc tutup"
+                  placeholder="Tulis prompt · Enter kirim · ⇧Enter baris baru · Esc tutup"
                   spellcheck="false"
                   autocapitalize="off"
                   onkeydown={(e) => {
@@ -1808,13 +1863,18 @@
     src: url("/fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
     font-display: block;
   }
+  /* fokus keyboard selalu terlihat; input yang punya penanda sendiri (outline: none berkelas) tidak terpengaruh */
+  :global(:focus-visible) {
+    outline: 1px solid #3b82f6;
+    outline-offset: 1px;
+  }
   :global(:root) {
     --bg: #000000;
     --fg: #e5e5e5;
     --muted: #8b8b8b;
     --line: #262626;
     --card: #111111;
-    --dim: rgba(0, 0, 0, 0.45);
+    --dim: rgba(0, 0, 0, 0.25); /* teks redup pane tak fokus tetap terbaca; garis biru kepala pane sudah menandai fokus */
   }
   /* tema mengikuti sistem kecuali [ui] theme memaksa (data-theme) */
   @media (prefers-color-scheme: light) {
@@ -2050,6 +2110,29 @@
   }
   .tab.on {
     background: var(--line);
+  }
+  /* FR-65: antrean perhatian (mockup-sidebar-status varian C) */
+  .queue {
+    display: flex;
+    flex-direction: column;
+    margin: 8px 0 2px;
+    padding: 4px 0;
+    border: 1px solid rgba(217, 119, 6, 0.35);
+    border-radius: 6px;
+    background: rgba(217, 119, 6, 0.07);
+  }
+  .qhead {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 8px;
+    color: #d97706;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .qhint {
+    padding: 2px 8px;
+    color: var(--muted);
+    font-size: 11px;
   }
   /* FR-52: butuh izin paling mencolok */
   .tab.blocked {
@@ -2409,7 +2492,16 @@
   .head .hb {
     visibility: hidden;
   }
-  .tile:hover .head .hb {
+  .tile:hover .head .hb,
+  .head.on .hb,
+  .head .hb:focus-visible {
+    visibility: visible;
+  }
+  .bar.rest > * {
+    visibility: hidden;
+  }
+  .tile:hover .bar.rest > *,
+  .bar.rest:focus-within > * {
     visibility: visible;
   }
   /* FR-56: blok agent selesai */
