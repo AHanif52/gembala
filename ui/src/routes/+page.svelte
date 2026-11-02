@@ -1801,12 +1801,12 @@
     font-display: block;
   }
   :global(:root) {
-    --bg: #101114;
+    --bg: #000000;
     --fg: #d4d4d8;
-    --muted: #8b8b93;
-    --line: #2a2b31;
-    --card: #17181c;
-    --dim: rgba(16, 17, 20, 0.45);
+    --muted: #8b8b8b;
+    --line: #262626;
+    --card: #141414;
+    --dim: rgba(0, 0, 0, 0.45);
   }
   /* tema mengikuti sistem kecuali [ui] theme memaksa (data-theme) */
   @media (prefers-color-scheme: light) {

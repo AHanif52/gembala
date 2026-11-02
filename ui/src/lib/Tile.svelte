@@ -46,7 +46,7 @@
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
-  const DARK: ITheme = { background: "#101114", foreground: "#d4d4d8", cursor: "#d4d4d8", selectionBackground: "#3f3f46" };
+  const DARK: ITheme = { background: "#000000", foreground: "#d4d4d8", cursor: "#d4d4d8", selectionBackground: "#3f3f46" };
   const LIGHT: ITheme = { background: "#fafafa", foreground: "#27272a", cursor: "#27272a", selectionBackground: "#d4d4d8" };
   const MATCH = {
     matchBackground: "#854d0e",
