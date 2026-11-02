@@ -176,7 +176,7 @@ pub struct Hooks {
 
 /// FR-4: event hook agent → status pane. `None` = event tidak mengubah status.
 /// `payload` = stdin (Claude) atau argumen terakhir (Codex); hanya dipakai untuk membedakan "butuh izin",
-/// isinya tidak pernah diteruskan ke daemon (SEC-33).
+/// isinya tidak diteruskan ke daemon (SEC-33), kecuali pesan terakhir giliran Codex untuk balasan otomatis (FR-66).
 pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static str> {
     Some(match (agent, event) {
         ("claude", "prompt" | "tool") => "working",
@@ -302,7 +302,7 @@ fn zsh_agents(petunjuk: &str) -> String {
     format!(
         "function claude {{ if (( ! $# )) || [[ $1 == -* ]]; then command claude --append-system-prompt \"$(<{f})\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp \"--append-system-prompt=$(<{f})\" \"$@\"; else command omp \"$@\"; fi }}\n\
-         function codex {{ command codex -c \"$(<{f}.codex)\" \"$@\" }}\n"
+         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c \"$(<{f}.codex)\" \"$@\" }}\n"
     )
 }
 
@@ -326,7 +326,8 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
         ),
         ("gembala.md", format!("{PETUNJUK}\n")),
         // nilai `-c` Codex untuk agent manual (string TOML = string JSON tanpa karakter khusus)
-        ("gembala.md.codex", format!("developer_instructions={}", json!(PETUNJUK))),
+        // FR-66: di sandbox, jawaban akhir giliran ikut terkirim sebagai balasan bila `gembala reply` gagal
+        ("gembala.md.codex", format!("developer_instructions={}", json!(format!("{PETUNJUK} Your final message of a turn is also delivered as the reply to a waiting message.")))),
         (
             "opencode-gembala.js",
             format!(
@@ -408,6 +409,10 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
         } else {
             s += &format!("export {k}=\"$(op read {})\"; ", q(r));
         }
+    }
+    // FR-66: sandbox Codex menolak socket pane; token (nama tanpa TOKEN supaya tidak dibuang Codex) untuk jalur spool
+    if p.agent == "codex" {
+        s += "export GEMBALA_SPOOL=\"$(gembala token 2>/dev/null)\"; ";
     }
     s += &q(&p.command);
     for a in flags.iter().chain(&p.args) {

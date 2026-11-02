@@ -80,8 +80,9 @@ struct Pane {
     status_at: Mutex<std::time::Instant>,
     readable: std::sync::atomic::AtomicBool,
     typed_at: Mutex<Option<std::time::Instant>>,
-    /// SEC-3 cadangan: token 128-bit untuk proses yang lepas dari sesi pane (mis. server tmux); hanya profil `token = true`
-    token: Option<String>,
+    /// SEC-3 cadangan: token 128-bit untuk proses yang lepas dari sesi pane (mis. server tmux, profil `token = true`)
+    /// atau yang tidak bisa memakai socket (FR-66: Codex bersandbox, dibuat lewat `gembala token`)
+    token: Mutex<Option<String>>,
     /// Grid dan pelanggan dikunci bersama: attach tidak kehilangan atau menggandakan output.
     view: Mutex<(Grid, Vec<Sub>)>,
 }
@@ -175,6 +176,8 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     let st3 = st.clone();
     thread::spawn(move || idle_exit(st3));
     thread::spawn(history::sweep); // FR-62: riwayat lebih dari 30 hari
+    let (st8, run_dir) = (st.clone(), dir.to_path_buf());
+    thread::spawn(move || spool(st8, run_dir));
     let st4 = st.clone();
     thread::spawn(move || watch_config(st4));
     let st6 = st.clone();
@@ -296,9 +299,13 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
                     Ok(json!({}))
                 }
-                ("send" | "reply" | "wait" | "read" | "status", Some(me)) => pane_method(&st, me, method, p),
+                ("send" | "reply" | "wait" | "read" | "status" | "token", Some(me)) => pane_method(&st, me, method, p),
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
+                        // FR-66: pesan terakhir giliran agent bersandbox = balasan untuk pesan yang menunggu
+                        if let Some(text) = p["reply"].as_str() {
+                            auto_reply(&st, me, text);
+                        }
                         let pane = st.panes.lock().unwrap().get(&me).cloned();
                         if let Some(pane) = pane {
                             set_status(&st, me, &pane, status, None);
@@ -340,7 +347,7 @@ fn hello(st: &State, chan: Chan, peer: i32, signed: bool, p: &Value) -> Res {
     if chan == Chan::Pane && pane.is_none() {
         // SEC-3 cadangan: proses di luar sesi pane membuktikan diri dengan token pane (dicabut saat pane ditutup)
         pane = p["token"].as_str().and_then(|t| {
-            st.panes.lock().unwrap().iter().find(|(_, x)| x.token.as_deref().is_some_and(|k| ct_eq(k.as_bytes(), t.as_bytes()))).map(|(id, _)| *id)
+            st.pane_of_token(t)
         });
     }
     match chan {
@@ -577,7 +584,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 status_at: Mutex::new(std::time::Instant::now()),
                 readable: std::sync::atomic::AtomicBool::new(false),
                 typed_at: Mutex::new(None),
-                token,
+                token: Mutex::new(token),
                 status: Mutex::new(if ["claude", "codex", "opencode", "omp", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
                 agent,
                 view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
@@ -748,6 +755,64 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
     }
 }
 
+/// FR-66: pesan terakhir giliran agent bersandbox menjawab pesan masuk yang masih menunggu (jalur `reply` biasa:
+/// hop, batas laju, jeda tetap berlaku). Tanpa pesan yang menunggu, teks dibuang dan tidak disimpan.
+fn auto_reply(st: &Arc<State>, me: u64, text: &str) {
+    let waiting = st.engine.lock().unwrap().waiting_for(me, Duration::from_secs(1800)).map(|m| m.id.clone());
+    if let Some(id) = waiting {
+        let body: String = text.chars().take(4000).collect();
+        let _ = pane_method(st, me, "reply", &json!({"msg_id": id, "body": body}));
+    }
+}
+
+/// FR-66: permintaan CLI dari proses bersandbox lewat file `<run>/spool/<id>.req`; jawaban `<id>.res` (0600).
+/// Identitas dari token pane (constant-time), bukan dari isi lain permintaan.
+fn spool(st: Arc<State>, dir: std::path::PathBuf) {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let dir = dir.join("spool");
+    let _ = fs::DirBuilder::new().mode(0o700).create(&dir);
+    loop {
+        thread::sleep(Duration::from_millis(200));
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else { continue };
+            let Some((id, ext)) = name.split_once('.') else { continue };
+            if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            if ext != "req" {
+                // jawaban yang tidak diambil 5 menit
+                if e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|a| a > Duration::from_secs(300))) {
+                    let _ = fs::remove_file(&path);
+                }
+                continue;
+            }
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            let _ = fs::remove_file(&path);
+            let (st, out, tmp) = (st.clone(), dir.join(format!("{id}.res")), dir.join(format!("{id}.out")));
+            thread::spawn(move || {
+                let v: Value = serde_json::from_str(&text).unwrap_or_default();
+                let method = v["method"].as_str().unwrap_or_default();
+                let r = match v["token"].as_str().and_then(|t| st.pane_of_token(t)) {
+                    None => Err("unauthorized"),
+                    Some(me) if ["send", "reply", "wait", "read", "status", "token"].contains(&method) => pane_method(&st, me, method, &v["params"]),
+                    Some(_) => Err("not_allowed"),
+                };
+                let body = match r {
+                    Ok(x) => json!({"result": x}),
+                    Err(e) => json!({"error": {"code": e}}),
+                };
+                // file baru (bukan symlink yang sudah ada), lalu rename: CLI tidak pernah membaca jawaban setengah jadi
+                let wrote = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body.to_string().as_bytes()));
+                if wrote.is_ok() {
+                    let _ = fs::rename(&tmp, &out);
+                }
+            });
+        }
+    }
+}
+
 /// FR-5: keputusan kirim untuk pesan baru (dari agent, atau setelah disetujui manusia).
 fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value {
     // dua pernyataan terpisah: lock `panes` tidak boleh masih dipegang saat workspace_of menguncinya lagi
@@ -839,6 +904,15 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
         Ok((id, pane))
     };
     match method {
+        "token" => {
+            // FR-66: token pane untuk proses bersandbox (jalur spool); dibuat sekali, dicabut saat pane ditutup
+            let pane = st.panes.lock().unwrap().get(&me).cloned().ok_or("not_a_pane")?;
+            let mut t = pane.token.lock().unwrap();
+            if t.is_none() {
+                *t = Some(new_secret().map_err(|_| "io")?[..32].to_string());
+            }
+            Ok(json!({"token": *t}))
+        }
         "status" => {
             let list: Vec<Value> = st
                 .panes
@@ -901,7 +975,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             let n = p["lines"].as_u64().unwrap_or(40).clamp(1, 500) as usize;
             let mut text = git::redact(&pane.view.lock().unwrap().0.tail(n));
             // SEC-12: nilai GEMBALA_TOKEN yang aktif ikut disamarkan
-            for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.clone()) {
+            for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.lock().unwrap().clone()) {
                 text = text.replace(&t, "[disamarkan]");
             }
             let name = pane.name.lock().unwrap().clone();
@@ -1317,6 +1391,12 @@ impl State {
     fn pane(&self, p: &Value) -> Result<Arc<Pane>, &'static str> {
         let id = p["pane"].as_u64().ok_or("bad_params")?;
         self.panes.lock().unwrap().get(&id).cloned().ok_or("no_such_pane")
+    }
+
+    /// SEC-3 cadangan, FR-66: pane pemilik token (constant-time); token dicabut bersama pane.
+    fn pane_of_token(&self, t: &str) -> Option<u64> {
+        let panes = self.panes.lock().unwrap();
+        panes.iter().find(|(_, x)| x.token.lock().unwrap().as_deref().is_some_and(|k| ct_eq(k.as_bytes(), t.as_bytes()))).map(|(id, _)| *id)
     }
 
     /// SEC-3: peer PID ditelusuri lewat proses induk sampai sesi pane. Tool agent sering membuat sesi

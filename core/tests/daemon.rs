@@ -765,6 +765,52 @@ fn kriteria_1_kirim_dan_balas() {
     assert!(h.contains("\"sent\"") && h.contains("\"reply\""), "{h}");
 }
 
+/// FR-66: agent bersandbox membalas lewat akhir gilirannya (hook notify Codex), dan memakai `gembala` lewat spool.
+#[test]
+fn fr66_balasan_akhir_giliran_dan_spool() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = start("bus66");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let tok = d.dir.join("tok");
+    // penerima tidak memanggil `reply`: hanya hook notify Codex dengan pesan terakhir giliran
+    let terima = format!(
+        "'{g}' token > '{}'; IFS= read -r l; IFS= read -r b; \
+         '{g}' hook codex notify '{{\"type\":\"agent-turn-complete\",\"last-assistant-message\":\"JAWABAN-OTOMATIS\"}}'; sleep 30",
+        tok.display()
+    );
+    let kirim = format!(
+        "sleep 2; id=$('{g}' send terima-1 'cek ini' --queue | sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p'); \
+         '{g}' wait --reply \"$id\" --timeout 20; echo SELESAI-66; sleep 30"
+    );
+    profiles(&d, &mut ui, &(sh_profile("terima", &terima) + &sh_profile("kirim", &kirim)), "SELESAI-66");
+    ui.call("pane.create", json!({"profile": "terima", "workspace": "w"}));
+    let a = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(a, &["SELESAI-66"]);
+    assert!(out.contains("JAWABAN-OTOMATIS"), "{out}");
+    // spool: token pane penerima, permintaan sebagai file seperti dari dalam sandbox
+    let token = std::fs::read_to_string(&tok).unwrap().trim().to_string();
+    assert_eq!(token.len(), 32, "{token}");
+    let spool = d.dir.join("spool");
+    let ask = |name: &str, body: Value| {
+        std::fs::write(spool.join(format!("{name}.tmp")), body.to_string()).unwrap();
+        std::fs::rename(spool.join(format!("{name}.tmp")), spool.join(format!("{name}.req"))).unwrap();
+        let t0 = Instant::now();
+        loop {
+            if let Ok(t) = std::fs::read_to_string(spool.join(format!("{name}.res"))) {
+                return t;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(5), "tanpa jawaban spool");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let ok = ask("a1", json!({"token": token, "method": "status", "params": {}}));
+    assert!(ok.contains("terima-1") && ok.contains("kirim-1"), "{ok}");
+    let ditolak = ask("a2", json!({"token": "x".repeat(32), "method": "status", "params": {}}));
+    assert!(ditolak.contains("unauthorized"), "{ditolak}");
+    assert_eq!(std::fs::metadata(spool.join("a1.res")).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
 /// Kriteria 10 + SEC-21: baca hanya dalam workspace sama; pane shell hanya bila diizinkan pengguna.
 #[test]
 fn kriteria_10_baca_dibatasi() {

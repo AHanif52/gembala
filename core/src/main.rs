@@ -28,7 +28,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str).unwrap_or_default() {
         "daemon" => daemon(&args[1..]),
         "hook" => hook(&args[1..]),
-        cmd @ ("send" | "wait" | "read" | "reply" | "status" | "watch") => agent_cli(cmd, &args[1..]),
+        cmd @ ("send" | "wait" | "read" | "reply" | "status" | "watch" | "token") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -87,6 +87,13 @@ fn hook(args: &[String]) -> ExitCode {
         let _ = std::io::stdin().take(64 * 1024).read_to_string(&mut payload);
     }
     let Some(status) = profile::hook_status(agent, event, &payload) else { return ExitCode::SUCCESS };
+    // FR-66: pesan terakhir giliran Codex; daemon hanya memakainya bila ada pesan yang menunggu balasan
+    let reply = (agent == "codex")
+        .then(|| serde_json::from_str::<serde_json::Value>(&payload).ok())
+        .flatten()
+        .filter(|v| v["type"] == "agent-turn-complete")
+        .and_then(|v| v["last-assistant-message"].as_str().map(|m| m.chars().take(4000).collect::<String>()))
+        .filter(|m| !m.trim().is_empty());
     let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else { return ExitCode::SUCCESS };
     let send = || -> std::io::Result<()> {
         use std::io::{BufRead, BufReader};
@@ -96,7 +103,7 @@ fn hook(args: &[String]) -> ExitCode {
         let mut l = String::new();
         writeln!(s, "{}", serde_json::json!({"id": 1, "method": "hello", "params": {"proto": daemon::PROTO, "client": "hook"}}))?;
         r.read_line(&mut l)?;
-        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "hook", "params": {"status": status}}))?;
+        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "hook", "params": {"status": status, "reply": reply}}))?;
         r.read_line(&mut l)?;
         Ok(())
     };
@@ -130,7 +137,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
             "target": rest.first(), "reply": opt.get("reply"), "pattern": opt.get("pattern"),
             "timeout_ms": opt.get("timeout").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok()).map(|s| s * 1000),
         }),
-        "status" | "watch" => json!({}),
+        "status" | "watch" | "token" => json!({}),
         _ => return usage(),
     };
     let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else {
@@ -139,7 +146,15 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     };
     let run = || -> std::io::Result<Value> {
         use std::io::{BufRead, BufReader};
-        let mut s = std::os::unix::net::UnixStream::connect(sock)?;
+        let mut s = match std::os::unix::net::UnixStream::connect(&sock) {
+            Ok(s) => s,
+            // FR-66: sandbox (Codex) menolak socket: lewat file spool dengan token pane
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && cmd != "watch" => {
+                let token = std::env::var("GEMBALA_SPOOL").or_else(|_| std::env::var("GEMBALA_TOKEN")).map_err(|_| e)?;
+                return spool_call(std::path::Path::new(&sock), &token, cmd, &params);
+            }
+            Err(e) => return Err(e),
+        };
         let mut r = BufReader::new(s.try_clone()?);
         let mut l = String::new();
         let token = std::env::var("GEMBALA_TOKEN").ok();
@@ -168,7 +183,11 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     match run() {
         Ok(v) => {
             let out = v.get("result").cloned().unwrap_or_else(|| v.get("error").cloned().unwrap_or_default());
-            println!("{out}");
+            match out["token"].as_str() {
+                // `GEMBALA_SPOOL="$(gembala token)"`: token polos
+                Some(t) if cmd == "token" => println!("{t}"),
+                _ => println!("{out}"),
+            }
             let ok = v.get("result").is_some_and(|r| r["result"] != "rejected" && r.get("timeout").is_none());
             ExitCode::from(if ok { 0 } else { 1 })
         }
@@ -176,6 +195,34 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
             eprintln!("gembala {cmd}: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// FR-66: permintaan lewat `<run>/spool/<id>.req` (tulis lalu rename), jawaban ditunggu sebagai `<id>.res`.
+fn spool_call(sock: &std::path::Path, token: &str, method: &str, params: &serde_json::Value) -> std::io::Result<serde_json::Value> {
+    use std::time::{Duration, Instant};
+    let dir = sock.parent().unwrap_or(std::path::Path::new(".")).join("spool");
+    let id = daemon::new_secret()?[..16].to_string();
+    let (tmp, req, res) = (dir.join(format!("{id}.tmp")), dir.join(format!("{id}.req")), dir.join(format!("{id}.res")));
+    std::fs::write(&tmp, serde_json::json!({"token": token, "method": method, "params": params}).to_string())?;
+    std::fs::rename(&tmp, &req)?;
+    // `wait` menunggu sendiri di daemon; batasnya sedikit di atas timeout-nya (bawaan 10 menit)
+    let limit = match params["timeout_ms"].as_u64() {
+        Some(ms) => Duration::from_millis(ms) + Duration::from_secs(10),
+        None if method == "wait" => Duration::from_secs(600),
+        None => Duration::from_secs(30),
+    };
+    let start = Instant::now();
+    loop {
+        if let Ok(text) = std::fs::read_to_string(&res) {
+            let _ = std::fs::remove_file(&res);
+            return Ok(serde_json::from_str(&text).unwrap_or_default());
+        }
+        if start.elapsed() > limit {
+            let _ = std::fs::remove_file(&req);
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "daemon tidak menjawab lewat spool"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 

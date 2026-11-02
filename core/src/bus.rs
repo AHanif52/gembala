@@ -66,6 +66,15 @@ impl Engine {
         reply_to.and_then(|r| self.find(r)).map_or(0, |m| m.hop + 1)
     }
 
+    /// FR-66: pesan masuk ke `to` yang menunggu balasan: bukan balasan, belum dibalas, tidak tertahan di antrean
+    /// atau persetujuan, umurnya di bawah `max_age`. Yang terbaru.
+    pub fn waiting_for(&self, to: u64, max_age: Duration) -> Option<&Msg> {
+        let held = |id: &str| self.queues.get(&to).is_some_and(|q| q.iter().any(|x| x.msg.id == id)) || self.pending.iter().any(|m| m.id == id);
+        self.known.iter().rev().find(|m| {
+            m.to == to && m.reply_to.is_none() && !self.replies.contains_key(&m.id) && !held(&m.id) && m.at.elapsed().is_ok_and(|a| a < max_age)
+        })
+    }
+
     pub fn remember(&mut self, m: &Msg) {
         self.known.push_back(m.clone());
         while self.known.len() > 1000 {
@@ -169,6 +178,24 @@ mod tests {
             hop,
             at: SystemTime::now(),
         }
+    }
+
+    /// FR-66: hanya pesan asli yang belum dibalas dan tidak tertahan yang dijawab otomatis
+    #[test]
+    fn pesan_menunggu_balasan() {
+        let mut e = Engine::default();
+        let day = Duration::from_secs(86_400);
+        e.remember(&msg("a", 0));
+        e.remember(&Msg { reply_to: Some("x".into()), ..msg("balasan", 1) });
+        assert_eq!(e.waiting_for(2, day).map(|m| m.id.as_str()), Some("a"));
+        assert!(e.waiting_for(1, day).is_none(), "bukan penerimanya");
+        e.replies.insert("a".into(), msg("r", 1));
+        assert!(e.waiting_for(2, day).is_none(), "sudah dibalas");
+        e.remember(&msg("tertahan", 0));
+        e.pending.push(msg("tertahan", 0));
+        assert!(e.waiting_for(2, day).is_none(), "menunggu persetujuan manusia");
+        e.remember(&Msg { at: SystemTime::now() - Duration::from_secs(3600), ..msg("lama", 0) });
+        assert!(e.waiting_for(2, Duration::from_secs(1800)).is_none(), "terlalu lama");
     }
 
     #[test]
