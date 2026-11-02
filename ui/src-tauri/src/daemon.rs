@@ -100,9 +100,94 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     }
 }
 
-/// `gembala` dicari di folder yang sama dengan binary app (dev: `target/debug`, bundle: sidecar).
+/// Binary daemon: helper app di dalam bundle (rilis), atau `gembala` di samping binary app (dev: `target/debug`).
+pub fn daemon_exe() -> Option<PathBuf> {
+    let me = std::env::current_exe().ok()?;
+    let helper = me.parent()?.parent()?.join("Helpers/Gembala Daemon.app/Contents/MacOS/gembala");
+    Some(if helper.exists() { helper } else { me.with_file_name("gembala") })
+}
+
+/// FR-20: daemon dijalankan LaunchServices (`open`) sebagai app latar sendiri. Proses yang dijalankan app
+/// (setsid, double-fork, disclaim, bahkan job `launchctl bootstrap`) masuk atau teratribusi ke coalition app,
+/// dan saat app ditutup loginwindow menghentikan semuanya, termasuk shell pane dan agent (uji 2 Nov 2026).
+/// Tanpa helper (dev) atau `open` gagal = anak langsung seperti dulu, dengan batas itu.
 fn spawn_daemon() -> io::Result<String> {
-    let exe = std::env::current_exe()?.with_file_name("gembala");
+    let exe = daemon_exe().ok_or_else(|| err("path app tidak terbaca"))?;
+    let helper = exe.ancestors().nth(3).filter(|p| p.extension().is_some_and(|e| e == "app")).map(|p| p.to_path_buf());
+    match helper {
+        Some(app) => spawn_helper(&app, &exe).or_else(|e| {
+            eprintln!("helper daemon: {e}; daemon dijalankan langsung");
+            spawn_child(&exe)
+        }),
+        None => spawn_child(&exe),
+    }
+}
+
+/// Rahasia lewat `hand.sock` di folder run (`0700`): daemon hanya menulis bila pemilik socket `gembala-ui`
+/// bundle ini, dan UI hanya menerima dari binary daemon bundle ini.
+fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<String> {
+    use std::os::unix::fs::DirBuilderExt;
+    use std::time::{Duration, Instant};
+    let dir = rundir();
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    let hand = dir.join("hand.sock");
+    let _ = std::fs::remove_file(&hand);
+    let l = std::os::unix::net::UnixListener::bind(&hand)?;
+    let mut c = Command::new("/usr/bin/open");
+    c.args(["-g", "-n", "--stderr"]).arg(dir.join("daemon.log"));
+    // lingkungan app diteruskan seperti saat daemon jadi anak app (pane mewarisinya)
+    for (k, v) in std::env::vars_os() {
+        let (Some(k), Some(v)) = (k.to_str(), v.to_str()) else { continue };
+        if !k.starts_with("XPC_") && !k.starts_with("__CF") {
+            c.arg("--env").arg(format!("{k}={v}"));
+        }
+    }
+    c.arg(app).args(["--args", "daemon", "--secret-sock"]).arg(&hand);
+    let out = c.output()?;
+    if !out.status.success() {
+        return Err(err(format!("open: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    l.set_nonblocking(true)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let s = loop {
+        match l.accept() {
+            Ok((s, _)) => break s,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(err(format!("daemon tidak menyerahkan rahasia: {e}"))),
+        }
+    };
+    let _ = std::fs::remove_file(&hand);
+    s.set_nonblocking(false)?;
+    s.set_read_timeout(Some(Duration::from_secs(5)))?;
+    if peer_path(&s) != exe.canonicalize().ok() {
+        return Err(err("serah-terima rahasia dari proses selain daemon Gembala"));
+    }
+    let mut secret = String::new();
+    BufReader::new(s).read_line(&mut secret)?;
+    let secret = secret.trim().to_string();
+    if secret.is_empty() {
+        return Err(err("daemon gagal start (daemon lain masih jalan?)"));
+    }
+    Ok(secret)
+}
+
+/// Path binary proses di ujung lain socket.
+fn peer_path(s: &UnixStream) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    if unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERPID, (&raw mut pid).cast(), &mut len) } != 0 {
+        return None;
+    }
+    let mut buf = [0u8; 4 * libc::MAXPATHLEN as usize];
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    let p = PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..usize::try_from(n).ok().filter(|&n| n > 0)?]));
+    p.canonicalize().ok()
+}
+
+/// Cara lama: anak langsung app, rahasia lewat descriptor 3.
+fn spawn_child(exe: &std::path::Path) -> io::Result<String> {
     let mut fds = [0; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
         return Err(io::Error::last_os_error());
@@ -112,11 +197,10 @@ fn spawn_daemon() -> io::Result<String> {
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
     let wfd = fds[1];
-    let mut c = Command::new(&exe);
+    let mut c = Command::new(exe);
     c.args(["daemon", "--secret-fd", "3"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     unsafe {
         c.pre_exec(move || {
-            // sesi sendiri: daemon tetap hidup saat app ditutup (FR-20)
             libc::setsid();
             if libc::dup2(wfd, 3) == -1 { Err(io::Error::last_os_error()) } else { Ok(()) }
         });

@@ -248,7 +248,7 @@ fn proc_list() -> Vec<Value> {
     let Ok(out) = std::process::Command::new("/bin/ps").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,comm="]).output() else {
         return vec![];
     };
-    let daemon = std::env::current_exe().ok().and_then(|p| Some(p.parent()?.join("gembala").to_string_lossy().into_owned()));
+    let daemon = daemon::daemon_exe().map(|p| p.to_string_lossy().into_owned());
     procs_of(&String::from_utf8_lossy(&out.stdout), std::process::id(), daemon.as_deref().unwrap_or(""))
 }
 

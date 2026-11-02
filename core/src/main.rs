@@ -14,7 +14,7 @@ use std::io::Write;
 use std::os::fd::FromRawFd;
 use std::process::ExitCode;
 
-const USAGE: &str = "pakai: gembala daemon [--secret-fd N]
+const USAGE: &str = "pakai: gembala daemon [--secret-fd N | --secret-sock <path>]
        gembala send <pane> <pesan…> [--queue] [--reply-to <msg_id>]
        gembala wait [<pane>] [--reply <msg_id>] [--pattern <regex>] [--timeout <detik>]
        gembala read <pane> [-n <baris>]
@@ -35,29 +35,34 @@ fn main() -> ExitCode {
     }
 }
 
-/// `--secret-fd N`: rahasia kanal UI ditulis ke descriptor warisan peluncur (UI), lalu ditutup.
-/// Tanpa flag ini kanal UI menolak semua koneksi.
+enum Handoff {
+    Fd(i32),
+    Sock(std::path::PathBuf),
+}
+
+/// Rahasia kanal UI diserahkan ke peluncur, lalu salurannya ditutup. Tanpa flag, kanal UI menolak semua koneksi.
+/// `--secret-fd N`: descriptor warisan (skrip uji, cadangan UI). `--secret-sock <path>`: socket milik UI saat daemon
+/// dijalankan sebagai helper app lewat `open` (FR-20); rahasia hanya ditulis bila pemilik socket `gembala-ui` bundle ini.
 fn daemon(args: &[String]) -> ExitCode {
-    let secret_fd = match args {
+    let handoff = match args {
         [] => None,
         [f, n] if f == "--secret-fd" => match n.parse::<i32>() {
-            Ok(n) if n > 2 => Some(n),
+            Ok(n) if n > 2 => Some(Handoff::Fd(n)),
             _ => return usage(),
         },
+        [f, p] if f == "--secret-sock" => Some(Handoff::Sock(p.into())),
         _ => return usage(),
     };
     let dir = daemon::default_dir();
     let res = rundir::ensure_private_dir(&dir).and_then(|_| {
-        let secret = secret_fd.map(|_| daemon::new_secret()).transpose()?;
-        let handoff = secret.clone();
+        let secret = handoff.as_ref().map(|_| daemon::new_secret()).transpose()?;
+        let s = secret.clone();
         daemon::run(&dir, secret, move || {
-            if let (Some(fd), Some(s)) = (secret_fd, handoff) {
-                let mut f = unsafe { File::from_raw_fd(fd) }; // ditutup saat drop
-                if let Err(e) = writeln!(f, "{s}") {
-                    // tanpa serah-terima, kanal UI tidak bisa dipakai siapa pun: daemon tidak berguna
-                    eprintln!("gembala daemon: tulis rahasia ke fd {fd}: {e}");
-                    std::process::exit(1);
-                }
+            let (Some(h), Some(s)) = (handoff, s) else { return };
+            if let Err(e) = hand_over(h, &s) {
+                // tanpa serah-terima, kanal UI tidak bisa dipakai siapa pun: daemon tidak berguna
+                eprintln!("gembala daemon: serah-terima rahasia: {e}");
+                std::process::exit(1);
             }
         })
     });
@@ -169,6 +174,27 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
         Err(e) => {
             eprintln!("gembala {cmd}: {e}");
             ExitCode::from(2)
+        }
+    }
+}
+
+fn hand_over(h: Handoff, secret: &str) -> std::io::Result<()> {
+    match h {
+        Handoff::Fd(fd) => writeln!(unsafe { File::from_raw_fd(fd) }, "{secret}"), // ditutup saat drop
+        Handoff::Sock(p) => {
+            let mut s = std::os::unix::net::UnixStream::connect(p)?;
+            // helper `Gembala.app/Contents/Helpers/Gembala Daemon.app/Contents/MacOS/gembala` → `Gembala.app/Contents/MacOS/gembala-ui`
+            let me = std::env::current_exe()?.canonicalize()?;
+            let ui = me.ancestors().nth(5).map(|c| c.join("MacOS/gembala-ui")).and_then(|p| p.canonicalize().ok());
+            let peer = pty::proc_path(daemon::peer_pid(&s)?).and_then(|p| p.canonicalize().ok());
+            if ui.is_none() || peer != ui {
+                return Err(std::io::Error::other(format!("pemilik socket bukan gembala-ui bundle ini: {peer:?}")));
+            }
+            writeln!(s, "{secret}")?;
+            // tetap tersambung sampai UI selesai memeriksa siapa pengirimnya (LOCAL_PEERPID gagal setelah ditutup)
+            s.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+            let _ = std::io::Read::read(&mut s, &mut [0u8; 1]);
+            Ok(())
         }
     }
 }

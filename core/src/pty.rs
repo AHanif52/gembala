@@ -118,10 +118,16 @@ pub fn signal((pid, group): (i32, bool), sig: libc::c_int) -> bool {
 
 #[cfg(target_os = "macos")]
 pub fn proc_name(pid: i32) -> Option<String> {
+    proc_path(pid)?.file_name()?.to_str().map(str::to_string)
+}
+
+/// Path binary proses (serah-terima rahasia: lawan bicara harus binary Gembala yang benar).
+#[cfg(target_os = "macos")]
+pub fn proc_path(pid: i32) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
     let mut buf = [0u8; 4 * libc::MAXPATHLEN as usize];
     let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
-    let path = std::str::from_utf8(&buf[..usize::try_from(n).ok().filter(|&n| n > 0)?]).ok()?;
-    path.rsplit('/').next().map(str::to_string)
+    Some(std::ffi::OsStr::from_bytes(&buf[..usize::try_from(n).ok().filter(|&n| n > 0)?]).into())
 }
 
 /// Folder kerja proses (FR-30: pane baru ikut folder pane yang fokus).
@@ -187,6 +193,11 @@ fn children(pid: i32) -> Vec<i32> {
     let size = std::mem::size_of_val(&buf) as libc::c_int;
     let n = unsafe { libc::proc_listchildpids(pid, buf.as_mut_ptr().cast(), size) };
     buf[..n.clamp(0, 64) as usize].to_vec()
+}
+
+#[cfg(target_os = "linux")]
+pub fn proc_path(pid: i32) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
 }
 
 #[cfg(target_os = "linux")]

@@ -1282,7 +1282,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn peer_pid(s: &UnixStream) -> io::Result<i32> {
+pub fn peer_pid(s: &UnixStream) -> io::Result<i32> {
     let mut pid: libc::pid_t = 0;
     let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
     let rc = unsafe {
@@ -1292,7 +1292,7 @@ fn peer_pid(s: &UnixStream) -> io::Result<i32> {
 }
 
 #[cfg(target_os = "linux")]
-fn peer_pid(s: &UnixStream) -> io::Result<i32> {
+pub fn peer_pid(s: &UnixStream) -> io::Result<i32> {
     let mut c: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let rc = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut c).cast(), &mut len) };

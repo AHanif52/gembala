@@ -29,7 +29,10 @@
     "targets": ["app", "dmg"],
     "externalBin": ["binaries/gembala"],
     "macOS": {
-      "signingIdentity": "Gembala Dev"
+      "signingIdentity": "Gembala Dev",
+      "files": {
+        "Helpers/Gembala Daemon.app": "binaries/Gembala Daemon.app"
+      }
     },
     "icon": [
       "icons/32x32.png",
