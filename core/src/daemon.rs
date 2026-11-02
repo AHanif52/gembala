@@ -51,8 +51,9 @@ struct Pane {
     agent: String,
     /// FR-4: idle | working | blocked | done; kosong = tidak dilacak (shell, profil tanpa hook)
     status: Mutex<&'static str>,
-    /// FR-53: id sesi Gembala untuk Claude Code (UUID tervalidasi)
-    session: Option<String>,
+    /// FR-53, FR-68: id sesi agent di pane ini (tervalidasi per agent): dari Gembala (Claude profil), argumen
+    /// `--session-id` agent manual, atau hook (Codex `thread-id`, OpenCode `sessionID`). Untuk lanjut sesi persis.
+    session: Mutex<Option<String>>,
     /// FR-56: output sesi agent yang sedang jalan (sejak penanda mulai) dan sesi terakhir yang sudah selesai; RAM saja (SEC-13)
     agent_log: Mutex<Option<(std::time::Instant, Vec<u8>)>>,
     last_output: Mutex<Vec<u8>>,
@@ -308,6 +309,12 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                         }
                         let pane = st.panes.lock().unwrap().get(&me).cloned();
                         if let Some(pane) = pane {
+                            // FR-68: id sesi dari hook agent (Codex thread-id, OpenCode sessionID)
+                            if let (Some(agent), Some(id)) = (p["agent"].as_str(), p["session"].as_str())
+                                && profile::valid_session(agent, id)
+                            {
+                                *pane.session.lock().unwrap() = Some(id.to_string());
+                            }
                             set_status(&st, me, &pane, status, None);
                         }
                         Ok(json!({}))
@@ -565,7 +572,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                     let n = (1..).find(|n| !taken.contains(&format!("{label}-{n}"))).unwrap_or(1);
                     Mutex::new(format!("{label}-{n}"))
                 },
-                session: session.id.clone().filter(|s| profile::valid_uuid(s)),
+                session: Mutex::new(session.id.clone().filter(|s| profile::valid_session(&agent, s))),
                 agent_log: Mutex::new(None),
                 last_output: Mutex::new(Vec::new()),
                 cmd_at: Mutex::new((0, 0)),
@@ -575,7 +582,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
                 at_prompt: std::sync::atomic::AtomicBool::new(false),
-                screen: agent == "custom",
+                // FR-68: Codex hanya punya hook `notify` (selesai); bekerja dan butuh izin dari layar
+                screen: agent == "custom" || agent == "codex",
                 started: std::time::Instant::now(),
                 workspace: Mutex::new(p["workspace"].as_str().unwrap_or_default().chars().take(64).collect()),
                 policy: Mutex::new(prof.as_ref().map_or(msg::Policy::Auto, |x| {
@@ -647,6 +655,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "password": busy.is_some() && pty::wants_password(&pane.master),
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
+                "session": *pane.session.lock().unwrap(), // FR-68: kartu lanjut walau daemon berhenti
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
@@ -1049,7 +1058,11 @@ fn screen_watch(st: Arc<State>) {
                     let at = *pane.cmd_at.lock().unwrap();
                     *pane.pre_agent.lock().unwrap() = v.0.before(at);
                     drop(v);
-                    *pane.manual.lock().unwrap() = Some((name, profile::shown_args(&pty::args_of(pid)), pty::cwd_of(pid)));
+                    let args = pty::args_of(pid);
+                    // FR-68: Claude diketik membawa `--session-id` dari fungsi zsh Gembala; selain itu id lama tidak berlaku
+                    let sid = args.windows(2).find(|w| w[0] == "--session-id").map(|w| w[1].clone()).filter(|s| profile::valid_session(&name, s));
+                    *pane.session.lock().unwrap() = sid;
+                    *pane.manual.lock().unwrap() = Some((name, profile::shown_args(&args), pty::cwd_of(pid)));
                     *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
                 }
                 // keluar = shell kembali di depan (sama dengan cek di `pump`)
@@ -1291,9 +1304,9 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let cwd = dir.as_ref().map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
     let omp = |d: std::path::PathBuf| omp_session(std::path::Path::new(&home), &d, since);
     let resume = match agent {
-        "claude" => pane.session.clone().or_else(|| printed_resume(&log)).map(|s| format!("claude --resume {s}")),
-        "codex" => Some(printed_resume(&log).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
-        "opencode" => Some("opencode --continue".into()),
+        "claude" => pane.session.lock().unwrap().clone().or_else(|| printed_resume(&log)).map(|s| format!("claude --resume {s}")),
+        "codex" => Some(printed_resume(&log).or_else(|| pane.session.lock().unwrap().clone()).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
+        "opencode" => Some(pane.session.lock().unwrap().clone().map_or("opencode --continue".into(), |s| format!("opencode --session {s}"))),
         "omp" => Some(agent_dir.or(dir).and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),
         _ => None,
     };

@@ -94,6 +94,12 @@ fn hook(args: &[String]) -> ExitCode {
         .filter(|v| v["type"] == "agent-turn-complete")
         .and_then(|v| v["last-assistant-message"].as_str().map(|m| m.chars().take(4000).collect::<String>()))
         .filter(|m| !m.trim().is_empty());
+    // FR-68: id sesi untuk lanjut persis (Codex `thread-id` payload notify, OpenCode `sessionID` dari plugin)
+    let session = match agent.as_str() {
+        "codex" => serde_json::from_str::<serde_json::Value>(&payload).ok().and_then(|v| v["thread-id"].as_str().map(String::from)),
+        "opencode" => Some(payload.trim().to_string()).filter(|p| !p.is_empty()),
+        _ => None,
+    };
     let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else { return ExitCode::SUCCESS };
     let send = || -> std::io::Result<()> {
         use std::io::{BufRead, BufReader};
@@ -103,7 +109,7 @@ fn hook(args: &[String]) -> ExitCode {
         let mut l = String::new();
         writeln!(s, "{}", serde_json::json!({"id": 1, "method": "hello", "params": {"proto": daemon::PROTO, "client": "hook"}}))?;
         r.read_line(&mut l)?;
-        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "hook", "params": {"status": status, "reply": reply}}))?;
+        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "hook", "params": {"status": status, "reply": reply, "agent": agent, "session": session}}))?;
         r.read_line(&mut l)?;
         Ok(())
     };

@@ -30,7 +30,7 @@
     name: string;
     busy?: string | null;
     status?: string;
-    session?: string; // FR-53: id sesi Gembala (Claude Code)
+    session?: string; // FR-53, FR-68: id sesi agent di pane (Claude dari Gembala; Codex/OpenCode/diketik dari daemon)
     git?: any; // FR-55: ringkasan git di toolbar
     pastes?: string[]; // SEC-34: gambar tempelan, dihapus saat pane ditutup
     output?: boolean; // FR-56: ada output sesi agent sebelumnya
@@ -605,6 +605,11 @@
     });
     if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session };
     if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: kartu sesi selesai ikut ke shell pengganti
+    // FR-68: agent yang diketik ikut berhenti bersama daemon = kartu lanjut dari id sesinya (perintah lolos pola aman)
+    else if (shell && m && !AGENTS.includes(m.agent) && m.busy && m.session) {
+      const cmd = { claude: `claude --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}` }[m.busy];
+      if (safeResume(cmd)) meta[id].ended = { resume: cmd ?? null };
+    }
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {
@@ -1325,6 +1330,7 @@
       if (i.pane_name && meta[p].name !== i.pane_name) meta[p].name = i.pane_name;
       if (meta[p].policy !== i.policy) meta[p].policy = i.policy;
       if (meta[p].readable !== i.readable) meta[p].readable = i.readable;
+      if (i.session && meta[p].session !== i.session) meta[p].session = i.session; // FR-68
     }
   }
 

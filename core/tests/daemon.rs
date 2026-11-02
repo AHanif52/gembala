@@ -811,6 +811,22 @@ fn fr66_balasan_akhir_giliran_dan_spool() {
     assert_eq!(std::fs::metadata(spool.join("a1.res")).unwrap().permissions().mode() & 0o777, 0o600);
 }
 
+/// FR-68: id sesi dari hook agent (Codex `thread-id`, OpenCode `sessionID`) tersimpan untuk lanjut persis; id berbahaya ditolak.
+#[test]
+fn fr68_id_sesi_dari_hook() {
+    let d = start("sesi68");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = format!(
+        "'{g}' hook codex notify '{{\"type\":\"agent-turn-complete\",\"thread-id\":\"01a19b1c-2cfb-7290-b33f-af39083bb39b\"}}'; \
+         '{g}' hook opencode idle 'x;rm'; echo SELESAI-68; sleep 30"
+    );
+    profiles(&d, &mut ui, &sh_profile("sesi", &script), "SELESAI-68");
+    let p = ui.call("pane.create", json!({"profile": "sesi", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    ui.attach_until(p, &["SELESAI-68"]);
+    assert_eq!(ui.call("pane.info", json!({"pane": p}))["result"]["session"], "01a19b1c-2cfb-7290-b33f-af39083bb39b");
+}
+
 /// Kriteria 10 + SEC-21: baca hanya dalam workspace sama; pane shell hanya bila diizinkan pengguna.
 #[test]
 fn kriteria_10_baca_dibatasi() {

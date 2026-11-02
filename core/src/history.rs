@@ -51,7 +51,7 @@ pub fn append(file: &Path, b: &Block) {
 fn safe_resume(r: &str) -> bool {
     const UUID: &str = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
     regex_lite::Regex::new(&format!(
-        "^(claude --resume {UUID}|codex resume ({UUID}|--last)|opencode --continue|omp --continue|omp --resume [A-Za-z0-9-]{{1,80}})$"
+        "^(claude --resume {UUID}|codex resume ({UUID}|--last)|opencode --continue|opencode --session [A-Za-z0-9_-]{{1,80}}|omp --continue|omp --resume [A-Za-z0-9-]{{1,80}})$"
     ))
     .is_ok_and(|re| re.is_match(r))
 }

@@ -9,6 +9,7 @@ test("perintah lanjut dari daemon lolos", () => {
     "codex resume 01a19b1c-2cfb-7290-b33f-af39083bb39b",
     "codex resume --last",
     "opencode --continue",
+    "opencode --session ses_4Ab-9",
     "omp --continue",
     "omp --resume 01a19b03-01a0-709b-87c6-c94faead61ab",
   ])
@@ -20,6 +21,7 @@ test("perintah lain dari layout.json ditolak", () => {
     "claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb; rm -rf ~",
     "claude --resume x",
     "omp --resume a$(id)",
+    "opencode --session x;id",
     "codex resume --last\nrm -rf ~",
     "bash -c id",
     "",

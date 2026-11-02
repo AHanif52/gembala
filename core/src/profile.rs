@@ -185,7 +185,9 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
         ("claude", "notify") if payload.to_lowercase().contains("permission") => "blocked",
         ("claude", "notify") => "idle",
         ("codex", "notify") if payload.contains("agent-turn-complete") => "done",
-        ("opencode", "busy") | ("omp", "start") => "working",
+        // FR-68: omp menunggu persetujuan tool = butuh izin; setelah diputus kembali bekerja
+        ("omp", "approval") => "blocked",
+        ("opencode", "busy") | ("omp", "start" | "resolved") => "working",
         ("opencode", "idle") | ("omp", "end") => "done",
         ("opencode", "permission") => "blocked",
         _ => return None,
@@ -193,7 +195,8 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
 }
 
 /// Teks di layar yang berarti agent menunggu jawaban manusia (huruf kecil).
-const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to", "approve", "allow once", "permission to"];
+// FR-68: dialog persetujuan Codex ("Would you like to run/make the following …")
+const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to", "would you like to run", "would you like to make", "approve", "allow once", "permission to"];
 
 /// FR-4 cadangan: status dari layar untuk agent tanpa hook. `tail` = beberapa baris terbawah layar,
 /// `quiet` = lama tanpa output, `prev` = status sebelumnya.
@@ -297,15 +300,20 @@ autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hoo
 /// FR-9: agent yang diketik manual di pane juga menerima petunjuk `gembala` (flag yang sama dengan profil).
 /// `function name` (bukan `name()`) supaya alias pengguna bernama sama tidak merusak definisi; alias tetap jalan
 /// lewat fungsi ini. Claude/OMP hanya saat membuka TUI (tanpa argumen atau argumen pertama opsi), bukan subperintah.
-/// ponytail: `claude "prompt"` positional tidak diberi petunjuk; OpenCode manual belum.
-fn zsh_agents(dir: &std::path::Path) -> String {
+/// Claude tanpa flag lanjut diberi `--session-id` sejak mulai (FR-68): daemon membacanya dari argumen proses.
+/// ponytail: `claude "prompt"` positional tidak diberi petunjuk.
+fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let f = q(&dir.join("gembala.md").to_string_lossy());
+    // FR-68: Codex diketik = hook notify sama dengan profil; OpenCode diketik = config Gembala (petunjuk + plugin)
+    let notify = q(&format!("notify={}", json!([exe, "hook", "codex", "notify"])));
+    let oc = q(&dir.join("opencode.json").to_string_lossy());
     // FR-67: omp manual juga mendapat hook (status + tool pesan) dan petunjuk khusus omp
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
     format!(
-        "function claude {{ if (( ! $# )) || [[ $1 == -* ]]; then command claude --append-system-prompt \"$(<{f})\" \"$@\"; else command claude \"$@\"; fi }}\n\
+        "function claude {{ if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
-         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c \"$(<{f}.codex)\" \"$@\" }}\n"
+         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c {notify} -c \"$(<{f}.codex)\" \"$@\" }}\n\
+         function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command opencode \"$@\" }}\n"
     )
 }
 
@@ -319,7 +327,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
     vec![
         (".zshenv", zsh_file(".zshenv", "")),
         (".zprofile", zsh_file(".zprofile", "")),
-        (".zshrc", zsh_file(".zshrc", &format!("{ZSH_MARKS}{}", zsh_agents(&h.dir)))),
+        (".zshrc", zsh_file(".zshrc", &format!("{ZSH_MARKS}{}", zsh_agents(&h.dir, &h.exe)))),
         (".zlogin", format!("# dibuat Gembala (FR-58); .zlogin pengguna dibaca apa adanya, lalu ZDOTDIR dikembalikan\n{ZSH_RESTORE}")),
         (
             "opencode.json",
@@ -336,11 +344,12 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
             "opencode-gembala.js",
             format!(
                 "// dibuat Gembala; status pane (FR-4)\nimport {{ execFile }} from \"node:child_process\";\n\
-                 const hook = (s) => execFile({exe}, [\"hook\", \"opencode\", s], () => {{}});\n\
+                 const hook = (s, id) => execFile({exe}, [\"hook\", \"opencode\", s, String(id ?? \"\")], () => {{}});\n\
                  export const Gembala = async () => ({{\n  event: async ({{ event }}) => {{\n\
-                 \x20   if (event.type === \"session.status\") hook(event.properties?.status?.type === \"busy\" ? \"busy\" : \"idle\");\n\
-                 \x20   else if (event.type === \"session.idle\") hook(\"idle\");\n\
-                 \x20   else if (event.type.startsWith(\"permission.\")) hook(\"permission\");\n  }},\n}});\n"
+                 \x20   const id = event.properties?.sessionID; // FR-68: lanjutkan sesi ini persis\n\
+                 \x20   if (event.type === \"session.status\") hook(event.properties?.status?.type === \"busy\" ? \"busy\" : \"idle\", id);\n\
+                 \x20   else if (event.type === \"session.idle\") hook(\"idle\", id);\n\
+                 \x20   else if (event.type.startsWith(\"permission.\")) hook(\"permission\", id);\n  }},\n}});\n"
             ),
         ),
         ("omp-gembala.ts", OMP_HOOK.replace("__EXE__", &exe.to_string())),
@@ -358,6 +367,8 @@ const run = (args: string[], signal?: AbortSignal) =>
 export default function (pi: any) {
   pi.on("agent_start", async () => hook("start"));
   pi.on("agent_end", async () => hook("end"));
+  pi.on("tool_approval_requested", async () => hook("approval")); // FR-68: butuh izin
+  pi.on("tool_approval_resolved", async () => hook("resolved"));
   const z = pi.zod;
   const tool = (name: string, description: string, parameters: any, approval: string, args: (p: any) => string[]) =>
     pi.registerTool({ name, label: name, description, parameters, approval,
@@ -383,16 +394,28 @@ pub struct Session {
     pub resume: bool,
 }
 
+/// FR-68: id sesi yang boleh dipakai untuk agent itu (ditulis ke perintah shell): UUID untuk Claude/Codex,
+/// huruf, angka, `_`, `-` untuk OpenCode/omp.
+pub fn valid_session(agent: &str, s: &str) -> bool {
+    match agent {
+        "claude" | "codex" => valid_uuid(s),
+        _ => (1..=80).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'),
+    }
+}
+
 pub fn valid_uuid(s: &str) -> bool {
     s.len() == 36 && s.chars().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() })
 }
 
 /// Claude Code menerima id dari luar; agent lain hanya "lanjutkan terakhir" (TECH bagian 7a, `--help` 1 Nov 2026).
 fn session_flags(agent: &str, s: &Session) -> Vec<String> {
-    let id = s.id.as_deref().filter(|i| valid_uuid(i));
+    let id = s.id.as_deref().filter(|i| valid_session(agent, i));
     match (agent, s.resume, id) {
         ("claude", false, Some(id)) => vec!["--session-id".into(), id.into()],
         ("claude", true, Some(id)) => vec!["--resume".into(), id.into()],
+        // FR-68: id persis, bukan sesi terakhir di folder
+        ("codex", true, Some(id)) => vec!["resume".into(), id.into()],
+        ("opencode", true, Some(id)) => vec!["--session".into(), id.into()],
         ("claude", true, None) | ("opencode" | "omp", true, _) => vec!["--continue".into()],
         ("codex", true, _) => vec!["resume".into(), "--last".into()],
         _ => vec![],
@@ -632,6 +655,13 @@ mod tests {
         assert_eq!(oc["instructions"][0], "/cfg/hooks/gembala.md");
         assert!(files.iter().any(|f| f.0 == "gembala.md" && f.1.contains(PETUNJUK)));
         let rc = &files.iter().find(|f| f.0 == ".zshrc").unwrap().1;
+        // fungsi agent di .zshrc harus sintaks zsh yang sah
+        let tmp = std::env::temp_dir().join(format!("gembala-zshrc-{}", std::process::id()));
+        std::fs::write(&tmp, rc).unwrap();
+        let ok = std::process::Command::new("zsh").arg("-n").arg(&tmp).status().unwrap().success();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(ok, "{rc}");
+        assert!(rc.contains("--session-id") && rc.contains("hook\",\"codex\",\"notify") && rc.contains("function opencode {"), "{rc}");
         assert!(rc.contains("function claude {") && rc.contains("'/cfg/hooks/gembala.md'"), "{rc}");
         assert!(launch(&by("opencode"), Some(&h), None).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
         assert!(launch(&by("omp"), Some(&h), None).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
@@ -650,8 +680,13 @@ mod tests {
         let again = Session { id: Some(id.into()), resume: true };
         assert!(launch(&by("claude"), None, Some(&new)).unwrap().contains(&format!("'claude' '--session-id' '{id}'")));
         assert!(launch(&by("claude"), None, Some(&again)).unwrap().contains(&format!("'claude' '--resume' '{id}'")));
-        assert!(launch(&by("codex"), None, Some(&again)).unwrap().contains("'codex' 'resume' '--last'"));
-        assert!(launch(&by("opencode"), None, Some(&again)).unwrap().contains("'opencode' '--continue'"));
+        // FR-68: id persis bila ada, "sesi terakhir di folder" hanya tanpa id
+        assert!(launch(&by("codex"), None, Some(&again)).unwrap().contains(&format!("'codex' 'resume' '{id}'")));
+        assert!(launch(&by("opencode"), None, Some(&Session { id: Some("ses_4Ab-9".into()), resume: true })).unwrap().contains("'opencode' '--session' 'ses_4Ab-9'"));
+        let none = Session { id: None, resume: true };
+        assert!(launch(&by("codex"), None, Some(&none)).unwrap().contains("'codex' 'resume' '--last'"));
+        assert!(launch(&by("opencode"), None, Some(&none)).unwrap().contains("'opencode' '--continue'"));
+        assert!(!valid_session("opencode", "a b") && !valid_session("codex", "ses_1") && valid_session("omp", "01a19b03-x"));
         let bad = Session { id: Some("x; rm -rf /".into()), resume: false };
         assert!(!launch(&by("claude"), None, Some(&bad)).unwrap().contains("rm"));
         assert!(valid_uuid(id) && !valid_uuid("0b6f2a1e"));
@@ -660,6 +695,8 @@ mod tests {
     #[test]
     fn status_dari_event_hook() {
         assert_eq!(hook_status("claude", "prompt", ""), Some("working"));
+        assert_eq!(hook_status("omp", "approval", ""), Some("blocked"));
+        assert_eq!(hook_status("omp", "resolved", ""), Some("working"));
         assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude needs your permission to use Bash"}"#), Some("blocked"));
         assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude is waiting for your input"}"#), Some("idle"));
         assert_eq!(hook_status("codex", "notify", r#"{"type":"agent-turn-complete"}"#), Some("done"));
