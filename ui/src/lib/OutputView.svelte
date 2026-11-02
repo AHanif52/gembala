@@ -15,7 +15,7 @@
       scrollback: 50_000,
       fontFamily: "'SF Mono', Menlo, monospace",
       fontSize: 12,
-      theme: { background: "#000000", foreground: "#d4d4d8" },
+      theme: { background: "#000000", foreground: "#e5e5e5" },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

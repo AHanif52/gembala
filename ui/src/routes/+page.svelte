@@ -1355,7 +1355,7 @@
           <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama workspace" />
         {:else}
           <span class="chev" aria-hidden="true">{w.collapsed ? "▸" : "▾"}</span>
-          <span class="wsname">{w.name}</span>
+          <span class="wsname" title={w.name}>{w.name}</span>
           {#if w.collapsed}
             <!-- FR-44: diciutkan tetap menampilkan jumlah tab dan status terberat -->
             {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
@@ -1802,10 +1802,10 @@
   }
   :global(:root) {
     --bg: #000000;
-    --fg: #d4d4d8;
+    --fg: #e5e5e5;
     --muted: #8b8b8b;
     --line: #262626;
-    --card: #141414;
+    --card: #111111;
     --dim: rgba(0, 0, 0, 0.45);
   }
   /* tema mengikuti sistem kecuali [ui] theme memaksa (data-theme) */
@@ -1868,6 +1868,7 @@
     gap: 2px;
     padding: 40px 8px 10px; /* atas: tombol jendela macOS (title bar transparan) */
     border-right: 1px solid var(--line);
+    background: var(--card); /* ala Warp: sidebar sedikit lebih terang dari terminal */
     overflow-y: auto;
     font: 13px system-ui, -apple-system, sans-serif;
     color: var(--fg);
@@ -1945,6 +1946,10 @@
     letter-spacing: 0.04em;
   }
   .wsname {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--fg);
     font-weight: 600;
   }
@@ -1988,6 +1993,8 @@
   }
   .wsum {
     margin-left: auto;
+    flex-shrink: 0; /* nama panjang yang dipotong, ringkasan tetap satu baris */
+    white-space: nowrap;
     text-transform: none;
     letter-spacing: 0;
   }
