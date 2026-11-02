@@ -397,7 +397,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({
                 "paused": eng.paused,
                 "muted": eng.muted.iter().filter_map(|id| names.get(id)).collect::<Vec<_>>(),
-                "pending": eng.pending.iter().map(|m| { let mut v = m.summary(); v["body"] = json!(git::redact(&m.body)); v }).collect::<Vec<_>>(),
+                // SEC-12 pengecualian: kartu konfirmasi menampilkan isi persis yang akan dikirim (yang disetujui = yang sampai)
+                "pending": eng.pending.iter().map(|m| { let mut v = m.summary(); v["body"] = json!(m.body); v }).collect::<Vec<_>>(),
                 "queued": queues,
                 "history": eng.history,
             }))

@@ -10,11 +10,24 @@ const MAX_DIFF: usize = 200 * 1024;
 
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     let mut c = Command::new("git");
-    c.arg("-C").arg(cwd).args(args);
+    // SEC-29: config milik repo tidak boleh menjalankan perintah (fsmonitor, repo bare tersemat)
+    c.args(["-c", "core.fsmonitor=false", "-c", "safe.bareRepository=explicit", "-C"]).arg(cwd).args(args);
     c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     crate::pty::scrub_env(&mut c);
     let out = crate::profile::run_with_timeout(c, Duration::from_secs(3))?;
     Some(out)
+}
+
+/// SEC-29: filter clean/smudge/process di config lokal repo berjalan saat diff membandingkan worktree dan tidak bisa
+/// dimatikan lewat `-c`; repo seperti itu dianggap bukan repo. Filter dari config global (mis. git-lfs) tetap dipercaya.
+fn repo_runs_filters(cwd: &Path) -> bool {
+    git(cwd, &["config", "--list", "--show-scope", "--includes"]).is_none_or(|s| {
+        s.lines().any(|l| {
+            let (scope, kv) = l.split_once('\t').unwrap_or_default();
+            let key = kv.split('=').next().unwrap_or_default();
+            matches!(scope, "local" | "worktree") && key.starts_with("filter.") && [".clean", ".smudge", ".process"].iter().any(|s| key.ends_with(s))
+        })
+    })
 }
 
 /// `{repo:false}` bila bukan repo; selain itu repo, branch, ahead/behind upstream, jumlah file dan baris.
@@ -22,6 +35,9 @@ pub fn status(cwd: &Path) -> Value {
     let Some(root) = git(cwd, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
         return json!({"repo": false});
     };
+    if repo_runs_filters(cwd) {
+        return json!({"repo": false, "reason": "repo_filter"});
+    }
     let branch = git(cwd, &["symbolic-ref", "--short", "-q", "HEAD"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let (ahead, behind) = git(cwd, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
         .and_then(|s| {
@@ -30,7 +46,7 @@ pub fn status(cwd: &Path) -> Value {
         })
         .map_or((Value::Null, Value::Null), |(a, b)| (json!(a), json!(b)));
     let (mut files, mut add, mut del) = (0u64, 0u64, 0u64);
-    for l in git(cwd, &["diff", "--numstat", "HEAD", "--"]).unwrap_or_default().lines() {
+    for l in git(cwd, &["diff", "--numstat", "--no-textconv", "--no-ext-diff", "HEAD", "--"]).unwrap_or_default().lines() {
         let mut f = l.split('\t');
         add += f.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
         del += f.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
@@ -46,7 +62,10 @@ pub fn diff(cwd: &Path) -> Value {
     if git(cwd, &["rev-parse", "--show-toplevel"]).is_none_or(|s| s.trim().is_empty()) {
         return json!({"repo": false});
     }
-    let mut text = git(cwd, &["diff", "--no-color", "--no-ext-diff", "HEAD", "--"]).unwrap_or_default();
+    if repo_runs_filters(cwd) {
+        return json!({"repo": false, "reason": "repo_filter"});
+    }
+    let mut text = git(cwd, &["diff", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).unwrap_or_default();
     let truncated = text.len() > MAX_DIFF;
     if truncated {
         let mut cut = MAX_DIFF;
@@ -116,5 +135,20 @@ mod tests {
         let df = diff(&d);
         assert!(df["diff"].as_str().unwrap().contains("+dua") && !df["diff"].as_str().unwrap().contains("sk-rahasia"), "{df}");
         assert_eq!(df["untracked"], json!(["baru.txt"]));
+
+        // audit run-1: config repo tidak boleh menjalankan perintah lewat panel (SEC-29)
+        let jejak = |n: &str| format!("touch '{}'; false", d.join(n).display());
+        run(&["config", "core.fsmonitor", &jejak("FSMON")]);
+        run(&["config", "diff.x.textconv", &jejak("TEXTCONV")]);
+        std::fs::write(d.join(".gitattributes"), "a.txt diff=x\n").unwrap();
+        std::fs::write(d.join("a.txt"), "tiga\n").unwrap();
+        assert_eq!(status(&d)["repo"], true);
+        assert!(diff(&d)["diff"].as_str().unwrap().contains("+tiga"));
+        assert!(!d.join("FSMON").exists() && !d.join("TEXTCONV").exists(), "fsmonitor/textconv dijalankan");
+        run(&["config", "filter.x.clean", &jejak("CLEAN")]);
+        std::fs::write(d.join(".gitattributes"), "a.txt filter=x\n").unwrap();
+        std::fs::write(d.join("a.txt"), "empat\n").unwrap();
+        assert_eq!((status(&d)["repo"].clone(), diff(&d)["repo"].clone()), (json!(false), json!(false)));
+        assert!(!d.join("CLEAN").exists(), "filter clean dijalankan");
     }
 }

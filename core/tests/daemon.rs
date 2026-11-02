@@ -750,7 +750,8 @@ fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
     let d = start("bus4");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
-    let script = format!("sleep 2; '{g}' send tanya-1 halo; '{g}' send sopan-1 halo; echo SELESAI-K4; sleep 30");
+    // isi berpola kunci privat: dulu disamarkan di kartu tapi tetap terkirim utuh (audit run-1)
+    let script = format!("sleep 2; '{g}' send tanya-1 halo; '{g}' send sopan-1 halo -----BEGIN PRIVATE KEY----- TERSEMBUNYI; echo SELESAI-K4; sleep 30");
     let toml = sh_profile("tanya", "printf 'Hapus semua? (y/n) '; sleep 60")
         + &sh_profile("sopan", "sleep 60")
         + "policy = \"confirm\"\n"
@@ -763,6 +764,8 @@ fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
     assert!(out.contains("target_blocked") && out.contains("needs_confirmation"), "{out}");
     let pending = ui.call("msg.list", json!({}))["result"]["pending"].clone();
     assert_eq!(pending.as_array().unwrap().len(), 1, "{pending}");
+    // kartu = isi persis yang akan dikirim (SEC-12 pengecualian FR-12)
+    assert!(pending[0]["body"].as_str().unwrap().contains("TERSEMBUNYI"), "{pending}");
     let id = pending[0]["id"].as_str().unwrap().to_string();
     // kanal pane tidak bisa menyetujui (kriteria 9)
     let mut outsider = Cli::connect(&d, "pane.sock");
