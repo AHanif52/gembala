@@ -304,10 +304,15 @@
 
   // FR-57: `@` di awal prompt pane = daftar agent lain; pilih = bar kirim di pane itu
   // editor = daftar dipicu dari input editor (FR-59), bukan dari ketikan di terminal
-  let mention = $state<{ pane: number; q: string; sel: number; editor?: boolean; inline?: boolean } | null>(null);
+  // picked = nama yang sudah dilengkapi dari daftar `@@` ini (pilih beberapa agent sekaligus)
+  let mention = $state<{ pane: number; q: string; sel: number; editor?: boolean; inline?: boolean; picked?: string[] } | null>(null);
   let lempar = $state<{ pane: number; to: number; name: string; body: string; error: string } | null>(null);
   const mentionItems = $derived(
-    mention ? targets.filter((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].some((s) => s.toLowerCase().startsWith(mention!.q.toLowerCase()))) : [],
+    mention
+      ? targets.filter(
+          (r) => !mention!.picked?.includes(r.name) && [r.name, r.agent, meta[r.pane]?.busy ?? ""].some((s) => s.toLowerCase().startsWith(mention!.q.toLowerCase())),
+        )
+      : [],
   );
   /// Di terminal pemicunya `@@` (`@` tunggal milik agent: pilih file di Claude/OMP). `@@` di awal baris = bar kirim;
   /// di tengah kalimat (mis. "cek buat @@om") = diganti `@<nama pane>` untuk agent itu
@@ -341,10 +346,14 @@
     }
     if (mention.inline) {
       // di tengah kalimat prompt agent: `@…` diganti nama pane lengkap; agent memakai `gembala send` (petunjuk FR-9)
-      // `@@q` → `@nama ` (satu `@` tersisa)
-      call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length + 1) + r.name + " ")) });
+      // `@@q` → `@nama ` (satu `@` tersisa); pilihan berikutnya dari daftar yang sama = `@nama2 ` di belakangnya
+      const picked = mention.picked ?? [];
+      const text = picked.length ? `@${r.name} ` : "\x7f".repeat(q.length + 1) + r.name + " ";
+      call("pane.write", { pane, data: b64(new TextEncoder().encode(text)) });
       tiles[pane]?.resetLine();
-      mention = null;
+      // daftar tetap terbuka tanpa yang sudah dipilih: Tab/Enter tambah agent, Esc atau terus mengetik = tutup
+      const next = [...picked, r.name];
+      mention = targets.some((t) => !next.includes(t.name)) ? { pane, q: "", sel: 0, inline: true, picked: next } : null;
       return;
     }
     // `@@…` yang sudah terkirim ke TUI dihapus lagi dengan backspace
@@ -1550,7 +1559,9 @@
                     <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {STATUS[r.status ?? ""] ?? r.status ?? "?"}</span>
                   </button>
                 {/each}
-                {#if mentionItems.length}<span class="keys">Tab/Enter {mention.inline ? "lengkapi nama" : "pilih"} · ↑↓ pilih · Esc tutup</span>{/if}
+                {#if mentionItems.length}<span class="keys"
+                    >{mention.picked ? "Tab/Enter tambah agent · ↑↓ pilih · Esc selesai" : `Tab/Enter ${mention.inline ? "lengkapi nama" : "pilih"} · ↑↓ pilih · Esc tutup`}</span
+                  >{/if}
               </div>
             {/if}
             {#if lempar?.pane === pane}
