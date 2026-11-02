@@ -19,6 +19,7 @@
     type Arrow, type Dir, type Divider, type Node,
   } from "$lib/layout";
   import { safeResume } from "$lib/resume";
+  import { cleanTitle } from "$lib/label";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean };
@@ -64,7 +65,8 @@
   let meta = $state<Record<number, Meta>>({});
   let blockedAt = $state<Record<number, number>>({}); // FR-65: sejak kapan pane butuh izin
   let now = $state(Date.now()); // FR-65: lama menunggu di antrean, diperbarui tiap poll
-  let ack = $state<Record<number, true>>({}); // pane yang status "selesai"-nya sudah dilihat; hapus saat status berubah
+  let ack = $state<Record<number, true>>({});
+  let labels = $state<Record<number, string>>({}); // FR-69: dari judul terminal agent; tidak ikut layout.json (SEC-13) // pane yang status "selesai"-nya sudah dilihat; hapus saat status berubah
   let dead = $state<Record<number, true>>({}); // pane dari run daemon lain atau sudah keluar (id negatif)
   let boot = $state(""); // state: layout disimpan ulang saat daemon baru dijalankan
   let zoomed = $state(false);
@@ -439,6 +441,7 @@
   const title = (t: Tab) => {
     const m = meta[t.focus];
     if (t.title) return t.title;
+    if (labels[t.focus]) return labels[t.focus]; // FR-69
     if (m?.busy && AGENTS.includes(m.busy)) return m.busy;
     return home(m?.cwd) === "~" ? "~" : base(m?.cwd) || "~";
   };
@@ -1327,6 +1330,10 @@
       }
       if (busy && busy !== m.busy && m.ended) delete m.ended; // FR-56: blok selesai hilang begitu proses baru jalan
       if (m.busy !== busy) m.busy = busy;
+      // FR-69: label hanya selama agent berjalan di pane ini
+      const label = AGENTS.includes(m.agent) || AGENTS.includes(busy ?? "") ? cleanTitle(i.title, base(i.cwd)) : "";
+      if (label) labels[p] !== label && (labels[p] = label);
+      else if (labels[p]) delete labels[p];
       if (i.pane_name && meta[p].name !== i.pane_name) meta[p].name = i.pane_name;
       if (meta[p].policy !== i.policy) meta[p].policy = i.policy;
       if (meta[p].readable !== i.readable) meta[p].readable = i.readable;
@@ -1430,9 +1437,9 @@
         {#each queue as q (q.p)}
           {@const ag = agentOf(q.p) || meta[q.p]?.agent || ""}
           <button class="tab" onclick={() => jumpTo(q.p)}>
-            <span class="tt"><span class="dot blocked" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{GLYPH[ag] ? ` · ${ag}` : ""}</span>
+            <span class="tt"><span class="dot blocked" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{labels[q.p] || GLYPH[ag] ? ` · ${labels[q.p] || ag}` : ""}</span>
             <span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
-            <span class="sub">{title(q.t)}{wss.length > 1 ? ` · ${q.w.name}` : ""}</span>
+            <span class="sub">{[title(q.t) !== labels[q.p] ? title(q.t) : "", wss.length > 1 ? q.w.name : ""].filter(Boolean).join(" · ")}</span>
           </button>
         {/each}
         <div class="qhint">{pretty("Cmd+Shift+U")} ke pane berikutnya</div>
@@ -1539,7 +1546,7 @@
               <!-- FR-37: kepala tipis saat tab punya lebih dari satu pane -->
               {@const hs = stat(pane)}
               <div class="head" class:on={pane === t.focus}>
-                <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{meta[pane]?.busy ? ` · ${meta[pane].busy}` : ""}</span>
+                <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
                 {#if STATUS[hs]}<span class="st {hs}">{STATUS[hs]}</span>{/if}
                 <!-- folder cukup sekali: toolbar agent sudah menampilkannya -->
                 {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd">{home(meta[pane]?.cwd)}</span>{/if}

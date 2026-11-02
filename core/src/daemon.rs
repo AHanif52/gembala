@@ -64,6 +64,8 @@ struct Pane {
     /// FR-62: file riwayat blok pane ini; blok yang sedang jalan (sejak OSC 133 C) dan blok agent manual yang
     /// sudah selesai tapi menunggu perintah lanjutnya dari `agent_done`.
     hist: std::path::PathBuf,
+    /// FR-69: judul terminal terakhir (OSC 0/2) yang dipasang program di pane; RAM saja (SEC-13)
+    title: Mutex<String>,
     block: Mutex<OpenBlocks>,
     /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap, folder kerja agent).
     /// Urutan kunci: `view` lalu `manual`.
@@ -578,6 +580,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 cmd_at: Mutex::new((0, 0)),
                 pre_agent: Mutex::new(Vec::new()),
                 hist: history::path(&st.boot, id),
+                title: Mutex::new(String::new()),
                 block: Mutex::new((None, None)),
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
@@ -656,6 +659,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "session": *pane.session.lock().unwrap(), // FR-68: kartu lanjut walau daemon berhenti
+                "title": *pane.title.lock().unwrap(), // FR-69: label pane
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
@@ -1206,6 +1210,9 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     for m in history::marks(bytes) {
         on_block(pane, m);
     }
+    if let Some(t) = osc_title(bytes) {
+        *pane.title.lock().unwrap() = t;
+    }
     if let Some(on) = prompt_mark(bytes) {
         pane.at_prompt.store(on, Ordering::Relaxed);
         if !on {
@@ -1246,6 +1253,15 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     let Some(code) = mark.strip_prefix("agent-exit;") else { return };
     let name = pane.name.lock().unwrap().clone();
     agent_done(v, pane, id, &pane.agent, &name, None, code, &[]);
+}
+
+/// FR-69: judul terminal terakhir di potongan output (`ESC ] 0|2 ; teks BEL|ST`), tanpa karakter kontrol, maks 200.
+// ponytail: judul yang terpotong batas baca PTY terlewat; judul berikutnya membetulkan
+fn osc_title(b: &[u8]) -> Option<String> {
+    let start = [b"\x1b]0;", b"\x1b]2;"].iter().filter_map(|m| b.windows(4).rposition(|w| w == *m)).max()? + 4;
+    let end = b[start..].iter().position(|&c| c == 0x07 || c == 0x1b)?;
+    let t: String = String::from_utf8_lossy(&b[start..start + end]).chars().filter(|c| !c.is_control()).take(200).collect();
+    Some(t.trim().to_string())
 }
 
 /// FR-59: penanda OSC 133 terakhir di potongan output: B = shell menunggu di prompt, C = perintah mulai jalan.
@@ -1466,6 +1482,14 @@ pub fn default_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn judul_terminal() {
+        assert_eq!(osc_title(b"x\x1b]0;\xe2\x9c\xb3 Claude Code\x07\x1b]2;\xe2\x9c\xb3 Fix login\x07y").as_deref(), Some("\u{2733} Fix login"));
+        assert_eq!(osc_title(b"\x1b]2;omp\x1b\\").as_deref(), Some("omp"));
+        assert_eq!(osc_title(b"\x1b]2;terpotong").as_deref(), None);
+        assert_eq!(osc_title(b"tanpa judul"), None);
+    }
 
     #[test]
     fn id_resume_dari_output_claude() {
