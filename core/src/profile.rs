@@ -357,7 +357,9 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
     // FR-56: penanda tak terlihat untuk daemon (OSC 777), mengapit output sesi agent
     let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
     for (k, v) in p.env.iter().chain(&hook_env) {
-        s += &format!("export {k}={}; ", q(v));
+        // `~/…` di luar kutip supaya jadi folder home (mis. CLAUDE_CONFIG_DIR per akun)
+        let v = v.strip_prefix("~/").map_or_else(|| q(v), |rest| format!("\"$HOME\"/{}", q(rest)));
+        s += &format!("export {k}={v}; ");
     }
     for (k, r) in &p.secret_env {
         // rahasia dibuka shell pane; nilainya tidak pernah lewat daemon (SEC-32)
@@ -490,12 +492,12 @@ mod tests {
         let p = Profile {
             command: "my tool".into(),
             args: vec!["it's".into(), "$(id)".into()],
-            env: vec![("X".into(), "a b'c".into())],
+            env: vec![("X".into(), "a b'c".into()), ("D".into(), "~/.claude-kerja".into())],
             secret_env: vec![("K".into(), "keychain:svc/me@x".into()), ("O".into(), "op://V/I/f".into())],
             ..builtin()[1].clone()
         };
         let s = launch(&p, None, None).unwrap();
-        assert!(s.starts_with("printf '\\033]777;gembala;agent-start\\007'; ( export X='a b'\\''c'; "), "{s}");
+        assert!(s.starts_with("printf '\\033]777;gembala;agent-start\\007'; ( export X='a b'\\''c'; export D=\"$HOME\"/'.claude-kerja'; "), "{s}");
         assert!(s.contains("printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\""), "{s}");
         let quiet = Profile { summarize: false, ..p.clone() };
         assert!(!launch(&quiet, None, None).unwrap().contains("777"));
