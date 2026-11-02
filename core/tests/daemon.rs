@@ -591,6 +591,37 @@ fn ringkas_agent_manual() {
     assert!(snap.contains("\x1b[?2004h"), "bracketed paste prompt hilang: {snap}");
 }
 
+/// FR-62: blok perintah tersimpan tanpa output, lalu tampil di pane baru yang membawa `history` pane lama.
+#[test]
+fn riwayat_blok_tersimpan_tanpa_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = start("riwayat");
+    let mut ui = Cli::ui(&d);
+    let boot = ui.call("daemon.info", json!({}))["result"]["boot"].as_str().unwrap().to_string();
+    let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.attach", json!({"pane": p}));
+    std::thread::sleep(Duration::from_secs(1));
+    ui.call("pane.write", json!({"pane": p, "data": B64.encode("echo RIWAYAT-$((6*7))\r")}));
+    let file = d.dir.join(format!("cfg/history/{boot}-{p}.jsonl"));
+    let t0 = Instant::now();
+    while !std::fs::read_to_string(&file).unwrap_or_default().contains("RIWAYAT") {
+        assert!(t0.elapsed() < Duration::from_secs(10), "blok tidak tercatat di {}", file.display());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let isi = std::fs::read_to_string(&file).unwrap();
+    assert!(isi.contains("echo RIWAYAT-$((6*7))") && !isi.contains("RIWAYAT-42"), "output tidak boleh tersimpan: {isi}");
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    let snap = |ui: &mut Cli, q: u64| {
+        let s = ui.call("pane.attach", json!({"pane": q}))["result"]["snapshot"].as_str().unwrap().to_string();
+        String::from_utf8_lossy(&B64.decode(s).unwrap()).into_owned()
+    };
+    let q = ui.call("pane.create", json!({"history": {"boot": boot, "pane": p}}))["result"]["pane"].as_u64().unwrap();
+    let layar = snap(&mut Cli::ui(&d), q);
+    assert!(layar.contains("echo RIWAYAT-$((6*7))") && layar.contains("Sesi sebelumnya"), "{layar}");
+    let r = ui.call("pane.create", json!({"history": {"boot": "../../../../etc", "pane": p}}))["result"]["pane"].as_u64().unwrap();
+    assert!(!snap(&mut Cli::ui(&d), r).contains("Sesi sebelumnya"));
+}
+
 /// FR-58: pane zsh memancarkan penanda blok OSC 133 (C + perintah base64, D + exit code); ZDOTDIR pengguna kembali.
 #[test]
 fn penanda_blok_zsh() {

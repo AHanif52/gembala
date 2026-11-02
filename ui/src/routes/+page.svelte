@@ -40,6 +40,7 @@
     zoom?: number; // FR-34: zoom pane ini di atas zoom global
     policy?: string; // SEC-5
     readable?: boolean; // SEC-21
+    from?: { boot: string; pane: number }; // FR-62: pane lama (daemon sebelumnya) untuk riwayat blok
     ended?: { resume: string | null }; // FR-56: blok agent selesai dengan tombol, hilang saat proses baru jalan
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
@@ -566,6 +567,7 @@
       session: shell ? undefined : m?.session,
       resume: !shell && AGENTS.includes(m?.agent ?? ""), // FR-53: lanjutkan percakapan pane ini
       workspace: wsIdOf(old),
+      history: m?.from, // FR-62
     });
     if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session };
     if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: kartu sesi selesai ikut ke shell pengganti
@@ -601,7 +603,7 @@
           const id = next--;
           t.tree = replace(t.tree, p, id);
           if (t.focus === p) t.focus = id;
-          meta[id] = meta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" };
+          meta[id] = { ...(meta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" }), from: { boot, pane: p } };
           delete meta[p];
           dead[id] = true;
         }
@@ -1139,7 +1141,7 @@
             const id = next--;
             t.tree = replace(t.tree, p, id);
             if (t.focus === p) t.focus = id;
-            meta[id] = oldMeta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" };
+            meta[id] = { ...(oldMeta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" }), from: { boot: saved.boot, pane: p } };
             dead[id] = true;
           }
       wss = restored;

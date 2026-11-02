@@ -10,6 +10,7 @@ use crate::msg;
 use crate::git;
 use crate::profile;
 use crate::grid::Grid;
+use crate::history;
 use crate::pty::{self, Pty};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
@@ -59,6 +60,10 @@ struct Pane {
     /// ditulis di bawahnya saat agent keluar, riwayat perintah sebelumnya tetap (ala Warp). Urutan kunci: `view` dulu.
     cmd_at: Mutex<(usize, u16)>,
     pre_agent: Mutex<Vec<u8>>,
+    /// FR-62: file riwayat blok pane ini; blok yang sedang jalan (sejak OSC 133 C) dan blok agent manual yang
+    /// sudah selesai tapi menunggu perintah lanjutnya dari `agent_done`.
+    hist: std::path::PathBuf,
+    block: Mutex<OpenBlocks>,
     /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap, folder kerja agent).
     /// Urutan kunci: `view` lalu `manual`.
     manual: Mutex<Option<(String, String, Option<std::path::PathBuf>)>>,
@@ -134,6 +139,8 @@ impl Drop for UiClient {
 }
 
 type Res = Result<Value, &'static str>;
+/// FR-62: (blok yang sedang jalan + waktu mulainya, blok agent manual yang menunggu perintah lanjut)
+type OpenBlocks = (Option<(history::Block, std::time::Instant)>, Option<history::Block>);
 
 pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::Result<()> {
     let ui = bind(&crate::rundir::socket_path(dir, "ui.sock")?)?;
@@ -167,6 +174,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     on_ready();
     let st3 = st.clone();
     thread::spawn(move || idle_exit(st3));
+    thread::spawn(history::sweep); // FR-62: riwayat lebih dari 30 hari
     let st4 = st.clone();
     thread::spawn(move || watch_config(st4));
     let st6 = st.clone();
@@ -555,6 +563,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 last_output: Mutex::new(Vec::new()),
                 cmd_at: Mutex::new((0, 0)),
                 pre_agent: Mutex::new(Vec::new()),
+                hist: history::path(&st.boot, id),
+                block: Mutex::new((None, None)),
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
                 at_prompt: std::sync::atomic::AtomicBool::new(false),
@@ -572,6 +582,12 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 agent,
                 view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
             });
+            // FR-62: blok pane lama (setelah daemon berhenti) tampil di atas shell baru dan bersambung di file baru
+            let prev = history::load(&p["history"]);
+            for b in &prev {
+                history::append(&pane.hist, b);
+            }
+            pane.view.lock().unwrap().0.feed(&history::render(&prev));
             st.panes.lock().unwrap().insert(id, pane.clone());
             let name = pane.name.lock().unwrap().clone();
             let st = st.clone();
@@ -1100,6 +1116,9 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     }
     v.0.feed(bytes);
     *pane.last_out.lock().unwrap() = std::time::Instant::now();
+    for m in history::marks(bytes) {
+        on_block(pane, m);
+    }
     if let Some(on) = prompt_mark(bytes) {
         pane.at_prompt.store(on, Ordering::Relaxed);
         if !on {
@@ -1152,6 +1171,32 @@ fn prompt_mark(b: &[u8]) -> Option<bool> {
     }
 }
 
+/// FR-62: blok perintah shell ke file riwayat. Selesai saat agent manual masih tercatat = tunggu `agent_done`
+/// supaya perintah lanjutnya ikut; blok tertunda ditulis apa adanya bila perintah berikutnya mulai lebih dulu.
+fn on_block(pane: &Pane, m: history::Mark) {
+    let mut b = pane.block.lock().unwrap();
+    match m {
+        history::Mark::Start(cmd) => {
+            if let Some(done) = b.1.take() {
+                history::append(&pane.hist, &done);
+            }
+            let home = std::env::var("HOME").unwrap_or_default();
+            let cwd = pty::cwd_of(pane.sid).map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
+            let blk = history::Block { t: history::now(), cwd, cmd, code: 0, secs: 0, resume: None };
+            b.0 = Some((blk, std::time::Instant::now()));
+        }
+        history::Mark::End(code) => {
+            let Some((mut blk, at)) = b.0.take() else { return };
+            (blk.code, blk.secs) = (code, at.elapsed().as_secs());
+            if pane.manual.lock().unwrap().is_some() {
+                b.1 = Some(blk);
+            } else {
+                history::append(&pane.hist, &blk);
+            }
+        }
+    }
+}
+
 /// FR-56: agent manual sudah keluar = blok ringkas (sekali; `pump` dan `screen_watch` bisa sama-sama memanggil).
 fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8]) {
     let Some((agent, cmd, dir)) = pane.manual.lock().unwrap().take() else { return };
@@ -1167,16 +1212,10 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     // 2 detik cadangan: agent manual baru terdeteksi sampai 1 detik setelah mulai
     let since = std::time::SystemTime::now() - started.elapsed() - Duration::from_secs(2);
     let secs = started.elapsed().as_secs();
-    let dur = match secs {
-        0..60 => format!("{secs} dtk"),
-        60..3600 => format!("{} mnt {} dtk", secs / 60, secs % 60),
-        _ => format!("{} jam {} mnt", secs / 3600, secs % 3600 / 60),
-    };
     let home = std::env::var("HOME").unwrap_or_default();
     let dir = pty::cwd_of(pane.sid);
     let cwd = dir.as_ref().map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
     let omp = |d: std::path::PathBuf| omp_session(std::path::Path::new(&home), &d, since);
-    let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
     let resume = match agent {
         "claude" => pane.session.clone().or_else(|| printed_resume(&log)).map(|s| format!("claude --resume {s}")),
         "codex" => Some(printed_resume(&log).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
@@ -1185,10 +1224,14 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
         _ => None,
     };
     *pane.last_output.lock().unwrap() = log;
-    let mut text = format!("\x1b[2m{cwd} ({dur}){exit}\x1b[0m\r\n\x1b[1m{}\x1b[0m\r\n", msg::sanitize(cmd).unwrap_or_default());
-    if let Some(r) = &resume {
-        text += &format!("\r\nResume this session with:\r\n{r}\r\n");
-    }
+    let cmd = msg::sanitize(cmd).unwrap_or_default();
+    let text = history::block_text(&cwd, secs, code, &cmd, resume.as_deref());
+    // FR-62: blok agent manual (dari penanda zsh) mendapat perintah lanjutnya; agent dari profil jadi blok sendiri
+    let blk = match pane.block.lock().unwrap().1.take() {
+        Some(b) => history::Block { resume: resume.clone(), ..b },
+        None => history::Block { t: history::now() - secs, cwd, cmd, code: code.parse().unwrap_or_default(), secs, resume: resume.clone() },
+    };
+    history::append(&pane.hist, &blk);
     let mut text = [std::mem::take(&mut *pane.pre_agent.lock().unwrap()), text.into_bytes()].concat();
     text.extend_from_slice(prompt);
     let (rows, cols) = v.0.size();

@@ -3,6 +3,7 @@ mod config;
 mod daemon;
 mod git;
 mod grid;
+mod history;
 mod msg;
 mod profile;
 mod pty;
