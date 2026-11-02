@@ -263,7 +263,7 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
             vec![],
         ),
         "opencode" => (vec![], vec![("OPENCODE_CONFIG".into(), file("opencode.json"))]),
-        "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={PETUNJUK}")], vec![]),
+        "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={PETUNJUK} {OMP_TOOLS}")], vec![]),
         _ => (vec![], vec![]),
     }
 }
@@ -298,11 +298,13 @@ autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hoo
 /// `function name` (bukan `name()`) supaya alias pengguna bernama sama tidak merusak definisi; alias tetap jalan
 /// lewat fungsi ini. Claude/OMP hanya saat membuka TUI (tanpa argumen atau argumen pertama opsi), bukan subperintah.
 /// ponytail: `claude "prompt"` positional tidak diberi petunjuk; OpenCode manual belum.
-fn zsh_agents(petunjuk: &str) -> String {
-    let f = q(petunjuk);
+fn zsh_agents(dir: &std::path::Path) -> String {
+    let f = q(&dir.join("gembala.md").to_string_lossy());
+    // FR-67: omp manual juga mendapat hook (status + tool pesan) dan petunjuk khusus omp
+    let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
     format!(
         "function claude {{ if (( ! $# )) || [[ $1 == -* ]]; then command claude --append-system-prompt \"$(<{f})\" \"$@\"; else command claude \"$@\"; fi }}\n\
-         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp \"--append-system-prompt=$(<{f})\" \"$@\"; else command omp \"$@\"; fi }}\n\
+         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
          function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c \"$(<{f}.codex)\" \"$@\" }}\n"
     )
 }
@@ -317,7 +319,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
     vec![
         (".zshenv", zsh_file(".zshenv", "")),
         (".zprofile", zsh_file(".zprofile", "")),
-        (".zshrc", zsh_file(".zshrc", &format!("{ZSH_MARKS}{}", zsh_agents(&h.dir.join("gembala.md").to_string_lossy())))),
+        (".zshrc", zsh_file(".zshrc", &format!("{ZSH_MARKS}{}", zsh_agents(&h.dir)))),
         (".zlogin", format!("# dibuat Gembala (FR-58); .zlogin pengguna dibaca apa adanya, lalu ZDOTDIR dikembalikan\n{ZSH_RESTORE}")),
         (
             "opencode.json",
@@ -326,6 +328,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
             .to_string(),
         ),
         ("gembala.md", format!("{PETUNJUK}\n")),
+        ("gembala.md.omp", format!("{PETUNJUK} {OMP_TOOLS}\n")),
         // nilai `-c` Codex untuk agent manual (string TOML = string JSON tanpa karakter khusus)
         // FR-66: di sandbox, jawaban akhir giliran ikut terkirim sebagai balasan bila `gembala reply` gagal
         ("gembala.md.codex", format!("developer_instructions={}", json!(format!("{PETUNJUK} Your final message of a turn is also delivered as the reply to a waiting message.")))),
@@ -340,17 +343,39 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
                  \x20   else if (event.type.startsWith(\"permission.\")) hook(\"permission\");\n  }},\n}});\n"
             ),
         ),
-        (
-            "omp-gembala.ts",
-            format!(
-                "// dibuat Gembala; status pane (FR-4)\nimport {{ execFile }} from \"node:child_process\";\n\
-                 const hook = (s: string) => execFile({exe}, [\"hook\", \"omp\", s], () => {{}});\n\
-                 export default function (pi: any) {{\n  pi.on(\"agent_start\", async () => hook(\"start\"));\n\
-                 \x20 pi.on(\"agent_end\", async () => hook(\"end\"));\n}}\n"
-            ),
-        ),
+        ("omp-gembala.ts", OMP_HOOK.replace("__EXE__", &exe.to_string())),
     ]
 }
+
+/// Hook omp: status pane (FR-4) dan tool pesan (FR-67). Tool dari hook tidak lewat bash, jadi pola bash pengguna
+/// (mis. `*psql*` = prompt) tidak menahan pesan yang kebetulan menyebut kata itu.
+const OMP_HOOK: &str = r#"// dibuat Gembala; status pane (FR-4) dan tool pesan tanpa bash (FR-67)
+import { execFile } from "node:child_process";
+const exe = __EXE__;
+const hook = (s: string) => execFile(exe, ["hook", "omp", s], () => {});
+const run = (args: string[], signal?: AbortSignal) =>
+  new Promise<string>((ok) => execFile(exe, args, { signal, maxBuffer: 1 << 20 }, (e, out, err) => ok(String(out || err || (e ? e.message : "")).trim())));
+export default function (pi: any) {
+  pi.on("agent_start", async () => hook("start"));
+  pi.on("agent_end", async () => hook("end"));
+  const z = pi.zod;
+  const tool = (name: string, description: string, parameters: any, approval: string, args: (p: any) => string[]) =>
+    pi.registerTool({ name, label: name, description, parameters, approval,
+      async execute(_id: string, p: any, signal?: AbortSignal) { return { content: [{ type: "text", text: await run(args(p), signal) }], details: {} }; } });
+  tool("gembala_status", "List Gembala panes in this workspace (name, agent, status).", z.object({}), "read", () => ["status"]);
+  tool("gembala_send", "Send a message to another Gembala pane; returns its id. Write a full handover.",
+    z.object({ to: z.string().describe("pane name, e.g. shell-4"), message: z.string(), queue: z.boolean().optional().describe("queue when the target is busy"), reply_to: z.string().optional() }),
+    "write", (p) => ["send", p.to, p.message, ...(p.queue ? ["--queue"] : []), ...(p.reply_to ? ["--reply-to", p.reply_to] : [])]);
+  tool("gembala_reply", "Answer a message labeled [Gembala · dari <pane> · <id>].", z.object({ msg_id: z.string(), message: z.string() }), "write", (p) => ["reply", p.msg_id, p.message]);
+  tool("gembala_wait", "Wait for the reply to a message you sent.", z.object({ reply_id: z.string(), timeout_s: z.number().optional() }), "read",
+    (p) => ["wait", "--reply", p.reply_id, ...(p.timeout_s ? ["--timeout", String(p.timeout_s)] : [])]);
+  tool("gembala_read", "Read the last lines of another pane in this workspace.", z.object({ target: z.string(), lines: z.number().optional() }), "read",
+    (p) => ["read", p.target, ...(p.lines ? ["-n", String(p.lines)] : [])]);
+}
+"#;
+
+/// FR-67: petunjuk tambahan omp: pakai tool hook, bukan bash
+pub const OMP_TOOLS: &str = "In omp, use the gembala_status, gembala_send, gembala_reply, gembala_wait and gembala_read tools instead of running gembala in bash.";
 
 /// FR-53: id sesi dari Gembala (UUID) dan apakah pane melanjutkan sesi sebelumnya.
 pub struct Session {
@@ -598,7 +623,7 @@ mod tests {
         assert!(claude.contains("hook claude stop"), "{claude}");
         // petunjuk `gembala` lewat flag resmi; tanda kutip tunggal di dalamnya akan merusak kutipan shell
         assert!(!PETUNJUK.contains('\'') && claude.contains(&format!("'--append-system-prompt' '{PETUNJUK}'")), "{claude}");
-        assert!(launch(&by("omp"), Some(&h), None).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK}'")));
+        assert!(launch(&by("omp"), Some(&h), None).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK} {OMP_TOOLS}'")));
         let codex = launch(&by("codex"), Some(&h), None).unwrap();
         assert!(codex.contains("'-c' 'notify=[\"/Apps/Gem bala/gembala\",\"hook\",\"codex\",\"notify\"]'"), "{codex}");
         assert!(codex.contains(&format!("'-c' 'developer_instructions=\"{PETUNJUK}\"'")), "{codex}");
