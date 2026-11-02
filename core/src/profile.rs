@@ -25,6 +25,8 @@ pub struct Profile {
     pub notify: bool,
     /// SEC-5: kebijakan penerima `auto` | `confirm` | `deny`
     pub policy: String,
+    /// FR-64: mode izin agent sendiri, `default` | `auto`; Gembala hanya menambah flag launch (lihat `permission_flags`)
+    pub permission: String,
     /// SEC-3 cadangan: beri `GEMBALA_TOKEN` (mis. agent yang jalan di dalam tmux)
     pub token: bool,
 }
@@ -51,6 +53,7 @@ pub fn builtin() -> Vec<Profile> {
         summarize: true,
         notify: true,
         policy: "auto".into(),
+        permission: "default".into(),
         token: false,
     };
     let agents = AGENTS.iter().map(|(agent, name, cmd, _, _)| Profile {
@@ -127,6 +130,11 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
             None => {}
             Some(Some(v)) if crate::msg::Policy::parse(v).is_some() => p.policy = v.into(),
             Some(_) => errors.push(format!("{}: harus auto, confirm, atau deny", at("policy"))),
+        }
+        match t.get("permission").map(|v| v.as_str()) {
+            None => {}
+            Some(Some(v @ ("default" | "auto"))) => p.permission = v.into(),
+            Some(_) => errors.push(format!("{}: harus default atau auto", at("permission"))),
         }
         if let Some(a) = t.get("args") {
             match a.as_array().map(|arr| arr.iter().map(|v| v.as_str().filter(|s| ok_text(s, 500)).map(String::from)).collect::<Option<Vec<_>>>()) {
@@ -364,6 +372,18 @@ fn session_flags(agent: &str, s: &Session) -> Vec<String> {
     }
 }
 
+/// FR-64: flag mode izin per agent (`--help` 2 Nov 2026). OpenCode tidak punya flag untuk TUI (`--auto` hanya di `run`): kosong.
+/// Codex tetap bersandbox `workspace-write`; omp `yolo` tetap menghormati rule `bash.patterns` milik pengguna.
+pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
+    let f: &[&str] = match (agent, permission) {
+        ("claude", "auto") => &["--permission-mode", "auto"],
+        ("omp", "auto") => &["--approval-mode=yolo"],
+        ("codex", "auto") => &["--ask-for-approval", "never", "--sandbox", "workspace-write"],
+        _ => &[],
+    };
+    f.iter().map(|s| s.to_string()).collect()
+}
+
 /// Teks yang dijalankan `$SHELL -l -c` (TECH bagian 6). `None` = shell login interaktif.
 /// Agent jalan di subshell supaya env rahasia tidak tertinggal di shell pane setelah agent keluar;
 /// lalu `exec $SHELL -l` membuat pane tetap hidup (FR-18). Exit 127 = pesan instal (FR-32).
@@ -372,6 +392,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
         return None;
     }
     let (mut flags, hook_env) = h.map(|h| hook_flags(p, h)).unwrap_or_default();
+    flags.extend(permission_flags(&p.agent, &p.permission));
     flags.extend(session.map(|s| session_flags(&p.agent, s)).unwrap_or_default());
     // FR-56: penanda tak terlihat untuk daemon (OSC 777), mengapit output sesi agent
     let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
@@ -407,7 +428,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
 
 pub fn to_json(p: &Profile) -> Value {
     json!({
-        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy, "token": p.token,
+        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy, "permission": p.permission, "token": p.token,
         "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
         "secret_env": p.secret_env.iter().map(|(k, r)| json!({"name": k, "ref": r})).collect::<Vec<_>>(),
     })
@@ -526,6 +547,19 @@ mod tests {
         assert!(s.ends_with("exec \"$SHELL\" -l"), "{s}");
         assert!(s.contains("brew install --cask claude-code"), "{s}");
         assert_eq!(launch(&builtin()[0], None, None), None);
+    }
+
+    #[test]
+    fn mode_izin_jadi_flag_per_agent() {
+        let auto = |a: &str| permission_flags(a, "auto").join(" ");
+        assert_eq!(auto("claude"), "--permission-mode auto");
+        assert_eq!(auto("omp"), "--approval-mode=yolo");
+        assert_eq!(auto("codex"), "--ask-for-approval never --sandbox workspace-write");
+        assert!(permission_flags("opencode", "auto").is_empty() && permission_flags("claude", "default").is_empty());
+        let p = Profile { permission: "auto".into(), ..builtin()[4].clone() };
+        assert!(launch(&p, None, None).unwrap().contains("'omp' '--approval-mode=yolo' );"));
+        let (ps, errs) = parse("[[profile]]\nid = \"omp\"\npermission = \"yolo\"\n");
+        assert!(errs.iter().any(|e| e.contains("default atau auto")) && ps.iter().all(|x| x.permission == "default"));
     }
 
     #[test]

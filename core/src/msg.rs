@@ -71,10 +71,10 @@ impl Policy {
 
 /// SEC-5: agent yang jalan dengan flag lewati-izin dipaksa `confirm`.
 pub const SKIP_PERMISSION_FLAGS: &[&str] =
-    &["--dangerously-skip-permissions", "--yolo", "--dangerously-bypass-approvals-and-sandbox", "--full-auto"];
+    &["--dangerously-skip-permissions", "--yolo", "--dangerously-bypass-approvals-and-sandbox", "--full-auto", "--approval-mode=yolo"];
 
 pub fn effective_policy(set: Policy, args: &[String]) -> Policy {
-    if set == Policy::Auto && args.iter().any(|a| SKIP_PERMISSION_FLAGS.contains(&a.as_str())) { Policy::Confirm } else { set }
+    if set == Policy::Auto && args.windows(2).any(|w| w[0] == "--ask-for-approval" && w[1] == "never") || set == Policy::Auto && args.iter().any(|a| SKIP_PERMISSION_FLAGS.contains(&a.as_str())) { Policy::Confirm } else { set }
 }
 
 /// Fakta yang dibutuhkan keputusan kirim. Diisi daemon tepat sebelum memutuskan (SEC-28: juga saat antrean dikirim).
@@ -257,6 +257,10 @@ mod tests {
         assert_eq!(effective_policy(Policy::Auto, &args), Policy::Confirm);
         assert_eq!(effective_policy(Policy::Deny, &args), Policy::Deny);
         assert_eq!(effective_policy(Policy::Auto, &[]), Policy::Auto);
+        for a in [vec!["--approval-mode=yolo"], vec!["--ask-for-approval", "never", "--sandbox", "workspace-write"]] {
+            let a: Vec<String> = a.into_iter().map(String::from).collect();
+            assert_eq!(effective_policy(Policy::Auto, &a), Policy::Confirm, "{a:?}");
+        }
     }
 
     #[test]

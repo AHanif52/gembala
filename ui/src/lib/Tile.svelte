@@ -328,10 +328,19 @@
     // Shift+Enter = ESC CR (sama dengan /terminal-setup Claude Code di iTerm2): baris baru di TUI agent
     term.attachCustomKeyEventHandler((e) => {
       // FR-57: daftar @ terbuka = Tab/panah/Esc milik daftar
-      if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && !e.shiftKey && onkey(e.key)) return false;
+      if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && !e.shiftKey && onkey(e.key)) {
+        e.preventDefault(); // Tab bawaan WebKit memindah fokus keluar dari terminal; agent menyembunyikan kursor saat fokus hilang
+        return false;
+      }
       const ku = (kitty.at(-1) ?? 0) & 1 ? encodeKey(e, !!term.options.macOptionIsMeta) : null;
       if (ku) {
         if (e.type === "keydown") (track(ku), call("pane.write", { pane, data: b64(enc.encode(ku)) }));
+        return false;
+      }
+      // Ctrl+Enter tanpa protokol kitty = Enter biasa; tanpa ini WebKit macOS membuka menu konteks
+      if (e.key === "Enter" && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        if (e.type === "keydown") call("pane.write", { pane, data: b64(enc.encode("\r")) });
         return false;
       }
       if (e.key !== "Enter" || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return true;

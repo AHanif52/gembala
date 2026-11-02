@@ -15,7 +15,7 @@
   }: { cfg: Config; meta: Record<number, { name: string; agent: string; profile: string; status?: string }>; onclose: () => void; onquitall: () => void } = $props();
   let daemon = $state<{ daemon: string; proto: number } | null>(null);
   // FR-29: ubah profil dari layar; satu baris = satu argumen / satu env
-  type Form = { id: string; name: string; command: string; args: string; cwd: string; env: string; secret: string; summarize: boolean; notify: boolean; isNew: boolean };
+  type Form = { id: string; name: string; command: string; args: string; cwd: string; env: string; secret: string; summarize: boolean; notify: boolean; permission: string; isNew: boolean };
   let form = $state<Form | null>(null);
   const BUILTIN = ["shell", "claude", "codex", "opencode", "omp"];
 
@@ -32,6 +32,7 @@
       secret: p.secret_env.map((x) => `${x.name}=${x.ref}`).join("\n"),
       summarize: p.summarize,
       notify: p.notify,
+      permission: p.permission ?? "default",
       isNew: copy,
     };
   }
@@ -54,6 +55,7 @@
       secret_env: pairs(form.secret),
       summarize: form.summarize,
       notify: form.notify,
+      permission: form.permission,
     };
     const r = await call("profile.save", { profile }).catch((e) => ({ error: String(e) }));
     if (r.error) failed = r.error;
@@ -225,6 +227,8 @@
       <label>Folder <input bind:value={form.cwd} placeholder="kosong = ikut pane yang fokus" spellcheck="false" /></label>
       <label>Env <small>NAMA=nilai per baris; nilai tidak ditampilkan ulang, isi lagi bila ingin mengubah</small><textarea bind:value={form.env} rows="2" spellcheck="false"></textarea></label>
       <label>Rujukan rahasia <small>NAMA=op://vault/item/field atau NAMA=keychain:service/akun</small><textarea bind:value={form.secret} rows="2" spellcheck="false"></textarea></label>
+      <label>Mode izin agent <small>Gembala hanya menambah flag launch; izin tetap dijaga agent. OpenCode: belum ada flag, tidak berpengaruh.</small>
+        <select bind:value={form.permission}><option value="default">Bawaan agent (tanya dulu)</option><option value="auto">Auto (claude --permission-mode auto, omp --approval-mode=yolo, codex -a never)</option></select></label>
       <label class="inline"><input type="checkbox" bind:checked={form.summarize} /> Ringkas output saat agent keluar</label>
       <label class="inline"><input type="checkbox" bind:checked={form.notify} /> Notifikasi untuk pane dari profil ini</label>
       <span class="acts"><button class="mini" onclick={() => (form = null)}>Batal</button> <button class="mini" onclick={saveForm}>Simpan</button></span>

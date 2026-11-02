@@ -25,6 +25,7 @@ export type Profile = {
   secret_env: { name: string; ref: string }[];
   summarize: boolean;
   notify: boolean;
+  permission: string; // FR-64: default | auto
 };
 
 export type Agent = {

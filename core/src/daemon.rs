@@ -572,7 +572,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 started: std::time::Instant::now(),
                 workspace: Mutex::new(p["workspace"].as_str().unwrap_or_default().chars().take(64).collect()),
                 policy: Mutex::new(prof.as_ref().map_or(msg::Policy::Auto, |x| {
-                    msg::effective_policy(msg::Policy::parse(&x.policy).unwrap_or(msg::Policy::Auto), &x.args)
+                    msg::effective_policy(msg::Policy::parse(&x.policy).unwrap_or(msg::Policy::Auto), &[x.args.clone(), profile::permission_flags(&x.agent, &x.permission)].concat())
                 })),
                 status_at: Mutex::new(std::time::Instant::now()),
                 readable: std::sync::atomic::AtomicBool::new(false),
