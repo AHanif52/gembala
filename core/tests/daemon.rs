@@ -671,8 +671,9 @@ fn agent_manual_terlihat_di_status() {
     std::thread::sleep(Duration::from_secs(3)); // screen_watch mengenali agent manual tiap 1 detik
     let a = ui.call("pane.create", json!({"workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     std::thread::sleep(Duration::from_secs(1));
-    ui.call("pane.write", json!({"pane": a, "data": B64.encode(format!("'{g}' status; echo SELESAI-S\r"))}));
-    let out = ui.attach_until(a, &["SELESAI-S\r\n"]);
+    // penanda dihitung shell: gema ketikan tidak ikut cocok, hanya setelah `status` selesai
+    ui.call("pane.write", json!({"pane": a, "data": B64.encode(format!("'{g}' status; echo SELESAI-$((40+2))\r"))}));
+    let out = ui.attach_until(a, &["SELESAI-42"]);
     assert!(out.contains("\"agent\":\"omp\""), "{out}");
 }
 
