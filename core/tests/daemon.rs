@@ -30,6 +30,10 @@ fn start(tag: &str) -> Daemon {
 }
 
 fn start_idle(tag: &str, idle_secs: u64) -> Daemon {
+    start_env(tag, idle_secs, &[])
+}
+
+fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> Daemon {
     let dir = std::env::temp_dir().join(format!("gbl-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
@@ -44,7 +48,8 @@ fn start_idle(tag: &str, idle_secs: u64) -> Daemon {
         // seolah Gembala dijalankan dari dalam sesi agent (SEC-35)
         .env("CLAUDECODE", "1")
         .env("CLAUDE_CODE_MESSAGING_TOKEN", "token-bocor-uji")
-        .env("CODEX_THREAD_ID", "thread-bocor-uji");
+        .env("CODEX_THREAD_ID", "thread-bocor-uji")
+        .envs(extra.iter().map(|(k, v)| (*k, *v)));
     unsafe {
         c.pre_exec(move || {
             libc::close(r);
@@ -826,6 +831,40 @@ fn fr68_id_sesi_dari_hook() {
     let p = ui.call("pane.create", json!({"profile": "sesi", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     ui.attach_until(p, &["SELESAI-68"]);
     assert_eq!(ui.call("pane.info", json!({"pane": p}))["result"]["session"], "01a19b1c-2cfb-7290-b33f-af39083bb39b");
+}
+
+/// FR-61: akun dibuat di HOME sementara: folder 0700, tautan dari Utama, file yang ada tidak ditimpa,
+/// folder di luar home ditolak, email terbaca, hapus akun tidak menyentuh folder.
+#[test]
+fn fr61_akun_agent() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = std::env::temp_dir().join(format!("gbl-{}-home61", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".claude/skills")).unwrap();
+    std::fs::write(home.join(".claude/CLAUDE.md"), "aturan").unwrap();
+    std::fs::create_dir_all(home.join(".claude-klien")).unwrap();
+    std::fs::write(home.join(".claude-klien/CLAUDE.md"), "punya klien").unwrap();
+    let d = start_env("akun61", 3600, &[("HOME", &home)]);
+    let mut ui = Cli::ui(&d);
+    let r = ui.call("account.create", json!({"name": "Kantor"}))["result"].clone();
+    assert_eq!(r["id"], "kantor", "{r}");
+    let k = home.join(".claude-kantor");
+    assert_eq!(std::fs::metadata(&k).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(std::fs::read_link(k.join("CLAUDE.md")).unwrap(), home.join(".claude/CLAUDE.md"));
+    assert!(std::fs::read_link(k.join("skills")).is_ok() && !k.join("settings.json").exists());
+    let r = ui.call("account.create", json!({"name": "Klien", "share": ["CLAUDE.md"]}))["result"].clone();
+    assert_eq!(r["skipped"], json!(["CLAUDE.md"]), "{r}");
+    assert_eq!(std::fs::read_to_string(home.join(".claude-klien/CLAUDE.md")).unwrap(), "punya klien");
+    let r = ui.call("account.create", json!({"name": "Luar", "dir": "/tmp/akun-luar"}))["result"].clone();
+    assert!(r["error"].as_str().is_some_and(|e| e.contains("home")), "{r}");
+    assert!(ui.call("account.create", json!({"name": "Kantor"}))["result"]["error"].as_str().is_some());
+    std::fs::write(k.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"kerja@kantor.id"}}"#).unwrap();
+    let list = ui.call("account.list", json!({}))["result"]["accounts"].to_string();
+    assert!(list.contains("kerja@kantor.id") && list.contains("\"Utama\"") && list.contains("\"Klien\""), "{list}");
+    ui.call("account.remove", json!({"id": "kantor"}));
+    let list = ui.call("account.list", json!({}))["result"]["accounts"].to_string();
+    assert!(!list.contains("\"Kantor\"") && k.join("CLAUDE.md").symlink_metadata().is_ok(), "{list}");
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// Kriteria 10 + SEC-21: baca hanya dalam workspace sama; pane shell hanya bila diizinkan pengguna.

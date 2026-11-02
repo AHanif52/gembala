@@ -4,6 +4,7 @@
 //! diserahkan ke peluncurnya lewat descriptor; koneksi dari dalam sesi pane ditolak walau
 //! rahasianya benar. Kanal pane (SEC-3): identitas dari `getsid(peer_pid)`, bukan isi pesan.
 
+use crate::account;
 use crate::bus;
 use crate::config;
 use crate::msg;
@@ -66,6 +67,8 @@ struct Pane {
     hist: std::path::PathBuf,
     /// FR-69: judul terminal terakhir (OSC 0/2) yang dipasang program di pane; RAM saja (SEC-13)
     title: Mutex<String>,
+    /// FR-61: nama akun agent pane ini; kosong = Utama
+    account: String,
     block: Mutex<OpenBlocks>,
     /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap, folder kerja agent).
     /// Urutan kunci: `view` lalu `manual`.
@@ -122,6 +125,8 @@ struct State {
     /// Config yang berlaku + galatnya (FR-42). File rusak = nilai valid terakhir tetap dipakai.
     config: Mutex<Value>,
     profiles: Mutex<Vec<profile::Profile>>,
+    /// FR-61: `[[account]]` dari config
+    accounts: Mutex<Vec<account::Account>>,
     /// Hasil deteksi agent terakhir (FR-28); Null = belum pernah.
     agents: Mutex<Value>,
     /// Id acak per run daemon: id pane dari run lain tidak boleh dianggap pane yang sama (FR-45).
@@ -161,6 +166,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         ui_next: AtomicU64::new(1),
         config: Mutex::new(Value::Null),
         profiles: Mutex::new(profile::builtin()),
+        accounts: Mutex::default(),
         agents: Mutex::new(Value::Null),
         boot: new_secret()?[..16].to_string(),
         hooks: profile::Hooks {
@@ -507,6 +513,45 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             reload_config(st);
             Ok(json!({}))
         }
+        // FR-61: daftar akun + status (sudah dipakai, email); Utama selalu ada
+        "account.list" => {
+            let main = json!({"id": "utama", "agent": "claude", "name": "Utama", "dir": "~/.claude", "share": [], "main": true});
+            let mut out = vec![json!({"account": main, "status": account::status(&account::config_json(None))})];
+            for a in st.accounts.lock().unwrap().iter() {
+                out.push(json!({"account": account::to_json(a), "status": account::status(&account::config_json(Some(a)))}));
+            }
+            Ok(json!({"accounts": out, "share": account::SHARE}))
+        }
+        "account.create" => {
+            let name = p["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).ok_or("bad_params")?.to_string();
+            let id = account::slug(&name);
+            let dir = p["dir"].as_str().map(str::trim).filter(|d| !d.is_empty()).map(String::from).unwrap_or_else(|| format!("~/.claude-{id}"));
+            let share = match p["share"].as_array() {
+                Some(a) => a.iter().filter_map(|v| v.as_str()).filter(|x| account::SHARE.contains(x)).map(String::from).collect(),
+                None => account::SHARE_DEFAULT.iter().map(|x| x.to_string()).collect(),
+            };
+            let a = account::Account { id, agent: "claude".into(), name, dir, share };
+            if let Err(why) = account::valid_dir(&a.dir) {
+                return Ok(json!({"error": why}));
+            }
+            // config dulu (validasi penuh, id/folder ganda ditolak), baru folder dan tautan
+            if let Err(why) = config::save_account(&config::path(), &a) {
+                return Ok(json!({"error": why}));
+            }
+            let res = account::create(&a);
+            reload_config(st);
+            match res {
+                Ok(skipped) => Ok(json!({"id": a.id, "skipped": skipped})),
+                Err(why) => Ok(json!({"id": a.id, "error": why})),
+            }
+        }
+        "account.remove" => {
+            if let Err(why) = config::remove_account(&config::path(), p["id"].as_str().ok_or("bad_params")?) {
+                return Ok(json!({"error": why}));
+            }
+            reload_config(st);
+            Ok(json!({}))
+        }
         "config.set" => {
             let (section, key) = (p["section"].as_str().ok_or("bad_params")?, p["key"].as_str().ok_or("bad_params")?);
             if let Err(why) = config::set(&config::path(), section, key, &p["value"]) {
@@ -523,9 +568,14 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             let (rows, cols) = (dim(&p["rows"], 24), dim(&p["cols"], 80));
             // FR-30: profil (bawaan "shell"); folder = folder profil, atau folder pane yang fokus
-            let prof = match p["profile"].as_str() {
+            let mut prof = match p["profile"].as_str() {
                 Some(id) => Some(st.profiles.lock().unwrap().iter().find(|x| x.id == id).cloned().ok_or("no_such_profile")?),
                 None => None,
+            };
+            // FR-61, C-9: akun = pilihan manusia saat membuka pane (UI, termasuk bawaan workspace) > akun profil > Utama
+            let acct_name = match prof.as_mut() {
+                Some(pr) => account::apply(pr, p["account"].as_str(), &st.accounts.lock().unwrap())?,
+                None => String::new(),
             };
             let session = profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) };
             let launch = prof.as_ref().and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
@@ -581,6 +631,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 pre_agent: Mutex::new(Vec::new()),
                 hist: history::path(&st.boot, id),
                 title: Mutex::new(String::new()),
+                account: acct_name,
                 block: Mutex::new((None, None)),
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
@@ -660,6 +711,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "session": *pane.session.lock().unwrap(), // FR-68: kartu lanjut walau daemon berhenti
                 "title": *pane.title.lock().unwrap(), // FR-69: label pane
+                "account": pane.account, // FR-61: chip akun
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
@@ -1151,6 +1203,7 @@ fn reload_config(st: &State) {
     let values = if c.broken && !cur.is_null() { cur["values"].clone() } else { c.values };
     if !c.broken {
         *st.profiles.lock().unwrap() = c.profiles;
+        *st.accounts.lock().unwrap() = c.accounts;
     }
     *cur = json!({"values": values, "errors": c.errors, "path": path.to_string_lossy()});
     let ev = line(json!({"event": "config.changed", "params": *cur}));

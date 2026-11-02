@@ -29,6 +29,8 @@ pub struct Profile {
     pub permission: String,
     /// SEC-3 cadangan: beri `GEMBALA_TOKEN` (mis. agent yang jalan di dalam tmux)
     pub token: bool,
+    /// FR-61: id `[[account]]` bawaan profil; kosong = Utama
+    pub account: String,
 }
 
 /// (agent, nama, perintah, perintah instal yang ditampilkan bila tidak ada, versi teruji major.minor)
@@ -55,6 +57,7 @@ pub fn builtin() -> Vec<Profile> {
         policy: "auto".into(),
         permission: "default".into(),
         token: false,
+        account: String::new(),
     };
     let agents = AGENTS.iter().map(|(agent, name, cmd, _, _)| Profile {
         id: agent.to_string(),
@@ -130,6 +133,10 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
             None => {}
             Some(Some(v)) if crate::msg::Policy::parse(v).is_some() => p.policy = v.into(),
             Some(_) => errors.push(format!("{}: harus auto, confirm, atau deny", at("policy"))),
+        }
+        // FR-61: dicocokkan ke [[account]] oleh config::load (akun belum terbaca di sini)
+        if let Some(a) = t.get("account").and_then(|v| v.as_str()) {
+            p.account = a.to_string();
         }
         match t.get("permission").map(|v| v.as_str()) {
             None => {}
@@ -482,7 +489,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
 
 pub fn to_json(p: &Profile) -> Value {
     json!({
-        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy, "permission": p.permission, "token": p.token,
+        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy, "permission": p.permission, "token": p.token, "account": p.account,
         "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
         "secret_env": p.secret_env.iter().map(|(k, r)| json!({"name": k, "ref": r})).collect::<Vec<_>>(),
     })

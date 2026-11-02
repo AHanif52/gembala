@@ -54,6 +54,8 @@ pub struct Config {
     pub errors: Vec<String>,
     /// File tidak bisa diurai sama sekali: pemanggil memakai nilai valid terakhir.
     pub broken: bool,
+    /// FR-61: `[[account]]` yang lolos validasi
+    pub accounts: Vec<crate::account::Account>,
 }
 
 pub fn path() -> PathBuf {
@@ -120,7 +122,7 @@ pub fn load(text: Option<&str>) -> Config {
     let doc = match text.map(str::parse::<DocumentMut>) {
         Some(Err(e)) => {
             errors.push(format!("config.toml tidak bisa diurai: {}", e.to_string().trim()));
-            return Config { values: defaults(), errors, broken: true, profiles: crate::profile::builtin() };
+            return Config { values: defaults(), errors, broken: true, profiles: crate::profile::builtin(), accounts: Vec::new() };
         }
         Some(Ok(d)) => Some(d),
         None => None,
@@ -163,10 +165,33 @@ pub fn load(text: Option<&str>) -> Config {
         errors.push("profile: harus ditulis sebagai [[profile]], diabaikan".into());
     }
     let tables: Vec<&dyn toml_edit::TableLike> = arr.map(|a| a.iter().map(|t| t as &dyn toml_edit::TableLike).collect()).unwrap_or_default();
-    let (profiles, perr) = crate::profile::from_config(&tables);
+    let (mut profiles, perr) = crate::profile::from_config(&tables);
     errors.extend(perr);
+    // FR-61: akun, lalu rujukan akun di profil (akun tak dikenal atau env ganda = profil memakai Utama)
+    let item = doc.as_ref().and_then(|d| d.get("account"));
+    let arr = item.and_then(|v| v.as_array_of_tables());
+    if item.is_some() && arr.is_none() {
+        errors.push("account: harus ditulis sebagai [[account]], diabaikan".into());
+    }
+    let tables: Vec<&dyn toml_edit::TableLike> = arr.map(|a| a.iter().map(|t| t as &dyn toml_edit::TableLike).collect()).unwrap_or_default();
+    let (accounts, aerr) = crate::account::from_config(&tables);
+    errors.extend(aerr);
+    for p in profiles.iter_mut().filter(|p| !p.account.is_empty()) {
+        let why = if !accounts.iter().any(|a| a.id == p.account && a.agent == p.agent) {
+            Some("akun tidak dikenal untuk agent ini")
+        } else if crate::account::conflicts(&p.env) {
+            Some("CLAUDE_CONFIG_DIR juga ditulis di env profil (dua sumber)")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            errors.push(format!("profile {}.account: {why}; memakai akun Utama", p.id));
+            p.account.clear();
+        }
+    }
     values.insert("profiles".into(), profiles.iter().map(crate::profile::to_json).collect());
-    Config { values: Value::Object(values), errors, broken: false, profiles }
+    values.insert("accounts".into(), accounts.iter().map(crate::account::to_json).collect());
+    Config { values: Value::Object(values), errors, broken: false, profiles, accounts }
 }
 
 fn defaults() -> Value {
@@ -240,7 +265,7 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), String> {
         .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id)).cloned());
     let mut t = old.unwrap_or_default();
     t["id"] = toml_edit::value(id);
-    for k in ["name", "command", "cwd", "policy", "permission"] {
+    for k in ["name", "command", "cwd", "policy", "permission", "account"] {
         if let Some(v) = p[k].as_str() {
             t[k] = toml_edit::value(v);
         }
@@ -296,6 +321,41 @@ pub fn set_key(path: &Path, action: &str, combo: &str) -> Result<(), String> {
     }
     if !combo.is_empty() {
         keys.insert(&combo.to_lowercase(), toml_edit::value(action));
+    }
+    commit(path, &doc, &before)
+}
+
+/// FR-61: tambah `[[account]]` (id unik per agent; validasi penuh oleh `load` lewat `commit`).
+pub fn save_account(path: &Path, a: &crate::account::Account) -> Result<(), String> {
+    let (mut doc, before) = read_doc(path)?;
+    if !doc.contains_key("account") {
+        doc["account"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+    }
+    let arr = doc["account"].as_array_of_tables_mut().ok_or("account: harus ditulis sebagai [[account]]")?;
+    if arr.iter().any(|x| x.get("id").and_then(|v| v.as_str()) == Some(a.id.as_str())) {
+        return Err(format!("akun \"{}\" sudah ada", a.id));
+    }
+    let mut t = toml_edit::Table::new();
+    t["id"] = toml_edit::value(a.id.as_str());
+    t["agent"] = toml_edit::value(a.agent.as_str());
+    t["name"] = toml_edit::value(a.name.as_str());
+    t["dir"] = toml_edit::value(a.dir.as_str());
+    t["share"] = toml_edit::value(a.share.iter().map(String::as_str).collect::<toml_edit::Array>());
+    arr.push(t);
+    commit(path, &doc, &before)
+}
+
+/// FR-61: hapus `[[account]]`; folder, tautan, dan Keychain tidak disentuh.
+pub fn remove_account(path: &Path, id: &str) -> Result<(), String> {
+    let (mut doc, before) = read_doc(path)?;
+    if let Some(arr) = doc.get_mut("account").and_then(|v| v.as_array_of_tables_mut()) {
+        arr.retain(|x| x.get("id").and_then(|v| v.as_str()) != Some(id));
+    }
+    // profil yang merujuk akun ini kembali ke Utama (tanpa ini commit menolak karena rujukan jadi galat)
+    if let Some(arr) = doc.get_mut("profile").and_then(|v| v.as_array_of_tables_mut()) {
+        for t in arr.iter_mut().filter(|t| t.get("account").and_then(|v| v.as_str()) == Some(id)) {
+            t.remove("account");
+        }
     }
     commit(path, &doc, &before)
 }

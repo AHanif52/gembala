@@ -1,3 +1,4 @@
+mod account;
 mod bus;
 mod config;
 mod daemon;
