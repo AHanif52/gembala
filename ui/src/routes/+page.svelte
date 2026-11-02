@@ -52,12 +52,15 @@
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
   const SWATCH: Record<string, string> = { red: "🔴", orange: "🟠", yellow: "🟡", green: "🟢", blue: "🔵", purple: "🟣" };
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
-  const worst = (ps: number[]): string => ps.reduce((a, p) => (rank(meta[p]?.status) > rank(a) ? (meta[p]?.status ?? "") : a), "");
+  /// status yang ditampilkan: "selesai" yang sudah dilihat pudar (FR-40)
+  const stat = (p: number) => (ack[p] && meta[p]?.status === "done" ? "" : (meta[p]?.status ?? ""));
+  const worst = (ps: number[]): string => ps.reduce((a, p) => (rank(stat(p)) > rank(a) ? stat(p) : a), "");
   const tabStatus = (t: Tab) => worst(panes(t.tree));
 
   let wss = $state<Ws[]>([]);
   let at = $state({ ws: 0, tab: 0 });
   let meta = $state<Record<number, Meta>>({});
+  let ack = $state<Record<number, true>>({}); // pane yang status "selesai"-nya sudah dilihat; hapus saat status berubah
   let dead = $state<Record<number, true>>({}); // pane dari run daemon lain atau sudah keluar (id negatif)
   let boot = $state(""); // state: layout disimpan ulang saat daemon baru dijalankan
   let zoomed = $state(false);
@@ -1157,10 +1160,10 @@
     welcome = await call("agents.detect", {}).catch(() => []);
   }
 
-  // FR-40: tanda selesai pane shell hilang begitu pane itu dilihat
+  // FR-40: tanda selesai hilang begitu pane itu dilihat (agent maupun shell)
   $effect(() => {
-    const m = tab ? meta[tab.focus] : undefined;
-    if (seen && m && !AGENTS.includes(m.agent) && m.status === "done") m.status = "";
+    const f = tab?.focus;
+    if (seen && f && meta[f]?.status === "done" && !ack[f]) ack[f] = true;
   });
 
   // FR-55: toolbar pane yang baru difokus diperbarui (tanpa polling git)
@@ -1185,13 +1188,14 @@
     invoke("notify_pane", { body: `${m.name || m.profile} ${label}`, sound: notify.sound }).catch(() => {});
   }
   const attention = $derived(
-    Object.values(meta).filter((m) => (m.status === "blocked" && notify.on_blocked) || (m.status === "done" && notify.on_done)).length,
+    Object.keys(meta).map(Number).filter((p) => (stat(p) === "blocked" && notify.on_blocked) || (stat(p) === "done" && notify.on_done)).length,
   );
   $effect(() => {
     invoke("badge", { count: seen ? 0 : attention }).catch(() => {});
   });
   function onStatus(pane: number, status: string) {
     if (!meta[pane]) return;
+    delete ack[pane];
     meta[pane].status = status;
     if (status === "done" || status === "idle") {
       refreshGit(pane); // toolbar diperbarui per giliran (TECH 7a)
@@ -1224,7 +1228,10 @@
       const m = meta[p];
       if (AGENTS.includes(m.agent) || m.agent === "custom" || i.status) {
         // status dari daemon: hook resmi, atau pola layar untuk profil custom dan agent yang diketik manual (FR-4)
-        if (m.status !== i.status) m.status = i.status;
+        if (m.status !== i.status) {
+          delete ack[p];
+          m.status = i.status;
+        }
       } else {
         // FR-40 untuk pane shell: perintah lebih dari 30 detik lalu selesai = done; menunggu password = blocked
         if (busy && !m.busy) m.since = Date.now();
@@ -1233,6 +1240,7 @@
           alert(p, "blocked", "menunggu password");
         } else if (!i.password && m.status === "blocked") m.status = "";
         if (!busy && m.busy && Date.now() - (m.since ?? Date.now()) >= notify.long_command_secs * 1000) {
+          delete ack[p];
           m.status = "done";
           alert(p, "done", "selesai menjalankan perintah lama");
         }
@@ -1433,7 +1441,7 @@
           {:else}
             {#if head}
               <!-- FR-37: kepala tipis saat tab punya lebih dari satu pane -->
-              {@const hs = meta[pane]?.status ?? ""}
+              {@const hs = stat(pane)}
               <div class="head" class:on={pane === t.focus}>
                 <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{meta[pane]?.busy ? ` · ${meta[pane].busy}` : ""}</span>
                 {#if STATUS[hs]}<span class="st {hs}">{STATUS[hs]}</span>{/if}
