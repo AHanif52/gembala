@@ -652,6 +652,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             let _ = std::fs::remove_dir(&hooks);
             let _ = std::fs::remove_dir(dir);
+            eprintln!("daemon keluar: daemon.reset");
             thread::spawn(|| {
                 thread::sleep(Duration::from_millis(200));
                 std::process::exit(0);
@@ -661,6 +662,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         "daemon.stop" => {
             // FR-46 "Keluar dan hentikan semua agent": balasan sempat terkirim, lalu keluar;
             // master PTY tertutup bersama proses = kernel mengirim SIGHUP ke semua sesi pane
+            eprintln!("daemon keluar: daemon.stop");
             thread::spawn(|| {
                 thread::sleep(Duration::from_millis(200));
                 std::process::exit(0);
@@ -1063,6 +1065,7 @@ fn idle_exit(st: Arc<State>) {
         let busy = st.panes.lock().unwrap().values().any(|p| pty::busy(&p.master, p.sid).is_some());
         strikes = if st.ui_clients.load(Ordering::Relaxed) == 0 && !busy { strikes + 1 } else { 0 };
         if strikes >= 2 {
+            eprintln!("daemon keluar: tanpa UI dan semua pane diam");
             std::process::exit(0);
         }
     }

@@ -1184,7 +1184,7 @@
     const m = meta[pane];
     if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
     if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
-    invoke("attention").catch(() => {});
+    if (kind === "blocked") invoke("attention").catch(() => {}); // Dock melompat hanya bila perlu tindakan; selesai cukup badge
     invoke("notify_pane", { body: `${m.name || m.profile} ${label}`, sound: notify.sound }).catch(() => {});
   }
   const attention = $derived(
