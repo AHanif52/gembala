@@ -328,6 +328,37 @@
     // selalu lengkapi nama: Gembala tidak tahu pasti isi baris prompt TUI, jadi "awal baris" tidak bisa diandalkan
     mention = m ? { pane, q: m[1], sel: 0, inline: true } : null;
   }
+  /// FR-57: Enter di prompt agent yang menyebut @nama pane lain (workspace sama) = Gembala meneruskan baris itu
+  /// sebagai pesan pengguna; target yang sedang bekerja dicoba lagi tiap poll sampai 10 menit
+  let forwards: { to: number; body: string; until: number }[] = [];
+  function onSubmit(pane: number, line: string) {
+    if (!AGENTS.includes(agentOf(pane) || meta[pane]?.agent || "")) return;
+    const ws = wsIdOf(pane);
+    const names = new Set([...line.matchAll(/(?:^|\s)@([\w.-]+)/g)].map((m) => m[1]));
+    for (const name of names) {
+      const to = Object.keys(meta).map(Number).find((p) => p !== pane && !dead[p] && meta[p]?.name === name && wsIdOf(p) === ws);
+      if (to !== undefined) forwards.push({ to, body: `${line.trim()}\n\n(diteruskan Gembala dari prompt ${meta[pane]?.name})`, until: Date.now() + 600_000 });
+    }
+    flushForwards();
+  }
+  let flushing = false;
+  async function flushForwards() {
+    if (flushing || !forwards.length) return;
+    flushing = true;
+    const rest: typeof forwards = [];
+    for (const f of forwards) {
+      try {
+        await call("msg.send", { to: f.to, body: f.body, force: false });
+        say(`Diteruskan ke ${meta[f.to]?.name ?? "agent"}`);
+      } catch (e) {
+        if ((e === "target_busy" || e === "target_blocked") && Date.now() < f.until && meta[f.to] && !dead[f.to]) rest.push(f);
+        else say(`Gagal meneruskan ke ${meta[f.to]?.name ?? "agent"}: ${e}`);
+      }
+    }
+    forwards = rest;
+    flushing = false;
+    refreshMsgs();
+  }
   function onMentionKey(pane: number, key: string): boolean {
     if (!mention || mention.pane !== pane || !mentionItems.length) return false;
     const n = mentionItems.length;
@@ -357,7 +388,8 @@
       const picked = mention.picked ?? [];
       const text = picked.length ? `@${r.name} ` : "\x7f".repeat(q.length + 1) + r.name + " ";
       call("pane.write", { pane, data: b64(new TextEncoder().encode(text)) });
-      tiles[pane]?.resetLine();
+      // baris yang dilacak ikut berubah, supaya Enter nanti tahu @nama yang dipilih (diteruskan, onSubmit)
+      tiles[pane]?.setLine((l) => (picked.length ? l : l.slice(0, -(q.length + 1))) + (picked.length ? text : `${r.name} `));
       // daftar tetap terbuka tanpa yang sudah dipilih: Tab/Enter tambah agent, Esc atau terus mengetik = tutup
       const next = [...picked, r.name];
       mention = targets.some((t) => !next.includes(t.name)) ? { pane, q: "", sel: 0, inline: true, picked: next } : null;
@@ -1258,6 +1290,7 @@
   // folder dan proses tiap pane untuk judul tab, subjudul, dan ikon agent (FR-52)
   async function poll() {
     now = Date.now();
+    flushForwards();
     const ids = Object.keys(meta).map(Number).filter((p) => !dead[p]);
     for (const p of ids) {
       const i = await call("pane.info", { pane: p }).catch(() => null);
@@ -1514,7 +1547,7 @@
             <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
               <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
-                online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
+                online={(line: string) => onLine(pane, line)} onsubmit={(line: string) => onSubmit(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
                 onused={() => (ran[pane] = true)}
                 onblock={(kind: string, text: string) => {
