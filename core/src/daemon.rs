@@ -55,6 +55,10 @@ struct Pane {
     /// FR-56: output sesi agent yang sedang jalan (sejak penanda mulai) dan sesi terakhir yang sudah selesai; RAM saja (SEC-13)
     agent_log: Mutex<Option<(std::time::Instant, Vec<u8>)>>,
     last_output: Mutex<Vec<u8>>,
+    /// FR-56: posisi baris perintah terakhir (penanda OSC 133 C) dan isi pane sebelum agent jalan; blok ringkas
+    /// ditulis di bawahnya saat agent keluar, riwayat perintah sebelumnya tetap (ala Warp). Urutan kunci: `view` dulu.
+    cmd_at: Mutex<(usize, u16)>,
+    pre_agent: Mutex<Vec<u8>>,
     /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap, folder kerja agent).
     /// Urutan kunci: `view` lalu `manual`.
     manual: Mutex<Option<(String, String, Option<std::path::PathBuf>)>>,
@@ -307,7 +311,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     let mut v = pane.view.lock().unwrap();
                     let (rows, cols) = v.0.size();
                     let prompt = pane.at_prompt.load(Ordering::Relaxed);
-                    reply(&tx, id, Ok(json!({"snapshot": B64.encode(v.0.snapshot()), "rows": rows, "cols": cols, "prompt": prompt})));
+                    reply(&tx, id, Ok(json!({"snapshot": B64.encode(v.0.replay()), "rows": rows, "cols": cols, "prompt": prompt})));
                     if let Ok(sock) = sock.try_clone() {
                         v.1.push(Sub { tx: tx.clone(), sock });
                     }
@@ -549,6 +553,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 session: session.id.clone().filter(|s| profile::valid_uuid(s)),
                 agent_log: Mutex::new(None),
                 last_output: Mutex::new(Vec::new()),
+                cmd_at: Mutex::new((0, 0)),
+                pre_agent: Mutex::new(Vec::new()),
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
                 at_prompt: std::sync::atomic::AtomicBool::new(false),
@@ -949,6 +955,10 @@ fn screen_watch(st: Arc<State>) {
             let manual = found.is_some() || (active && fg.is_some());
             match (active, found, fg) {
                 (false, Some((pid, name)), _) => {
+                    let mut v = pane.view.lock().unwrap();
+                    let at = *pane.cmd_at.lock().unwrap();
+                    *pane.pre_agent.lock().unwrap() = v.0.before(at);
+                    drop(v);
                     *pane.manual.lock().unwrap() = Some((name, profile::shown_args(&pty::args_of(pid)), pty::cwd_of(pid)));
                     *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
                 }
@@ -1092,6 +1102,11 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     *pane.last_out.lock().unwrap() = std::time::Instant::now();
     if let Some(on) = prompt_mark(bytes) {
         pane.at_prompt.store(on, Ordering::Relaxed);
+        if !on {
+            // perintah mulai: kursor di baris output pertama, baris perintahnya satu di atas
+            let (sb, row) = v.0.position();
+            *pane.cmd_at.lock().unwrap() = ((sb + row as usize).saturating_sub(1), 0);
+        }
     }
     if let Some((_, log)) = pane.agent_log.lock().unwrap().as_mut() {
         log.extend_from_slice(bytes);
@@ -1117,6 +1132,8 @@ fn find_marker(b: &[u8]) -> Option<(usize, usize, &str)> {
 /// FR-56: agent mulai = catat log sesi; agent keluar = layar diganti satu blok ringkas, log lengkap disimpan di RAM.
 fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     if mark == "agent-start" {
+        let at = v.0.position();
+        *pane.pre_agent.lock().unwrap() = v.0.before(at);
         *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
         return;
     }
@@ -1172,7 +1189,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     if let Some(r) = &resume {
         text += &format!("\r\nResume this session with:\r\n{r}\r\n");
     }
-    let mut text = text.into_bytes();
+    let mut text = [std::mem::take(&mut *pane.pre_agent.lock().unwrap()), text.into_bytes()].concat();
     text.extend_from_slice(prompt);
     let (rows, cols) = v.0.size();
     v.0 = Grid::new(rows, cols, SCROLLBACK);

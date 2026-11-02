@@ -23,8 +23,7 @@ impl Grid {
 
     /// Byte yang ditulis ke terminal kosong berukuran sama supaya tampil identik:
     /// layar alternatif, isi + warna, posisi/visibilitas kursor, mode input
-    /// (bracketed paste, mouse, application cursor/keypad, bentuk kursor).
-    // ponytail: hanya layar terlihat; scrollback layar utama tidak ikut dikirim saat attach
+    /// (bracketed paste, mouse, application cursor/keypad, bentuk kursor). Tanpa scrollback; lihat `replay`.
     pub fn snapshot(&self) -> Vec<u8> {
         let s = self.0.screen();
         let mut out = String::new();
@@ -32,6 +31,55 @@ impl Grid {
             out.push_str("\x1b[?1049h");
         }
         out.push_str(&s.state_formatted());
+        out.into_bytes()
+    }
+
+    /// FR-2: scrollback layar utama lalu snapshot, supaya riwayat ikut tampil saat app dibuka lagi.
+    /// Baris scrollback didorong keluar layar dengan baris baru sebelum snapshot menggambar ulang layar.
+    // ponytail: baris panjang yang terbungkus jadi baris terpisah (tanpa reflow saat lebar berubah)
+    pub fn replay(&mut self) -> Vec<u8> {
+        let n = self.0.screen().scrollback_len();
+        let rows = self.size().0 as usize;
+        let mut out = if self.0.screen().alternate_screen() { Vec::new() } else { self.before((n, 0)) };
+        if !out.is_empty() {
+            out.extend(b"\r\n".repeat(rows));
+        }
+        out.extend(self.snapshot());
+        out
+    }
+
+    /// `(panjang scrollback, baris kursor)`: posisi baris sekarang di riwayat layar utama.
+    pub fn position(&self) -> (usize, u16) {
+        let s = self.0.screen();
+        (s.scrollback_len(), s.cursor_position().0)
+    }
+
+    /// FR-56: baris layar utama (berwarna, tertua dulu) sebelum `position` yang dicatat tadi, siap ditulis ulang ke
+    /// grid baru. Layar alternatif tidak punya riwayat: kosong.
+    // ponytail: bila scrollback sudah penuh sejak `position` dicatat, baris yang terbuang menggeser potongan
+    pub fn before(&mut self, (sb, row): (usize, u16)) -> Vec<u8> {
+        let s = self.0.screen_mut();
+        if s.alternate_screen() {
+            return Vec::new();
+        }
+        let (rows, cols) = (s.size().0.get() as usize, s.size().1.get());
+        let mut keep = sb + row as usize;
+        let mut out = String::new();
+        let mut off = s.scrollback_len();
+        while keep > 0 {
+            s.set_scrollback(off);
+            let take = if off > 0 { off.min(rows) } else { rows }.min(keep);
+            for line in s.rows_formatted(0, cols).take(take) {
+                out.push_str(&line);
+                out.push_str("\x1b[m\r\n");
+            }
+            keep -= take;
+            if off == 0 {
+                break;
+            }
+            off -= off.min(rows);
+        }
+        s.set_scrollback(0);
         out.into_bytes()
     }
 
@@ -97,6 +145,31 @@ mod tests {
         assert!(g.0.screen().alternate_screen());
         assert_roundtrip(&g);
         assert!(!g.text().contains("prompt utama"));
+    }
+
+    #[test]
+    fn replay_membawa_scrollback() {
+        let mut g = Grid::new(5, 30, 100);
+        for i in 0..12 {
+            g.feed(format!("baris \x1b[1m{i}\x1b[m\r\n").as_bytes());
+        }
+        let mut b = Grid::new(5, 30, 100);
+        b.feed(&g.replay());
+        assert_eq!(b.0.screen().contents(), g.0.screen().contents());
+        assert_eq!(b.0.screen().cursor_position(), g.0.screen().cursor_position());
+        assert!(b.before((b.0.screen().scrollback_len(), 0)).windows(7).any(|w| w == b"baris \x1b"), "riwayat ikut");
+        let teks = String::from_utf8_lossy(&b.before(b.position())).replace("\x1b[m", "").replace("\x1b[1m", "");
+        assert!(teks.starts_with("baris 0\r\nbaris 1\r\n") && teks.contains("baris 11"), "{teks}");
+    }
+
+    #[test]
+    fn before_memotong_di_posisi() {
+        let mut g = Grid::new(4, 30, 100);
+        g.feed(b"satu\r\ndua\r\ntiga\r\n");
+        let at = g.position();
+        g.feed(b"agent\r\nlayar\r\npenuh\r\nlagi\r\n");
+        let teks = String::from_utf8_lossy(&g.before(at)).replace("\x1b[m", "");
+        assert_eq!(teks, "satu\r\ndua\r\ntiga\r\n");
     }
 
     #[test]
