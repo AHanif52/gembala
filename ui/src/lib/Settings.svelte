@@ -277,6 +277,13 @@
         <h4>Keluar</h4>
         <section>
           <div class="row">
+            <span>Saat Cmd+Q<small>Biarkan jalan = app ditutup, agent lanjut di latar dan muncul lagi saat app dibuka</small></span>
+            <select aria-label="Saat Cmd+Q" value={ui.on_quit} onchange={(e) => set("on_quit", e.currentTarget.value as Ui["on_quit"])}>
+              <option value="keep">Biarkan agent jalan</option>
+              <option value="stop">Hentikan semua</option>
+            </select>
+          </div>
+          <div class="row">
             <span>Keluar dan hentikan semua agent<small>Menghentikan daemon dan semua proses di pane</small></span>
             <button class="mini" onclick={onquitall}>Hentikan…</button>
           </div>
@@ -343,13 +350,6 @@
           <div class="row">
             <span>Input editor<small>Kotak ketik ala Warp menggantikan prompt shell (zsh); berlaku untuk pane baru</small></span>
             <input type="checkbox" role="switch" aria-label="Input editor" checked={ui.input_editor} onchange={(e) => set("input_editor", e.currentTarget.checked)} />
-          </div>
-          <div class="row">
-            <span>Saat Cmd+Q<small>Agent yang dihentikan bisa dilanjutkan dari kartu "Sesi agent selesai" bila id sesinya diketahui</small></span>
-            <select aria-label="Saat Cmd+Q" value={ui.on_quit} onchange={(e) => set("on_quit", e.currentTarget.value as Ui["on_quit"])}>
-              <option value="keep">Biarkan agent jalan</option>
-              <option value="stop">Hentikan semua</option>
-            </select>
           </div>
         </section>
       {:else if sec === "agent"}
