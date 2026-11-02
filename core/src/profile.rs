@@ -238,7 +238,8 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
         "claude" => {
             let one = |ev: &str| json!([{"hooks": [{"type": "command", "command": cmd(ev)}]}]);
             let settings = json!({"hooks": {
-                "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "Stop": one("stop"), "Notification": one("notify"),
+                // PostToolUse: status `blocked` kembali `working` begitu izin disetujui (PreToolUse jalan sebelum dialog izin)
+                "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "PostToolUse": one("tool"), "Stop": one("stop"), "Notification": one("notify"),
             }});
             (vec!["--settings".into(), settings.to_string(), "--append-system-prompt".into(), PETUNJUK.into()], vec![])
         }
@@ -573,6 +574,7 @@ mod tests {
         // perintah hook Claude dijalankan shell: path berspasi tetap satu kata
         let settings: serde_json::Value = serde_json::from_str(hook_flags(&by("claude"), &h).0[1].as_str()).unwrap();
         assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
+        assert_eq!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude tool");
     }
 
     #[test]

@@ -1174,29 +1174,15 @@
   const toolbar = $derived(cfg?.values.toolbar ?? { left: ["attach", "diff", "rich_input"], right: ["cwd", "branch", "settings"] });
   const notify = $derived(cfg?.values.notify ?? { on_blocked: true, on_done: true, long_command_secs: 30, sound: true });
 
-  /// FR-40: banner + Dock melompat saat jendela tidak dilihat; isi nama pane + status saja (SEC-33)
-  let lastNotified: { pane: number; at: number } | null = null;
+  /// FR-40: banner + Dock melompat saat jendela tidak dilihat; isi nama pane + status saja (SEC-33).
+  /// Kembali ke app tidak memindah pane: plugin tidak memberi callback klik, dan event fokus jendela
+  /// tidak bisa membedakan klik notifikasi dari Cmd+Tab (gesekan 2 Nov 2026).
   function alert(pane: number, kind: "blocked" | "done", label: string) {
     const m = meta[pane];
     if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
     if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
     invoke("attention").catch(() => {});
     invoke("notify_pane", { body: `${m.name || m.profile} ${label}`, sound: notify.sound }).catch(() => {});
-    lastNotified = { pane, at: Date.now() };
-  }
-
-  /// Klik notifikasi = app aktif; loncat ke pane yang terakhir memberi tahu (bila belum lama)
-  function onReturn() {
-    const n = lastNotified;
-    lastNotified = null;
-    if (!n || Date.now() - n.at > 120_000) return;
-    for (const [wi, w] of wss.entries())
-      for (const [ti, t] of w.tabs.entries())
-        if (panes(t.tree).includes(n.pane)) {
-          at = { ws: wi, tab: ti };
-          t.focus = n.pane;
-          zoomed = false;
-        }
   }
   const attention = $derived(
     Object.values(meta).filter((m) => (m.status === "blocked" && notify.on_blocked) || (m.status === "done" && notify.on_done)).length,
@@ -1279,10 +1265,7 @@
       if (editorShown(pane)) invoke<string[]>("resolve_paths", { paths: payload.paths }).then((p) => insertPaths(pane, p)).catch(() => {});
       else attach(pane, payload.paths);
     });
-    const onFocus = () => {
-      seen = true;
-      onReturn();
-    };
+    const onFocus = () => (seen = true);
     const onBlur = () => (seen = false);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
@@ -1450,8 +1433,10 @@
           {:else}
             {#if head}
               <!-- FR-37: kepala tipis saat tab punya lebih dari satu pane -->
+              {@const hs = meta[pane]?.status ?? ""}
               <div class="head" class:on={pane === t.focus}>
-                <span class="hname">{meta[pane]?.name}{meta[pane]?.busy ? ` · ${meta[pane].busy}` : ""}</span>
+                <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{meta[pane]?.busy ? ` · ${meta[pane].busy}` : ""}</span>
+                {#if STATUS[hs]}<span class="st {hs}">{STATUS[hs]}</span>{/if}
                 <span class="hcwd">{home(meta[pane]?.cwd)}</span>
                 <span class="grow"></span>
                 <button class="hb" title="Split ke kanan ⌘D" aria-label="Split ke kanan" onclick={() => splitFocused("row")}>◫</button>
