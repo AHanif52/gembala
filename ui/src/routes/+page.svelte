@@ -18,6 +18,7 @@
     dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, swap, valid,
     type Arrow, type Dir, type Divider, type Node,
   } from "$lib/layout";
+  import { safeResume } from "$lib/resume";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean };
@@ -567,6 +568,7 @@
       workspace: wsIdOf(old),
     });
     if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session };
+    if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: kartu sesi selesai ikut ke shell pengganti
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {
@@ -1141,8 +1143,8 @@
             dead[id] = true;
           }
       wss = restored;
-      // layout.json tidak tepercaya: perintah lanjut di blok FR-56 tidak boleh berasal dari file
-      for (const m of Object.values(meta)) delete m.ended;
+      // layout.json tidak tepercaya: kartu FR-56 tetap, perintah lanjutnya hanya bila cocok bentuk buatan daemon
+      for (const m of Object.values(meta)) if (m.ended) m.ended = { resume: safeResume(m.ended.resume) };
       // FR-45: pane mati langsung diganti shell baru (id negatif dulu supaya tidak bentrok dengan id run baru)
       for (const d of Object.keys(dead).map(Number)) await restart(d, true);
       // pane hidup yang tidak ada di layout (mis. layout gagal tersimpan) tetap tampil

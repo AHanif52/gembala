@@ -34,6 +34,8 @@ const UI: &[(&str, Kind)] = &[
     ("screen_reader", Bool(false)),
     // FR-59: input editor di prompt zsh; prompt shell disembunyikan (berlaku untuk pane baru)
     ("input_editor", Bool(true)),
+    // FR-20: Cmd+Q = app ditutup, agent tetap jalan (keep) atau semua pane dihentikan (stop)
+    ("on_quit", Enum(&["keep", "stop"], "keep")),
 ];
 const CHIPS: &[&str] = &["attach", "diff", "rich_input", "cwd", "branch", "settings"];
 /// FR-55: isi dan urutan chip toolbar agent

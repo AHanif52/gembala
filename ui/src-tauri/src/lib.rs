@@ -557,17 +557,23 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, ev| {
-            if let tauri::RunEvent::ExitRequested { .. } = ev {
-                notify_background(app);
+            // Cmd+Q (terminate AppKit) hanya memberi Exit, tanpa ExitRequested
+            if let tauri::RunEvent::Exit = ev {
+                on_exit(app);
             }
         });
 }
 
-/// FR-60: app ditutup tapi daemon tetap hidup karena pane masih menjalankan proses (FR-20) = beri tahu pengguna
-/// alasannya, supaya proses latar tidak dikira diam-diam. "Hentikan semua" menghentikan daemon dulu, jadi tidak muncul.
-fn notify_background(app: &tauri::AppHandle) {
+/// App keluar (Cmd+Q, tutup jendela). Pengaturan "Saat Cmd+Q: Hentikan semua" = daemon dihentikan (FR-20).
+/// Selain itu, FR-60: daemon tetap hidup karena pane masih menjalankan proses = beri tahu pengguna alasannya,
+/// supaya proses latar tidak dikira diam-diam. "Hentikan semua" menghentikan daemon dulu, jadi tidak muncul.
+fn on_exit(app: &tauri::AppHandle) {
     use tauri_plugin_notification::NotificationExt;
     let Some(c) = app.state::<Daemon>().0.lock().unwrap().clone() else { return };
+    if c.call("config.get", json!({})).is_ok_and(|v| v["values"]["ui"]["on_quit"] == "stop") {
+        let _ = c.call("daemon.stop", json!({}));
+        return;
+    }
     let Ok(ids) = c.call("pane.list", json!({})) else { return };
     let busy: Vec<String> = ids
         .as_array()

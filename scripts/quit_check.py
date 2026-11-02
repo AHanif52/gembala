@@ -1,7 +1,8 @@
 # FR-20 dengan app debug asli: UI menjalankan daemon sendiri, pane sibuk (sleep), lalu UI ditutup seperti Cmd+Q
 # (NSRunningApplication.terminate ke PID instance uji saja). Lolos = daemon dan sleep di pane tetap hidup.
 # Folder run, config, dan shell terpisah; instance Gembala lain tidak tersentuh.
-# pakai: npm run tauri build -- --debug && python3 -I scripts/quit_check.py target/debug/bundle/macos/Gembala.app
+# Argumen kedua `stop`: pengaturan "Saat Cmd+Q: Hentikan semua"; lolos = daemon dan sleep ikut berhenti.
+# pakai: npm run tauri build -- --debug && python3 -I scripts/quit_check.py target/debug/bundle/macos/Gembala.app [stop]
 import os, shutil, subprocess, sys, time
 
 app = sys.argv[1]
@@ -9,6 +10,9 @@ R = os.path.join(os.environ["TMPDIR"], "gquit")
 shutil.rmtree(R, ignore_errors=True)
 os.makedirs(os.path.join(R, "cfg"))
 os.chmod(R, 0o700)
+stop = sys.argv[2:] == ["stop"]
+if stop:
+    open(os.path.join(R, "cfg", "config.toml"), "w").write('[ui]\non_quit = "stop"\n')
 # shell palsu: perintah `-c` (deteksi agent) diteruskan ke zsh, shell pane interaktif menjalankan sleep
 sh = os.path.join(R, "fakesh")
 open(sh, "w").write('#!/bin/sh\ncase "$1$2" in *-c*) exec /bin/zsh "$@";; esac\nsleep 600 &\nwait\n')
@@ -50,8 +54,8 @@ else:
                    check=True, capture_output=True)
     time.sleep(5)  # loginwindow menghentikan proses coalition ±1 detik setelah app keluar
     print("ui:", "hidup" if alive(ui) else "mati", "· daemon:", "hidup" if alive(d) else "mati", "· sleep di pane:", "hidup" if alive(sl) else "mati")
-    if alive(ui) or not alive(d) or not alive(sl):
-        print("GAGAL: daemon atau pane ikut berhenti saat app ditutup"); fail = 1
+    if alive(ui) or alive(d) != (not stop) or alive(sl) != (not stop):
+        print("GAGAL:", "daemon atau pane masih hidup" if stop else "daemon atau pane ikut berhenti saat app ditutup"); fail = 1
 for p in pids("-f", "MacOS/gembala-ui") - before:
     os.kill(p, 15)
 for p in daemon():

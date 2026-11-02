@@ -11,6 +11,7 @@ export type Ui = {
   scrollback_lines: number;
   screen_reader: boolean;
   input_editor: boolean;
+  on_quit: "keep" | "stop";
 };
 
 export type Profile = {
@@ -61,6 +62,7 @@ export const UI_DEFAULT: Ui = {
   scrollback_lines: 5000,
   screen_reader: false,
   input_editor: true,
+  on_quit: "keep",
 };
 
 // tampilkan pintasan dengan simbol Mac
