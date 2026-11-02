@@ -26,7 +26,11 @@ export type Profile = {
   summarize: boolean;
   notify: boolean;
   permission: string; // FR-64: default | auto
+  account?: string; // FR-61: akun bawaan profil; kosong = Utama
 };
+
+/// FR-61: `[[account]]` dari config.toml
+export type Account = { id: string; agent: string; name: string; dir: string; share: string[] };
 
 export type Agent = {
   agent: string;
@@ -46,6 +50,7 @@ export type Config = {
     toolbar: { left: string[]; right: string[] };
     keys: Record<string, string>;
     profiles: Profile[];
+    accounts?: Account[];
   };
   errors: string[];
   path: string;

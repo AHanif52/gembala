@@ -22,7 +22,7 @@
   import { cleanTitle } from "$lib/label";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
-  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean };
+  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string> }; // FR-61: akun bawaan per agent
   /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
   type Meta = {
     profile: string;
@@ -37,12 +37,15 @@
     output?: boolean; // FR-56: ada output sesi agent sebelumnya
     since?: number; // FR-40: kapan proses di pane shell mulai jalan
     sig?: string; // FR-51: sidik profil saat pane dibuat
-    prev?: { profile: string; agent: string; session?: string }; // FR-45: agent pane lama yang bisa dilanjutkan
+    prev?: { profile: string; agent: string; session?: string; acct?: string }; // FR-45: agent pane lama yang bisa dilanjutkan
     zoom?: number; // FR-34: zoom pane ini di atas zoom global
     policy?: string; // SEC-5
     readable?: boolean; // SEC-21
     from?: { boot: string; pane: number }; // FR-62: pane lama (daemon sebelumnya) untuk riwayat blok
     ended?: { resume: string | null }; // FR-56: blok agent selesai dengan tombol, hilang saat proses baru jalan
+    acct?: string; // FR-61: id akun yang dipilih saat pane dibuat (dipakai lagi saat dijalankan ulang)
+    accountName?: string; // FR-61: nama akun dari daemon untuk chip; kosong = Utama
+    login?: string; // FR-61: kartu "masuk ke akun …" setelah tombol Login
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: titik status + keterangan teks, tidak hanya warna (bagian 11 BRD)
@@ -76,7 +79,7 @@
   let zoom = $state(0); // FR-34 ⌘=/⌘- sementara di atas ukuran config; ponytail: zoom per pane menyusul
   let cfg = $state<Config | null>(null);
   let settingsOpen = $state(false);
-  let picker = $state<{ items: (Profile & { missing: boolean })[]; sel: number } | null>(null);
+  let picker = $state<{ items: (Profile & { missing: boolean; key: string; label: string; account?: string })[]; sel: number } | null>(null);
   let sidebar = $state(true);
   let sideW = $state(220); // FR-52: lebar sidebar, disimpan di layout
   let pal = $state<{ q: string; sel: number; keys: [string, string, string][] } | null>(null); // FR-39 palet
@@ -173,7 +176,7 @@
   async function swapToProfile(old: number, profile: string) {
     const m = meta[old];
     if (!m) return;
-    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old) });
+    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account: m.acct });
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {
@@ -453,8 +456,11 @@
     const agent = cfg?.values.profiles.find((p) => p.id === profile)?.agent ?? "shell";
     // FR-53: Claude Code menerima id sesi dari luar; dipakai lagi saat pane dijalankan ulang
     const session = (opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined);
-    const r = await call("pane.create", { workspace: ws?.id, ...opts, session });
-    meta[r.pane] = { profile, cwd: null, agent, name: r.name, session, sig: sig(profile) };
+    // FR-61, C-9: akun = pilihan saat membuka (atau akun pane yang dijalankan ulang) > akun bawaan workspace > profil/Utama (daemon)
+    const w = wss.find((x) => x.id === ((opts.workspace as string) ?? ws?.id));
+    const acct = (opts.account as string | undefined) || w?.accounts?.[agent] || undefined;
+    const r = await call("pane.create", { workspace: ws?.id, ...opts, session, account: acct });
+    meta[r.pane] = { profile, cwd: null, agent, name: r.name, session, sig: sig(profile), acct };
     return r.pane;
   }
 
@@ -475,6 +481,7 @@
       cwd: m.cwd ?? undefined,
       session: m.session,
       resume: AGENTS.includes(m.agent),
+      account: m.acct,
     });
     for (const w of wss)
       for (const t of w.tabs)
@@ -530,13 +537,14 @@
 
   const quote = (p: string) => `'${p.replaceAll("'", "'\\''")}'`;
 
-  async function newTab(profile?: string, wi = at.ws) {
+  async function newTab(profile?: string, wi = at.ws, account?: string): Promise<number> {
     const w = wss[wi];
     const from = wi === at.ws ? tab?.focus : undefined;
-    const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined, workspace: w.id });
+    const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined, workspace: w.id, account });
     w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id });
     at = { ws: wi, tab: w.tabs.length - 1 };
     zoomed = false;
+    return id;
   }
 
   async function splitFocused(dir: Dir) {
@@ -605,8 +613,9 @@
       resume: !shell && AGENTS.includes(m?.agent ?? ""), // FR-53: lanjutkan percakapan pane ini
       workspace: wsIdOf(old),
       history: m?.from, // FR-62
+      account: shell ? undefined : m?.acct,
     });
-    if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session };
+    if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session, acct: m.acct };
     if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: kartu sesi selesai ikut ke shell pengganti
     // FR-68: agent yang diketik ikut berhenti bersama daemon = kartu lanjut dari id sesinya (perintah lolos pola aman)
     else if (shell && m && !AGENTS.includes(m.agent) && m.busy && m.session) {
@@ -682,13 +691,27 @@
   async function openPicker() {
     const agents: Agent[] = await call("agents.detect", {}).catch(() => []);
     const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
-    picker = { items: (cfg?.values.profiles ?? []).map((p) => ({ ...p, missing: missing.has(p.agent) })), sel: 0 };
+    const accs = cfg?.values.accounts ?? [];
+    // FR-61: satu baris per akun bila agent itu punya akun selain Utama
+    const items = (cfg?.values.profiles ?? []).flatMap((p) => {
+      const own = accs.filter((a) => a.agent === p.agent);
+      const base = { ...p, missing: missing.has(p.agent), key: p.id, label: p.name, account: undefined as string | undefined };
+      return own.length ? [{ id: "utama", name: "Utama" }, ...own].map((a) => ({ ...base, key: `${p.id}:${a.id}`, label: `${p.name} · ${a.name}`, account: a.id })) : [base];
+    });
+    picker = { items, sel: 0 };
   }
 
   function pick(i: number) {
     const p = picker?.items[i];
     picker = null;
-    if (p) newTab(p.id === "shell" ? undefined : p.id);
+    if (p) newTab(p.id === "shell" ? undefined : p.id, at.ws, p.account);
+  }
+
+  /// FR-61: tombol Login = pane baru dengan akun itu + kartu petunjuk; Gembala tidak mengetik apa pun ke terminal
+  async function loginAccount(id: string, name: string) {
+    settingsOpen = false;
+    const pane = await newTab("claude", at.ws, id);
+    if (meta[pane]) meta[pane].login = name;
   }
 
   async function openLink() {
@@ -875,6 +898,15 @@
     popup(e, [
       ["Ganti nama", () => (editing = { kind: "ws", id: w.id, value: w.name })],
       ["Ganti folder…", () => changeRoot(w)],
+      // FR-61: akun Claude bawaan pane baru di workspace ini (pilihan manusia, C-9)
+      ...((cfg?.values.accounts ?? []).some((a) => a.agent === "claude")
+        ? [
+            "-" as MItem,
+            ...[{ id: "utama", name: "Utama" }, ...(cfg?.values.accounts ?? []).filter((a) => a.agent === "claude")].map(
+              (a): MItem => [`${(w.accounts?.claude ?? "utama") === a.id ? "✓ " : ""}Akun Claude bawaan: ${a.name}`, () => void (w.accounts = { ...w.accounts, claude: a.id })],
+            ),
+          ]
+        : []),
       [w.collapsed ? "Buka" : "Ciutkan", () => (w.collapsed = !w.collapsed)],
       "-",
       ["Hapus workspace", () => askRemoveWorkspace(wss.indexOf(w)), wss.length > 1],
@@ -1154,6 +1186,8 @@
         name: String(w.name ?? "workspace").slice(0, 60),
         root: String(w.root ?? "~").slice(0, 500),
         collapsed: w.collapsed === true,
+        // FR-61: hanya id akun yang sah (dicocokkan lagi oleh daemon saat membuka pane)
+        accounts: Object.fromEntries(Object.entries(w.accounts ?? {}).filter(([k, v]) => /^[a-z]+$/.test(k) && typeof v === "string" && /^[a-z0-9-]{1,32}$/.test(v))),
         tabs: w.tabs
           .filter((t: any) => typeof t?.id === "string" && valid(t.tree))
           .map((t: any) => ({
@@ -1338,6 +1372,7 @@
       if (meta[p].policy !== i.policy) meta[p].policy = i.policy;
       if (meta[p].readable !== i.readable) meta[p].readable = i.readable;
       if (i.session && meta[p].session !== i.session) meta[p].session = i.session; // FR-68
+      if ((i.account ?? "") !== (meta[p].accountName ?? "")) meta[p].accountName = i.account || undefined; // FR-61
     }
   }
 
@@ -1677,6 +1712,14 @@
                 {/if}
               </div>
             {/if}
+            {#if meta[pane]?.login}
+              <!-- FR-61: Gembala tidak mengetik apa pun; login dilakukan pengguna di Claude Code pane ini -->
+              <div class="ended" class:withhead={head} role="status">
+                <span class="etitle">Masuk ke akun {meta[pane].login}: ikuti langkah login di pane ini, atau ketik <code>/login</code></span>
+                <span class="grow"></span>
+                <button class="hb" aria-label="Tutup" onclick={() => delete meta[pane].login}>×</button>
+              </div>
+            {/if}
             {#if meta[pane]?.ended}
               {@const resume = meta[pane].ended.resume}
               <!-- FR-56: blok agent selesai dengan tombol; hilang saat proses baru jalan atau ditutup -->
@@ -1702,6 +1745,7 @@
                 {:else}
                   <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
                 {/if}
+                {#if meta[pane]?.accountName}<span class="chip acc" title="Akun Claude Code (FR-61)">{meta[pane].accountName}</span>{/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
                 {#if meta[pane]?.prev}<button class="chip" onclick={() => resumePrev(pane)}>Lanjutkan sesi {meta[pane].prev.agent}</button>{/if}
@@ -1885,10 +1929,10 @@
   {/if}
   {#if picker}
     <div class="confirm picker" role="listbox" aria-label="Pane baru dari profil">
-      {#each picker.items as p, i (p.id)}
+      {#each picker.items as p, i (p.key)}
         <button class="opt" class:on={i === picker.sel} role="option" aria-selected={i === picker.sel} onclick={() => pick(i)}>
           <span class="num">{i < 9 ? i + 1 : ""}</span>
-          <span>{p.name}</span>
+          <span>{p.label}</span>
           <span class="keys">{p.missing ? "tidak terpasang" : p.command || "$SHELL"}</span>
         </button>
       {/each}
@@ -1896,7 +1940,7 @@
     </div>
   {/if}
   {#if settingsOpen && cfg}
-    <Settings {cfg} {meta} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} />
+    <Settings {cfg} {meta} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
   {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
   <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
@@ -2602,6 +2646,11 @@
     color: var(--muted);
     font: inherit;
     white-space: nowrap;
+  }
+  /* FR-61: nama akun pane */
+  .chip.acc {
+    border: 1px solid rgba(59, 130, 246, 0.5);
+    color: #93c5fd;
   }
   /* chip berbingkai + ikon ala toolbar CLI agent Warp */
   .chip.box {

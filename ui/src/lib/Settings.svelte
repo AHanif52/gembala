@@ -5,17 +5,53 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { call } from "./daemon";
-  import { pretty, type Agent, type Config, type Profile, type Ui } from "./config";
+  import { pretty, type Account, type Agent, type Config, type Profile, type Ui } from "./config";
 
   let {
     cfg,
     meta,
     onclose,
     onquitall,
-  }: { cfg: Config; meta: Record<number, { name: string; agent: string; profile: string; status?: string }>; onclose: () => void; onquitall: () => void } = $props();
+    onlogin,
+  }: {
+    cfg: Config;
+    meta: Record<number, { name: string; agent: string; profile: string; status?: string }>;
+    onclose: () => void;
+    onquitall: () => void;
+    onlogin: (id: string, name: string) => void; // FR-61: buka pane akun itu untuk login
+  } = $props();
+
+  // FR-61: akun Claude Code (folder config sendiri lewat CLAUDE_CONFIG_DIR); Utama selalu ada
+  type AccRow = { account: Account & { main?: boolean }; status: { used: boolean; email: string | null } };
+  const SHARE_DEFAULT = ["CLAUDE.md", "settings.json", "skills", "commands", "agents", "plugins"];
+  let accRows = $state<AccRow[]>([]);
+  let shareOpts = $state<string[]>([]);
+  let accForm = $state({ name: "", dir: "", share: [...SHARE_DEFAULT], error: "", info: "" });
+  let removeAsk = $state("");
+  const slug = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32);
+  async function loadAccounts() {
+    const r = await call("account.list", {}).catch(() => null);
+    if (r) [accRows, shareOpts] = [r.accounts, r.share];
+  }
+  $effect(() => {
+    void cfg.values.accounts; // muat ulang saat config berubah
+    loadAccounts();
+  });
+  async function createAccount() {
+    const r = await call("account.create", { name: accForm.name.trim(), dir: accForm.dir.trim() || undefined, share: accForm.share }).catch((e) => ({ error: String(e) }));
+    if (r.error && !r.id) return void (accForm.error = r.error);
+    accForm = { name: "", dir: "", share: [...SHARE_DEFAULT], error: r.error ?? "", info: r.skipped?.length ? `Sudah ada, tidak ditimpa: ${r.skipped.join(", ")}` : "" };
+    loadAccounts();
+  }
+  async function removeAccount(id: string) {
+    if (removeAsk !== id) return void (removeAsk = id);
+    removeAsk = "";
+    await call("account.remove", { id }).catch(() => {});
+    loadAccounts();
+  }
   let daemon = $state<{ daemon: string; proto: number } | null>(null);
   // FR-29: ubah profil dari layar; satu baris = satu argumen / satu env
-  type Form = { id: string; name: string; command: string; args: string; cwd: string; env: string; secret: string; summarize: boolean; notify: boolean; permission: string; isNew: boolean };
+  type Form = { id: string; name: string; agent: string; command: string; args: string; cwd: string; env: string; secret: string; summarize: boolean; notify: boolean; permission: string; account: string; isNew: boolean };
   let form = $state<Form | null>(null);
   const BUILTIN = ["shell", "claude", "codex", "opencode", "omp"];
 
@@ -25,6 +61,8 @@
     form = {
       id,
       name: copy ? `${p.name} ${id.split("-").at(-1)}` : p.name,
+      agent: p.agent,
+      account: p.account ?? "",
       command: p.command,
       args: p.args.join("\n"),
       cwd: p.cwd,
@@ -56,6 +94,7 @@
       summarize: form.summarize,
       notify: form.notify,
       permission: form.permission,
+      account: form.account,
     };
     const r = await call("profile.save", { profile }).catch((e) => ({ error: String(e) }));
     if (r.error) failed = r.error;
@@ -229,6 +268,10 @@
       <label>Rujukan rahasia <small>NAMA=op://vault/item/field atau NAMA=keychain:service/akun</small><textarea bind:value={form.secret} rows="2" spellcheck="false"></textarea></label>
       <label>Mode izin agent <small>Gembala hanya menambah flag launch; izin tetap dijaga agent. OpenCode: belum ada flag, tidak berpengaruh.</small>
         <select bind:value={form.permission}><option value="default">Bawaan agent (tanya dulu)</option><option value="auto">Auto (claude --permission-mode auto, omp --approval-mode=yolo, codex -a never)</option></select></label>
+      {#if form.agent === "claude" && cfg.values.accounts?.length}
+        <label>Akun bawaan <small>Dipakai bila tidak dipilih lain saat membuka pane (FR-61)</small>
+          <select bind:value={form.account}><option value="">Utama</option>{#each cfg.values.accounts.filter((a) => a.agent === "claude") as a (a.id)}<option value={a.id}>{a.name}</option>{/each}</select></label>
+      {/if}
       <label class="inline"><input type="checkbox" bind:checked={form.summarize} /> Ringkas output saat agent keluar</label>
       <label class="inline"><input type="checkbox" bind:checked={form.notify} /> Notifikasi untuk pane dari profil ini</label>
       <span class="acts"><button class="mini" onclick={() => (form = null)}>Batal</button> <button class="mini" onclick={saveForm}>Simpan</button></span>
@@ -373,6 +416,35 @@
           <div class="row">
             <span>Periksa ulang<small>Mencari agent lewat login shell, sama dengan terminal biasa</small></span>
             <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? "Memeriksa…" : "Periksa"}</button>
+          </div>
+        </section>
+        <h4>Akun Claude Code</h4>
+        <section>
+          {#each accRows as r (r.account.id)}
+            <div class="row">
+              <span class="grow"
+                >{r.account.name}{r.account.main ? " · bawaan" : ""}<small
+                  >{r.status.email ?? (r.status.used ? "email tidak terbaca" : "belum login")} · {r.account.dir}{r.account.share?.length
+                    ? ` · bawa dari Utama: ${r.account.share.join(", ")}`
+                    : ""}</small
+                ></span
+              >
+              <span class="acts">
+                {#if !r.status.used}<button class="mini" onclick={() => onlogin(r.account.id, r.account.name)}>Login</button>{/if}
+                {#if !r.account.main}<button class="mini" onclick={() => removeAccount(r.account.id)}>{removeAsk === r.account.id ? "Yakin hapus? Folder tetap" : "Hapus"}</button>{/if}
+              </span>
+            </div>
+          {/each}
+          <div class="form">
+            <label>Tambah akun · nama <input bind:value={accForm.name} placeholder="mis. Kantor" /></label>
+            <label>Folder <small>Di bawah folder home; dibuat dengan izin 0700</small><input bind:value={accForm.dir} placeholder={`~/.claude-${slug(accForm.name) || "nama"}`} spellcheck="false" /></label>
+            <span class="lbl">Bawa dari Utama <small>Tautan, bukan salinan. Login, token, dan MCP pengguna tidak pernah dibawa; MCP diatur per akun (claude mcp add di pane akun itu) atau per proyek lewat .mcp.json</small></span>
+            {#each shareOpts as s (s)}
+              <label class="inline"><input type="checkbox" checked={accForm.share.includes(s)} onchange={(e) => (accForm.share = e.currentTarget.checked ? [...accForm.share, s] : accForm.share.filter((x) => x !== s))} /> {s === "projects" ? "projects (memori + riwayat sesi)" : s}</label>
+            {/each}
+            {#if accForm.error}<span class="m err" role="alert">{accForm.error}</span>{/if}
+            {#if accForm.info}<span class="m">{accForm.info}</span>{/if}
+            <span class="acts"><button class="mini" disabled={!accForm.name.trim()} onclick={createAccount}>Buat akun</button></span>
           </div>
         </section>
         <h4>Profil</h4>
@@ -816,6 +888,17 @@
     gap: 4px;
     font-size: 12px;
     color: var(--muted);
+  }
+  .form .lbl {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .form .lbl small,
+  .form label small {
+    display: block;
+  }
+  .err {
+    color: #ef4444;
   }
   .form label.inline {
     display: flex;
