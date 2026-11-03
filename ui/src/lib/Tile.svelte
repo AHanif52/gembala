@@ -252,7 +252,7 @@
         const rh = rowHeight();
         (el.querySelector(".tl-dot") as HTMLElement).style.top = `${rh / 2 - 5}px`;
         const acts = el.querySelector(".tl-acts") as HTMLElement;
-        acts.style.top = `${rh - 11}px`;
+        acts.style.top = `${rh / 2 - 11}px`; // tombol sejajar baris kepala (folder · durasi)
         const btn = (label: string, cls: string, run: () => void) => {
           const b = Object.assign(document.createElement("button"), { textContent: label, className: cls });
           b.addEventListener("mousedown", (e) => e.preventDefault());

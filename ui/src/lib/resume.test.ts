@@ -6,6 +6,7 @@ import { safeResume } from "./resume.ts";
 test("perintah lanjut dari daemon lolos", () => {
   for (const c of [
     "claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb",
+    "claude-kantor --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb",
     "codex resume 01a19b1c-2cfb-7290-b33f-af39083bb39b",
     "codex resume --last",
     "opencode --continue",

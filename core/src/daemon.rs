@@ -1617,7 +1617,13 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let cmd = msg::sanitize(cmd).unwrap_or_default();
     let text = history::block_text(&cwd, secs, code, &cmd, resume.as_deref());
     // FR-62: blok agent manual (dari penanda zsh) mendapat perintah lanjutnya; agent dari profil jadi blok sendiri
-    let blk = match pane.block.lock().unwrap().1.take() {
+    // blok shell yang belum selesai (agent keluar terdeteksi sebelum penanda D) ikut dipakai, supaya penanda D yang
+    // datang sesudahnya tidak mencatat blok kedua tanpa perintah lanjut
+    let open = {
+        let mut b = pane.block.lock().unwrap();
+        b.1.take().or_else(|| b.0.take().map(|(blk, at)| history::Block { secs: at.elapsed().as_secs(), ..blk }))
+    };
+    let blk = match open {
         Some(b) => history::Block { resume: resume.clone(), ..b },
         None => history::Block { t: history::now() - secs, cwd, cmd, code: code.parse().unwrap_or_default(), secs, resume: resume.clone() },
     };

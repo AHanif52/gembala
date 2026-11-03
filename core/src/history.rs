@@ -91,7 +91,7 @@ pub fn append(file: &Path, b: &Block) {
 fn safe_resume(r: &str) -> bool {
     const UUID: &str = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
     regex_lite::Regex::new(&format!(
-        "^(claude --resume {UUID}|codex resume ({UUID}|--last)|opencode --continue|opencode --session [A-Za-z0-9_-]{{1,80}}|omp --continue|omp --resume [A-Za-z0-9-]{{1,80}})$"
+        "^(claude(-[a-z0-9-]{{1,32}})? --resume {UUID}|codex resume ({UUID}|--last)|opencode --continue|opencode --session [A-Za-z0-9_-]{{1,80}}|omp --continue|omp --resume [A-Za-z0-9-]{{1,80}})$"
     ))
     .is_ok_and(|re| re.is_match(r))
 }
@@ -225,6 +225,8 @@ mod tests {
     fn perintah_lanjut_dari_file_disaring() {
         assert!(safe_resume("claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb"));
         assert!(safe_resume("omp --continue"));
+        assert!(safe_resume("claude-kantor --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb"));
+        assert!(!safe_resume("claude-x;id --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb"));
         assert!(!safe_resume("claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb; rm -rf ~"));
         assert!(!safe_resume("bash -c id"));
     }
