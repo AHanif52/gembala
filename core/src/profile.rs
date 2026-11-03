@@ -212,7 +212,8 @@ fn claude_permission(payload: &str) -> bool {
 
 /// Teks di layar yang berarti agent menunggu jawaban manusia (huruf kecil).
 // FR-68: dialog persetujuan Codex ("Would you like to run/make the following …")
-const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to", "would you like to run", "would you like to make", "approve", "allow once", "permission to"];
+// hanya kalimat khas dialog: kata lepas seperti "approve" juga muncul di jawaban agent ("approve kalau muncul") = butuh izin palsu
+const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to proceed", "do you want to make", "do you want to create", "would you like to run", "would you like to make", "allow once", "allow tool:"];
 
 /// FR-4 cadangan: status dari layar untuk agent tanpa hook. `tail` = beberapa baris terbawah layar,
 /// `quiet` = lama tanpa output, `prev` = status sebelumnya.
@@ -760,6 +761,10 @@ mod tests {
         assert_eq!(s("selesai", 4000, "working"), "done");
         assert_eq!(s("selesai", 4000, "idle"), "idle");
         assert_eq!(s("Do you want to proceed?", 100, "working"), "blocked");
+        assert_eq!(s("Allow tool: bash\n❯ Approve\n  Deny", 100, "working"), "blocked");
+        // jawaban agent yang menyebut approve/izin bukan dialog
+        assert_eq!(s("psql bakal minta izin di shell-2, jadi approve kalau muncul", 4000, "working"), "done");
+        assert_eq!(s("needs permission to write", 4000, "done"), "done");
     }
 
     #[test]
