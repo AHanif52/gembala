@@ -2767,7 +2767,10 @@
     visibility: hidden;
   }
   .tile:hover .bar.rest > *,
-  .bar.rest:focus-within > * {
+  .bar.rest:focus-within > *,
+  /* nama pane dan akun (FR-61) selalu tampil: pane sebelah tetap jelas siapa dan pakai akun apa */
+  .bar.rest > .pname,
+  .bar.rest > .acc {
     visibility: visible;
   }
   /* FR-56: blok agent selesai */
