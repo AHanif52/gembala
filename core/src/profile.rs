@@ -330,8 +330,26 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
         "function claude {{ if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
          function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c {notify} -c \"$(<{f}.codex)\" \"$@\" }}\n\
-         function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command opencode \"$@\" }}\n"
+         function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command opencode \"$@\" }}\n\
+         [[ -f {acc} ]] && builtin source {acc}\n",
+        acc = q(&dir.join("accounts.zsh").to_string_lossy())
     )
+}
+
+/// FR-61: `claude-<akun>` di pane shell = `claude` (dengan hook di atas) memakai folder akun itu.
+/// Ditulis ulang daemon tiap config dimuat, jadi akun baru ada di pane yang dibuka sesudahnya.
+pub fn zsh_accounts(accounts: &[crate::account::Account]) -> String {
+    let mut s = String::from("# dibuat Gembala (FR-61): satu perintah per akun agent\n");
+    for a in accounts.iter().filter(|a| a.agent == "claude") {
+        let (k, v) = crate::account::env(a);
+        s += &format!("function claude-{} {{ {k}={} claude \"$@\" }}\n", a.id, home_q(&v));
+    }
+    s
+}
+
+/// `~/…` di luar kutip supaya jadi folder home
+pub fn home_q(v: &str) -> String {
+    v.strip_prefix("~/").map_or_else(|| q(v), |rest| format!("\"$HOME\"/{}", q(rest)))
 }
 
 const ZSH_RESTORE: &str = "ZDOTDIR=$GEMBALA_USER_ZDOTDIR\n[[ -f \"$ZDOTDIR/.zlogin\" ]] && builtin source \"$ZDOTDIR/.zlogin\"\n\
@@ -469,8 +487,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
     }
     for (k, v) in p.env.iter().chain(&hook_env) {
         // `~/…` di luar kutip supaya jadi folder home (mis. CLAUDE_CONFIG_DIR per akun)
-        let v = v.strip_prefix("~/").map_or_else(|| q(v), |rest| format!("\"$HOME\"/{}", q(rest)));
-        s += &format!("export {k}={v}; ");
+        s += &format!("export {k}={}; ", home_q(v));
     }
     for (k, r) in &p.secret_env {
         // rahasia dibuka shell pane; nilainya tidak pernah lewat daemon (SEC-32)
@@ -773,5 +790,16 @@ mod tests {
         assert_eq!(version_of("codex-cli 0.149.0").as_deref(), Some("0.149.0"));
         assert_eq!(version_of("omp/18.13.3").as_deref(), Some("18.13.3"));
         assert_eq!(version_of("tanpa versi"), None);
+    }
+
+    #[test]
+    fn claude_per_akun_di_shell() {
+        let a = |id: &str, agent: &str, dir: &str| crate::account::Account { id: id.into(), agent: agent.into(), name: id.into(), dir: dir.into(), share: vec![] };
+        let rc = zsh_accounts(&[a("kantor", "claude", "~/.claude-kantor"), a("x", "codex", "~/.codex-x")]);
+        assert!(!rc.contains("claude-x"), "{rc}");
+        // fungsi `claude` (hook) menerima folder akun lewat env yang sampai ke proses anak
+        let script = format!("function claude {{ command env | grep '^CLAUDE_CONFIG_DIR=' }}\n{rc}claude-kantor --versi");
+        let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).env("HOME", "/rumah").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "CLAUDE_CONFIG_DIR=/rumah/.claude-kantor", "{rc}");
     }
 }

@@ -175,12 +175,21 @@
   // FR-59: panel "Mulai" di pane shell yang belum menjalankan apa pun
   let ran = $state<Record<number, boolean>>({});
   let installed = $state<string[]>([]); // agent terpasang (agents.detect), diisi saat app dibuka
-  const startProfiles = $derived((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell" && installed.includes(p.agent)));
+  // FR-61: satu tombol per akun bila agent itu punya akun selain Utama (seperti palet)
+  const startProfiles = $derived(
+    (cfg?.values.profiles ?? [])
+      .filter((p) => p.agent !== "shell" && installed.includes(p.agent))
+      .flatMap((p) => {
+        const own = (cfg?.values.accounts ?? []).filter((a) => a.agent === p.agent);
+        const base = { ...p, key: p.id, label: p.name, account: undefined as string | undefined };
+        return own.length ? [{ id: "utama", name: "Utama" }, ...own].map((a) => ({ ...base, key: `${p.id}:${a.id}`, label: `${p.name} · ${a.name}`, account: a.id })) : [base];
+      }),
+  );
   /// pane shell diganti pane profil di posisi yang sama (agent jalan dengan hook resmi, FR-4)
-  async function swapToProfile(old: number, profile: string) {
+  async function swapToProfile(old: number, profile: string, account?: string) {
     const m = meta[old];
     if (!m) return;
-    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account: m.acct });
+    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account });
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {
@@ -433,7 +442,8 @@
     const session = (opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined);
     // FR-61, C-9: akun = pilihan saat membuka (atau akun pane yang dijalankan ulang) > akun bawaan workspace > profil/Utama (daemon)
     const w = wss.find((x) => x.id === ((opts.workspace as string) ?? ws?.id));
-    const acct = (opts.account as string | undefined) || w?.accounts?.[agent] || undefined;
+    // pane shell ikut akun Claude bawaan workspace: `claude` yang diketik memakai akun itu
+    const acct = (opts.account as string | undefined) || w?.accounts?.[agent === "shell" ? "claude" : agent] || undefined;
     const r = await call("pane.create", { workspace: ws?.id, ...opts, session, account: acct });
     meta[r.pane] = { profile, cwd: null, agent, name: r.name, session, sig: sig(profile), acct };
     return r.pane;
@@ -1655,8 +1665,8 @@
               <div class="start" class:withhead={head}>
                 <span class="m">Mulai di {home(meta[pane]?.cwd) || "~"}</span>
                 <div class="starts">
-                  {#each startProfiles as p (p.id)}
-                    <button class="sbtn" onclick={() => swapToProfile(pane, p.id)}><span class="aico {p.agent}">{GLYPH[p.agent] ?? "›"}</span>{p.name}</button>
+                  {#each startProfiles as p (p.key)}
+                    <button class="sbtn" onclick={() => swapToProfile(pane, p.id, p.account)}><span class="aico {p.agent}">{GLYPH[p.agent] ?? "›"}</span>{p.label}</button>
                   {/each}
                   <button class="sbtn" onclick={() => startInFolder(pane)}>{@render icon("folder")} Buka folder…</button>
                 </div>

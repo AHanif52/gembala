@@ -579,9 +579,18 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 None => None,
             };
             // FR-61, C-9: akun = pilihan manusia saat membuka pane (UI, termasuk bawaan workspace) > akun profil > Utama
+            // pane shell: akun bawaan workspace dipasang ke env shell, jadi `claude` yang diketik ikut akun itu
+            let mut shell_acct = None;
             let acct_name = match prof.as_mut() {
                 Some(pr) => account::apply(pr, p["account"].as_str(), &st.accounts.lock().unwrap())?,
-                None => String::new(),
+                None => match p["account"].as_str().filter(|a| !a.is_empty() && *a != "utama") {
+                    Some(id) => {
+                        let a = st.accounts.lock().unwrap().iter().find(|a| a.id == id && a.agent == "claude").cloned().ok_or("no_such_account")?;
+                        shell_acct = Some(account::env(&a));
+                        a.name
+                    }
+                    None => String::new(),
+                },
             };
             let session = profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) };
             let launch = prof.as_ref().and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
@@ -618,6 +627,10 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             if let Some(t) = &token {
                 env.push(("GEMBALA_TOKEN", t.as_str()));
+            }
+            let acct_dir = shell_acct.as_ref().map(|(_, v)| v.strip_prefix("~/").map_or_else(|| v.clone(), |rest| format!("{home}/{rest}")));
+            if let (Some((k, _)), Some(d)) = (&shell_acct, &acct_dir) {
+                env.push((k.as_str(), d.as_str()));
             }
             let pty = Pty::spawn(cmd, rows, cols, &env, cwd.as_deref()).map_err(|_| "spawn_failed")?;
             let id = st.next.fetch_add(1, Ordering::Relaxed);
@@ -1208,6 +1221,9 @@ fn reload_config(st: &State) {
     let mut cur = st.config.lock().unwrap();
     let values = if c.broken && !cur.is_null() { cur["values"].clone() } else { c.values };
     if !c.broken {
+        if let Err(e) = config::write_atomic(&st.hooks.dir.join("accounts.zsh"), profile::zsh_accounts(&c.accounts).as_bytes()) {
+            eprintln!("gembala daemon: tulis accounts.zsh: {e}");
+        }
         *st.profiles.lock().unwrap() = c.profiles;
         *st.accounts.lock().unwrap() = c.accounts;
     }
