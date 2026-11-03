@@ -22,7 +22,6 @@
     onlink,
     onpasted,
     online,
-    onsubmit,
     onkey,
     onprompt,
     ontype,
@@ -38,7 +37,6 @@
     onlink: (url: string) => void;
     onpasted: (path: string) => void;
     online: (line: string) => void; // FR-57: teks yang diketik sejak Enter terakhir
-    onsubmit: (line: string) => void; // FR-57: baris itu dikirim dengan Enter (meneruskan @nama)
     onkey: (key: string) => boolean; // FR-57: true = tombol dipakai daftar @, tidak diteruskan ke terminal
     onprompt: (at: boolean) => void; // FR-59: shell menunggu di prompt (penanda OSC 133 B sampai C)
     ontype: (text: string) => boolean; // FR-59: true = huruf diambil input editor, tidak diteruskan ke shell
@@ -123,7 +121,6 @@
   /// ponytail: tidak tahu isi prompt TUI sebenarnya; cukup untuk mengenali `@` di awal baris baru
   let line = "";
   function track(d: string) {
-    if (d.includes("\r") && line.trim()) onsubmit(line);
     if (d === "\x7f") line = line.slice(0, -1);
     else if (/[\x00-\x1f]/.test(d)) line = "";
     else line += d;

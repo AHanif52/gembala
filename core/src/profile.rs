@@ -229,7 +229,7 @@ test result), longer only if the sender asked; label `[Gembala · dari pengguna]
 answer on screen. The recipient cannot see your conversation: write every send as a full handover (goal, context and user decisions, \
 files/paths, what was tried or is forbidden, constraints, reply format), never a one-line summary; multi-line is fine. \
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. \
-When a user prompt names panes as `@<pane>`, Gembala has already forwarded that prompt to them: do not send it again unless asked. Do not look for processes via ps.";
+A user prompt naming panes as `@<pane>` = send each of them that full handover yourself with `gembala send`; never the prompt verbatim. Do not look for processes via ps.";
 
 /// FR-56: perintah agent manual untuk blok ringkas, tanpa flag sisipan Gembala (petunjuk, hook) yang
 /// ditambah fungsi zsh: yang tampil cukup yang diketik pengguna.

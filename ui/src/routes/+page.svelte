@@ -333,37 +333,6 @@
     // selalu lengkapi nama: Gembala tidak tahu pasti isi baris prompt TUI, jadi "awal baris" tidak bisa diandalkan
     mention = m ? { pane, q: m[1], sel: 0, inline: true } : null;
   }
-  /// FR-57: Enter di prompt agent yang menyebut @nama pane lain (workspace sama) = Gembala meneruskan baris itu
-  /// sebagai pesan pengguna; target yang sedang bekerja dicoba lagi tiap poll sampai 10 menit
-  let forwards: { to: number; body: string; until: number }[] = [];
-  function onSubmit(pane: number, line: string) {
-    if (!AGENTS.includes(agentOf(pane) || meta[pane]?.agent || "")) return;
-    const ws = wsIdOf(pane);
-    const names = new Set([...line.matchAll(/(?:^|\s)@([\w.-]+)/g)].map((m) => m[1]));
-    for (const name of names) {
-      const to = Object.keys(meta).map(Number).find((p) => p !== pane && !dead[p] && meta[p]?.name === name && wsIdOf(p) === ws);
-      if (to !== undefined) forwards.push({ to, body: `${line.trim()}\n\n(diteruskan Gembala dari prompt ${meta[pane]?.name})`, until: Date.now() + 600_000 });
-    }
-    flushForwards();
-  }
-  let flushing = false;
-  async function flushForwards() {
-    if (flushing || !forwards.length) return;
-    flushing = true;
-    const rest: typeof forwards = [];
-    for (const f of forwards) {
-      try {
-        await call("msg.send", { to: f.to, body: f.body, force: false });
-        say(`Diteruskan ke ${meta[f.to]?.name ?? "agent"}`);
-      } catch (e) {
-        if ((e === "target_busy" || e === "target_blocked") && Date.now() < f.until && meta[f.to] && !dead[f.to]) rest.push(f);
-        else say(`Gagal meneruskan ke ${meta[f.to]?.name ?? "agent"}: ${e}`);
-      }
-    }
-    forwards = rest;
-    flushing = false;
-    refreshMsgs();
-  }
   function onMentionKey(pane: number, key: string): boolean {
     if (!mention || mention.pane !== pane || !mentionItems.length) return false;
     const n = mentionItems.length;
@@ -393,7 +362,7 @@
       const picked = mention.picked ?? [];
       const text = picked.length ? `@${r.name} ` : "\x7f".repeat(q.length + 1) + r.name + " ";
       call("pane.write", { pane, data: b64(new TextEncoder().encode(text)) });
-      // baris yang dilacak ikut berubah, supaya Enter nanti tahu @nama yang dipilih (diteruskan, onSubmit)
+      // baris yang dilacak ikut berubah, supaya daftar @@ berikutnya membaca teks yang benar
       tiles[pane]?.setLine((l) => (picked.length ? l : l.slice(0, -(q.length + 1))) + (picked.length ? text : `${r.name} `));
       // daftar tetap terbuka tanpa yang sudah dipilih: Tab/Enter tambah agent, Esc atau terus mengetik = tutup
       const next = [...picked, r.name];
@@ -1332,7 +1301,6 @@
   // folder dan proses tiap pane untuk judul tab, subjudul, dan ikon agent (FR-52)
   async function poll() {
     now = Date.now();
-    flushForwards();
     const ids = Object.keys(meta).map(Number).filter((p) => !dead[p]);
     for (const p of ids) {
       const i = await call("pane.info", { pane: p }).catch(() => null);
@@ -1523,13 +1491,13 @@
             <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama tab" />
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
-            <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{title(t)}</span>
+            <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{!t.title && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
             <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
             {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents].filter(Boolean).join(" · ")}
             {#if STATUS[st] || rest}
-              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot mini {stat(p) || 'idle'}" title="{meta[p]?.name} {STATUS[stat(p)] ?? 'diam'}"></span>{/each}{:else if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}
           {/if}
         </button>
@@ -1595,7 +1563,7 @@
             <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
               <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
-                online={(line: string) => onLine(pane, line)} onsubmit={(line: string) => onSubmit(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
+                online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
                 onused={() => (ran[pane] = true)}
                 onblock={(kind: string, text: string) => {
@@ -2257,6 +2225,19 @@
   .dot.working {
     background: #3b82f6;
     animation: pulse 1.4s ease-in-out infinite; /* FR-52: bekerja = berdenyut */
+  }
+  /* FR-52: tab beberapa pane = satu titik kecil per pane; pane diam = cincin */
+  .dot.mini {
+    width: 6px;
+    height: 6px;
+    margin-right: 3px;
+  }
+  .dot.mini:last-of-type {
+    margin-right: 7px;
+  }
+  .dot.idle {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--muted);
   }
   @keyframes pulse {
     50% {
