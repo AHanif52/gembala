@@ -112,7 +112,7 @@
         </details>
       {/if}
       {#if diff.truncated}<p class="m">Diff dipotong di 200 KB.</p>{/if}
-      <button class="mini" onclick={() => copy(diff?.diff ?? "", "Diff")}>Salin diff</button>
+      {#if diff.diff}<button class="mini" onclick={() => copy(diff?.diff ?? "", "Diff")}>Salin diff</button>{/if}
     {/if}
   </div>
 </aside>

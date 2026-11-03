@@ -586,6 +586,13 @@ fn version_of(raw: &str) -> Option<String> {
 
 pub fn run_with_timeout(mut c: Command, limit: Duration) -> Option<String> {
     let mut child = c.spawn().ok()?;
+    // stdout dibaca sambil menunggu: output di atas buffer pipe (~64 KB, mis. git diff besar) membuat proses
+    // menunggu dibaca, jadi baca-setelah-selesai selalu macet sampai batas waktu
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        stdout.read_to_string(&mut out).ok().map(|_| out)
+    });
     let t0 = Instant::now();
     while child.try_wait().ok()?.is_none() {
         if t0.elapsed() > limit {
@@ -593,11 +600,9 @@ pub fn run_with_timeout(mut c: Command, limit: Duration) -> Option<String> {
             let _ = child.wait();
             return None;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(20));
     }
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    Some(out)
+    reader.join().ok()?
 }
 
 #[cfg(test)]
@@ -791,6 +796,17 @@ mod tests {
         assert_eq!(version_of("codex-cli 0.149.0").as_deref(), Some("0.149.0"));
         assert_eq!(version_of("omp/18.13.3").as_deref(), Some("18.13.3"));
         assert_eq!(version_of("tanpa versi"), None);
+    }
+
+    #[test]
+    fn output_besar_tidak_macet() {
+        // 1 MB > buffer pipe: dulu macet sampai batas waktu lalu kosong (panel perubahan "Memuat…" lama)
+        let mut c = std::process::Command::new("/bin/sh");
+        c.args(["-c", "head -c 1048576 /dev/zero | tr '\\0' x"]).stdout(std::process::Stdio::piped());
+        let t0 = Instant::now();
+        let out = run_with_timeout(c, Duration::from_secs(3)).unwrap();
+        assert_eq!(out.len(), 1 << 20);
+        assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
     }
 
     #[test]
