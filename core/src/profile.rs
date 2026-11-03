@@ -453,6 +453,10 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
     flags.extend(session.map(|s| session_flags(&p.agent, s)).unwrap_or_default());
     // FR-56: penanda tak terlihat untuk daemon (OSC 777), mengapit output sesi agent
     let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
+    // PATH interaktif (sudah diambil detect saat daemon mulai), supaya agent yang hanya ada di PATH `.zshrc` ketemu
+    if let Some(path) = USER_PATH.get().cloned().flatten() {
+        s += &format!("export PATH={}:\"$PATH\"; ", q(&path));
+    }
     for (k, v) in p.env.iter().chain(&hook_env) {
         // `~/…` di luar kutip supaya jadi folder home (mis. CLAUDE_CONFIG_DIR per akun)
         let v = v.strip_prefix("~/").map_or_else(|| q(v), |rest| format!("\"$HOME\"/{}", q(rest)));
@@ -495,11 +499,31 @@ pub fn to_json(p: &Profile) -> Value {
     })
 }
 
+static USER_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// PATH shell login interaktif, seperti pane. Banyak pemasang hanya menambah PATH di `.zshrc`
+/// (Codex standalone: `~/.local/bin`), yang tidak dibaca `-l -c`. Diambil sekali per daemon.
+fn user_path() -> Option<String> {
+    USER_PATH
+        .get_or_init(|| {
+            let mut c = Command::new(crate::pty::login_shell());
+            c.args(["-l", "-i", "-c", "printf '\\n__GEMBALA_PATH__%s\\n' \"$PATH\""]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+            crate::pty::scrub_env(&mut c);
+            if let Some(home) = std::env::var_os("HOME") {
+                c.current_dir(home);
+            }
+            let out = run_with_timeout(c, Duration::from_secs(10))?;
+            out.lines().rev().find_map(|l| l.strip_prefix("__GEMBALA_PATH__")).filter(|p| !p.is_empty()).map(str::to_string)
+        })
+        .clone()
+}
+
 /// FR-28: cari agent lewat login shell (PATH sama dengan terminal biasa), batas 10 detik.
 pub fn detect() -> Value {
     let names: Vec<&str> = AGENTS.iter().map(|a| a.0).collect();
     let script = format!(
-        "for a in {}; do p=$(command -v \"$a\") && printf '%s\\t%s\\t%s\\n' \"$a\" \"$p\" \"$(\"$a\" --version 2>/dev/null | head -1)\"; done",
+        "{}for a in {}; do p=$(command -v \"$a\") && printf '%s\\t%s\\t%s\\n' \"$a\" \"$p\" \"$(\"$a\" --version 2>/dev/null | head -1)\"; done",
+        user_path().map(|p| format!("export PATH={}:\"$PATH\"; ", q(&p))).unwrap_or_default(),
         names.join(" ")
     );
     let mut c = Command::new(crate::pty::login_shell());

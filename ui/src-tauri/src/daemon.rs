@@ -133,6 +133,8 @@ fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<Stri
     let hand = dir.join("hand.sock");
     let _ = std::fs::remove_file(&hand);
     let l = std::os::unix::net::UnixListener::bind(&hand)?;
+    // `open --stderr` menimpa log: catatan daemon sebelumnya disimpan satu generasi untuk diagnosa
+    let _ = std::fs::rename(dir.join("daemon.log"), dir.join("daemon.log.1"));
     let mut c = Command::new("/usr/bin/open");
     c.args(["-g", "-n", "--stderr"]).arg(dir.join("daemon.log"));
     // lingkungan app diteruskan seperti saat daemon jadi anak app (pane mewarisinya)

@@ -1125,7 +1125,7 @@ fn screen_watch(st: Arc<State>) {
                 (true, None, None) => {
                     let mut v = pane.view.lock().unwrap();
                     let prompt = v.0.cursor_line();
-                    manual_done(&mut v, &pane, id, &prompt);
+                    manual_done(&mut v, &pane, id, &prompt, None);
                 }
                 _ => {}
             }
@@ -1357,9 +1357,10 @@ fn on_block(pane: &Pane, m: history::Mark) {
 }
 
 /// FR-56: agent manual sudah keluar = blok ringkas (sekali; `pump` dan `screen_watch` bisa sama-sama memanggil).
-fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8]) {
+/// `code` = kode keluar dari penanda zsh bila sudah terbaca bersama prompt.
+fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8], code: Option<i64>) {
     let Some((agent, cmd, dir)) = pane.manual.lock().unwrap().take() else { return };
-    agent_done(v, pane, id, &agent, &cmd, dir, "0", prompt);
+    agent_done(v, pane, id, &agent, &cmd, dir, &code.unwrap_or_default().to_string(), prompt);
 }
 
 /// FR-56: blok ringkas ala Warp: `<folder> (<durasi>)`, perintah, lalu perintah untuk melanjutkan sesi.
@@ -1374,6 +1375,8 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     // 2 detik cadangan: agent manual baru terdeteksi sampai 1 detik setelah mulai
     let since = std::time::SystemTime::now() - started.elapsed() - Duration::from_secs(2);
     let secs = started.elapsed().as_secs();
+    // diagnosa agent keluar sendiri (GESEKAN 3 Nov): kapan dan kode saja, isi layar tidak (SEC-13)
+    eprintln!("{} pane {id}: {agent} keluar, kode {code}, {secs} dtk", history::now());
     let home = std::env::var("HOME").unwrap_or_default();
     let dir = pty::cwd_of(pane.sid);
     let cwd = dir.as_ref().map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
@@ -1444,7 +1447,8 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
         // FR-56: agent manual sudah keluar = blok ringkas dulu, lalu output shell (prompt) tampil di bawahnya
         // ponytail: output terakhir agent yang terbaca bersama prompt dalam satu baca tidak ikut ke log sesi
         if pane.manual.lock().unwrap().is_some() && pty::busy(&pane.master, pane.sid).is_none() {
-            manual_done(&mut v, &pane, id, &[]);
+            let code = history::marks(&buf[..n]).into_iter().find_map(|m| if let history::Mark::End(c) = m { Some(c) } else { None });
+            manual_done(&mut v, &pane, id, &[], code);
         }
         // FR-56: penanda sesi agent dari skrip launch dipotong dari stream; sisanya diteruskan apa adanya
         let mut rest = &buf[..n];
