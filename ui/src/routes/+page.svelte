@@ -1363,7 +1363,8 @@
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
       if (payload.event === "pane.replace" && meta[payload.params.pane])
-        Object.assign(meta[payload.params.pane], { output: true, ended: { resume: payload.params.resume ?? null } });
+        // agent keluar = status kosong (daemon mengosongkan tanpa event pane.status; tanpa ini tetap "bekerja")
+        Object.assign(meta[payload.params.pane], { output: true, status: "", ended: { resume: payload.params.resume ?? null } });
       if (payload.event === "daemon.lost") onLost();
       if (payload.event === "msg.event") refreshMsgs();
     });
