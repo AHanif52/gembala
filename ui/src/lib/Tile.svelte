@@ -144,7 +144,7 @@
 
   /// FR-58: blok per perintah dari penanda OSC 133 shell (A prompt, C perintah jalan + teks base64, D selesai + exit code).
   /// Hanya blok dari stream sejak attach; snapshot attach tidak memuat penanda.
-  type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; code?: number; t0?: number; live?: { dispose(): void } };
+  type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; code?: number; t0?: number; ms?: number; live?: { dispose(): void } };
   let blocks: Block[] = [];
   let kitty: number[] = []; // tumpukan flag protokol keyboard kitty yang diminta app di pane ini
   function onMark(data: string) {
@@ -167,6 +167,7 @@
     } else if (k === "D" && last?.c && !last.d) {
       last.d = term.registerMarker(0);
       last.code = Number(arg) || 0;
+      if (last.t0) last.ms = Date.now() - last.t0;
       last.live?.dispose();
       decorate(last);
     }
@@ -177,7 +178,7 @@
   function decorate(b: Block) {
     const height = Math.max(1, (b.d?.line ?? b.a.line) - b.a.line);
     const d = term.registerDecoration({ marker: b.a, width: term.cols, height, layer: "top" });
-    const meta = !b.d ? "" : (b.t0 ? dur(Date.now() - b.t0) : "") + (b.code ? ` <b>· keluar ${b.code}</b>` : "");
+    const meta = !b.d ? "" : (b.ms !== undefined ? dur(b.ms) : "") + (b.code ? ` <b>· keluar ${b.code}</b>` : "");
     d?.onRender((el) => {
       if (el.dataset.tl) return;
       el.dataset.tl = "1";
@@ -475,9 +476,12 @@
 <div class="term" bind:this={el}></div>
 {#if sticky}
   <!-- FR-58: kepala blok menempel -->
-  <div class="sticky" class:fail={!!sticky.code}>
+  <div class="sticky" class:fail={!!sticky.code} class:run={!sticky.d}>
+    <i class="sdot"></i>
     <span class="scmd">{sticky.cmd}</span>
-    {#if sticky.code}<span class="scode">keluar {sticky.code}</span>{/if}
+    <span class="smeta"
+      >{sticky.d ? (sticky.ms !== undefined ? dur(sticky.ms) : "") : "jalan"}{#if sticky.code}<span class="scode"> · keluar {sticky.code}</span>{/if}</span
+    >
     {@render acts(sticky)}
   </div>
 {/if}
@@ -590,7 +594,7 @@
     background: #3b82f6;
     animation: tl-pulse 1.4s ease-in-out infinite;
   }
-  @keyframes tl-pulse {
+  @keyframes -global-tl-pulse {
     50% {
       opacity: 0.35;
     }
@@ -633,7 +637,28 @@
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
   }
   .sticky.fail {
-    border-left: 3px solid #dc2626;
+    background: color-mix(in srgb, #dc2626 7%, var(--bg));
+  }
+  /* titik sama dengan linimasa blok: cincin hijau, merah gagal, biru berdenyut saat jalan */
+  .sdot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border: 2px solid #16a34a;
+    border-radius: 50%;
+  }
+  .sticky.fail .sdot {
+    border-color: #dc2626;
+    background: #dc2626;
+  }
+  .sticky.run .sdot {
+    border-color: #3b82f6;
+    background: #3b82f6;
+    animation: tl-pulse 1.4s ease-in-out infinite;
+  }
+  .smeta {
+    color: var(--muted);
+    white-space: nowrap;
   }
   .scmd {
     flex: 1;
@@ -644,7 +669,7 @@
     white-space: nowrap;
   }
   .scode {
-    color: #ef4444;
+    color: #f87171;
   }
   /* tombol blok ala Gembala.pen: Salin/Output polos, Ubah berbingkai, Ulangi biru */
   .bacts-in {
