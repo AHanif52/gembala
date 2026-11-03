@@ -11,6 +11,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { pretty, UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { Menu } from "@tauri-apps/api/menu";
+  import { Image } from "@tauri-apps/api/image";
   import { homeDir } from "@tauri-apps/api/path";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -68,8 +69,13 @@
   /// FR-61: nama akun Claude pane yang sedang menjalankan Claude; begitu ada akun lain, Utama ikut berlabel
   const acctOf = (p: number) =>
     meta[p]?.accountName || (agentOf(p) === "claude" && (cfg?.values.accounts ?? []).some((a) => a.agent === "claude") ? "Utama" : "");
-  // satu bentuk untuk semua warna (bulatan emoji tidak ada untuk merah muda dan toska)
-  const SWATCH: Record<string, string> = { red: "❤️", orange: "🧡", yellow: "💛", green: "💚", blue: "💙", purple: "💜", pink: "🩷", cyan: "🩵", brown: "🤎" };
+  const HEX: Record<string, string> = { red: "#ef4444", orange: "#f97316", yellow: "#eab308", green: "#22c55e", blue: "#3b82f6", purple: "#a855f7", pink: "#ec4899", cyan: "#06b6d4", brown: "#a16207" };
+  /// submenu Warna: bulatan + nama, ✓ = warna sekarang
+  const colorMenu = (cur: string | null | undefined, set: (c: string | undefined) => void): MItem[] => [
+    [`Tanpa warna${cur ? "" : "  ✓"}`, () => set(undefined), true, "none"],
+    "-",
+    ...COLORS.map(([c, name]) => [`${name}${cur === c ? "  ✓" : ""}`, () => set(c), true, c] as MItem),
+  ];
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   /// status yang ditampilkan: "selesai" yang sudah dilihat pudar (FR-40)
   const stat = (p: number) => (ack[p] && meta[p]?.status === "done" ? "" : (meta[p]?.status ?? ""));
@@ -863,11 +869,32 @@
   }
 
   /// Menu klik kanan native (FR-37, FR-44, FR-52). Item: [label, aksi, aktif?], "-" pemisah, [label, sub-item[]] submenu.
-  type MItem = "-" | [string, (() => void) | MItem[], boolean?];
+  // elemen ke-4 = warna: bulatan digambar sebagai ikon item menu native (bukan emoji)
+  type MItem = "-" | [string, (() => void) | MItem[], boolean?, string?];
   const opts = (items: MItem[]): any[] =>
     items.map((it) =>
-      it === "-" ? { item: "Separator" } : Array.isArray(it[1]) ? { text: it[0], items: opts(it[1]) } : { text: it[0], action: it[1], enabled: it[2] ?? true },
+      it === "-"
+        ? { item: "Separator" }
+        : Array.isArray(it[1])
+          ? { text: it[0], items: opts(it[1]) }
+          : { text: it[0], action: it[1], enabled: it[2] ?? true, ...(it[3] && dots[it[3]] ? { icon: dots[it[3]] } : {}) },
     );
+  /// FR-44/52: bulatan warna 36px (menu macOS menampilkan ikon setinggi 18pt); "none" = lingkaran kosong
+  let dots: Record<string, Image> = {};
+  async function makeDots() {
+    const hex: Record<string, string> = { ...HEX, none: "" };
+    const out: Record<string, Image> = {};
+    for (const [k, c] of Object.entries(hex)) {
+      const cv = new OffscreenCanvas(36, 36);
+      const g = cv.getContext("2d")!;
+      g.beginPath();
+      g.arc(18, 18, c ? 13 : 12, 0, Math.PI * 2);
+      if (c) (g.fillStyle = c), g.fill();
+      else (g.strokeStyle = "#8b8b8b"), (g.lineWidth = 2.5), g.stroke();
+      out[k] = await Image.new(g.getImageData(0, 0, 36, 36).data.buffer, 36, 36);
+    }
+    dots = out;
+  }
   async function popup(e: MouseEvent, items: MItem[]) {
     e.preventDefault();
     e.stopPropagation();
@@ -890,12 +917,7 @@
     const others = wss.map((w, j) => [w.name, () => moveTab(wi, wss[wi].tabs.indexOf(t), j, w.tabs.length)] as MItem).filter((_, j) => j !== wi);
     popup(e, [
       ["Ganti nama", () => (editing = { kind: "tab", id: t.id, value: title(t) })],
-      // menu native tidak bisa diwarnai: bulatan emoji sebagai contoh warna, ✓ = warna sekarang
-      ["Warna", [
-        [`🤍 Tanpa warna${t.color ? "" : "  ✓"}`, () => (t.color = undefined)],
-        "-",
-        ...COLORS.map(([c, name]) => [`${SWATCH[c]} ${name}${t.color === c ? "  ✓" : ""}`, () => (t.color = c)] as MItem),
-      ]],
+      ["Warna", colorMenu(t.color, (c) => (t.color = c))],
       others.length ? ["Pindah ke workspace", others] : ["Pindah ke workspace", () => {}, false],
       ["Salin folder", () => copy(meta[t.focus]?.cwd)],
       "-",
@@ -919,11 +941,7 @@
     popup(e, [
       ["Ganti nama", () => (editing = { kind: "ws", id: w.id, value: w.name })],
       ["Ganti folder…", () => changeRoot(w)],
-      ["Warna", [
-        [`🤍 Tanpa warna${w.color ? "" : "  ✓"}`, () => (w.color = null)],
-        "-",
-        ...COLORS.map(([c, name]) => [`${SWATCH[c]} ${name}${w.color === c ? "  ✓" : ""}`, () => (w.color = c)] as MItem),
-      ]],
+      ["Warna", colorMenu(w.color, (c) => (w.color = c ?? null))],
       // FR-61: akun Claude bawaan pane baru di workspace ini (pilihan manusia, C-9)
       ...((cfg?.values.accounts ?? []).some((a) => a.agent === "claude")
         ? [
@@ -1490,6 +1508,7 @@
     (async () => {
       try {
         cfg = await call("config.get");
+        makeDots().catch(() => {});
         // FR-59: bahan autocomplete
         homePath = (await homeDir().catch(() => "")).replace(/\/$/, "");
         call("agents.detect", {}).then((a: Agent[]) => (installed = a.filter((x) => x.installed).map((x) => x.agent))).catch(() => {});
@@ -2420,6 +2439,13 @@
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .ws {
     margin-top: 4px;
     color: color-mix(in srgb, var(--c) 70%, #fff);
+  }
+  /* tab aktif/hover di blok berwarna: tint warna blok, bukan kotak abu */
+  .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .tab:hover:not(.on) {
+    background: color-mix(in srgb, var(--c) 12%, transparent);
+  }
+  .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .tab.on {
+    background: color-mix(in srgb, var(--c) 24%, transparent);
   }
   /* seret workspace: blok polos sementara, isinya yang bergerak */
   .side.dragging .wsg {
