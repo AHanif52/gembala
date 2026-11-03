@@ -23,7 +23,7 @@
   import { cleanTitle } from "$lib/label";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
-  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string> }; // FR-61: akun bawaan per agent
+  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null }; // FR-61: akun bawaan per agent; FR-44: warna blok
   /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
   type Meta = {
     profile: string;
@@ -56,9 +56,9 @@
     ["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"],
     ["purple", "Ungu"], ["pink", "Merah muda"], ["cyan", "Toska"], ["brown", "Cokelat"],
   ];
-  /// FR-52: tab baru otomatis berwarna: warna yang paling jarang dipakai tab lain di workspace itu (urut daftar)
-  const nextColor = (w: Ws) => {
-    const used = (c: string) => w.tabs.filter((t) => t.color === c).length;
+  /// FR-44: workspace baru otomatis berwarna: warna yang paling jarang dipakai workspace lain (urut daftar)
+  const nextColor = (list: Ws[]) => {
+    const used = (c: string) => list.filter((w) => w.color === c).length;
     return COLORS.map(([c]) => c).reduce((best, c) => (used(c) < used(best) ? c : best));
   };
   // FR-52: tanda per agent (bukan logo merek), warna mendekati warna khas agent
@@ -562,7 +562,7 @@
     const w = wss[wi];
     const from = wi === at.ws ? tab?.focus : undefined;
     const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined, workspace: w.id, account });
-    w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id, color: nextColor(w) });
+    w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id });
     at = { ws: wi, tab: w.tabs.length - 1 };
     zoomed = false;
     return id;
@@ -919,6 +919,11 @@
     popup(e, [
       ["Ganti nama", () => (editing = { kind: "ws", id: w.id, value: w.name })],
       ["Ganti folder…", () => changeRoot(w)],
+      ["Warna", [
+        [`🤍 Tanpa warna${w.color ? "" : "  ✓"}`, () => (w.color = null)],
+        "-",
+        ...COLORS.map(([c, name]) => [`${SWATCH[c]} ${name}${w.color === c ? "  ✓" : ""}`, () => (w.color = c)] as MItem),
+      ]],
       // FR-61: akun Claude bawaan pane baru di workspace ini (pilihan manusia, C-9)
       ...((cfg?.values.accounts ?? []).some((a) => a.agent === "claude")
         ? [
@@ -1190,7 +1195,7 @@
     if (!rest) return;
     tab.tree = rest;
     tab.focus = panes(rest)[0];
-    ws.tabs.push({ id: uid(), title: "", tree: { pane }, focus: pane, color: nextColor(ws) });
+    ws.tabs.push({ id: uid(), title: "", tree: { pane }, focus: pane });
     at = { ws: at.ws, tab: ws.tabs.length - 1 };
     zoomed = false;
   }
@@ -1201,7 +1206,7 @@
     const path = await invoke<string | null>("pick_folder");
     if (!path) return;
     const root = home(path);
-    wss.push({ id: uid(), name: base(path).slice(0, 60) || "workspace", root, tabs: [] });
+    wss.push({ id: uid(), name: base(path).slice(0, 60) || "workspace", root, tabs: [], color: nextColor(wss) });
     await newTab(undefined, wss.length - 1);
   }
 
@@ -1248,13 +1253,15 @@
   /// Isi layout.json dianggap tidak tepercaya: bentuk salah dibuang, sisanya dipakai.
   function sanitize(saved: any): Ws[] {
     if (!Array.isArray(saved?.workspaces)) return [];
-    return saved.workspaces
+    const out: Ws[] = saved.workspaces
       .filter((w: any) => typeof w?.id === "string" && Array.isArray(w.tabs))
       .map((w: any) => ({
         id: w.id,
         name: String(w.name ?? "workspace").slice(0, 60),
         root: String(w.root ?? "~").slice(0, 500),
         collapsed: w.collapsed === true,
+        // FR-44: warna blok; workspace lama tanpa warna diberi warna di bawah (null = sengaja tanpa warna)
+        color: COLORS.some(([c]) => c === w.color) ? w.color : w.color === null ? null : undefined,
         // FR-61: hanya id akun yang sah (dicocokkan lagi oleh daemon saat membuka pane)
         accounts: Object.fromEntries(Object.entries(w.accounts ?? {}).filter(([k, v]) => /^[a-z]+$/.test(k) && typeof v === "string" && /^[a-z0-9-]{1,32}$/.test(v))),
         tabs: w.tabs
@@ -1267,6 +1274,8 @@
             color: COLORS.some(([c]) => c === t.color) ? t.color : undefined,
           })),
       }));
+    for (const w of out) if (w.color === undefined) w.color = nextColor(out);
+    return out;
   }
 
   /// FR-45 pulihkan; FR-43 pertama kali dibuka
@@ -1306,7 +1315,7 @@
       if (typeof saved.side === "number") sideW = Math.min(480, Math.max(160, saved.side));
       if (typeof saved.panel === "number") panelW = Math.min(1600, Math.max(320, saved.panel));      return;
     }
-    wss = [{ id: uid(), name: "default", root: "~", tabs: [] }];
+    wss = [{ id: uid(), name: "default", root: "~", tabs: [], color: COLORS[0][0] }];
     const ids = [...alive];
     if (ids.length) for (const p of ids) wss[0].tabs.push({ id: uid(), title: "", tree: { pane: p }, focus: p });
     else await newTab(undefined, 0);
@@ -1564,6 +1573,8 @@
     {#each wss as w, wi (w.id)}
       <!-- FR-44: klik judul = buka/ciutkan; ganti nama lewat klik kanan atau palet -->
       {@const liftWs = dragging?.kind === "ws" && dragging.wi === wi}
+      <!-- FR-44: blok workspace berwarna (mockup-warna-tab varian D) -->
+      <div class="wsg {w.color ?? ''}">
       <div class="ws" data-wi={wi} data-k="{w.id}:h" class:lift={liftWs} style:transform={slide(`${w.id}:h`, liftWs)}
         role="button" tabindex="0" aria-expanded={!w.collapsed} title={w.root}
         onclick={() => editing?.id !== w.id && (w.collapsed = !w.collapsed)}
@@ -1618,6 +1629,7 @@
           {/if}
         </button>
       {/each}
+      </div>
     {/each}
   </aside>
   <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label="Lebar sidebar"></div>
@@ -2378,6 +2390,37 @@
   .tab.pink { box-shadow: inset 3px 0 0 #ec4899; }
   .tab.cyan { box-shadow: inset 3px 0 0 #06b6d4; }
   .tab.brown { box-shadow: inset 3px 0 0 #a16207; }
+  /* FR-44 (mockup-warna-tab varian D): blok workspace berwarna; tanpa warna = polos seperti dulu */
+  .wsg {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .wsg.red { --c: #ef4444; }
+  .wsg.orange { --c: #f97316; }
+  .wsg.yellow { --c: #eab308; }
+  .wsg.green { --c: #22c55e; }
+  .wsg.blue { --c: #3b82f6; }
+  .wsg.purple { --c: #a855f7; }
+  .wsg.pink { --c: #ec4899; }
+  .wsg.cyan { --c: #06b6d4; }
+  .wsg.brown { --c: #a16207; }
+  .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) {
+    margin-top: 6px;
+    padding: 0 0 4px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--c) 9%, transparent);
+    box-shadow: inset 3px 0 0 var(--c);
+  }
+  .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .ws {
+    margin-top: 4px;
+    color: color-mix(in srgb, var(--c) 70%, #fff);
+  }
+  /* seret workspace: blok polos sementara, isinya yang bergerak */
+  .side.dragging .wsg {
+    background: none;
+    box-shadow: none;
+  }
   .tt {
     overflow: hidden;
     text-overflow: ellipsis;
