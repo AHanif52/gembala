@@ -57,6 +57,9 @@
   const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇" };
   /// agent yang sedang jalan di pane (dari profil atau diketik sendiri); "" = tidak ada
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
+  /// FR-61: nama akun Claude pane yang sedang menjalankan Claude; begitu ada akun lain, Utama ikut berlabel
+  const acctOf = (p: number) =>
+    meta[p]?.accountName || (agentOf(p) === "claude" && (cfg?.values.accounts ?? []).some((a) => a.agent === "claude") ? "Utama" : "");
   const SWATCH: Record<string, string> = { red: "🔴", orange: "🟠", yellow: "🟡", green: "🟢", blue: "🔵", purple: "🟣" };
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   /// status yang ditampilkan: "selesai" yang sudah dilihat pudar (FR-40)
@@ -236,7 +239,8 @@
   let zhist: string[] = []; // riwayat zsh, dimuat sekali saat app dibuka
   let homePath = "";
   type Comp = { label: string; kind: string; insert: string };
-  // `auto` = saran akun yang muncul sendiri saat mengetik `cl…` (FR-61): Enter langsung menjalankan
+  // `auto` = saran akun yang muncul sendiri saat mengetik `cl…` (FR-61): Tab/Enter mengisi perintah, lalu bisa
+  // ditambah argumen sebelum Enter berikutnya menjalankan
   let comp = $state<{ pane: number; items: Comp[]; sel: number; auto?: boolean } | null>(null);
   /// FR-61 varian C: `cl…` di kotak ketik = satu saran per akun Claude; terpilih pertama = akun bawaan workspace
   async function accountSuggest(pane: number) {
@@ -244,14 +248,14 @@
     const rows: { account: { id: string; name: string; agent: string }; status: { email?: string } }[] = r?.accounts ?? [];
     const items = rows
       .filter((x) => x.account.agent === "claude")
-      .map((x) => ({ label: `claude · ${x.account.name}`, kind: x.status.email ?? "", insert: x.account.id === "utama" ? "claude" : `claude-${x.account.id}` }));
+      .map((x) => ({ label: `claude · ${x.account.name}`, kind: x.status.email ?? "", insert: x.account.id === "utama" ? "claude " : `claude-${x.account.id} ` }));
     const d = draft[pane] ?? "";
     if (items.length < 2 || d.length < 2 || !"claude".startsWith(d)) return;
     // sesi pane ini yang baru selesai (FR-56) = baris pertama dan terpilih, supaya Enter tidak menimpa niat lanjut
     const resume = meta[pane]?.ended?.resume;
-    if (resume?.startsWith("claude")) return void (comp = { pane, items: [{ label: "Lanjutkan sesi", kind: resume.replace(/([0-9a-f]{8})-[0-9a-f-]{27}$/, "$1…"), insert: resume }, ...items], sel: 0, auto: true });
+    if (resume?.startsWith("claude")) return void (comp = { pane, items: [{ label: "Lanjutkan sesi", kind: resume.replace(/([0-9a-f]{8})-[0-9a-f-]{27}$/, "$1…"), insert: `${resume} ` }, ...items], sel: 0, auto: true });
     const def = wss.find((w) => w.id === wsIdOf(pane))?.accounts?.claude;
-    comp = { pane, items, sel: Math.max(0, items.findIndex((it) => it.insert === `claude-${def}`)), auto: true };
+    comp = { pane, items, sel: Math.max(0, items.findIndex((it) => it.insert === `claude-${def} `)), auto: true };
   }
   const ghost = (pane: number) => {
     const d = draft[pane] ?? "";
@@ -302,7 +306,6 @@
       if (["ArrowDown", "ArrowUp", "Tab", "Enter", "Escape"].includes(e.key)) e.preventDefault();
       if (e.key === "ArrowDown") return void (comp.sel = (comp.sel + 1) % n);
       if (e.key === "ArrowUp") return void (comp.sel = (comp.sel + n - 1) % n);
-      if (e.key === "Enter" && comp.auto) return void ((draft[pane] = comp.items[comp.sel].insert), (comp = null), runDraft(pane));
       if (e.key === "Tab" || e.key === "Enter") return void ((draft[pane] = comp.items[comp.sel].insert), (comp = null));
       if (e.key === "Escape") return void (comp = null);
       // saran akun tetap terbuka selama teks masih awal `claude` (diatur onEditorInput)
@@ -1599,7 +1602,7 @@
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
             <!-- FR-61: akun selain Utama tampil di keterangan tab -->
-            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents, meta[t.focus]?.accountName].filter(Boolean).join(" · ")}
+            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents, acctOf(t.focus)].filter(Boolean).join(" · ")}
             {#if STATUS[st] || rest}
               <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {STATUS[stat(p)] ?? 'diam'}"></span>{/each}{:else if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}
@@ -1715,13 +1718,20 @@
                 </div>
                 {#if comp?.pane === pane}
                   <!-- FR-59: daftar Tab ala Warp -->
-                  <div class="mention complist" role="listbox" aria-label="Pilihan lengkapi">
+                  <div class="mention complist" class:acct={comp.auto} role="listbox" aria-label="Pilihan lengkapi">
                     {#each comp.items as it, i (it.label)}
                       <button class="opt" class:on={i === comp.sel} role="option" aria-selected={i === comp.sel}
                         onpointerdown={(e) => e.preventDefault()} onclick={() => ((draft[pane] = it.insert), (comp = null))}>
-                        <span class="ico" class:aico={comp.auto} class:claude={comp.auto} aria-hidden="true">{comp.auto ? GLYPH.claude : (({ Folder: "▸", Perintah: "›", Branch: "⎇", Script: "▶" } as Record<string, string>)[it.kind] ?? "·")}</span>
-                        <span>{it.label}</span>
-                        <span class="keys">{it.kind}</span>
+                        {#if comp.auto}
+                          <!-- FR-61 varian C (mockup-pilih-akun): nama di atas, email/perintah kecil di bawah -->
+                          <span class="ico claude" aria-hidden="true">{GLYPH.claude}</span>
+                          <span class="two"><span>{it.label}</span><small>{it.kind}</small></span>
+                          <span class="keys">{i === comp.sel ? "Tab" : ""}</span>
+                        {:else}
+                          <span class="ico" aria-hidden="true">{({ Folder: "▸", Perintah: "›", Branch: "⎇", Script: "▶" } as Record<string, string>)[it.kind] ?? "·"}</span>
+                          <span>{it.label}</span>
+                          <span class="keys">{it.kind}</span>
+                        {/if}
                       </button>
                     {/each}
                   </div>
@@ -1817,7 +1827,7 @@
                 {:else}
                   <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
                 {/if}
-                {#if meta[pane]?.accountName}<span class="chip acc" title="Akun Claude Code (FR-61)">{meta[pane].accountName}</span>{/if}
+                {#if acctOf(pane)}<span class="chip acc" title="Akun Claude Code (FR-61)">{acctOf(pane)}</span>{/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
                 {#if meta[pane]?.prev}<button class="chip" onclick={() => resumePrev(pane)}>Lanjutkan sesi {meta[pane].prev.agent}</button>{/if}
@@ -2676,6 +2686,37 @@
   }
   .complist .ico {
     color: var(--muted);
+  }
+  /* FR-61 varian C: saran akun ala mockup-pilih-akun (huruf sistem, dua baris, ikon oranye) */
+  .complist.acct {
+    min-width: 300px;
+    padding: 4px;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  }
+  .complist.acct .opt {
+    grid-template-columns: 14px 1fr auto;
+    gap: 8px;
+    align-items: start;
+    padding: 6px 8px;
+    border-radius: 5px;
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .complist.acct .ico.claude {
+    color: #d97757;
+    font-weight: 700;
+  }
+  .complist.acct .two {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .complist.acct small {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   /* FR-37: kepala pane; tombol muncul saat kursor di atas pane */
   .head {
