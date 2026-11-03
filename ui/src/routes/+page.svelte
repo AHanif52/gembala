@@ -1440,7 +1440,9 @@
       }
       const busy = i.busy ? (i.name ?? "proses") : null;
       const m = meta[p];
-      if (AGENTS.includes(m.agent) || m.agent === "custom" || i.status) {
+      // agent yang diketik di pane shell (`m.busy` = agent di poll sebelumnya): status kosong dari daemon saat agent
+      // keluar juga dipakai, supaya "selesai" tidak tertahan setelah agentnya mati
+      if (AGENTS.includes(m.agent) || m.agent === "custom" || i.status || AGENTS.includes(m.busy ?? "")) {
         // status dari daemon: hook resmi, atau pola layar untuk profil custom dan agent yang diketik manual (FR-4)
         if (m.status !== i.status) {
           delete ack[p];

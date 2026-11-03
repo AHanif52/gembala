@@ -453,7 +453,9 @@
   /* FR-58: dekorasi blok (dibuat xterm di luar komponen, jadi :global) */
   .term :global(.blk) {
     box-sizing: border-box;
-    border-top: 1px solid var(--line);
+    /* ala Warp: pemisah blok jelas terlihat; lebar xterm (px saat dibuat) ditimpa supaya ikut pane yang dibesarkan */
+    width: 100% !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.16);
     pointer-events: none;
   }
   .term :global(.blk.fail) {
