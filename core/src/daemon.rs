@@ -1317,8 +1317,16 @@ fn save_logs(st: &State, saved: &mut HashMap<u64, std::time::Instant>) {
         }
         let log = {
             let mut v = pane.view.lock().unwrap();
-            let pos = v.0.position();
-            v.0.before(pos)
+            if pane.agent_log.lock().unwrap().is_some() {
+                // agent masih jalan: tampilan TUI-nya tidak disimpan, cukup isi pane sebelum agent mulai
+                let name = pane.agent_name().unwrap_or_else(|| "agent".into());
+                let mut log = pane.pre_agent.lock().unwrap().clone();
+                log.extend(format!("   \x1b[2m{name} (masih jalan saat daemon berhenti)\x1b[0m\r\n").as_bytes());
+                log
+            } else {
+                let pos = v.0.position();
+                v.0.before(pos)
+            }
         };
         if !log.is_empty() {
             history::save_log(&st.boot, id, &log);
