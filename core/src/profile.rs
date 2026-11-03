@@ -189,7 +189,8 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
         ("claude", "prompt" | "tool") => "working",
         ("claude", "stop") => "done",
         // Notification Claude Code: izin alat = blocked; "menunggu input" = siap menerima tugas
-        ("claude", "notify") if payload.to_lowercase().contains("permission") => "blocked",
+        // dibaca dari `notification_type`/`message` saja: payload selalu memuat `permission_mode`, jadi menunggu input ikut "butuh izin"
+        ("claude", "notify") if claude_permission(payload) => "blocked",
         ("claude", "notify") => "idle",
         ("codex", "notify") if payload.contains("agent-turn-complete") => "done",
         // FR-68: omp menunggu persetujuan tool = butuh izin; setelah diputus kembali bekerja
@@ -199,6 +200,14 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
         ("opencode", "permission") => "blocked",
         _ => return None,
     })
+}
+
+fn claude_permission(payload: &str) -> bool {
+    let v: Value = serde_json::from_str(payload).unwrap_or_default();
+    match v["notification_type"].as_str() {
+        Some(t) => t == "permission_prompt",
+        None => v["message"].as_str().is_some_and(|m| m.to_lowercase().contains("permission")),
+    }
 }
 
 /// Teks di layar yang berarti agent menunggu jawaban manusia (huruf kecil).
@@ -730,6 +739,11 @@ mod tests {
         assert_eq!(hook_status("omp", "resolved", ""), Some("working"));
         assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude needs your permission to use Bash"}"#), Some("blocked"));
         assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude is waiting for your input"}"#), Some("idle"));
+        // payload asli selalu membawa permission_mode: menunggu input tetap idle
+        let idle = r#"{"permission_mode":"auto","message":"Claude is waiting for your input","notification_type":"idle_prompt"}"#;
+        assert_eq!(hook_status("claude", "notify", idle), Some("idle"));
+        let ask = r#"{"permission_mode":"auto","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}"#;
+        assert_eq!(hook_status("claude", "notify", ask), Some("blocked"));
         assert_eq!(hook_status("codex", "notify", r#"{"type":"agent-turn-complete"}"#), Some("done"));
         assert_eq!(hook_status("codex", "notify", r#"{"type":"lain"}"#), None);
         assert_eq!(hook_status("opencode", "permission", ""), Some("blocked"));
