@@ -247,6 +247,9 @@
       .map((x) => ({ label: `claude · ${x.account.name}`, kind: x.status.email ?? "", insert: x.account.id === "utama" ? "claude" : `claude-${x.account.id}` }));
     const d = draft[pane] ?? "";
     if (items.length < 2 || d.length < 2 || !"claude".startsWith(d)) return;
+    // sesi pane ini yang baru selesai (FR-56) = baris pertama dan terpilih, supaya Enter tidak menimpa niat lanjut
+    const resume = meta[pane]?.ended?.resume;
+    if (resume?.startsWith("claude")) return void (comp = { pane, items: [{ label: "Lanjutkan sesi", kind: resume.replace(/([0-9a-f]{8})-[0-9a-f-]{27}$/, "$1…"), insert: resume }, ...items], sel: 0, auto: true });
     const def = wss.find((w) => w.id === wsIdOf(pane))?.accounts?.claude;
     comp = { pane, items, sel: Math.max(0, items.findIndex((it) => it.insert === `claude-${def}`)), auto: true };
   }
@@ -309,6 +312,7 @@
     if (e.key === "ArrowRight" && ta.selectionStart === ta.value.length && ghost(pane)) {
       e.preventDefault();
       draft[pane] = (draft[pane] ?? "") + ghost(pane);
+      comp = null; // teks sudah bukan awal `claude` lagi: saran akun ditutup supaya Enter menjalankan teks ini
       return;
     }
     // daftar @ terbuka: Tab/Enter pilih, panah geser, Esc tutup
