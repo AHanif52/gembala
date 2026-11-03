@@ -1,7 +1,7 @@
 # Gembala (app)
 
 Terminal GUI ala Warp untuk banyak TUI agent (Claude Code, Codex, OpenCode, Oh My Pi) dalam satu layar, dengan
-pesan antar agent yang diawasi. Kebutuhan: repo gembala-brd (`BRD.md` = apa/kenapa, sumber utama; `TECH.md` = cara,
+pesan antar agent yang diawasi. Kebutuhan: repo gembala-brd, privat, hanya pemilik (`BRD.md` = apa/kenapa, sumber utama; `TECH.md` = cara,
 catatan per milestone, dan tabel "Sisa Fase 1").
 
 ## Status (1 Nov 2026)
@@ -161,6 +161,8 @@ Keluaran satu baris JSON; kode keluar 0 diterima, 1 ditolak/timeout, 2 salah pak
   bukan dari Gembala; setujui ulang hook di Codex.
 
 ## Cara kerja di repo ini
+
+Contributor: lihat `CONTRIBUTING.md` (branch + PR, sertifikat Gembala Dev). Butir di bawah alur pemilik repo.
 
 - Urutan: BRD → TECH → kode/mockup.
 - Tiap pekerjaan selesai dan uji hijau: commit (path spesifik, tanpa trailer Co-Authored-By karena remote GitHub),
