@@ -84,7 +84,10 @@
   let sidebar = $state(true);
   let sideW = $state(220); // FR-52: lebar sidebar, disimpan di layout
   let pal = $state<{ q: string; sel: number; keys: [string, string, string][] } | null>(null); // FR-39 palet
-  let dragging = $state<{ kind: "tab" | "ws"; wi: number; ti: number; over?: { wi: number; ti: number } } | null>(null);
+  let dragging = $state<{ kind: "tab" | "ws"; wi: number; ti: number; dy: number; over?: { wi: number; ti: number }; shift: Record<string, number> } | null>(null);
+  /// geser baris sidebar saat seret: yang diangkat ikut kursor, sisanya bergeser membuka celah (ala Warp)
+  const slide = (k: string, lifted: boolean) =>
+    !dragging ? null : lifted ? `translateY(${dragging.dy}px)` : dragging.shift[k] ? `translateY(${dragging.shift[k]}px)` : null;
   let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
   let renameError = $state("");
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
@@ -931,33 +934,81 @@
     });
   }
 
-  /// FR-44/52: seret tab dan workspace di sidebar (pointer, bukan drag HTML: WKWebView + drop file Tauri)
+  /// FR-44/52: seret tab dan workspace di sidebar (pointer, bukan drag HTML: WKWebView + drop file Tauri).
+  /// Target = baris terdekat menurut Y (celah antar baris ikut terhitung); item yang diseret ikut kursor dan
+  /// baris di antara asal dan target bergeser sejauh tinggi item itu, jadi celah tempat jatuh langsung kelihatan.
   function startDrag(e: PointerEvent, kind: "tab" | "ws", wi: number, ti = -1) {
     if (e.button !== 0 || editing) return;
+    const side = (e.currentTarget as HTMLElement).closest<HTMLElement>(".side")!;
     const [x0, y0] = [e.clientX, e.clientY];
     const move = (m: PointerEvent) => {
       if (!dragging && Math.hypot(m.clientX - x0, m.clientY - y0) < 5) return;
-      const el = document.elementFromPoint(m.clientX, m.clientY)?.closest<HTMLElement>("[data-wi]");
-      dragging = { kind, wi, ti, over: el ? { wi: +el.dataset.wi!, ti: el.dataset.ti ? +el.dataset.ti : -1 } : undefined };
+      // koordinat isi sidebar; offsetTop tidak ikut transform item yang sedang diseret
+      const y = m.clientY - side.getBoundingClientRect().top + side.scrollTop;
+      // semua baris sidebar urut DOM: kepala workspace, tab, "+ Tab" workspace kosong
+      const els = [...side.querySelectorAll<HTMLElement>("[data-k]")];
+      const rs = els.map((el) => ({ top: el.offsetTop, bottom: el.offsetTop + el.offsetHeight }));
+      const own = els.flatMap((el, i) => (+el.dataset.wi! === wi && (kind === "ws" || el.dataset.ti === `${ti}`) ? [i] : []));
+      let over: { wi: number; ti: number };
+      let p: number; // posisi sisip di urutan DOM
+      if (kind === "ws") {
+        // blok workspace = kepala + tab-tabnya; sisip sebelum/sesudah blok terdekat
+        const blocks = wss.map((_, j) => {
+          const ix = els.flatMap((el, i) => (+el.dataset.wi! === j ? [i] : []));
+          return { top: rs[ix[0]].top, bottom: rs[ix.at(-1)!].bottom, first: ix[0], end: ix.at(-1)! + 1 };
+        });
+        const j = nearest(blocks, y);
+        const after = y > (blocks[j].top + blocks[j].bottom) / 2;
+        over = { wi: j + +after, ti: -1 };
+        p = after ? blocks[j].end : blocks[j].first;
+      } else {
+        const k = nearest(rs, y);
+        const el = els[k];
+        const head = el.dataset.ti === undefined;
+        // kepala workspace (atau "+ Tab" workspace kosong) = jatuh di posisi pertama workspace itu
+        const after = head || y > (rs[k].top + rs[k].bottom) / 2;
+        over = { wi: +el.dataset.wi!, ti: head ? 0 : +el.dataset.ti! + +after };
+        p = k + +after;
+      }
+      const [f0, f1] = [own[0], own.at(-1)!];
+      const span = (f1 + 1 < els.length ? rs[f1 + 1].top : rs[f1].bottom + 2) - rs[f0].top;
+      const shift: Record<string, number> = {};
+      els.forEach((el, i) => {
+        if (p > f1 && i > f1 && i < p) shift[el.dataset.k!] = -span;
+        else if (p < f0 && i >= p && i < f0) shift[el.dataset.k!] = span;
+      });
+      dragging = { kind, wi, ti, dy: m.clientY - y0, over, shift };
     };
-    const up = () => {
+    const stop = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", stop);
       const d = dragging;
       dragging = null;
-      if (!d) return;
+      return d;
+    };
+    const up = () => {
+      const d = stop();
+      if (!d?.over) return;
       // klik yang menutup seretan tidak ikut memindah tab (click datang tepat setelah pointerup, bila ada)
       const eat = (c: MouseEvent) => c.stopPropagation();
       window.addEventListener("click", eat, true);
       setTimeout(() => window.removeEventListener("click", eat, true), 0);
-      if (!d.over) return;
       if (d.kind === "ws") {
-        if (d.over.wi !== d.wi) keepAt(() => wss.splice(d.over!.wi, 0, ...wss.splice(d.wi, 1)));
-      } else if (d.over.ti < 0) moveTab(d.wi, d.ti, d.over.wi, Infinity);
-      else if (d.over.wi !== d.wi || d.over.ti !== d.ti) moveTab(d.wi, d.ti, d.over.wi, d.over.ti);
+        const to = d.over.wi - +(d.over.wi > d.wi);
+        if (to !== d.wi) keepAt(() => wss.splice(to, 0, ...wss.splice(d.wi, 1)));
+      } else {
+        const to = d.over.ti - +(d.over.wi === d.wi && d.over.ti > d.ti);
+        if (d.over.wi !== d.wi || to !== d.ti) moveTab(d.wi, d.ti, d.over.wi, to);
+      }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", stop);
+  }
+  function nearest(rs: { top: number; bottom: number }[], y: number) {
+    const gap = (r: { top: number; bottom: number }) => Math.max(r.top - y, y - r.bottom, 0);
+    return rs.reduce((b, r, i) => (gap(r) < gap(rs[b]) ? i : b), 0);
   }
 
   /// FR-52: lebar sidebar diseret
@@ -1466,7 +1517,8 @@
     <button class="add wsnew" onclick={addWorkspace}>+ Workspace</button>
     {#each wss as w, wi (w.id)}
       <!-- FR-44: klik judul = buka/ciutkan; ganti nama lewat klik kanan atau palet -->
-      <div class="ws" data-wi={wi} class:over={dragging?.over?.wi === wi && dragging.over.ti < 0} class:lift={dragging?.kind === "ws" && dragging.wi === wi}
+      {@const liftWs = dragging?.kind === "ws" && dragging.wi === wi}
+      <div class="ws" data-wi={wi} data-k="{w.id}:h" class:lift={liftWs} style:transform={slide(`${w.id}:h`, liftWs)}
         role="button" tabindex="0" aria-expanded={!w.collapsed} title={w.root}
         onclick={() => editing?.id !== w.id && (w.collapsed = !w.collapsed)}
         onkeydown={(e) => e.key === "Enter" && e.target === e.currentTarget && (w.collapsed = !w.collapsed)}
@@ -1490,14 +1542,16 @@
         {/if}
       </div>
       {#if !w.collapsed && !w.tabs.length}
-        <button class="add empty-ws" onclick={() => newTab(undefined, wi)}>+ Tab</button>
+        <button class="add empty-ws" data-wi={wi} data-k="{w.id}:e" class:lift={liftWs} style:transform={slide(`${w.id}:e`, liftWs)}
+          onclick={() => newTab(undefined, wi)}>+ Tab</button>
       {/if}
       {#each w.collapsed ? [] : w.tabs as t, ti (t.id)}
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
         {@const st = tabStatus(t)}
         <button class="tab {t.color ?? ''}" class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} data-wi={wi} data-ti={ti}
-          class:over={dragging?.over?.wi === wi && dragging.over.ti === ti} class:lift={dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti}
+          class:lift={(dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti) || (dragging?.kind === "ws" && dragging.wi === wi)}
+          data-k={t.id} style:transform={slide(t.id, dragging?.wi === wi && (dragging.kind === "ws" || dragging.ti === ti))}
           onpointerdown={(e) => startDrag(e, "tab", wi, ti)} oncontextmenu={(e) => tabMenu(e, wi, t)}
           onclick={() => ((at = { ws: wi, tab: ti }), (zoomed = false))}
           ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
@@ -2178,17 +2232,25 @@
     visibility: hidden;
     cursor: pointer;
   }
-  /* seret tab/workspace: yang diangkat pudar, target bergaris */
+  /* seret tab/workspace ala Warp: yang diangkat ikut kursor, baris lain bergeser halus membuka celah */
   .lift {
-    opacity: 0.4;
+    position: relative;
+    z-index: 2;
+    background: var(--line);
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
   }
-  .over {
-    outline: 1px solid var(--muted);
-    outline-offset: -1px;
-    border-radius: 4px;
+  .side.dragging [data-k]:not(.lift) {
+    transition: transform 150ms ease;
   }
-  .side.dragging {
-    cursor: grabbing;
+  @media (prefers-reduced-motion: reduce) {
+    .side.dragging [data-k]:not(.lift) {
+      transition: none;
+    }
+  }
+  /* kursor tangan tetap kelihatan di atas baris mana pun selama seret */
+  .side.dragging,
+  .side.dragging * {
+    cursor: grabbing !important;
   }
   /* sidebar = chrome app: seret tab/workspace tidak ikut memblok teks; input tetap bisa diblok */
   .side {
