@@ -2673,8 +2673,9 @@
       transition: none;
     }
   }
-  .complist {
-    left: 8px;
+  /* di atas kotak editor (baris folder/branch), tidak menutupi teks yang diketik; `.mention` (bottom: 8px) kalah */
+  .mention.complist {
+    left: 10px;
     bottom: calc(100% + 6px);
     min-width: 320px;
     max-height: 260px;
