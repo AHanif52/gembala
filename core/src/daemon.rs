@@ -546,11 +546,17 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
         }
         "account.remove" => {
-            if let Err(why) = config::remove_account(&config::path(), p["id"].as_str().ok_or("bad_params")?) {
+            let id = p["id"].as_str().ok_or("bad_params")?;
+            let dir = st.accounts.lock().unwrap().iter().find(|a| a.id == id).map(|a| a.dir.clone());
+            if let Err(why) = config::remove_account(&config::path(), id) {
                 return Ok(json!({"error": why}));
             }
             reload_config(st);
-            Ok(json!({}))
+            // FR-61 (7): folder akun ikut dihapus setelah config tidak lagi merujuknya
+            match dir.map(|d| account::delete_dir(&d)) {
+                Some(Err(why)) => Ok(json!({"error": why})),
+                _ => Ok(json!({})),
+            }
         }
         "config.set" => {
             let (section, key) = (p["section"].as_str().ok_or("bad_params")?, p["key"].as_str().ok_or("bad_params")?);

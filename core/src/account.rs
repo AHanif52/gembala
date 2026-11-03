@@ -145,6 +145,18 @@ pub fn create(a: &Account) -> Result<Vec<String>, String> {
     Ok(skipped)
 }
 
+/// FR-61 (7): folder akun ikut dihapus. `remove_dir_all` tidak mengikuti symlink, jadi tautan ke Utama hanya dilepas.
+/// Hanya folder `.claude…` yang bukan symlink, supaya folder lain yang kebetulan ditunjuk akun tidak terhapus.
+pub fn delete_dir(dir: &str) -> Result<(), String> {
+    let p = valid_dir(dir)?;
+    let Ok(meta) = p.symlink_metadata() else { return Ok(()) }; // folder sudah tidak ada
+    let named = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(".claude"));
+    if !named || !meta.is_dir() {
+        return Err(format!("{dir} bukan folder akun Claude; tidak dihapus"));
+    }
+    std::fs::remove_dir_all(&p).map_err(|e| format!("hapus folder: {e}"))
+}
+
 /// Status akun untuk daftar: sudah dipakai (`.claude.json` ada) dan email dari `oauthAccount.emailAddress` saja.
 /// Field lain dibuang; file > 5 MB atau rusak = tanpa email. Token tidak ada di file ini (Keychain).
 pub fn status(config_json: &Path) -> Value {
@@ -229,6 +241,30 @@ mod tests {
         assert_eq!(apply(&mut codex, Some("kantor"), &all), Err("no_such_account"));
         let mut p = crate::profile::Profile { env: vec![(ENV.into(), "~/.x".into())], ..claude() };
         assert_eq!(apply(&mut p, Some("kantor"), &all), Err("account_env_conflict"));
+    }
+
+    #[test]
+    fn hapus_folder_akun_tautan_utama_aman() {
+        let pid = std::process::id();
+        let target = std::env::temp_dir().join(format!("gembala-utama-{pid}"));
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("CLAUDE.md"), "x").unwrap();
+        let dir = format!("~/.claude-gembala-uji-{pid}");
+        let p = expand(&dir);
+        std::fs::create_dir_all(p.join("sessions")).unwrap();
+        std::os::unix::fs::symlink(&target, p.join("skills")).unwrap();
+        assert_eq!(delete_dir(&dir), Ok(()));
+        assert!(!p.exists() && target.join("CLAUDE.md").exists(), "tautan dilepas, isi Utama tetap");
+        assert_eq!(delete_dir(&dir), Ok(()), "sudah tidak ada = beres");
+        // folder bukan .claude… atau symlink ditolak
+        let other = format!("~/gembala-uji-{pid}");
+        std::fs::create_dir_all(expand(&other)).unwrap();
+        assert!(delete_dir(&other).is_err() && expand(&other).exists());
+        std::fs::remove_dir(expand(&other)).unwrap();
+        std::os::unix::fs::symlink(&target, &p).unwrap();
+        assert!(delete_dir(&dir).is_err() && target.exists());
+        std::fs::remove_file(&p).unwrap();
+        std::fs::remove_dir_all(&target).unwrap();
     }
 
     #[test]

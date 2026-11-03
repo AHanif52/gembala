@@ -29,6 +29,7 @@
   let accForm = $state({ name: "", dir: "", share: [...SHARE_DEFAULT], error: "", info: "" });
   let accOpen = $state(false); // form tertutup; akun Utama sudah jadi bawaan
   let removeAsk = $state("");
+  let accErr = $state("");
   const slug = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32);
   async function loadAccounts() {
     const r = await call("account.list", {}).catch(() => null);
@@ -48,7 +49,8 @@
   async function removeAccount(id: string) {
     if (removeAsk !== id) return void (removeAsk = id);
     removeAsk = "";
-    await call("account.remove", { id }).catch(() => {});
+    const r = await call("account.remove", { id }).catch((e) => ({ error: String(e) }));
+    accErr = r?.error ?? "";
     loadAccounts();
   }
   let daemon = $state<{ daemon: string; proto: number } | null>(null);
@@ -433,10 +435,12 @@
               >
               <span class="acts">
                 {#if !r.status.used}<button class="mini" onclick={() => onlogin(r.account.id, r.account.name)}>Login</button>{/if}
-                {#if !r.account.main}<button class="mini" onclick={() => removeAccount(r.account.id)}>{removeAsk === r.account.id ? "Yakin hapus? Folder tetap" : "Hapus"}</button>{/if}
+                {#if !r.account.main}<button class="mini" onclick={() => removeAccount(r.account.id)}>{removeAsk === r.account.id ? `Yakin? ${r.account.dir} ikut dihapus` : "Hapus"}</button>{/if}
               </span>
             </div>
           {/each}
+          {#if removeAsk}<span class="m">Sesi dan pengaturan akun itu hilang; isi Utama aman. Login tetap di Keychain: /logout dulu bila ingin dicabut</span>{/if}
+          {#if accErr}<span class="m err" role="alert">{accErr}</span>{/if}
           {#if !accOpen}
             <div class="row"><span class="grow">Akun lain<small>Mis. akun kantor; tiap akun punya folder dan login sendiri</small></span><span class="acts"><button class="mini" onclick={() => (accOpen = true)}>Tambah akun</button></span></div>
           {:else}

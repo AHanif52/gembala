@@ -863,7 +863,8 @@ fn fr61_akun_agent() {
     assert!(list.contains("kerja@kantor.id") && list.contains("\"Utama\"") && list.contains("\"Klien\""), "{list}");
     ui.call("account.remove", json!({"id": "kantor"}));
     let list = ui.call("account.list", json!({}))["result"]["accounts"].to_string();
-    assert!(!list.contains("\"Kantor\"") && k.join("CLAUDE.md").symlink_metadata().is_ok(), "{list}");
+    // FR-61 (7): folder akun ikut hilang, tautan dilepas tanpa menyentuh isi Utama
+    assert!(!list.contains("\"Kantor\"") && !k.exists() && home.join(".claude/CLAUDE.md").exists(), "{list}");
     let _ = std::fs::remove_dir_all(&home);
 }
 
