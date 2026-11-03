@@ -625,8 +625,18 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             if let Some(a) = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name && a.trust) {
                 account::sync_trust(&a.dir);
             }
-            let session = profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) };
-            let launch = prof.as_ref().and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
+            // FR-72: pemilih sesi bawaan agent (tanpa id); Gembala tidak membaca daftar sesi (SEC-15)
+            let pick = p["pick"].as_bool() == Some(true);
+            let picked = prof.as_ref().filter(|_| pick).map(|x| {
+                let mut x = x.clone();
+                x.args.extend(profile::picker_flags(&x.agent).iter().map(|s| s.to_string()));
+                x
+            });
+            let session = if pick { profile::Session { id: None, resume: false } } else { profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) } };
+            if pick && prof.as_ref().is_none_or(|x| profile::picker_flags(&x.agent).is_empty()) {
+                return Err("no_picker");
+            }
+            let launch = picked.as_ref().or(prof.as_ref()).and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
             let cmd = launch.as_deref().or(p["cmd"].as_str());
             let home = std::env::var("HOME").unwrap_or_default();
             // urutan folder: `cwd` eksplisit (jalankan ulang pane mati, FR-45) > folder profil > pane yang fokus

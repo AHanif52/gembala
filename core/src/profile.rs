@@ -458,6 +458,15 @@ fn session_flags(agent: &str, s: &Session) -> Vec<String> {
     }
 }
 
+/// FR-72: pemilih sesi bawaan agent (`--help` 3 Nov 2026); OpenCode tidak punya pemilih dari baris perintah
+pub fn picker_flags(agent: &str) -> &'static [&'static str] {
+    match agent {
+        "claude" | "omp" => &["--resume"],
+        "codex" => &["resume"],
+        _ => &[],
+    }
+}
+
 /// FR-64: flag mode izin per agent (`--help` 2 Nov 2026). OpenCode tidak punya flag untuk TUI (`--auto` hanya di `run`): kosong.
 /// Codex tetap bersandbox `workspace-write`; omp `yolo` tetap menghormati rule `bash.patterns` milik pengguna.
 pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
@@ -747,6 +756,12 @@ mod tests {
         // FR-68: id persis bila ada, "sesi terakhir di folder" hanya tanpa id
         assert!(launch(&by("codex"), None, Some(&again)).unwrap().contains(&format!("'codex' 'resume' '{id}'")));
         assert!(launch(&by("opencode"), None, Some(&Session { id: Some("ses_4Ab-9".into()), resume: true })).unwrap().contains("'opencode' '--session' 'ses_4Ab-9'"));
+        // FR-72: pemilih sesi bawaan = flag pemilih, tanpa id sesi baru
+        let mut pick = by("claude");
+        pick.args.extend(picker_flags("claude").iter().map(|s| s.to_string()));
+        let l = launch(&pick, None, Some(&Session { id: None, resume: false })).unwrap();
+        assert!(l.contains("'claude' '--resume'") && !l.contains("--session-id"), "{l}");
+        assert!(picker_flags("opencode").is_empty());
         let none = Session { id: None, resume: true };
         assert!(launch(&by("codex"), None, Some(&none)).unwrap().contains("'codex' 'resume' '--last'"));
         assert!(launch(&by("opencode"), None, Some(&none)).unwrap().contains("'opencode' '--continue'"));

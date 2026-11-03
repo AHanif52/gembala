@@ -203,11 +203,13 @@
         return own.length ? [{ id: "utama", name: "Utama" }, ...own].map((a) => ({ ...base, key: `${p.id}:${a.id}`, label: `${p.name} · ${a.name}`, account: a.id })) : [base];
       }),
   );
+  // FR-72: agent dengan pemilih sesi bawaan (OpenCode tidak punya dari baris perintah)
+  const pickable = $derived(startProfiles.filter((p) => ["claude", "codex", "omp"].includes(p.agent)));
   /// pane shell diganti pane profil di posisi yang sama (agent jalan dengan hook resmi, FR-4)
-  async function swapToProfile(old: number, profile: string, account?: string) {
+  async function swapToProfile(old: number, profile: string, account?: string, pick = false) {
     const m = meta[old];
     if (!m) return;
-    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account });
+    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account, pick });
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {
@@ -517,7 +519,8 @@
     const profile = (opts.profile as string) ?? "shell";
     const agent = cfg?.values.profiles.find((p) => p.id === profile)?.agent ?? "shell";
     // FR-53: Claude Code menerima id sesi dari luar; dipakai lagi saat pane dijalankan ulang
-    const session = (opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined);
+    // FR-72: pemilih sesi bawaan = id sesi belum diketahui
+    const session = opts.pick ? undefined : ((opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined));
     // FR-61, C-9: akun = pilihan saat membuka (atau akun pane yang dijalankan ulang) > akun bawaan workspace > profil/Utama (daemon)
     const w = wss.find((x) => x.id === ((opts.workspace as string) ?? ws?.id));
     // pane shell ikut akun Claude bawaan workspace: `claude` yang diketik memakai akun itu
@@ -600,10 +603,10 @@
 
   const quote = (p: string) => `'${p.replaceAll("'", "'\\''")}'`;
 
-  async function newTab(profile?: string, wi = at.ws, account?: string): Promise<number> {
+  async function newTab(profile?: string, wi = at.ws, account?: string, extra: Record<string, unknown> = {}): Promise<number> {
     const w = wss[wi];
     const from = wi === at.ws ? tab?.focus : undefined;
-    const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined, workspace: w.id, account });
+    const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined, workspace: w.id, account, ...extra });
     w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id });
     at = { ws: wi, tab: w.tabs.length - 1 };
     zoomed = false;
@@ -871,6 +874,7 @@
       ...order.map((o, i) => ({ label: title(o.t), hint: `${wss[o.wi].name}${i < 9 ? ` · ⌘${i + 1}` : ""}`, go: () => goto(i) })),
       ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
+      ...pickable.map((p) => ({ label: `Pilih sesi lama: ${p.label}`, hint: "pemilih sesi bawaan agent", go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
       { label: "Workspace baru…", hint: "", go: addWorkspace },
       { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
       { label: "Ganti nama tab", hint: "", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
@@ -983,7 +987,13 @@
     e.stopPropagation();
     const agents: Agent[] = await call("agents.detect", {}).catch(() => []);
     const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
-    popup(e, (cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? " (tidak terpasang)" : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem));
+    popup(e, [
+      ...(cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? " (tidak terpasang)" : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem),
+      "-",
+      pickable.length
+        ? ["Pilih sesi lama…", pickable.map((p) => [p.label, () => newTab(p.id, wi, p.account, { pick: true })] as MItem)]
+        : ["Pilih sesi lama…", () => {}, false],
+    ]);
   }
 
   function wsMenu(e: MouseEvent, wi: number) {
@@ -1600,6 +1610,8 @@
     {:else if name === "rich"}<path d="M2 3.5h12v7H2zM5 13.5h6M5 6h4" />
     {:else if name === "folder"}<path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" />
     {:else if name === "branch"}<path d="M5 2.5v11M5 9c0-3 6-2 6-5.5M11 2.5v1" /><circle cx="11" cy="4" r="1.3" /><circle cx="5" cy="13" r="1.3" />
+    {:else if name === "history"}<path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2h2M8 5v3l2 1.5" />
+    {:else if name === "fork"}<circle cx="4.5" cy="3.5" r="1.3" /><circle cx="11.5" cy="3.5" r="1.3" /><circle cx="8" cy="12.5" r="1.3" /><path d="M4.5 5c0 3 3.5 3 3.5 6M11.5 5c0 3-3.5 3-3.5 6" />
     {:else if name === "sliders"}<path d="M2 5h7M12 5h2M2 11h2M7 11h7" /><circle cx="10.5" cy="5" r="1.5" /><circle cx="5.5" cy="11" r="1.5" />{/if}
   </svg>
 {/snippet}
@@ -1791,6 +1803,11 @@
                   {#each startProfiles as p (p.key)}
                     <button class="sbtn" onclick={() => swapToProfile(pane, p.id, p.account)}><span class="aico {p.agent}">{GLYPH[p.agent] ?? "›"}</span>{p.label}</button>
                   {/each}
+                  {#if pickable.length}
+                    <button class="sbtn" onclick={(e) => popup(e, pickable.map((p) => [p.label, () => swapToProfile(pane, p.id, p.account, true)] as MItem))}
+                      >{@render icon("history")} Sesi lama…</button
+                    >
+                  {/if}
                   <button class="sbtn" onclick={() => startInFolder(pane)}>{@render icon("folder")} Buka folder…</button>
                 </div>
               </div>
