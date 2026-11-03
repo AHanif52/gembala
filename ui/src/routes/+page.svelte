@@ -7,6 +7,7 @@
   import OutputView from "$lib/OutputView.svelte";
   import Messages from "$lib/Messages.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getVersion } from "@tauri-apps/api/app";
   import { pretty, UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { Menu } from "@tauri-apps/api/menu";
@@ -1348,10 +1349,15 @@
 
   // Esc yang tidak dipakai halaman diteruskan WebKit ke jendela = keluar layar penuh macOS; layar penuh cukup fn+F
   const keepFullscreen = (e: KeyboardEvent) => e.key === "Escape" && e.preventDefault();
+  let fullscreen = $state(false); // layar penuh: tombol jendela macOS hilang, ruangnya di sidebar ikut hilang
 
   onMount(() => {
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("keydown", keepFullscreen);
+    const win = getCurrentWindow();
+    const onFull = () => win.isFullscreen().then((f) => (fullscreen = f)).catch(() => {});
+    onFull();
+    const unlistenFull = win.onResized(onFull);
     const unlisten = listen<string>("shortcut", ({ payload }) => run(payload));
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
@@ -1399,6 +1405,7 @@
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("keydown", keepFullscreen);
+      unlistenFull.then((f) => f());
       unlisten.then((f) => f());
       unlistenCfg.then((f) => f());
       unlistenDrop.then((f) => f());
@@ -1435,7 +1442,7 @@
 {/snippet}
 
 {#if sidebar}
-  <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging}>
+  <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging} class:full={fullscreen}>
     <!-- title bar transparan: area tombol jendela + geser jendela -->
     <div class="drag" data-tauri-drag-region></div>
     <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
@@ -2035,6 +2042,9 @@
     position: absolute;
     inset: 0 0 auto 0;
     height: 36px;
+  }
+  .side.full {
+    padding-top: 10px;
   }
   .drag.top {
     position: fixed;

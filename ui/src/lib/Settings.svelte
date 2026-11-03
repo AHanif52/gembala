@@ -168,6 +168,21 @@
     return "";
   }
   const mb = (kb: number) => `${Math.round(kb / 1024)} MB`;
+  // satu baris per pane (total RAM/CPU semua prosesnya), rincian dibuka per pane; pane berisi shell saja di bawah
+  const SHELLS = ["zsh", "bash", "fish", "sh", "login"];
+  const AGENT_BIN = ["claude", "codex", "opencode", "omp"];
+  const paneGroups = $derived.by(() => {
+    const g = new Map<string, Proc[]>();
+    for (const p of procs.filter((p) => p.role === "pane")) {
+      const k = paneOf(p) || "pane lain";
+      g.set(k, [...(g.get(k) ?? []), p]);
+    }
+    return [...g].map(([name, ps]) => {
+      const run = ps.find((p) => AGENT_BIN.includes(p.name))?.name ?? ps.find((p) => !SHELLS.includes(p.name))?.name;
+      return { name, ps, run: run ?? "shell (diam)", idle: !run, rss: ps.reduce((s, p) => s + p.rss_kb, 0), cpu: ps.reduce((s, p) => s + p.cpu, 0) };
+    }).sort((a, b) => +a.idle - +b.idle || b.rss - a.rss);
+  });
+  let openGroups = $state<string[]>([]);
   let sec = $state<(typeof SECTIONS)[number][0]>("tampilan");
   let failed = $state("");
   let keys = $state<[string, string, string][]>([]);
@@ -579,13 +594,22 @@
             <span class="m">{mb(procs.filter((p) => p.role !== "pane").reduce((s, p) => s + p.rss_kb, 0))}</span>
           </div>
         </section>
-        <h4>Proses di pane</h4>
+        <h4>Proses di pane <small>Total {mb(paneGroups.reduce((s, g) => s + g.rss, 0))}</small></h4>
         <section>
-          {#each procs.filter((p) => p.role === "pane") as p (p.pid)}
-            <div class="row">
-              <span><code>{p.name}</code><small>{paneOf(p) ? `di ${paneOf(p)}` : "di pane"}</small></span>
-              <span class="m">PID {p.pid} · {mb(p.rss_kb)} · CPU {p.cpu.toFixed(1)}%</span>
-            </div>
+          {#each paneGroups as g (g.name)}
+            {@const open = openGroups.includes(g.name)}
+            <button class="row grp" aria-expanded={open} onclick={() => (openGroups = open ? openGroups.filter((x) => x !== g.name) : [...openGroups, g.name])}>
+              <span>{open ? "▾" : "▸"} {g.name}<small>{g.run}</small></span>
+              <span class="m">{mb(g.rss)} · CPU {g.cpu.toFixed(1)}%</span>
+            </button>
+            {#if open}
+              {#each g.ps as p (p.pid)}
+                <div class="row sub">
+                  <span><code>{p.name}</code></span>
+                  <span class="m">PID {p.pid} · {mb(p.rss_kb)} · CPU {p.cpu.toFixed(1)}%</span>
+                </div>
+              {/each}
+            {/if}
           {:else}
             <div class="row"><span>Belum ada pane</span></div>
           {/each}
@@ -825,6 +849,19 @@
   }
   .row + .row {
     border-top: 1px solid var(--line);
+  }
+  button.grp {
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+  .row.sub {
+    min-height: 32px;
+    padding-left: 30px;
   }
   .row > span:first-child {
     display: flex;
