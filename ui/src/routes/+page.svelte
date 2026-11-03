@@ -1497,7 +1497,7 @@
             {@const g = meta[t.focus]?.git}
             {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents].filter(Boolean).join(" · ")}
             {#if STATUS[st] || rest}
-              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot mini {stat(p) || 'idle'}" title="{meta[p]?.name} {STATUS[stat(p)] ?? 'diam'}"></span>{/each}{:else if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {STATUS[stat(p)] ?? 'diam'}"></span>{/each}{:else if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}
           {/if}
         </button>
@@ -2227,12 +2227,13 @@
     animation: pulse 1.4s ease-in-out infinite; /* FR-52: bekerja = berdenyut */
   }
   /* FR-52: tab beberapa pane = satu titik kecil per pane; pane diam = cincin */
-  .dot.mini {
+  /* bukan .mini: nama itu sudah dipakai tombol kecil (padding + border) */
+  .dot.pdot {
     width: 6px;
     height: 6px;
     margin-right: 3px;
   }
-  .dot.mini:last-of-type {
+  .dot.pdot:last-of-type {
     margin-right: 7px;
   }
   .dot.idle {
