@@ -885,7 +885,7 @@
     const hex: Record<string, string> = { ...HEX, none: "" };
     const out: Record<string, Image> = {};
     for (const [k, c] of Object.entries(hex)) {
-      const cv = new OffscreenCanvas(36, 36);
+      const cv = Object.assign(document.createElement("canvas"), { width: 36, height: 36 });
       const g = cv.getContext("2d")!;
       g.beginPath();
       g.arc(18, 18, c ? 13 : 12, 0, Math.PI * 2);
@@ -898,6 +898,8 @@
   async function popup(e: MouseEvent, items: MItem[]) {
     e.preventDefault();
     e.stopPropagation();
+    // bulatan warna belum ada (gagal saat app dibuka) = coba lagi sebelum menu dibangun
+    if (!Object.keys(dots).length) await makeDots().catch((err) => say(`Ikon warna gagal dimuat: ${err}`));
     (await Menu.new({ items: opts(items) })).popup().catch(() => {});
   }
   const copy = (text: string | null | undefined) =>
@@ -1508,7 +1510,8 @@
     (async () => {
       try {
         cfg = await call("config.get");
-        makeDots().catch(() => {});
+        // ikon gagal dibuat = menu tetap jalan tanpa bulatan; sebabnya ditampilkan supaya tidak hilang diam-diam
+        makeDots().catch((e) => say(`Ikon warna gagal dimuat: ${e}`));
         // FR-59: bahan autocomplete
         homePath = (await homeDir().catch(() => "")).replace(/\/$/, "");
         call("agents.detect", {}).then((a: Agent[]) => (installed = a.filter((x) => x.installed).map((x) => x.agent))).catch(() => {});

@@ -179,6 +179,32 @@
       el.title = b.code ? `keluar ${b.code}` : "";
     });
   }
+  /// FR-56/62: blok ringkas sesi agent dan riwayat "Sesi sebelumnya" ditulis daemon sebagai teks (tanpa penanda,
+  /// juga di snapshot attach): kepala blok = baris redup `<folder> (<durasi>)`, jadi garisnya dipasang dari isi buffer
+  let summary: { dispose(): void }[] = [];
+  function decorateSummary() {
+    summary.splice(0).forEach((d) => d.dispose());
+    const buf = term.buffer.active;
+    if (buf.type === "alternate") return;
+    const head = /^\S.* \(\d+ (dtk|mnt|jam)[^)]*\)( · keluar (-?\d+))?$/;
+    const heads: { y: number; fail: boolean }[] = [];
+    const stops: number[] = []; // garis "Sesi sebelumnya": blok berhenti di sini
+    for (let y = 0; y < buf.length; y++) {
+      const line = buf.getLine(y);
+      const text = line?.translateToString(true) ?? "";
+      if (text.startsWith("── Sesi sebelumnya")) stops.push(y);
+      const m = head.exec(text);
+      if (m && line?.getCell(0)?.isDim()) heads.push({ y, fail: !!m[3] && m[3] !== "0" });
+    }
+    const cursor = buf.baseY + buf.cursorY;
+    heads.forEach((h, i) => {
+      const end = Math.min(heads[i + 1]?.y ?? buf.length, stops.find((s) => s > h.y) ?? buf.length);
+      const marker = term.registerMarker(h.y - cursor);
+      const d = marker && term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "bottom" });
+      d?.onRender((el) => (el.classList.add("blk"), el.classList.toggle("fail", h.fail)));
+      if (marker) summary.push(marker);
+    });
+  }
   const outputOf = (b: Block) => {
     if (!b.c || !b.d) return "";
     const buf = term.buffer.active;
@@ -309,7 +335,7 @@
       // FR-56: agent keluar = layar diganti blok ringkas dari daemon
       if (e.event === "pane.replace") {
         term.reset();
-        term.write(unb64(e.params.data));
+        term.write(unb64(e.params.data), decorateSummary);
       }
       if (e.event === "pane.exit") onexit(pane);
     };
@@ -325,7 +351,7 @@
         // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
         const a = await call("pane.attach", { pane });
         const snap = unb64(a.snapshot);
-        term.write(snap);
+        term.write(snap, decorateSummary);
         if (a.prompt) onprompt(true); // FR-59: penanda B sebelum attach tidak ikut snapshot
         if (/\S/.test(new TextDecoder().decode(snap).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
         attached = true;
