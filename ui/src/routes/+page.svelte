@@ -236,7 +236,20 @@
   let zhist: string[] = []; // riwayat zsh, dimuat sekali saat app dibuka
   let homePath = "";
   type Comp = { label: string; kind: string; insert: string };
-  let comp = $state<{ pane: number; items: Comp[]; sel: number } | null>(null);
+  // `auto` = saran akun yang muncul sendiri saat mengetik `cl…` (FR-61): Enter langsung menjalankan
+  let comp = $state<{ pane: number; items: Comp[]; sel: number; auto?: boolean } | null>(null);
+  /// FR-61 varian C: `cl…` di kotak ketik = satu saran per akun Claude; terpilih pertama = akun bawaan workspace
+  async function accountSuggest(pane: number) {
+    const r = await call("account.list", {}).catch(() => null);
+    const rows: { account: { id: string; name: string; agent: string }; status: { email?: string } }[] = r?.accounts ?? [];
+    const items = rows
+      .filter((x) => x.account.agent === "claude")
+      .map((x) => ({ label: `claude · ${x.account.name}`, kind: x.status.email ?? "", insert: x.account.id === "utama" ? "claude" : `claude-${x.account.id}` }));
+    const d = draft[pane] ?? "";
+    if (items.length < 2 || d.length < 2 || !"claude".startsWith(d)) return;
+    const def = wss.find((w) => w.id === wsIdOf(pane))?.accounts?.claude;
+    comp = { pane, items, sel: Math.max(0, items.findIndex((it) => it.insert === `claude-${def}`)), auto: true };
+  }
   const ghost = (pane: number) => {
     const d = draft[pane] ?? "";
     if (!d || d.includes("\n") || d.startsWith("@")) return "";
@@ -286,9 +299,11 @@
       if (["ArrowDown", "ArrowUp", "Tab", "Enter", "Escape"].includes(e.key)) e.preventDefault();
       if (e.key === "ArrowDown") return void (comp.sel = (comp.sel + 1) % n);
       if (e.key === "ArrowUp") return void (comp.sel = (comp.sel + n - 1) % n);
+      if (e.key === "Enter" && comp.auto) return void ((draft[pane] = comp.items[comp.sel].insert), (comp = null), runDraft(pane));
       if (e.key === "Tab" || e.key === "Enter") return void ((draft[pane] = comp.items[comp.sel].insert), (comp = null));
-      comp = null;
-      if (e.key === "Escape") return;
+      if (e.key === "Escape") return void (comp = null);
+      // saran akun tetap terbuka selama teks masih awal `claude` (diatur onEditorInput)
+      if (!comp.auto) comp = null;
     }
     // saran abu-abu: → di ujung teks = terima
     if (e.key === "ArrowRight" && ta.selectionStart === ta.value.length && ghost(pane)) {
@@ -360,6 +375,11 @@
   function onEditorInput(pane: number) {
     const m = /^@([\w.-]*)$/.exec(draft[pane] ?? "");
     mention = m ? { pane, q: m[1], sel: 0, editor: true } : mention?.editor ? null : mention;
+    const d = draft[pane] ?? "";
+    const claudeAccts = (cfg?.values.accounts ?? []).some((a) => a.agent === "claude");
+    if (claudeAccts && d.length >= 2 && "claude".startsWith(d)) {
+      if (!(comp?.pane === pane && comp.auto)) accountSuggest(pane);
+    } else if (comp?.pane === pane && comp.auto) comp = null;
   }
   function chooseMention(i: number) {
     const r = mentionItems[i];
@@ -1695,7 +1715,7 @@
                     {#each comp.items as it, i (it.label)}
                       <button class="opt" class:on={i === comp.sel} role="option" aria-selected={i === comp.sel}
                         onpointerdown={(e) => e.preventDefault()} onclick={() => ((draft[pane] = it.insert), (comp = null))}>
-                        <span class="ico" aria-hidden="true">{({ Folder: "▸", Perintah: "›", Branch: "⎇", Script: "▶" } as Record<string, string>)[it.kind] ?? "·"}</span>
+                        <span class="ico" class:aico={comp.auto} class:claude={comp.auto} aria-hidden="true">{comp.auto ? GLYPH.claude : (({ Folder: "▸", Perintah: "›", Branch: "⎇", Script: "▶" } as Record<string, string>)[it.kind] ?? "·")}</span>
                         <span>{it.label}</span>
                         <span class="keys">{it.kind}</span>
                       </button>
