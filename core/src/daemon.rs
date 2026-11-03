@@ -1301,6 +1301,9 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
         let at = v.0.position();
         *pane.pre_agent.lock().unwrap() = v.0.before(at);
         *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
+        // agent dari profil jalan (lagi, mis. "Lanjutkan") = siap menerima pesan
+        *pane.status.lock().unwrap() = "idle";
+        *pane.status_at.lock().unwrap() = std::time::Instant::now();
         return;
     }
     let Some(code) = mark.strip_prefix("agent-exit;") else { return };
@@ -1365,6 +1368,9 @@ fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8]) {
 #[allow(clippy::too_many_arguments)]
 fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_dir: Option<std::path::PathBuf>, code: &str, prompt: &[u8]) {
     let Some((started, log)) = pane.agent_log.lock().unwrap().take() else { return };
+    // agent keluar = tidak ada lagi yang membaca pesan: status kosong, `gembala send` ke pane ini ditolak
+    // (target_unknown) alih-alih menempel pesan ke zsh dan pengirim mengira terkirim
+    *pane.status.lock().unwrap() = "";
     // 2 detik cadangan: agent manual baru terdeteksi sampai 1 detik setelah mulai
     let since = std::time::SystemTime::now() - started.elapsed() - Duration::from_secs(2);
     let secs = started.elapsed().as_secs();

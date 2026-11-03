@@ -227,7 +227,9 @@
   const ghost = (pane: number) => {
     const d = draft[pane] ?? "";
     if (!d || d.includes("\n") || d.startsWith("@")) return "";
-    const hit = [...history].reverse().concat(zhist).find((h) => h.startsWith(d) && h.length > d.length && !h.includes("\n"));
+    // perintah lanjut dari kartu sesi selesai (FR-56) didahulukan: `claude` → `claude --resume <id>` pane ini
+    const resume = meta[pane]?.ended?.resume;
+    const hit = [...(resume ? [resume] : []), ...[...history].reverse(), ...zhist].find((h) => h.startsWith(d) && h.length > d.length && !h.includes("\n"));
     return hit ? hit.slice(d.length) : "";
   };
   async function complete(pane: number) {
