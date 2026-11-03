@@ -184,7 +184,8 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     on_ready();
     let st3 = st.clone();
     thread::spawn(move || idle_exit(st3));
-    thread::spawn(history::sweep); // FR-62: riwayat lebih dari 30 hari
+    let st9 = st.clone();
+    thread::spawn(move || save_logs_loop(st9)); // FR-62: log layar ke disk, riwayat lebih dari 14 hari dibuang
     let (st8, run_dir) = (st.clone(), dir.to_path_buf());
     thread::spawn(move || spool(st8, run_dir));
     let st4 = st.clone();
@@ -707,7 +708,15 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             for b in &prev {
                 history::append(&pane.hist, b);
             }
-            pane.view.lock().unwrap().0.feed(&history::render(&prev));
+            // log layar lama sudah memuat blok-blok itu; tanpa log cukup blok ringkasnya
+            match history::load_log(&p["history"]) {
+                Some((log, t)) => {
+                    let mut v = pane.view.lock().unwrap();
+                    v.0.feed(&log);
+                    v.0.feed(&history::separator(t));
+                }
+                None => pane.view.lock().unwrap().0.feed(&history::render(&prev)),
+            }
             st.panes.lock().unwrap().insert(id, pane.clone());
             let name = pane.name.lock().unwrap().clone();
             let st = st.clone();
@@ -808,6 +817,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             // FR-46 "Keluar dan hentikan semua agent": balasan sempat terkirim, lalu keluar;
             // master PTY tertutup bersama proses = kernel mengirim SIGHUP ke semua sesi pane
             eprintln!("daemon keluar: daemon.stop");
+            save_logs(st, &mut HashMap::new());
             thread::spawn(|| {
                 thread::sleep(Duration::from_millis(200));
                 std::process::exit(0);
@@ -1296,6 +1306,38 @@ fn watch_config(st: Arc<State>) {
 }
 
 /// FR-20: tanpa UI dan semua pane shell diam selama dua pemeriksaan berturut-turut = keluar.
+/// FR-62: log layar utama tiap pane yang dapat output baru; layar alternatif (TUI) tidak menimpa log terakhir
+fn save_logs(st: &State, saved: &mut HashMap<u64, std::time::Instant>) {
+    let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(k, v)| (*k, v.clone())).collect();
+    saved.retain(|id, _| panes.iter().any(|(k, _)| k == id));
+    for (id, pane) in panes {
+        let at = *pane.last_out.lock().unwrap();
+        if saved.get(&id) == Some(&at) {
+            continue;
+        }
+        let log = {
+            let mut v = pane.view.lock().unwrap();
+            let pos = v.0.position();
+            v.0.before(pos)
+        };
+        if !log.is_empty() {
+            history::save_log(&st.boot, id, &log);
+        }
+        saved.insert(id, at);
+    }
+}
+
+fn save_logs_loop(st: Arc<State>) {
+    let mut saved = HashMap::new();
+    for n in (0..5760u32).cycle() {
+        if n == 0 {
+            history::sweep(); // saat mulai lalu tiap hari (5760 x 15 dtk)
+        }
+        thread::sleep(Duration::from_secs(15));
+        save_logs(&st, &mut saved);
+    }
+}
+
 fn idle_exit(st: Arc<State>) {
     let every = std::env::var("GEMBALA_IDLE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
     let mut strikes = 0;
@@ -1305,6 +1347,7 @@ fn idle_exit(st: Arc<State>) {
         strikes = if st.ui_clients.load(Ordering::Relaxed) == 0 && !busy { strikes + 1 } else { 0 };
         if strikes >= 2 {
             eprintln!("daemon keluar: tanpa UI dan semua pane diam");
+            save_logs(&st, &mut HashMap::new());
             std::process::exit(0);
         }
     }

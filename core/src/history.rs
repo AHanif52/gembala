@@ -1,13 +1,14 @@
 //! FR-62: riwayat blok per pane di disk, supaya blok perintah tetap tampil setelah daemon berhenti atau laptop
-//! restart (ala "Previous session" Warp). Hanya baris perintah, folder, waktu, kode keluar, dan perintah lanjut;
-//! output tidak pernah ditulis (pengecualian SEC-13).
+//! restart (ala "Previous session" Warp): baris perintah, folder, waktu, kode keluar, dan perintah lanjut, plus log
+//! layar utama yang disamarkan (`.log`, pengecualian SEC-13).
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 const MAX: usize = 200;
-const KEEP_DAYS: u64 = 30;
+const KEEP_DAYS: u64 = 14;
+const LOG_MAX: u64 = 4 << 20;
 
 pub struct Block {
     pub t: u64,
@@ -30,6 +31,45 @@ fn dir() -> PathBuf {
 
 pub fn path(boot: &str, pane: u64) -> PathBuf {
     dir().join(format!("{boot}-{pane}.jsonl"))
+}
+
+fn log_path(from: &Value) -> Option<PathBuf> {
+    let (boot, pane) = (from["boot"].as_str()?, from["pane"].as_u64()?);
+    (boot.len() == 16 && boot.bytes().all(|c| c.is_ascii_hexdigit())).then(|| dir().join(format!("{boot}-{pane}.log")))
+}
+
+/// Log layar pane (baris berwarna) ditulis utuh lewat file sementara; gagal tulis diabaikan.
+pub fn save_log(boot: &str, pane: u64, bytes: &[u8]) {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let Some(file) = log_path(&json!({"boot": boot, "pane": pane})) else { return };
+    let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir());
+    let tmp = file.with_extension("tmp");
+    // disamarkan per potongan di antara kode warna: `\x1b[32mghp_…` tetap kena (huruf `m` bukan awal kata)
+    let raw = String::from_utf8_lossy(bytes);
+    let (mut text, mut last) = (String::new(), 0);
+    for m in regex_lite::Regex::new("\x1b\\[[0-9;]*m").unwrap().find_iter(&raw) {
+        text += &crate::git::redact(&raw[last..m.start()]);
+        text += m.as_str();
+        last = m.end();
+    }
+    text += &crate::git::redact(&raw[last..]);
+    let ok = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(text.as_bytes()));
+    if ok.is_ok() {
+        let _ = std::fs::rename(&tmp, &file);
+    }
+}
+
+/// Log pane lama dan waktu terakhir ditulis, bila ada.
+pub fn load_log(from: &Value) -> Option<(Vec<u8>, u64)> {
+    let file = log_path(from)?;
+    let meta = std::fs::metadata(&file).ok().filter(|m| m.len() <= LOG_MAX)?;
+    let t = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some((std::fs::read(file).ok()?, t))
+}
+
+/// Garis pemisah di bawah log lama
+pub fn separator(t: u64) -> Vec<u8> {
+    format!("{GUTTER}\x1b[2mSesi sebelumnya · {}\x1b[0m\r\n\r\n", date(t)).into_bytes()
 }
 
 pub fn now() -> u64 {
@@ -130,8 +170,9 @@ pub fn render(blocks: &[Block]) -> Vec<u8> {
     for b in blocks {
         out += &block_text(&b.cwd, b.secs, &b.code.to_string(), &b.cmd, b.resume.as_deref());
     }
-    out += &format!("{GUTTER}\x1b[2mSesi sebelumnya · {}\x1b[0m\r\n\r\n", date(first.t));
-    out.into_bytes()
+    let mut out = out.into_bytes();
+    out.extend(separator(first.t));
+    out
 }
 
 /// Penanda blok dalam potongan output, berurutan.
@@ -156,7 +197,7 @@ pub fn marks(b: &[u8]) -> Vec<Mark> {
     out
 }
 
-/// File riwayat yang tidak disentuh lebih dari 30 hari dihapus.
+/// File riwayat dan log yang tidak disentuh lebih dari 14 hari dihapus.
 pub fn sweep() {
     let Ok(entries) = std::fs::read_dir(dir()) else { return };
     let limit = std::time::Duration::from_secs(KEEP_DAYS * 86400);
@@ -192,6 +233,19 @@ mod tests {
     fn boot_tidak_valid_diabaikan() {
         assert!(load(&json!({"boot": "../../etc/passwd", "pane": 1})).is_empty());
         assert!(load(&json!({"boot": "0123456789abcdef"})).is_empty());
+    }
+
+    #[test]
+    fn log_pulih_dan_disamarkan() {
+        let d = std::env::temp_dir().join(format!("gembala-log-{}", std::process::id()));
+        // SAFETY: test tunggal yang memakai GEMBALA_CONFIG di modul ini
+        unsafe { std::env::set_var("GEMBALA_CONFIG", d.join("config.toml")) };
+        save_log("0123456789abcdef", 7, b"\x1b[32mok\x1b[m\r\n\x1b[33mghp_abcd1234abcd1234\x1b[m\r\n");
+        let (b, _) = load_log(&json!({"boot": "0123456789abcdef", "pane": 7})).unwrap();
+        let t = String::from_utf8(b).unwrap();
+        assert!(t.contains("\x1b[32mok") && !t.contains("abcd1234abcd1234"), "{t}");
+        assert!(load_log(&json!({"boot": "../../etc/passwd", "pane": 7})).is_none());
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
