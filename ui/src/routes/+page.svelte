@@ -253,7 +253,7 @@
     if (items.length < 2 || d.length < 2 || !"claude".startsWith(d)) return;
     // sesi pane ini yang baru selesai (FR-56) = baris pertama dan terpilih, supaya Enter tidak menimpa niat lanjut
     const resume = meta[pane]?.ended?.resume;
-    if (resume?.startsWith("claude")) return void (comp = { pane, items: [{ label: "Lanjutkan sesi", kind: resume.replace(/([0-9a-f]{8})-[0-9a-f-]{27}$/, "$1…"), insert: `${resume} ` }, ...items], sel: 0, auto: true });
+    if (resume?.startsWith("claude")) return void (comp = { pane, items: [{ label: resume.replace(/([0-9a-f]{8})-[0-9a-f-]{27}$/, "$1…"), kind: "sesi terakhir pane ini", insert: `${resume} ` }, ...items], sel: 0, auto: true });
     const def = wss.find((w) => w.id === wsIdOf(pane))?.accounts?.claude;
     comp = { pane, items, sel: Math.max(0, items.findIndex((it) => it.insert === `claude-${def} `)), auto: true };
   }
