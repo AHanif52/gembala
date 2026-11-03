@@ -345,6 +345,30 @@ pub fn save_account(path: &Path, a: &crate::account::Account) -> Result<(), Stri
     commit(path, &doc, &before)
 }
 
+/// FR-61 (8): ubah setelan akun yang sudah ada (share, model, effort, trust); validasi penuh oleh `load` lewat `commit`.
+pub fn update_account(path: &Path, a: &crate::account::Account) -> Result<(), String> {
+    let (mut doc, before) = read_doc(path)?;
+    let t = doc
+        .get_mut("account")
+        .and_then(|v| v.as_array_of_tables_mut())
+        .and_then(|arr| arr.iter_mut().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(a.id.as_str())))
+        .ok_or_else(|| format!("akun \"{}\" tidak ada", a.id))?;
+    t["share"] = toml_edit::value(a.share.iter().map(String::as_str).collect::<toml_edit::Array>());
+    for (k, v) in [("model", &a.model), ("effort", &a.effort)] {
+        if v.is_empty() {
+            t.remove(k);
+        } else {
+            t[k] = toml_edit::value(v.as_str());
+        }
+    }
+    if a.trust {
+        t.remove("trust");
+    } else {
+        t["trust"] = toml_edit::value(false);
+    }
+    commit(path, &doc, &before)
+}
+
 /// FR-61: hapus `[[account]]`; folder, tautan, dan Keychain tidak disentuh.
 pub fn remove_account(path: &Path, id: &str) -> Result<(), String> {
     let (mut doc, before) = read_doc(path)?;

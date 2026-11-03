@@ -30,7 +30,7 @@ export type Profile = {
 };
 
 /// FR-61: `[[account]]` dari config.toml
-export type Account = { id: string; agent: string; name: string; dir: string; share: string[] };
+export type Account = { id: string; agent: string; name: string; dir: string; share: string[]; model?: string; effort?: string; trust?: boolean };
 
 export type Agent = {
   agent: string;

@@ -520,7 +520,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             for a in st.accounts.lock().unwrap().iter() {
                 out.push(json!({"account": account::to_json(a), "status": account::status(&account::config_json(Some(a)))}));
             }
-            Ok(json!({"accounts": out, "share": account::SHARE}))
+            Ok(json!({"accounts": out, "share": account::SHARE, "models": account::MODELS, "efforts": account::EFFORTS}))
         }
         "account.create" => {
             let name = p["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).ok_or("bad_params")?.to_string();
@@ -530,7 +530,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 Some(a) => a.iter().filter_map(|v| v.as_str()).filter(|x| account::SHARE.contains(x)).map(String::from).collect(),
                 None => account::SHARE_DEFAULT.iter().map(|x| x.to_string()).collect(),
             };
-            let a = account::Account { id, agent: "claude".into(), name, dir, share };
+            let a = account::Account { id, agent: "claude".into(), name, dir, share, model: String::new(), effort: String::new(), trust: true };
             if let Err(why) = account::valid_dir(&a.dir) {
                 return Ok(json!({"error": why}));
             }
@@ -557,6 +557,34 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 Some(Err(why)) => Ok(json!({"error": why})),
                 _ => Ok(json!({})),
             }
+        }
+        // FR-61 (8): model/effort/trust, atau satu butir jadi Ikut Utama/Sendiri (`item` + `follow`)
+        "account.update" => {
+            let id = p["id"].as_str().ok_or("bad_params")?;
+            let Some(mut a) = st.accounts.lock().unwrap().iter().find(|a| a.id == id).cloned() else { return Ok(json!({"error": "akun tidak ada"})) };
+            if let Some(m) = p["model"].as_str() {
+                a.model = m.into();
+            }
+            if let Some(e) = p["effort"].as_str() {
+                a.effort = e.into();
+            }
+            if let Some(t) = p["trust"].as_bool() {
+                a.trust = t;
+            }
+            if let (Some(item), Some(follow)) = (p["item"].as_str(), p["follow"].as_bool()) {
+                if let Err(why) = account::set_share(&a, item, follow) {
+                    return Ok(json!({"error": why}));
+                }
+                a.share.retain(|x| x != item);
+                if follow {
+                    a.share.push(item.into());
+                }
+            }
+            if let Err(why) = config::update_account(&config::path(), &a) {
+                return Ok(json!({"error": why}));
+            }
+            reload_config(st);
+            Ok(json!({}))
         }
         "config.set" => {
             let (section, key) = (p["section"].as_str().ok_or("bad_params")?, p["key"].as_str().ok_or("bad_params")?);
@@ -593,7 +621,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 },
             };
             // FR-61: folder yang dipercaya di Utama ikut dipercaya di akun ini sebelum Claude-nya jalan
-            if let Some(a) = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name) {
+            if let Some(a) = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name && a.trust) {
                 account::sync_trust(&a.dir);
             }
             let session = profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) };

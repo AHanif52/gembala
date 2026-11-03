@@ -31,7 +31,10 @@ fn main() -> ExitCode {
         "hook" => hook(&args[1..]),
         // FR-61: dipanggil fungsi zsh `claude` sebelum Claude akun lain jalan (tidak tercantum di USAGE: internal)
         "trust-sync" => {
-            if let Some(dir) = args.get(1) {
+            // hanya akun di config yang trust-nya nyala (FR-61 (8): "Folder dipercaya" bisa Sendiri)
+            let text = std::fs::read_to_string(config::path()).ok();
+            let on = |d: &str| config::load(text.as_deref()).accounts.iter().any(|a| a.trust && account::expand(&a.dir) == account::expand(d));
+            if let Some(dir) = args.get(1).filter(|d| on(d)) {
                 account::sync_trust(dir);
             }
             ExitCode::SUCCESS

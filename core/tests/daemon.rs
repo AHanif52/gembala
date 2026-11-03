@@ -868,6 +868,36 @@ fn fr61_akun_agent() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// FR-61 (8): butir jadi Sendiri = salinan isi Utama (projects kosong); kembali Ikut Utama = isi akun disimpan
+/// `.gembala-bak` lalu ditautkan; model/effort tersimpan dan nilai asing ditolak.
+#[test]
+fn fr61_setelan_per_akun() {
+    let home = std::env::temp_dir().join(format!("gbl-{}-home61b", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".claude/projects/p")).unwrap();
+    std::fs::write(home.join(".claude/CLAUDE.md"), "aturan").unwrap();
+    let d = start_env("akun61b", 3600, &[("HOME", &home)]);
+    let mut ui = Cli::ui(&d);
+    ui.call("account.create", json!({"name": "Kantor", "share": ["CLAUDE.md", "projects"]}));
+    let k = home.join(".claude-kantor");
+    let up = |ui: &mut Cli, p: serde_json::Value| ui.call("account.update", p)["result"].clone();
+    assert_eq!(up(&mut ui, json!({"id": "kantor", "item": "CLAUDE.md", "follow": false})), json!({}));
+    assert!(std::fs::read_link(k.join("CLAUDE.md")).is_err());
+    assert_eq!(std::fs::read_to_string(k.join("CLAUDE.md")).unwrap(), "aturan");
+    std::fs::write(k.join("CLAUDE.md"), "aturan kantor").unwrap();
+    up(&mut ui, json!({"id": "kantor", "item": "projects", "follow": false}));
+    assert!(k.join("projects").is_dir() && !k.join("projects/p").exists());
+    up(&mut ui, json!({"id": "kantor", "item": "CLAUDE.md", "follow": true}));
+    assert_eq!(std::fs::read_link(k.join("CLAUDE.md")).unwrap(), home.join(".claude/CLAUDE.md"));
+    assert_eq!(std::fs::read_to_string(k.join("CLAUDE.md.gembala-bak")).unwrap(), "aturan kantor");
+    up(&mut ui, json!({"id": "kantor", "model": "opus", "effort": "high", "trust": false}));
+    let acc = ui.call("account.list", json!({}))["result"]["accounts"][1]["account"].clone();
+    assert_eq!((acc["model"].as_str(), acc["effort"].as_str(), acc["trust"].as_bool()), (Some("opus"), Some("high"), Some(false)), "{acc}");
+    assert_eq!(acc["share"], json!(["CLAUDE.md"]), "{acc}");
+    assert!(up(&mut ui, json!({"id": "kantor", "effort": "super"}))["error"].as_str().is_some());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Kriteria 10 + SEC-21: baca hanya dalam workspace sama; pane shell hanya bila diizinkan pengguna.
 #[test]
 fn kriteria_10_baca_dibatasi() {

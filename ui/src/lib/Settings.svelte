@@ -33,7 +33,31 @@
   const slug = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32);
   async function loadAccounts() {
     const r = await call("account.list", {}).catch(() => null);
-    if (r) [accRows, shareOpts] = [r.accounts, r.share];
+    if (r) [accRows, shareOpts, models, efforts] = [r.accounts, r.share, r.models ?? [], r.efforts ?? []];
+  }
+  // FR-61 (8) varian A: setelan sendiri (model, effort), Ikut Utama/Sendiri per butir, dan yang selalu milik akun
+  let models = $state<string[]>([]);
+  let efforts = $state<string[]>([]);
+  let accDetail = $state(""); // id akun yang halamannya terbuka
+  let ownAsk = $state(""); // "<id>:<butir>" menunggu konfirmasi Sendiri untuk settings.json/plugins
+  const FOLLOW: { label: string; sub: string; items: string[] }[] = [
+    { label: "Instruksi global", sub: "CLAUDE.md", items: ["CLAUDE.md"] },
+    { label: "Pengaturan Claude", sub: "settings.json: hook, izin, plugin aktif (termasuk MCP bersama)", items: ["settings.json"] },
+    { label: "Skill, perintah, subagent", sub: "skills, commands, agents", items: ["skills", "commands", "agents"] },
+    { label: "Plugin dan MCP bersama", sub: "plugins", items: ["plugins"] },
+    { label: "Riwayat sesi dan memori proyek", sub: "projects: /resume dan lanjut sesi lintas akun; Sendiri = mulai kosong", items: ["projects"] },
+  ];
+  async function updateAccount(params: Record<string, unknown>) {
+    const r = await call("account.update", params).catch((e) => ({ error: String(e) }));
+    accErr = r?.error ?? "";
+    loadAccounts();
+  }
+  async function setFollow(a: Account, items: string[], follow: boolean) {
+    const key = `${a.id}:${items[0]}`;
+    // settings.json/plugins jadi Sendiri: hook, izin, plugin, MCP bersama berhenti ikut Utama, jadi tanya dulu
+    if (!follow && (items.includes("settings.json") || items.includes("plugins")) && ownAsk !== key) return void (ownAsk = key);
+    ownAsk = "";
+    for (const item of items) await updateAccount({ id: a.id, item, follow });
   }
   $effect(() => {
     void cfg.values.accounts; // muat ulang saat config berubah
@@ -443,16 +467,59 @@
             <div class="row">
               <span class="grow"
                 >{r.account.name}{r.account.main ? " · bawaan" : ""}<small
-                  >{r.status.email ?? (r.status.used ? "email tidak terbaca" : "belum login")} · {r.account.dir}{r.account.share?.length
-                    ? ` · bawa dari Utama: ${r.account.share.join(", ")}`
+                  >{r.status.email ?? (r.status.used ? "email tidak terbaca" : "belum login")} · {r.account.dir}{r.account.model || r.account.effort
+                    ? ` · ${[r.account.model, r.account.effort].filter(Boolean).join(" · ")}`
                     : ""}</small
                 ></span
               >
               <span class="acts">
                 {#if !r.status.used}<button class="mini" onclick={() => onlogin(r.account.id, r.account.name)}>Login</button>{/if}
+                {#if !r.account.main}<button class="mini" aria-expanded={accDetail === r.account.id} onclick={() => (accDetail = accDetail === r.account.id ? "" : r.account.id)}>{accDetail === r.account.id ? "Tutup" : "Atur"}</button>{/if}
                 {#if !r.account.main}<button class="mini" onclick={() => removeAccount(r.account.id)}>{removeAsk === r.account.id ? `Yakin? ${r.account.dir} ikut dihapus` : "Hapus"}</button>{/if}
               </span>
             </div>
+            {#if accDetail === r.account.id}
+              {@const a = r.account}
+              <!-- FR-61 (8), mockup-akun-setelan varian A -->
+              <div class="accd">
+                <span class="grp">Setelan sendiri <small>dipakai tiap Claude akun ini dijalankan dari Gembala</small></span>
+                <div class="row sub">
+                  <span class="grow">Model<small>Bawaan = ikut settings.json</small></span>
+                  <select aria-label="Model akun {a.name}" value={a.model ?? ""} onchange={(e) => updateAccount({ id: a.id, model: e.currentTarget.value })}>
+                    <option value="">Bawaan</option>{#each models as m (m)}<option value={m}>{m}</option>{/each}
+                  </select>
+                </div>
+                <div class="row sub">
+                  <span class="grow">Effort</span>
+                  <select aria-label="Effort akun {a.name}" value={a.effort ?? ""} onchange={(e) => updateAccount({ id: a.id, effort: e.currentTarget.value })}>
+                    <option value="">Bawaan</option>{#each efforts as x (x)}<option value={x}>{x}</option>{/each}
+                  </select>
+                </div>
+                <span class="grp">Ikut Utama <small>satu sumber; ubah di Utama, akun ini ikut. Sendiri = mulai dari salinan isi Utama saat ini</small></span>
+                {#each FOLLOW as f (f.label)}
+                  {@const on = f.items.every((i) => a.share.includes(i))}
+                  <div class="row sub">
+                    <span class="grow">{f.label}<small>{f.sub}</small></span>
+                    <span class="seg" role="group" aria-label={f.label}>
+                      <button class:on onclick={() => !on && setFollow(a, f.items, true)}>Ikut Utama</button>
+                      <button class:on={!on} onclick={() => on && setFollow(a, f.items, false)}>{ownAsk === `${a.id}:${f.items[0]}` ? "Yakin?" : "Sendiri"}</button>
+                    </span>
+                  </div>
+                  {#if ownAsk === `${a.id}:${f.items[0]}`}<span class="m">Hook, izin, plugin aktif, dan MCP bersama tidak lagi ikut Utama (mulai dari salinan sekarang). Klik Yakin? untuk lanjut</span>{/if}
+                {/each}
+                <div class="row sub">
+                  <span class="grow">Folder dipercaya<small>disalin dari Utama sebelum Claude jalan (satu arah)</small></span>
+                  <span class="seg" role="group" aria-label="Folder dipercaya">
+                    <button class:on={a.trust !== false} onclick={() => a.trust === false && updateAccount({ id: a.id, trust: true })}>Ikut Utama</button>
+                    <button class:on={a.trust === false} onclick={() => a.trust !== false && updateAccount({ id: a.id, trust: false })}>Sendiri</button>
+                  </span>
+                </div>
+                <span class="grp">Selalu milik akun ini <small>tidak bisa dibagi</small></span>
+                <div class="row sub"><span class="grow">🔒 Login dan token<small>disimpan Claude di Keychain; Gembala tidak membaca</small></span></div>
+                <div class="row sub"><span class="grow">🔒 Connector claude.ai<small>Google, Figma, Docs: tersambung ke akun claude.ai masing-masing</small></span></div>
+                <div class="row sub"><span class="grow">🔒 Riwayat prompt (panah atas)<small>history.jsonl per akun</small></span></div>
+              </div>
+            {/if}
           {/each}
           {#if removeAsk}<span class="m">Sesi dan pengaturan akun itu hilang; isi Utama aman. Login tetap di Keychain: /logout dulu bila ingin dicabut</span>{/if}
           {#if accErr}<span class="m err" role="alert">{accErr}</span>{/if}
@@ -862,6 +929,27 @@
   .row.sub {
     min-height: 32px;
     padding-left: 30px;
+  }
+  /* FR-61 (8): halaman akun, tiga kelompok */
+  .accd {
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 6px;
+    border-top: 1px solid var(--line);
+  }
+  .accd .grp {
+    padding: 10px 12px 2px 30px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .accd .grp small {
+    margin-left: 6px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
   }
   .row > span:first-child {
     display: flex;

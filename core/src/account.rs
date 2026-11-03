@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 /// Butir folder Utama yang boleh ditautkan ke akun baru (bukan input bebas). `projects` = memori + riwayat, opsional.
 pub const SHARE: &[&str] = &["CLAUDE.md", "settings.json", "skills", "commands", "agents", "plugins", "projects"];
 pub const SHARE_DEFAULT: &[&str] = &["CLAUDE.md", "settings.json", "skills", "commands", "agents", "plugins"];
+/// FR-61 (8): pilihan model dan effort per akun (alias resmi `claude --help`); kosong = ikut settings.json
+pub const MODELS: &[&str] = &["fable", "opus", "sonnet", "haiku"];
+pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const ENV: &str = "CLAUDE_CONFIG_DIR";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -17,6 +20,11 @@ pub struct Account {
     /// seperti ditulis di config (mis. `~/.claude-kantor`)
     pub dir: String,
     pub share: Vec<String>,
+    /// FR-61 (8): `--model`/`--effort` tiap Claude akun ini dijalankan dari Gembala; kosong = bawaan
+    pub model: String,
+    pub effort: String,
+    /// folder dipercaya Utama disalin ke akun ini (FR-61); bawaan nyala
+    pub trust: bool,
 }
 
 fn home() -> PathBuf {
@@ -93,7 +101,18 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Account>, Vec<S
             None => SHARE_DEFAULT.iter().map(|x| x.to_string()).collect(),
             Some(a) => a.iter().filter_map(|v| v.as_str()).filter(|x| SHARE.contains(x)).map(String::from).collect(),
         };
-        out.push(Account { id, agent, name, dir, share });
+        let pick = |k: &str, ok: &[&str], errors: &mut Vec<String>| match s(k) {
+            Some(v) if ok.contains(&v.as_str()) => v,
+            Some(_) => {
+                errors.push(format!("{}: salah satu dari {}; memakai bawaan", at(k), ok.join(", ")));
+                String::new()
+            }
+            None => String::new(),
+        };
+        let model = pick("model", MODELS, &mut errors);
+        let effort = pick("effort", EFFORTS, &mut errors);
+        let trust = t.get("trust").and_then(|v| v.as_bool()).unwrap_or(true);
+        out.push(Account { id, agent, name, dir, share, model, effort, trust });
     }
     (out, errors)
 }
@@ -101,6 +120,17 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Account>, Vec<S
 /// Env yang diekspor peluncur agent (nilai `~/…` dibuka shell, bagian 6).
 pub fn env(a: &Account) -> (String, String) {
     (ENV.into(), a.dir.clone())
+}
+
+/// FR-61 (8): flag model/effort akun untuk baris perintah Claude
+pub fn flags(a: &Account) -> Vec<String> {
+    let mut out = vec![];
+    for (flag, v) in [("--model", &a.model), ("--effort", &a.effort)] {
+        if !v.is_empty() {
+            out.extend([flag.to_string(), v.clone()]);
+        }
+    }
+    out
 }
 
 pub fn conflicts(env: &[(String, String)]) -> bool {
@@ -119,6 +149,7 @@ pub fn apply(p: &mut crate::profile::Profile, chosen: Option<&str>, accounts: &[
         return Err("account_env_conflict");
     }
     p.env.push(env(a));
+    p.args.extend(flags(a));
     Ok(a.name.clone())
 }
 
@@ -143,6 +174,40 @@ pub fn create(a: &Account) -> Result<Vec<String>, String> {
         std::os::unix::fs::symlink(&src, &dst).map_err(|e| format!("tautan {item}: {e}"))?;
     }
     Ok(skipped)
+}
+
+/// FR-61 (8): satu butir jadi Ikut Utama (`follow`) atau Sendiri. Sendiri = tautan diganti salinan isi Utama
+/// (`projects` mulai kosong: besar); Ikut Utama = isi milik akun disimpan sebagai `<butir>.gembala-bak`, lalu ditautkan.
+pub fn set_share(a: &Account, item: &str, follow: bool) -> Result<(), String> {
+    if !SHARE.contains(&item) {
+        return Err(format!("butir {item} tidak dikenal"));
+    }
+    let dir = valid_dir(&a.dir)?;
+    let (src, dst) = (main_dir().join(item), dir.join(item));
+    let linked = dst.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink());
+    if follow {
+        if linked {
+            return Ok(());
+        }
+        if dst.symlink_metadata().is_ok() {
+            let bak = (0..).map(|n| dir.join(if n == 0 { format!("{item}.gembala-bak") } else { format!("{item}.gembala-bak{n}") })).find(|p| p.symlink_metadata().is_err()).unwrap();
+            std::fs::rename(&dst, &bak).map_err(|e| format!("simpan {item}: {e}"))?;
+        }
+        return if src.exists() { std::os::unix::fs::symlink(&src, &dst).map_err(|e| format!("tautan {item}: {e}")) } else { Ok(()) };
+    }
+    if !linked {
+        return Ok(());
+    }
+    std::fs::remove_file(&dst).map_err(|e| format!("lepas tautan {item}: {e}"))?;
+    if item == "projects" {
+        return std::fs::create_dir(&dst).map_err(|e| format!("buat {item}: {e}"));
+    }
+    if !src.exists() {
+        return Ok(());
+    }
+    // `cp -Rp`: isi Utama saat ini jadi titik awal milik akun; symlink di dalamnya disalin apa adanya
+    let ok = std::process::Command::new("/bin/cp").arg("-Rp").arg(&src).arg(&dst).status().is_ok_and(|s| s.success());
+    if ok { Ok(()) } else { Err(format!("salin {item} dari Utama gagal")) }
 }
 
 /// FR-61 (7): folder akun ikut dihapus. `remove_dir_all` tidak mengikuti symlink, jadi tautan ke Utama hanya dilepas.
@@ -218,7 +283,7 @@ fn merge_trust(main: &Value, target: &mut Value) -> usize {
 }
 
 pub fn to_json(a: &Account) -> Value {
-    json!({"id": a.id, "agent": a.agent, "name": a.name, "dir": a.dir, "share": a.share})
+    json!({"id": a.id, "agent": a.agent, "name": a.name, "dir": a.dir, "share": a.share, "model": a.model, "effort": a.effort, "trust": a.trust})
 }
 
 /// Nama → id: huruf kecil, selain a-z0-9 jadi `-`.
@@ -258,7 +323,7 @@ mod tests {
     #[test]
     fn urutan_akun_dan_env() {
         let claude = || crate::profile::builtin().into_iter().find(|p| p.id == "claude").unwrap();
-        let acc = |id: &str, name: &str| Account { id: id.into(), agent: "claude".into(), name: name.into(), dir: format!("~/.claude-{id}"), share: vec![] };
+        let acc = |id: &str, name: &str| Account { id: id.into(), agent: "claude".into(), name: name.into(), dir: format!("~/.claude-{id}"), share: vec![], model: String::new(), effort: String::new(), trust: true };
         let all = [acc("kantor", "Kantor"), acc("klien", "Klien")];
         // tanpa pilihan, tanpa akun profil = Utama
         let mut p = claude();

@@ -342,7 +342,8 @@ pub fn zsh_accounts(accounts: &[crate::account::Account]) -> String {
     let mut s = String::from("# dibuat Gembala (FR-61): satu perintah per akun agent\n");
     for a in accounts.iter().filter(|a| a.agent == "claude") {
         let (k, v) = crate::account::env(a);
-        s += &format!("function claude-{} {{ {k}={} claude \"$@\" }}\n", a.id, home_q(&v));
+        let flags: String = crate::account::flags(a).iter().map(|f| format!(" {}", q(f))).collect();
+        s += &format!("function claude-{} {{ {k}={} claude{flags} \"$@\" }}\n", a.id, home_q(&v));
     }
     s
 }
@@ -794,12 +795,18 @@ mod tests {
 
     #[test]
     fn claude_per_akun_di_shell() {
-        let a = |id: &str, agent: &str, dir: &str| crate::account::Account { id: id.into(), agent: agent.into(), name: id.into(), dir: dir.into(), share: vec![] };
+        let a = |id: &str, agent: &str, dir: &str| crate::account::Account { id: id.into(), agent: agent.into(), name: id.into(), dir: dir.into(), share: vec![], model: String::new(), effort: String::new(), trust: true };
         let rc = zsh_accounts(&[a("kantor", "claude", "~/.claude-kantor"), a("x", "codex", "~/.codex-x")]);
         assert!(!rc.contains("claude-x"), "{rc}");
         // fungsi `claude` (hook) menerima folder akun lewat env yang sampai ke proses anak
         let script = format!("function claude {{ command env | grep '^CLAUDE_CONFIG_DIR=' }}\n{rc}claude-kantor --versi");
         let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).env("HOME", "/rumah").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "CLAUDE_CONFIG_DIR=/rumah/.claude-kantor", "{rc}");
+        // FR-61 (8): model/effort akun jadi flag sebelum argumen pengguna
+        let mut k = a("kantor", "claude", "~/.claude-kantor");
+        (k.model, k.effort) = ("opus".into(), "high".into());
+        let script = format!("function claude {{ print -r -- \"$*\" }}\n{}claude-kantor --resume x", zsh_accounts(&[k]));
+        let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "--model opus --effort high --resume x");
     }
 }
