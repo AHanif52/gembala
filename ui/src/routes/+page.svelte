@@ -52,7 +52,15 @@
   // FR-4/52: titik status + keterangan teks, tidak hanya warna (bagian 11 BRD)
   const STATUS: Record<string, string> = { blocked: "butuh izin", done: "selesai", working: "bekerja" };
   // FR-52: warna tab pilihan pengguna (garis tipis kiri)
-  const COLORS: [string, string][] = [["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"], ["purple", "Ungu"]];
+  const COLORS: [string, string][] = [
+    ["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"],
+    ["purple", "Ungu"], ["pink", "Merah muda"], ["cyan", "Toska"], ["brown", "Cokelat"],
+  ];
+  /// FR-52: tab baru otomatis berwarna: warna yang paling jarang dipakai tab lain di workspace itu (urut daftar)
+  const nextColor = (w: Ws) => {
+    const used = (c: string) => w.tabs.filter((t) => t.color === c).length;
+    return COLORS.map(([c]) => c).reduce((best, c) => (used(c) < used(best) ? c : best));
+  };
   // FR-52: tanda per agent (bukan logo merek), warna mendekati warna khas agent
   const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇" };
   /// agent yang sedang jalan di pane (dari profil atau diketik sendiri); "" = tidak ada
@@ -60,7 +68,8 @@
   /// FR-61: nama akun Claude pane yang sedang menjalankan Claude; begitu ada akun lain, Utama ikut berlabel
   const acctOf = (p: number) =>
     meta[p]?.accountName || (agentOf(p) === "claude" && (cfg?.values.accounts ?? []).some((a) => a.agent === "claude") ? "Utama" : "");
-  const SWATCH: Record<string, string> = { red: "🔴", orange: "🟠", yellow: "🟡", green: "🟢", blue: "🔵", purple: "🟣" };
+  // satu bentuk untuk semua warna (bulatan emoji tidak ada untuk merah muda dan toska)
+  const SWATCH: Record<string, string> = { red: "❤️", orange: "🧡", yellow: "💛", green: "💚", blue: "💙", purple: "💜", pink: "🩷", cyan: "🩵", brown: "🤎" };
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   /// status yang ditampilkan: "selesai" yang sudah dilihat pudar (FR-40)
   const stat = (p: number) => (ack[p] && meta[p]?.status === "done" ? "" : (meta[p]?.status ?? ""));
@@ -553,7 +562,7 @@
     const w = wss[wi];
     const from = wi === at.ws ? tab?.focus : undefined;
     const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined, workspace: w.id, account });
-    w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id });
+    w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id, color: nextColor(w) });
     at = { ws: wi, tab: w.tabs.length - 1 };
     zoomed = false;
     return id;
@@ -883,7 +892,7 @@
       ["Ganti nama", () => (editing = { kind: "tab", id: t.id, value: title(t) })],
       // menu native tidak bisa diwarnai: bulatan emoji sebagai contoh warna, ✓ = warna sekarang
       ["Warna", [
-        [`⚪ Tanpa warna${t.color ? "" : "  ✓"}`, () => (t.color = undefined)],
+        [`🤍 Tanpa warna${t.color ? "" : "  ✓"}`, () => (t.color = undefined)],
         "-",
         ...COLORS.map(([c, name]) => [`${SWATCH[c]} ${name}${t.color === c ? "  ✓" : ""}`, () => (t.color = c)] as MItem),
       ]],
@@ -1181,7 +1190,7 @@
     if (!rest) return;
     tab.tree = rest;
     tab.focus = panes(rest)[0];
-    ws.tabs.push({ id: uid(), title: "", tree: { pane }, focus: pane });
+    ws.tabs.push({ id: uid(), title: "", tree: { pane }, focus: pane, color: nextColor(ws) });
     at = { ws: at.ws, tab: ws.tabs.length - 1 };
     zoomed = false;
   }
@@ -2366,6 +2375,9 @@
   .tab.green { box-shadow: inset 3px 0 0 #22c55e; }
   .tab.blue { box-shadow: inset 3px 0 0 #3b82f6; }
   .tab.purple { box-shadow: inset 3px 0 0 #a855f7; }
+  .tab.pink { box-shadow: inset 3px 0 0 #ec4899; }
+  .tab.cyan { box-shadow: inset 3px 0 0 #06b6d4; }
+  .tab.brown { box-shadow: inset 3px 0 0 #a16207; }
   .tt {
     overflow: hidden;
     text-overflow: ellipsis;
