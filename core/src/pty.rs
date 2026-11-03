@@ -168,23 +168,43 @@ pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
 /// Argumen proses (SEC-5: flag lewati-izin pada agent yang diketik sendiri di pane shell).
 #[cfg(target_os = "macos")]
 pub fn args_of(pid: i32) -> Vec<String> {
+    procargs(pid).0
+}
+
+/// Satu variabel env proses (FR-61: `CLAUDE_CONFIG_DIR` agent yang diketik = akun mana). Nilai lain tidak disimpan.
+#[cfg(target_os = "macos")]
+pub fn env_of(pid: i32, key: &str) -> Option<String> {
+    procargs(pid).1.into_iter().find_map(|kv| kv.strip_prefix(key)?.strip_prefix('=').map(String::from))
+}
+
+/// (argv, env) dari KERN_PROCARGS2
+#[cfg(target_os = "macos")]
+fn procargs(pid: i32) -> (Vec<String>, Vec<String>) {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
     let mut buf = vec![0u8; 64 * 1024];
     let mut len = buf.len();
     let rc = unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
     if rc != 0 || len < 4 {
-        return vec![];
+        return (vec![], vec![]);
     }
-    // tata letak: argc (i32), path exec, NUL pengisi, lalu argv[0..argc]
+    // tata letak: argc (i32), path exec, NUL pengisi, lalu argv[0..argc], lalu env
     let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]).max(0) as usize;
     let rest = &buf[4..len];
     let mut parts = rest.split(|&b| b == 0).filter(|p| !p.is_empty()).skip(1); // lewati path exec
-    (0..argc).filter_map(|_| parts.next()).map(|p| String::from_utf8_lossy(p).into_owned()).collect()
+    let s = |p: &[u8]| String::from_utf8_lossy(p).into_owned();
+    let argv = (0..argc).filter_map(|_| parts.next()).map(s).collect();
+    (argv, parts.map(s).collect())
 }
 
 #[cfg(target_os = "linux")]
 pub fn args_of(pid: i32) -> Vec<String> {
     std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default().split(|&b| b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect()
+}
+
+#[cfg(target_os = "linux")]
+pub fn env_of(pid: i32, key: &str) -> Option<String> {
+    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    env.split(|&b| b == 0).find_map(|kv| Some(String::from_utf8_lossy(kv.strip_prefix(key.as_bytes())?.strip_prefix(b"=")?).into_owned()))
 }
 
 #[cfg(target_os = "macos")]
@@ -277,5 +297,27 @@ mod tests {
         let out = run(Pty::spawn(Some("tty; echo x > /dev/tty"), 24, 80, &[], None).unwrap());
         assert!(!out.contains("Device not configured"), "{out:?}");
         assert!(out.contains("/dev/ttys") || out.contains("/dev/pts/"), "{out:?}");
+    }
+
+    /// dipanggil `env_of_membaca_folder_akun` sebagai proses anak
+    #[test]
+    #[ignore]
+    fn tidur() {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn env_of_membaca_folder_akun() {
+        // macOS menyembunyikan env binary Apple (mis. /bin/sleep); agent (claude, node) bukan binary Apple
+        let exe = std::env::current_exe().unwrap();
+        let mut c = std::process::Command::new(exe).args(["--ignored", "--exact", "pty::tests::tidur", "-q"]).env("CLAUDE_CONFIG_DIR", "/rumah/.claude-kantor")
+            .stdout(std::process::Stdio::null()).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let pid = c.id() as i32;
+        let (dir, none) = (env_of(pid, "CLAUDE_CONFIG_DIR"), env_of(pid, "CLAUDE_CONFIG"));
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(dir.as_deref(), Some("/rumah/.claude-kantor"));
+        assert_eq!(none, None);
     }
 }

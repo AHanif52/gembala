@@ -67,8 +67,8 @@ struct Pane {
     hist: std::path::PathBuf,
     /// FR-69: judul terminal terakhir (OSC 0/2) yang dipasang program di pane; RAM saja (SEC-13)
     title: Mutex<String>,
-    /// FR-61: nama akun agent pane ini; kosong = Utama
-    account: String,
+    /// FR-61: id akun agent pane ini; kosong = Utama. Agent yang diketik: dari `CLAUDE_CONFIG_DIR` prosesnya
+    account: Mutex<String>,
     block: Mutex<OpenBlocks>,
     /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap, folder kerja agent).
     /// Urutan kunci: `view` lalu `manual`.
@@ -650,7 +650,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 pre_agent: Mutex::new(Vec::new()),
                 hist: history::path(&st.boot, id),
                 title: Mutex::new(String::new()),
-                account: acct_name,
+                account: Mutex::new(st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name).map(|a| a.id.clone()).unwrap_or_default()),
                 block: Mutex::new((None, None)),
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
@@ -730,7 +730,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "session": *pane.session.lock().unwrap(), // FR-68: kartu lanjut walau daemon berhenti
                 "title": *pane.title.lock().unwrap(), // FR-69: label pane
-                "account": pane.account, // FR-61: chip akun
+                "account": acct_label(st, &pane.account.lock().unwrap()), // FR-61: chip akun
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
@@ -760,7 +760,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 let _ = std::fs::remove_file(f);
             }
             let hooks = st.hooks.dir.clone();
-            for (name, _) in profile::hook_files(&st.hooks) {
+            for name in profile::hook_files(&st.hooks).into_iter().map(|f| f.0).chain(["accounts.zsh"]) {
                 let _ = std::fs::remove_file(hooks.join(name));
             }
             let _ = std::fs::remove_dir(&hooks);
@@ -1137,6 +1137,10 @@ fn screen_watch(st: Arc<State>) {
                     // FR-68: Claude diketik membawa `--session-id` dari fungsi zsh Gembala; selain itu id lama tidak berlaku
                     let sid = args.windows(2).find(|w| w[0] == "--session-id").map(|w| w[1].clone()).filter(|s| profile::valid_session(&name, s));
                     *pane.session.lock().unwrap() = sid;
+                    // FR-61: `claude-kantor` diketik = akun dari folder config proses agent
+                    if name == "claude" {
+                        *pane.account.lock().unwrap() = acct_of_dir(st.as_ref(), pty::env_of(pid, "CLAUDE_CONFIG_DIR"));
+                    }
                     *pane.manual.lock().unwrap() = Some((name, profile::shown_args(&args), pty::cwd_of(pid)));
                     *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
                 }
@@ -1202,6 +1206,17 @@ fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     if !dead.is_empty() {
         st.pane_subs.lock().unwrap().retain(|(who, _)| !dead.contains(who));
     }
+}
+
+/// FR-61: nama akun untuk chip; Utama atau tidak dikenal = kosong
+fn acct_label(st: &State, id: &str) -> String {
+    st.accounts.lock().unwrap().iter().find(|a| a.id == id).map(|a| a.name.clone()).unwrap_or_default()
+}
+
+/// FR-61: folder config Claude proses → id akun; tanpa env atau folder Utama = kosong
+fn acct_of_dir(st: &State, dir: Option<String>) -> String {
+    let Some(dir) = dir.map(|d| account::expand(&d)) else { return String::new() };
+    st.accounts.lock().unwrap().iter().find(|a| a.agent == "claude" && account::expand(&a.dir) == dir).map(|a| a.id.clone()).unwrap_or_default()
 }
 
 /// File hook OpenCode/omp di folder config Gembala (SEC-26). Gagal tulis = agent itu tanpa hook, pane tetap jalan.
@@ -1404,7 +1419,12 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let cwd = dir.as_ref().map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
     let omp = |d: std::path::PathBuf| omp_session(std::path::Path::new(&home), &d, since);
     let resume = match agent {
-        "claude" => pane.session.lock().unwrap().clone().or_else(|| printed_resume(&log)).map(|s| format!("claude --resume {s}")),
+        "claude" => {
+            // FR-61: sesi tersimpan per akun, jadi lanjut lewat perintah akun yang sama (`claude-kantor`)
+            let acct = pane.account.lock().unwrap().clone();
+            let cmd = if acct.is_empty() { "claude".to_string() } else { format!("claude-{acct}") };
+            pane.session.lock().unwrap().clone().or_else(|| printed_resume(&log)).map(|s| format!("{cmd} --resume {s}"))
+        }
         "codex" => Some(printed_resume(&log).or_else(|| pane.session.lock().unwrap().clone()).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
         "opencode" => Some(pane.session.lock().unwrap().clone().map_or("opencode --continue".into(), |s| format!("opencode --session {s}"))),
         "omp" => Some(agent_dir.or(dir).and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),

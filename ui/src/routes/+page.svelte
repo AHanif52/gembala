@@ -1574,7 +1574,8 @@
             <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
-            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents].filter(Boolean).join(" · ")}
+            <!-- FR-61: akun selain Utama tampil di keterangan tab -->
+            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents, meta[t.focus]?.accountName].filter(Boolean).join(" · ")}
             {#if STATUS[st] || rest}
               <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {STATUS[stat(p)] ?? 'diam'}"></span>{/each}{:else if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}
