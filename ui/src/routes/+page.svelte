@@ -1928,6 +1928,31 @@
     src: url("/fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
     font-display: block;
   }
+  /* Hack = font bawaan Warp (MIT + Bitstream Vera, static/fonts/Hack-LICENSE.md) */
+  @font-face {
+    font-family: "Hack";
+    src: url("/fonts/hack-regular.woff2") format("woff2");
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Hack";
+    src: url("/fonts/hack-bold.woff2") format("woff2");
+    font-weight: bold;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Hack";
+    src: url("/fonts/hack-italic.woff2") format("woff2");
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Hack";
+    src: url("/fonts/hack-bolditalic.woff2") format("woff2");
+    font-weight: bold;
+    font-style: italic;
+    font-display: block;
+  }
   /* fokus keyboard selalu terlihat; input yang punya penanda sendiri (outline: none berkelas) tidak terpengaruh */
   :global(:focus-visible) {
     outline: 1px solid #3b82f6;
@@ -2019,6 +2044,10 @@
   /* polish ala Warp: huruf halus, scrollbar tipis, hover lembut */
   :global(body) {
     -webkit-font-smoothing: antialiased;
+  }
+  /* terminal: ketebalan huruf seperti Warp; antialiased membuat teks redup/tipis di layar gelap */
+  :global(.xterm) {
+    -webkit-font-smoothing: auto;
   }
   :global(::-webkit-scrollbar) {
     width: 8px;

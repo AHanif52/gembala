@@ -23,7 +23,7 @@ use Kind::*;
 // ponytail: hanya bagian yang sudah dipakai app; notify/app/toolbar/workspace/profile ditambah di M4–M7
 const UI: &[(&str, Kind)] = &[
     ("theme", Enum(&["system", "light", "dark"], "system")),
-    ("font_family", Str("SF Mono")),
+    ("font_family", Str("Hack")),
     ("font_size", Int(8, 32, 13)),
     ("line_height", Float(1.0, 2.0, 1.2)),
     ("cursor", Enum(&["bar", "block", "underline"], "bar")),

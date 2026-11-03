@@ -59,7 +59,7 @@ export type Config = {
 // sama dengan bawaan di core/src/config.rs; dipakai sampai balasan pertama daemon datang
 export const UI_DEFAULT: Ui = {
   theme: "system",
-  font_family: "SF Mono",
+  font_family: "Hack",
   font_size: 13,
   line_height: 1.2,
   cursor: "bar",

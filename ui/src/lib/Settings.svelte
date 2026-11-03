@@ -350,7 +350,7 @@
           <div class="row">
             <span>Huruf</span>
             <select aria-label="Huruf terminal" value={ui.font_family} onchange={(e) => set("font_family", e.currentTarget.value)}>
-              {#each [...new Set([ui.font_family, "SF Mono", "Menlo", "Monaco"])] as f}<option>{f}</option>{/each}
+              {#each [...new Set([ui.font_family, "Hack", "SF Mono", "Menlo", "Monaco"])] as f}<option>{f}</option>{/each}
             </select>
           </div>
           <div class="row">

@@ -46,7 +46,12 @@
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
-  const DARK: ITheme = { background: "#000000", foreground: "#e5e5e5", cursor: "#e5e5e5", selectionBackground: "#404040" };
+  // palet tema Dark bawaan Warp; tanpa palet, xterm memakai warna ANSI bawaannya (biru gelap nyaris tak terbaca)
+  const DARK: ITheme = {
+    background: "#000000", foreground: "#ffffff", cursor: "#ffffff", selectionBackground: "#404040",
+    black: "#616161", red: "#ff8272", green: "#b4fa72", yellow: "#fefdc2", blue: "#a5d5fe", magenta: "#ff8ffd", cyan: "#d0d1fe", white: "#f1f1f1",
+    brightBlack: "#8e8e8e", brightRed: "#ffc4bd", brightGreen: "#d6fcb9", brightYellow: "#fefdd5", brightBlue: "#c1e3fe", brightMagenta: "#ffb1fe", brightCyan: "#e5e6fe", brightWhite: "#feffff",
+  };
   const LIGHT: ITheme = { background: "#fafafa", foreground: "#27272a", cursor: "#27272a", selectionBackground: "#d4d4d8" };
   const MATCH = {
     matchBackground: "#854d0e",
@@ -339,6 +344,7 @@
       }
       const ku = (kitty.at(-1) ?? 0) & 1 ? encodeKey(e, !!term.options.macOptionIsMeta) : null;
       if (ku) {
+        e.preventDefault(); // Ctrl+Enter: WebKit macOS membuka menu konteks walau kodenya sudah dikirim
         if (e.type === "keydown") (track(ku), call("pane.write", { pane, data: b64(enc.encode(ku)) }));
         return false;
       }
