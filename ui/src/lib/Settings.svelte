@@ -27,6 +27,7 @@
   let accRows = $state<AccRow[]>([]);
   let shareOpts = $state<string[]>([]);
   let accForm = $state({ name: "", dir: "", share: [...SHARE_DEFAULT], error: "", info: "" });
+  let accOpen = $state(false); // form tertutup; akun Utama sudah jadi bawaan
   let removeAsk = $state("");
   const slug = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32);
   async function loadAccounts() {
@@ -41,6 +42,7 @@
     const r = await call("account.create", { name: accForm.name.trim(), dir: accForm.dir.trim() || undefined, share: accForm.share }).catch((e) => ({ error: String(e) }));
     if (r.error && !r.id) return void (accForm.error = r.error);
     accForm = { name: "", dir: "", share: [...SHARE_DEFAULT], error: r.error ?? "", info: r.skipped?.length ? `Sudah ada, tidak ditimpa: ${r.skipped.join(", ")}` : "" };
+    accOpen = !!(accForm.error || accForm.info);
     loadAccounts();
   }
   async function removeAccount(id: string) {
@@ -435,6 +437,9 @@
               </span>
             </div>
           {/each}
+          {#if !accOpen}
+            <div class="row"><span class="grow">Akun lain<small>Mis. akun kantor; tiap akun punya folder dan login sendiri</small></span><span class="acts"><button class="mini" onclick={() => (accOpen = true)}>Tambah akun</button></span></div>
+          {:else}
           <div class="form">
             <label>Tambah akun · nama <input bind:value={accForm.name} placeholder="mis. Kantor" /></label>
             <label>Folder <small>Di bawah folder home; dibuat dengan izin 0700</small><input bind:value={accForm.dir} placeholder={`~/.claude-${slug(accForm.name) || "nama"}`} spellcheck="false" /></label>
@@ -444,8 +449,9 @@
             {/each}
             {#if accForm.error}<span class="m err" role="alert">{accForm.error}</span>{/if}
             {#if accForm.info}<span class="m">{accForm.info}</span>{/if}
-            <span class="acts"><button class="mini" disabled={!accForm.name.trim()} onclick={createAccount}>Buat akun</button></span>
+            <span class="acts"><button class="mini" onclick={() => (accOpen = false)}>Batal</button><button class="mini" disabled={!accForm.name.trim()} onclick={createAccount}>Buat akun</button></span>
           </div>
+          {/if}
         </section>
         <h4>Profil</h4>
         <section>
