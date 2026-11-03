@@ -658,6 +658,13 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 Some(id) => Some(st.profiles.lock().unwrap().iter().find(|x| x.id == id).cloned().ok_or("no_such_profile")?),
                 None => None,
             };
+            // FR-13: peran (template) dan brief workspace ikut petunjuk launch; teks dari UI dibersihkan dan dibatasi
+            if let Some(x) = prof.as_mut() {
+                let role = profile::ROLES.iter().find(|r| p["role"].as_str() == Some(r.0));
+                let brief = p["brief"].as_str().map(|b| b.chars().take(4000).collect::<String>()).and_then(|b| msg::sanitize(&b).ok()).filter(|b| !b.trim().is_empty());
+                x.readonly = role.is_some_and(|r| r.1);
+                x.brief = [role.map(|r| r.2.to_string()), brief.map(|b| format!("Workspace brief from the user (read only):\n{b}"))].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
+            }
             // FR-61, C-9: akun = pilihan manusia saat membuka pane (UI, termasuk bawaan workspace) > akun profil > Utama
             // pane shell: akun bawaan workspace dipasang ke env shell, jadi `claude` yang diketik ikut akun itu
             let mut shell_acct = None;

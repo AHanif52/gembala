@@ -24,7 +24,7 @@
   import { cleanTitle } from "$lib/label";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
-  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null }; // FR-61: akun bawaan per agent; FR-44: warna blok
+  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: akun bawaan per agent; FR-44: warna blok; FR-13: brief
   /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
   type Meta = {
     profile: string;
@@ -39,6 +39,7 @@
     output?: boolean; // FR-56: ada output sesi agent sebelumnya
     since?: number; // FR-40: kapan proses di pane shell mulai jalan
     sig?: string; // FR-51: sidik profil saat pane dibuat
+    roleWarn?: boolean; // FR-13: peran baca saja yang tidak bisa dikunci di agent ini
     prev?: { profile: string; agent: string; session?: string; acct?: string }; // FR-45: agent pane lama yang bisa dilanjutkan
     zoom?: number; // FR-34: zoom pane ini di atas zoom global
     policy?: string; // SEC-5
@@ -252,6 +253,53 @@
   }
   let wtDel = $state<{ wi: number; dir: string; files: string[] } | null>(null);
   let wtForce: () => void = () => {};
+  // FR-13: template peran (pen layar 17): satu pane per peran di tab baru, brief workspace ikut petunjuk launch
+  const TEMPLATES: { name: string; desc: string; roles: [string, string, string, string][] }[] = [
+    { name: "Koordinator + pekerja", desc: "1 baca saja · 2 pekerja · 1 reviewer", roles: [["Koordinator", "koordinator", "claude", "koord"], ["Pekerja 1", "pekerja", "claude", "kerja-1"], ["Pekerja 2", "pekerja", "codex", "kerja-2"], ["Reviewer", "reviewer", "codex", "review"]] },
+    { name: "Planner → worker", desc: "1 planner · 1 worker", roles: [["Planner", "planner", "claude", "plan"], ["Worker", "pekerja", "claude", "kerja"]] },
+    { name: "Review berpasangan", desc: "2 reviewer beda agent", roles: [["Reviewer 1", "reviewer", "claude", "review-1"], ["Reviewer 2", "reviewer", "codex", "review-2"]] },
+  ];
+  const READONLY = ["koordinator", "planner", "reviewer"];
+  let tpl = $state<{ wi: number; t: number; rows: { label: string; role: string; prof: number; name: string }[]; brief: string } | null>(null);
+  function pickTemplate(t: number) {
+    if (!tpl) return;
+    const prefer = (agent: string) => Math.max(0, startProfiles.findIndex((p) => p.agent === agent));
+    tpl.t = t;
+    tpl.rows = TEMPLATES[t].roles.map(([label, role, agent, name]) => ({ label, role, prof: prefer(agent), name }));
+  }
+  function openTemplate(wi = at.ws) {
+    if (!startProfiles.length) return say("Belum ada agent yang terpasang");
+    tpl = { wi, t: 0, rows: [], brief: wss[wi]?.brief ?? "" };
+    pickTemplate(0);
+  }
+  const limitOf = (role: string, prof: number) =>
+    !READONLY.includes(role) ? "edit" : startProfiles[prof]?.agent === "claude" ? "lock" : "warn";
+  async function runTemplate() {
+    if (!tpl) return;
+    const { wi, rows } = tpl;
+    const title = TEMPLATES[tpl.t].name;
+    const w = wss[wi];
+    w.brief = tpl.brief.trim().slice(0, 4000) || undefined;
+    const from = wi === at.ws ? tab?.focus : undefined;
+    tpl = null;
+    const ids: number[] = [];
+    for (const r of rows) {
+      const p = startProfiles[r.prof];
+      if (!p) continue;
+      const id = await createPane({ profile: p.id, account: p.account, workspace: w.id, from_pane: from, cwd: from === undefined ? w.root : undefined, role: r.role });
+      ids.push(id);
+      if (r.name.trim()) call("pane.rename", { pane: id, name: r.name.trim().toLowerCase() }).then((x) => meta[id] && (meta[id].name = x.name)).catch(() => {});
+    }
+    if (!ids.length) return;
+    // 2 = kiri|kanan, 3 = kiri | kanan atas/bawah, 4 = kotak 2x2
+    let tree: Node = { pane: ids[0] };
+    if (ids[1] !== undefined) tree = split(tree, ids[0], "row", ids[1]);
+    if (ids[2] !== undefined) tree = split(tree, ids.length > 3 ? ids[0] : ids[1], "col", ids[2]);
+    if (ids[3] !== undefined) tree = split(tree, ids[1], "col", ids[3]);
+    w.tabs.push({ id: uid(), title, tree, focus: ids[0] });
+    at = { ws: wi, tab: w.tabs.length - 1 };
+    zoomed = false;
+  }
   /// pane shell diganti pane profil di posisi yang sama (agent jalan dengan hook resmi, FR-4)
   async function swapToProfile(old: number, profile: string, account?: string, pick = false) {
     const m = meta[old];
@@ -572,8 +620,12 @@
     const w = wss.find((x) => x.id === ((opts.workspace as string) ?? ws?.id));
     // pane shell ikut akun Claude bawaan workspace: `claude` yang diketik memakai akun itu
     const acct = (opts.account as string | undefined) || w?.accounts?.[agent === "shell" ? "claude" : agent] || undefined;
-    const r = await call("pane.create", { workspace: ws?.id, ...opts, session, account: acct });
-    meta[r.pane] = { profile, cwd: null, agent, name: r.name, session, sig: sig(profile), acct };
+    // FR-13: brief workspace ikut petunjuk launch tiap agent di workspace itu
+    const brief = agent !== "shell" ? w?.brief : undefined;
+    const r = await call("pane.create", { workspace: ws?.id, ...opts, session, account: acct, brief });
+    // FR-13: peran baca saja di agent tanpa pembatas tool = cuma petunjuk, ditandai di kepala pane
+    const roleWarn = ["koordinator", "planner", "reviewer"].includes(opts.role as string) && agent !== "claude";
+    meta[r.pane] = { profile, cwd: null, agent, name: r.name, session, sig: sig(profile), acct, roleWarn };
     return r.pane;
   }
 
@@ -950,6 +1002,7 @@
       ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
       { label: "Agent di worktree baru…", hint: "git worktree dari HEAD repo pane ini", go: () => openWorktree() },
+      { label: "Dari template peran…", hint: "koordinator, pekerja, reviewer + brief workspace", go: () => openTemplate() },
       ...pickable.map((p) => ({ label: `Pilih sesi lama: ${p.label}`, hint: "pemilih sesi bawaan agent", go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
       { label: "Workspace baru…", hint: "", go: addWorkspace },
       { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
@@ -1069,6 +1122,7 @@
       ...(cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? " (tidak terpasang)" : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem),
       "-",
       ["Agent di worktree baru…", () => openWorktree(wi)],
+      ["Dari template peran…", () => openTemplate(wi)],
       pickable.length
         ? ["Pilih sesi lama…", pickable.map((p) => [p.label, () => newTab(p.id, wi, p.account, { pick: true })] as MItem)]
         : ["Pilih sesi lama…", () => {}, false],
@@ -1420,6 +1474,7 @@
         // FR-44: warna blok; workspace lama tanpa warna diberi warna di bawah (null = sengaja tanpa warna)
         color: COLORS.some(([c]) => c === w.color) ? w.color : w.color === null ? null : undefined,
         // FR-61: hanya id akun yang sah (dicocokkan lagi oleh daemon saat membuka pane)
+        brief: typeof w.brief === "string" && w.brief.trim() ? w.brief.slice(0, 4000) : undefined,
         accounts: Object.fromEntries(Object.entries(w.accounts ?? {}).filter(([k, v]) => /^[a-z]+$/.test(k) && typeof v === "string" && /^[a-z0-9-]{1,32}$/.test(v))),
         tabs: w.tabs
           .filter((t: any) => typeof t?.id === "string" && valid(t.tree))
@@ -2035,6 +2090,7 @@
                   <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
                 {/if}
                 {#if acctOf(pane)}<span class="chip acc" title="Akun Claude Code (FR-61)">{acctOf(pane)}</span>{/if}
+                {#if meta[pane]?.roleWarn}<span class="chip rwarn" title="Peran baca saja hanya lewat petunjuk; agent ini tidak punya pembatas tool (FR-13)">edit tidak diblokir</span>{/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
                 {#if meta[pane]?.prev}<button class="chip" onclick={() => resumePrev(pane)}>Lanjutkan sesi {meta[pane].prev.agent}</button>{/if}
@@ -2191,6 +2247,42 @@
       <span class="acts">
         <button class="mini" onclick={() => (linkAsk = "")}>Batal <span class="keys">Esc</span></button>
         <button class="mini" onclick={openLink}>Buka <span class="keys">↩</span></button>
+      </span>
+    </div>
+  {/if}
+  {#if tpl}
+    <!-- FR-13: dialog template peran (pen layar 17) -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="confirm tpldlg" role="dialog" aria-label="Dari template peran" tabindex="-1" onkeydown={(e) => e.key === "Escape" && (tpl = null)}>
+      <span class="thd"><b>Dari template peran</b><button class="mini" onclick={() => (tpl = null)} aria-label="Tutup">×</button></span>
+      <div class="tpls">
+        {#each TEMPLATES as t, i (t.name)}
+          <button class="tplc" class:on={tpl.t === i} onclick={() => pickTemplate(i)}><span>{t.name}</span><span class="m">{t.desc}</span></button>
+        {/each}
+      </div>
+      <div class="roles">
+        <div class="rrow rh"><span>Peran</span><span>Agent</span><span>Batas</span><span>Nama pane</span></div>
+        {#each tpl.rows as r, i (i)}
+          {@const lim = limitOf(r.role, r.prof)}
+          <div class="rrow">
+            <span>{r.label}</span>
+            <select class="edit" bind:value={r.prof}>
+              {#each startProfiles as p, j (p.key)}<option value={j}>{GLYPH[p.agent] ?? "›"} {p.label}</option>{/each}
+            </select>
+            <span class="lim {lim}">{lim === "lock" ? "cuma bisa baca, dikunci lewat --disallowedTools" : lim === "warn" ? "cuma dikasih tahu baca saja, edit tidak bisa diblokir" : "boleh ubah file"}</span>
+            <input class="edit" bind:value={r.name} spellcheck="false" autocapitalize="off" />
+          </div>
+        {/each}
+      </div>
+      <div class="brief">
+        <b>Brief workspace {wss[tpl.wi]?.name}</b>
+        <span class="m">Ikut dikirim ke tiap agent di workspace ini · agent cuma bisa baca · disimpan di Gembala, bukan di repo</span>
+        <textarea class="edit" bind:value={tpl.brief} rows="5" maxlength="4000" spellcheck="false" placeholder="Tujuan, cara build dan test, batasan"></textarea>
+      </div>
+      <span class="acts">
+        <span class="m">{tpl.rows.length} pane baru di tab baru · namanya bisa diganti</span>
+        <button class="mini" onclick={() => (tpl = null)}>Batal</button>
+        <button class="mini pri" onclick={runTemplate}>Jalankan {tpl.rows.length} pane</button>
       </span>
     </div>
   {/if}
@@ -3339,6 +3431,89 @@
   }
   .targets .opt {
     grid-template-columns: 10px 1fr auto;
+  }
+  .tpldlg {
+    top: 45%;
+    width: min(760px, 92%);
+    gap: 12px;
+  }
+  .tpldlg .thd {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .tpls {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .tplc {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: none;
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tplc.on {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.1);
+  }
+  .roles {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .rrow {
+    display: grid;
+    grid-template-columns: 90px 190px 1fr 110px;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .rrow.rh {
+    border-top: 0;
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--muted);
+  }
+  .rrow .edit {
+    min-width: 0;
+    font-size: 12px;
+  }
+  .lim.lock {
+    color: #16a34a;
+  }
+  .lim.warn {
+    color: #d97706;
+  }
+  .lim.edit {
+    color: var(--muted);
+  }
+  .brief {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .brief .m {
+    font-size: 11px;
+  }
+  .brief textarea {
+    resize: vertical;
+    font: 12px/1.5 "SF Mono", Menlo, monospace;
+  }
+  .tpldlg .acts .m {
+    flex: 1;
+    font-size: 11px;
+  }
+  .chip.rwarn {
+    color: #d97706;
   }
   .wtdlg {
     top: 35%;

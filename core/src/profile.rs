@@ -31,6 +31,10 @@ pub struct Profile {
     pub token: bool,
     /// FR-61: id `[[account]]` bawaan profil; kosong = Utama
     pub account: String,
+    /// FR-13: peran dan brief workspace untuk pane ini (bukan dari config profil), ikut petunjuk launch
+    pub brief: String,
+    /// FR-13: peran baca saja; Claude dikunci lewat `--disallowedTools`, agent lain hanya petunjuk
+    pub readonly: bool,
 }
 
 /// (agent, nama, perintah, perintah instal yang ditampilkan bila tidak ada, versi teruji major.minor)
@@ -58,6 +62,8 @@ pub fn builtin() -> Vec<Profile> {
         permission: "default".into(),
         token: false,
         account: String::new(),
+        brief: String::new(),
+        readonly: false,
     };
     let agents = AGENTS.iter().map(|(agent, name, cmd, _, _)| Profile {
         id: agent.to_string(),
@@ -260,8 +266,21 @@ pub fn shown_args(args: &[String]) -> String {
 }
 
 /// Flag/env hook per agent saat launch (TECH bagian 7, teruji 31 Okt 2026).
+/// FR-13: tool pengubah file Claude Code yang ditolak untuk peran baca saja (Bash tetap, untuk `gembala send`)
+pub const READONLY_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/// FR-13: peran yang dikenal: (id, baca saja, petunjuk)
+pub const ROLES: &[(&str, bool, &str)] = &[
+    ("koordinator", true, "Your role: coordinator. Do not modify files. Read the code, split the work into small tasks, send them to the worker panes with `gembala send`, and check their results before reporting back."),
+    ("planner", true, "Your role: planner. Do not modify files. Write a short step-by-step plan for the task and send it to the worker pane with `gembala send`."),
+    ("pekerja", false, "Your role: worker. Do the task you receive, run the relevant tests, then reply with a short summary of what changed."),
+    ("reviewer", true, "Your role: reviewer. Do not modify files. Review the changes you are asked to check and reply with concrete findings (file, line, problem)."),
+];
+
 fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
     let cmd = |ev: &str| format!("{} hook claude {ev}", q(&h.exe));
+    let petunjuk = if p.brief.is_empty() { PETUNJUK.to_string() } else { format!("{PETUNJUK}\n\n{}", p.brief) };
+    let petunjuk = petunjuk.as_str();
     let file = |name: &str| h.dir.join(name).to_string_lossy().into_owned();
     match p.agent.as_str() {
         "claude" => {
@@ -270,7 +289,12 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
                 // PostToolUse: status `blocked` kembali `working` begitu izin disetujui (PreToolUse jalan sebelum dialog izin)
                 "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "PostToolUse": one("tool"), "Stop": one("stop"), "Notification": one("notify"),
             }});
-            (vec!["--settings".into(), settings.to_string(), "--append-system-prompt".into(), PETUNJUK.into()], vec![])
+            let mut f = vec!["--settings".into(), settings.to_string(), "--append-system-prompt".into(), petunjuk.into()];
+            if p.readonly {
+                f.push("--disallowedTools".into());
+                f.extend(READONLY_TOOLS.iter().map(|t| t.to_string()));
+            }
+            (f, vec![])
         }
         // ponytail: developer_instructions milik config pengguna tertimpa; gabungkan kalau ada yang memakainya
         "codex" => (
@@ -278,12 +302,12 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
                 "-c".into(),
                 format!("notify={}", json!([h.exe, "hook", "codex", "notify"])),
                 "-c".into(),
-                format!("developer_instructions={}", json!(PETUNJUK)),
+                format!("developer_instructions={}", json!(petunjuk)),
             ],
             vec![],
         ),
         "opencode" => (vec![], vec![("OPENCODE_CONFIG".into(), file("opencode.json"))]),
-        "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={PETUNJUK} {OMP_TOOLS}")], vec![]),
+        "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={petunjuk} {OMP_TOOLS}")], vec![]),
         _ => (vec![], vec![]),
     }
 }
@@ -720,6 +744,12 @@ mod tests {
         // petunjuk `gembala` lewat flag resmi; tanda kutip tunggal di dalamnya akan merusak kutipan shell
         assert!(!PETUNJUK.contains('\'') && claude.contains(&format!("'--append-system-prompt' '{PETUNJUK}'")), "{claude}");
         assert!(launch(&by("omp"), Some(&h), None).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK} {OMP_TOOLS}'")));
+        // FR-13: peran baca saja dikunci di Claude, brief ikut petunjuk
+        let ro = Profile { readonly: true, brief: "Your role: reviewer.".into(), ..by("claude") };
+        let l = launch(&ro, Some(&h), None).unwrap();
+        assert!(l.contains("'--disallowedTools' 'Edit' 'Write'") && l.contains("Your role: reviewer."), "{l}");
+        let c = launch(&Profile { readonly: true, brief: "B".into(), ..by("codex") }, Some(&h), None).unwrap();
+        assert!(!c.contains("disallowedTools") && c.contains("\\n\\nB"), "{c}");
         let codex = launch(&by("codex"), Some(&h), None).unwrap();
         assert!(codex.contains("'-c' 'notify=[\"/Apps/Gem bala/gembala\",\"hook\",\"codex\",\"notify\"]'"), "{codex}");
         assert!(codex.contains(&format!("'-c' 'developer_instructions=\"{PETUNJUK}\"'")), "{codex}");
