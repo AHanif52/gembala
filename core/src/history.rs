@@ -120,7 +120,19 @@ pub fn load(from: &Value) -> Vec<Block> {
             resume: v["resume"].as_str().filter(|r| safe_resume(r)).map(String::from),
         })
         .filter(|b| !b.cmd.trim().is_empty())
-        .collect()
+        .fold(Vec::new(), |mut out: Vec<Block>, b| {
+            // satu sesi agent yang tercatat dua kali (blok shell + blok agent, sebelum perbaikan 4 Nov 2026):
+            // mulai dan durasinya sama; yang punya perintah lanjut dipakai
+            match out.last_mut() {
+                Some(p) if p.t.abs_diff(b.t) <= 5 && p.secs.abs_diff(b.secs) <= 5 => {
+                    if p.resume.is_none() && b.resume.is_some() {
+                        *p = b;
+                    }
+                }
+                _ => out.push(b),
+            }
+            out
+        })
 }
 
 pub fn dur(secs: u64) -> String {
@@ -232,6 +244,22 @@ mod tests {
     }
 
     #[test]
+    fn blok_kembar_digabung() {
+        let d = std::env::temp_dir().join(format!("gembala-uji-{}", std::process::id()));
+        // SAFETY: test lain yang memakai GEMBALA_CONFIG menulis nilai yang sama (folder uji per proses)
+        unsafe { std::env::set_var("GEMBALA_CONFIG", d.join("config.toml")) };
+        let f = path("00000000000000aa", 1);
+        let r = "claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb";
+        append(&f, &Block { t: 100, cwd: "~".into(), cmd: "claude".into(), code: 0, secs: 60, resume: Some(r.into()) });
+        append(&f, &Block { t: 101, cwd: "~".into(), cmd: "claude".into(), code: 0, secs: 61, resume: None });
+        append(&f, &Block { t: 500, cwd: "~".into(), cmd: "ls".into(), code: 0, secs: 0, resume: None });
+        let b = load(&json!({"boot": "00000000000000aa", "pane": 1}));
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[0].resume.as_deref(), Some(r));
+        let _ = std::fs::remove_file(f);
+    }
+
+    #[test]
     fn boot_tidak_valid_diabaikan() {
         assert!(load(&json!({"boot": "../../etc/passwd", "pane": 1})).is_empty());
         assert!(load(&json!({"boot": "0123456789abcdef"})).is_empty());
@@ -247,7 +275,7 @@ mod tests {
         let t = String::from_utf8(b).unwrap();
         assert!(t.contains("\x1b[32mok") && !t.contains("abcd1234abcd1234"), "{t}");
         assert!(load_log(&json!({"boot": "../../etc/passwd", "pane": 7})).is_none());
-        let _ = std::fs::remove_dir_all(d.join("history"));
+        let _ = std::fs::remove_file(d.join("history/0123456789abcdef-7.log")); // folder dipakai test lain
     }
 
     #[test]
