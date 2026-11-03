@@ -144,7 +144,7 @@
 
   /// FR-58: blok per perintah dari penanda OSC 133 shell (A prompt, C perintah jalan + teks base64, D selesai + exit code).
   /// Hanya blok dari stream sejak attach; snapshot attach tidak memuat penanda.
-  type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; code?: number };
+  type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; code?: number; t0?: number; live?: { dispose(): void } };
   let blocks: Block[] = [];
   let kitty: number[] = []; // tumpukan flag protokol keyboard kitty yang diminta app di pane ini
   function onMark(data: string) {
@@ -159,25 +159,36 @@
       if (blocks.length > 1000) blocks.shift()?.a.dispose(); // ponytail: 1000 blok terakhir, sisanya ikut scrollback
     } else if (k === "C" && last && !last.c) {
       last.c = term.registerMarker(0);
+      last.t0 = Date.now();
       try {
         last.cmd = new TextDecoder().decode(unb64(arg));
       } catch {}
+      if (last.cmd) last.live = decorate(last); // titik biru berdenyut selama jalan
     } else if (k === "D" && last?.c && !last.d) {
       last.d = term.registerMarker(0);
       last.code = Number(arg) || 0;
+      last.live?.dispose();
       decorate(last);
     }
     return true; // penanda tidak menggambar apa pun
   }
-  /// garis tipis di atas tiap blok; gagal = garis kiri merah + latar tipis
+  const dur = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1).replace(".", ",")} dtk` : `${Math.round(ms / 1000)} dtk`);
+  /// linimasa blok shell (Gembala.pen layar 01): garis + titik di gutter kiri luar grid, durasi/exit code di kanan baris perintah
   function decorate(b: Block) {
     const height = Math.max(1, (b.d?.line ?? b.a.line) - b.a.line);
-    const d = term.registerDecoration({ marker: b.a, width: term.cols, height, layer: "bottom" });
+    const d = term.registerDecoration({ marker: b.a, width: term.cols, height, layer: "top" });
+    const meta = !b.d ? "" : (b.t0 ? dur(Date.now() - b.t0) : "") + (b.code ? ` <b>· keluar ${b.code}</b>` : "");
     d?.onRender((el) => {
-      el.classList.add("blk");
-      el.classList.toggle("fail", b.code !== 0);
-      el.title = b.code ? `keluar ${b.code}` : "";
+      if (el.dataset.tl) return;
+      el.dataset.tl = "1";
+      el.className += " tl sh" + (b.code ? " fail" : "") + (b.d ? "" : " run");
+      el.innerHTML = `<i class="tl-dot"></i><span class="tl-meta"></span>`;
+      (el.querySelector(".tl-dot") as HTMLElement).style.top = `${rowHeight() / 2 - 5}px`;
+      const m = el.querySelector(".tl-meta") as HTMLElement;
+      m.innerHTML = meta; // hanya angka, aman
+      m.style.lineHeight = `${rowHeight()}px`;
     });
+    return d;
   }
   /// FR-56/62: blok ringkas sesi agent dan riwayat "Sesi sebelumnya" ditulis daemon sebagai teks (tanpa penanda,
   /// juga di snapshot attach): kepala blok = baris redup `<folder> (<durasi>)`, jadi garisnya dipasang dari isi buffer
@@ -454,9 +465,10 @@
 
 {#snippet acts(b: Block)}
   <span class="bacts-in">
-    <button title="Salin perintah" onclick={() => onblock("cmd", b.cmd)}>⧉ perintah</button>
-    <button title="Salin output" onclick={() => onblock("out", outputOf(b))} disabled={!b.d}>⧉ output</button>
-    <button title="Masukkan ke editor untuk diubah lalu jalankan lagi" onclick={() => onblock("reuse", b.cmd)}>↻ pakai lagi</button>
+    <button class="ghost" title="Salin perintah" onclick={() => onblock("cmd", b.cmd)}>Salin</button>
+    <button class="ghost" title="Salin output" onclick={() => onblock("out", outputOf(b))} disabled={!b.d}>Output</button>
+    <button title="Masukkan ke editor untuk diubah lalu jalankan lagi" onclick={() => onblock("reuse", b.cmd)}>Ubah</button>
+    {#if b.code}<button class="pri" title="Jalankan lagi" onclick={() => onblock("run", b.cmd)}>Ulangi</button>{/if}
   </span>
 {/snippet}
 
@@ -563,6 +575,41 @@
   .term :global(.tl-acts button.ghost:hover) {
     color: #e5e5e5;
   }
+  /* FR-58 blok shell: garis + titik di gutter kiri (di luar grid, kolom 0 dipakai prompt), durasi di kanan */
+  .term :global(.tl.sh) {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .term :global(.tl.sh::before) {
+    left: -8px;
+  }
+  .term :global(.tl.sh .tl-dot) {
+    left: -12px;
+  }
+  .term :global(.tl.sh.run .tl-dot) {
+    border-color: #3b82f6;
+    background: #3b82f6;
+    animation: tl-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes tl-pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .term :global(.tl.sh.fail) {
+    background: rgba(220, 38, 38, 0.06);
+  }
+  .term :global(.tl-meta) {
+    position: absolute;
+    top: 0;
+    right: 12px;
+    color: #8b8b8b;
+    font: 11px system-ui, -apple-system, sans-serif;
+    line-height: inherit;
+  }
+  .term :global(.tl-meta b) {
+    color: #f87171;
+    font-weight: normal;
+  }
   /* FR-58: tombol aksi blok (kanan baris perintah) dan kepala blok menempel (atas pane) */
   .bacts,
   .sticky {
@@ -599,26 +646,36 @@
   .scode {
     color: #ef4444;
   }
+  /* tombol blok ala Gembala.pen: Salin/Output polos, Ubah berbingkai, Ulangi biru */
   .bacts-in {
     display: inline-flex;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--line);
-    border-radius: 5px;
-    background: var(--card);
+    gap: 6px;
+    padding: 2px 4px;
+    border-radius: 6px;
+    background: var(--bg);
   }
   .bacts-in button {
-    padding: 1px 6px;
-    border: 0;
-    border-radius: 3px;
-    background: none;
-    color: var(--muted);
+    padding: 2px 8px;
+    border: 1px solid #333;
+    border-radius: 5px;
+    background: #141414;
+    color: var(--fg);
     font: inherit;
     cursor: pointer;
   }
+  .bacts-in button.ghost {
+    border-color: transparent;
+    background: none;
+    color: var(--muted);
+  }
+  .bacts-in button.pri {
+    border-color: #1d4ed8;
+    background: #1e3a8a;
+    color: #dbeafe;
+  }
   .bacts-in button:hover:not(:disabled) {
-    background: var(--line);
     color: var(--fg);
+    filter: brightness(1.25);
   }
   .bacts-in button:disabled {
     opacity: 0.4;
