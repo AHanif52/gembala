@@ -91,14 +91,25 @@ pub fn dur(secs: u64) -> String {
     }
 }
 
-/// Satu blok seperti FR-56: `<folder> (<durasi>)` redup, perintah tebal, lalu perintah lanjut bila ada.
+/// Kolom kiri blok: tempat titik dan garis linimasa yang digambar UI (FR-56, mockup-blok-sesi varian E)
+const GUTTER: &str = "   ";
+
+/// Satu blok seperti FR-56 (linimasa): `<ikon> <folder> · <durasi>[ · keluar n]` redup, perintah tebal,
+/// `↳ <perintah lanjut>` redup bila ada, lalu satu baris kosong sebagai jarak antarblok.
 pub fn block_text(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&str>) -> String {
     let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
-    let mut t = format!("\x1b[2m{cwd} ({}){exit}\x1b[0m\r\n\x1b[1m{}\x1b[0m\r\n", dur(secs), cmd.replace('\n', "\r\n"));
+    // ikon agent berwarna seperti di sidebar (FR-52); perintah lain tanpa ikon
+    let first = cmd.split_whitespace().next().unwrap_or_default();
+    let icon = [("claude", "\x1b[38;2;217;119;87m✳"), ("omp", "\x1b[38;2;168;85;247mπ"), ("codex", "\x1b[38;2;16;163;127m◎"), ("opencode", "\x1b[38;2;96;165;250m◇")]
+        .iter()
+        .find(|(a, _)| first == *a || first.starts_with(&format!("{a}-")))
+        .map_or(String::new(), |(_, g)| format!("{g}\x1b[0m\x1b[2m "));
+    let cmd = cmd.replace('\n', &format!("\r\n{GUTTER}"));
+    let mut t = format!("{GUTTER}\x1b[2m{icon}{cwd} · {}{exit}\x1b[0m\r\n{GUTTER}\x1b[1m{cmd}\x1b[0m\r\n", dur(secs));
     if let Some(r) = resume {
-        t += &format!("\r\nResume this session with:\r\n{r}\r\n");
+        t += &format!("{GUTTER}\x1b[2m↳ {r}\x1b[0m\r\n");
     }
-    t
+    t + "\r\n"
 }
 
 fn date(t: u64) -> String {
@@ -119,7 +130,7 @@ pub fn render(blocks: &[Block]) -> Vec<u8> {
     for b in blocks {
         out += &block_text(&b.cwd, b.secs, &b.code.to_string(), &b.cmd, b.resume.as_deref());
     }
-    out += &format!("\x1b[2m── Sesi sebelumnya · {} ──\x1b[0m\r\n\r\n", date(first.t));
+    out += &format!("{GUTTER}\x1b[2mSesi sebelumnya · {}\x1b[0m\r\n\r\n", date(first.t));
     out.into_bytes()
 }
 
@@ -187,6 +198,6 @@ mod tests {
     fn render_blok_dan_garis() {
         let b = Block { t: 0, cwd: "~/x".into(), cmd: "claude".into(), code: 0, secs: 75, resume: Some("omp --continue".into()) };
         let t = String::from_utf8(render(&[b])).unwrap();
-        assert!(t.contains("~/x (1 mnt 15 dtk)") && t.contains("claude") && t.contains("omp --continue") && t.contains("Sesi sebelumnya"), "{t}");
+        assert!(t.contains("~/x · 1 mnt 15 dtk") && t.contains("claude") && t.contains("omp --continue") && t.contains("Sesi sebelumnya"), "{t}");
     }
 }

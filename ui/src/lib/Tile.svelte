@@ -42,7 +42,7 @@
     ontype: (text: string) => boolean; // FR-59: true = huruf diambil input editor, tidak diteruskan ke shell
     onfocusin: () => void; // FR-59: terminal dapat fokus keyboard (halaman memindahkannya ke editor bila tampil)
     onused: () => void; // FR-59: layar saat attach sudah berisi teks (pane bukan baru)
-    onblock: (kind: "cmd" | "out" | "reuse", text: string) => void; // FR-58: tombol aksi blok
+    onblock: (kind: "cmd" | "out" | "reuse" | "copy" | "run", text: string) => void; // FR-58: tombol aksi blok; FR-56: linimasa
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -186,23 +186,66 @@
     summary.splice(0).forEach((d) => d.dispose());
     const buf = term.buffer.active;
     if (buf.type === "alternate") return;
-    const head = /^\S.* \(\d+ (dtk|mnt|jam)[^)]*\)( · keluar (-?\d+))?$/;
-    const heads: { y: number; fail: boolean }[] = [];
-    const stops: number[] = []; // garis "Sesi sebelumnya": blok berhenti di sini
+    // linimasa (mockup-blok-sesi E): "   [ikon ]<folder> · <durasi>[ · keluar n]"; format lama "<folder> (<durasi>)" = garis saja
+    const head = /^ {3}(?:[✳π◎◇] )?\S.* · \d+ (?:dtk|mnt|jam)(?: \d+ (?:dtk|mnt))?( · keluar (-?\d+))?$/;
+    const old = /^\S.* \(\d+ (dtk|mnt|jam)[^)]*\)( · keluar (-?\d+))?$/;
+    const text = (y: number) => {
+      // baris yang terlipat (perintah panjang) disambung
+      let t = buf.getLine(y)?.translateToString(true) ?? "";
+      for (let k = y + 1; buf.getLine(k)?.isWrapped; k++) t += buf.getLine(k)!.translateToString(true);
+      return t;
+    };
+    const heads: { y: number; fail: boolean; tl: boolean }[] = [];
+    const stops: number[] = []; // "Sesi sebelumnya": blok berhenti di sini
     for (let y = 0; y < buf.length; y++) {
-      const line = buf.getLine(y);
-      const text = line?.translateToString(true) ?? "";
-      if (text.startsWith("── Sesi sebelumnya")) stops.push(y);
-      const m = head.exec(text);
-      if (m && line?.getCell(0)?.isDim()) heads.push({ y, fail: !!m[3] && m[3] !== "0" });
+      const t = buf.getLine(y)?.translateToString(true) ?? "";
+      if (/^\s*(── )?Sesi sebelumnya/.test(t)) stops.push(y);
+      const m = head.exec(t) ?? old.exec(t);
+      if (!m) continue;
+      const tl = m[0] === head.exec(t)?.[0];
+      heads.push({ y, tl, fail: tl ? !!m[2] && m[2] !== "0" : !!m[3] && m[3] !== "0" });
     }
     const cursor = buf.baseY + buf.cursorY;
     heads.forEach((h, i) => {
       const end = Math.min(heads[i + 1]?.y ?? buf.length, stops.find((s) => s > h.y) ?? buf.length);
       const marker = term.registerMarker(h.y - cursor);
-      const d = marker && term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "bottom" });
-      d?.onRender((el) => (el.classList.add("blk"), el.classList.toggle("fail", h.fail)));
-      if (marker) summary.push(marker);
+      if (!marker) return;
+      summary.push(marker);
+      if (!h.tl) {
+        const d = term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "bottom" });
+        d?.onRender((el) => (el.classList.add("blk"), el.classList.toggle("fail", h.fail)));
+        return;
+      }
+      // perintah = baris tebal sesudah kepala; perintah lanjut = baris "↳ …" (bila ada)
+      let cmd = "";
+      let resume = "";
+      for (let y = h.y + 1; y < end; y++) {
+        if (buf.getLine(y)?.isWrapped) continue;
+        const t = text(y).trim();
+        if (t.startsWith("↳ ")) resume = t.slice(2);
+        else if (t && !cmd) cmd = t;
+      }
+      const d = term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "top" });
+      d?.onRender((el) => {
+        if (el.dataset.tl) return;
+        el.dataset.tl = "1";
+        el.classList.add("tl");
+        el.classList.toggle("fail", h.fail);
+        el.innerHTML = `<i class="tl-dot"></i><span class="tl-acts"></span>`;
+        const rh = rowHeight();
+        (el.querySelector(".tl-dot") as HTMLElement).style.top = `${rh / 2 - 5}px`;
+        const acts = el.querySelector(".tl-acts") as HTMLElement;
+        acts.style.top = `${rh - 11}px`;
+        const btn = (label: string, cls: string, run: () => void) => {
+          const b = Object.assign(document.createElement("button"), { textContent: label, className: cls });
+          b.addEventListener("mousedown", (e) => e.preventDefault());
+          b.addEventListener("click", (e) => (e.stopPropagation(), run()));
+          acts.append(b);
+        };
+        if (resume || h.fail) btn("Salin", "ghost", () => onblock("copy", resume || cmd));
+        if (resume) btn("Lanjutkan", "pri", () => onblock("run", resume));
+        else if (h.fail && cmd) btn("Ulangi", "", () => onblock("run", cmd));
+      });
     });
   }
   const outputOf = (b: Block) => {
@@ -449,6 +492,8 @@
   .term {
     position: absolute;
     inset: 10px 8px 6px 14px;
+    /* z-index dekorasi xterm (6-7) tetap di dalam pane: tidak menembus palet, panel Pesan, atau pemisah */
+    isolation: isolate;
   }
   /* FR-58: dekorasi blok (dibuat xterm di luar komponen, jadi :global) */
   .term :global(.blk) {
@@ -461,6 +506,62 @@
   .term :global(.blk.fail) {
     border-left: 3px solid #dc2626;
     background: rgba(220, 38, 38, 0.07);
+  }
+  /* FR-56 linimasa (mockup-blok-sesi E): garis kiri di kolom kosong 3 sel, titik per sesi, tombol di kanan */
+  .term :global(.tl) {
+    width: 100% !important;
+    pointer-events: none;
+  }
+  .term :global(.tl::before) {
+    content: "";
+    position: absolute;
+    left: 10px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: #2c2c2c;
+  }
+  .term :global(.tl-dot) {
+    position: absolute;
+    left: 5px;
+    width: 7px;
+    height: 7px;
+    border: 2px solid #16a34a;
+    border-radius: 50%;
+    background: #000;
+  }
+  .term :global(.tl.fail .tl-dot) {
+    border-color: #dc2626;
+    background: #dc2626;
+  }
+  .term :global(.tl-acts) {
+    position: absolute;
+    right: 12px;
+    display: flex;
+    gap: 6px;
+  }
+  .term :global(.tl-acts button) {
+    padding: 2px 9px;
+    border: 1px solid #333;
+    border-radius: 5px;
+    background: #141414;
+    color: #e5e5e5;
+    font: 11px system-ui, -apple-system, sans-serif;
+    pointer-events: auto;
+    cursor: pointer;
+  }
+  .term :global(.tl-acts button.pri) {
+    border-color: #1d4ed8;
+    background: #1e3a8a;
+    color: #dbeafe;
+  }
+  .term :global(.tl-acts button.ghost) {
+    border-color: transparent;
+    background: none;
+    color: #8b8b8b;
+  }
+  .term :global(.tl-acts button.ghost:hover) {
+    color: #e5e5e5;
   }
   /* FR-58: tombol aksi blok (kanan baris perintah) dan kepala blok menempel (atas pane) */
   .bacts,

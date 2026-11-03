@@ -582,7 +582,7 @@ fn ringkas_agent_manual() {
         panic!("tanpa pane.replace; layar: {}", String::from_utf8_lossy(&B64.decode(snap).unwrap()));
     };
     let text = String::from_utf8(B64.decode(data).unwrap()).unwrap();
-    assert!(text.contains("omp watch") && text.contains("Resume this session with:") && text.contains("omp --continue"), "{text}");
+    assert!(text.contains("omp watch") && text.contains("↳ omp --continue"), "{text}");
     assert_eq!(e["params"]["resume"], "omp --continue"); // tombol Lanjutkan di UI
     // ala Warp: perintah sebelum agent tetap ada di atas blok; baris perintah agent tidak dobel
     assert!(text.contains("RIWAYAT-42") && text.find("RIWAYAT-42") < text.find("omp watch"), "{text}");

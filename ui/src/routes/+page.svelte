@@ -1,6 +1,6 @@
 <script lang="ts">
   // Fase 1: workspace → tab → pohon split pane (FR-1, 37, 38, 43–46, 50, 52). Tata letak disimpan daemon (FR-45).
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
   import Changes from "$lib/Changes.svelte";
@@ -257,6 +257,42 @@
   // `auto` = saran akun yang muncul sendiri saat mengetik `cl…` (FR-61): Tab/Enter mengisi perintah, lalu bisa
   // ditambah argumen sebelum Enter berikutnya menjalankan
   let comp = $state<{ pane: number; items: Comp[]; sel: number; auto?: boolean } | null>(null);
+  /// FR-59: pemilih folder dari chip folder (ala Warp): cari, "..", subfolder; Enter = `cd` di pane
+  let dirs = $state<{ pane: number; dir: string; all: string[]; q: string; sel: number } | null>(null);
+  const dirItems = $derived.by(() => {
+    if (!dirs) return [];
+    const q = dirs.q.toLowerCase();
+    return [...(q ? [] : [".."]), ...dirs.all.filter((n) => n.toLowerCase().includes(q))];
+  });
+  async function openDirs(pane: number) {
+    const dir = meta[pane]?.cwd ?? homePath;
+    dirs = { pane, dir, all: await subdirs(dir, ""), q: "", sel: 0 };
+  }
+  const subdirs = async (dir: string, prefix: string) =>
+    (await invoke<[string, boolean][]>("list_dir", { dir, prefix }).catch(() => [] as [string, boolean][])).filter(([, d]) => d).map(([n]) => n);
+  async function dirsInput() {
+    if (!dirs) return;
+    dirs.sel = 0;
+    // folder tersembunyi hanya dicari bila pencarian diawali titik (seperti Tab di editor)
+    if (dirs.q.startsWith(".") || dirs.all.some((n) => n.startsWith("."))) dirs.all = await subdirs(dirs.dir, dirs.q.startsWith(".") ? "." : "");
+  }
+  function cdTo(name: string | undefined) {
+    if (!dirs || !name) return;
+    const { pane, dir } = dirs;
+    dirs = null;
+    draft[pane] = name === ".." ? "cd .." : `cd ${quote(`${dir}/${name}`)}`;
+    runDraft(pane);
+  }
+  function dirsKey(e: KeyboardEvent) {
+    if (!dirs) return;
+    const n = dirItems.length;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      dirs.sel = (dirs.sel + (e.key === "ArrowDown" ? 1 : n - 1)) % Math.max(1, n);
+      tick().then(() => document.querySelector(".dirs .opt.on")?.scrollIntoView({ block: "nearest" }));
+    } else if (e.key === "Enter") (e.preventDefault(), cdTo(dirItems[dirs.sel]));
+    else if (e.key === "Escape") (e.preventDefault(), (dirs = null));
+  }
   /// FR-61 varian C: `cl…` di kotak ketik = satu saran per akun Claude; terpilih pertama = akun bawaan workspace
   async function accountSuggest(pane: number) {
     const r = await call("account.list", {}).catch(() => null);
@@ -814,8 +850,14 @@
   /// FR-39: palet = semua tab + profil + semua aksi beserta pintasannya (sekaligus daftar pintasan)
   type PalItem = { label: string; hint: string; go: () => void };
   async function openPalette() {
+    // ⌘P lagi = tutup
+    if (pal) return void (pal = null);
     const [keys] = await invoke<[[string, string, string][], string[]]>("shortcuts").catch(() => [[]] as any);
     pal = { q: "", sel: 0, keys };
+    // autofocus bisa kalah oleh editor pane yang merebut fokus; tanpa fokus palet tidak bisa dipakai/ditutup
+    await tick();
+    document.querySelector<HTMLInputElement>(".palette input")?.focus();
+    setTimeout(() => pal && document.querySelector<HTMLInputElement>(".palette input")?.focus(), 50);
   }
   const palItems = $derived.by((): PalItem[] => {
     if (!pal) return [];
@@ -1719,6 +1761,8 @@
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
                 onused={() => (ran[pane] = true)}
                 onblock={(kind: string, text: string) => {
+                  // FR-56 linimasa: Lanjutkan/Ulangi = jalankan perintah di pane ini (lewat editor supaya tercatat di riwayat)
+                  if (kind === "run" && editorShown(pane)) return void ((draft[pane] = text), runDraft(pane));
                   if (kind !== "reuse") return void copy(text);
                   if (!editorShown(pane)) return void copy(text); // editor tidak tampil (mis. TUI jalan): salin saja
                   draft[pane] = text;
@@ -1752,15 +1796,31 @@
                 <div class="ctx">
                   <button class="cchip" title="Lampirkan file · bisa juga seret file atau ⌘V gambar" aria-label="Lampirkan file"
                     onclick={async () => insertPaths(pane, await invoke<string[]>("pick_files").catch(() => [] as string[]))}>{@render icon("plus")}</button>
-                  <span class="cchip" title={meta[pane]?.cwd ?? ""}>
+                  <!-- FR-59: klik = pemilih folder ala Warp -->
+                  <button class="cchip" title="Pindah folder · {meta[pane]?.cwd ?? ''}" onclick={() => openDirs(pane)}>
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" fill="none" stroke="currentColor" /></svg>
                     {home(meta[pane]?.cwd) || "~"}
-                  </span>
+                  </button>
                   {#if meta[pane]?.git?.repo && meta[pane].git.branch}
                     <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${meta[pane].git.files} file` : ""}</span>
                   {/if}
                   <span class="ehint" class:off={!active || pane !== t.focus}>Enter jalankan · ⇧Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan</span>
                 </div>
+                {#if dirs?.pane === pane}
+                  <div class="mention complist acct dirs" role="listbox" aria-label="Pilih folder">
+                    <!-- svelte-ignore a11y_autofocus -->
+                    <input class="dq" placeholder="Cari folder…" bind:value={dirs.q} autofocus spellcheck="false" autocapitalize="off"
+                      onkeydown={dirsKey} oninput={dirsInput} onblur={() => (dirs = null)} />
+                    {#each dirItems as n, i (n)}
+                      <button class="opt" class:on={i === dirs.sel} role="option" aria-selected={i === dirs.sel}
+                        onpointerdown={(e) => e.preventDefault()} onclick={() => cdTo(n)}>
+                        <span class="ico" aria-hidden="true">{#if n === ".."}↑{:else}{@render icon("folder")}{/if}</span>
+                        <span>{n === ".." ? ".. (Folder induk)" : n}</span><span></span>
+                      </button>
+                    {/each}
+                    {#if !dirItems.length}<span class="keys">Tidak ada folder yang cocok</span>{/if}
+                  </div>
+                {/if}
                 {#if comp?.pane === pane}
                   <!-- FR-59: daftar Tab ala Warp -->
                   <div class="mention complist" class:acct={comp.auto} role="listbox" aria-label="Pilihan lengkapi">
@@ -2452,6 +2512,23 @@
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .tab.on {
     background: color-mix(in srgb, var(--c) 24%, transparent);
   }
+  /* FR-59: pemilih folder */
+  .dirs .dq {
+    margin: 2px 2px 4px;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+    outline: none;
+  }
+  .dirs .dq:focus {
+    border-color: #3b82f6;
+  }
+  .dirs .opt {
+    align-items: center;
+  }
   /* seret workspace: blok polos sementara, isinya yang bergerak */
   .side.dragging .wsg {
     background: none;
@@ -2742,7 +2819,7 @@
     position: absolute;
     left: 50%;
     bottom: 96px;
-    z-index: 7;
+    z-index: 9;
     padding: 6px 14px;
     border: 1px solid var(--line);
     border-radius: 999px;
@@ -3210,7 +3287,7 @@
     background: var(--card);
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
-    z-index: 3;
+    z-index: 8; /* dialog dan palet di atas pemisah pane (4) dan panel samping (5) */
   }
   .picker {
     min-width: 320px;
