@@ -1346,8 +1346,12 @@
     }
   }
 
+  // Esc yang tidak dipakai halaman diteruskan WebKit ke jendela = keluar layar penuh macOS; layar penuh cukup fn+F
+  const keepFullscreen = (e: KeyboardEvent) => e.key === "Escape" && e.preventDefault();
+
   onMount(() => {
     window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keydown", keepFullscreen);
     const unlisten = listen<string>("shortcut", ({ payload }) => run(payload));
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
@@ -1394,6 +1398,7 @@
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keydown", keepFullscreen);
       unlisten.then((f) => f());
       unlistenCfg.then((f) => f());
       unlistenDrop.then((f) => f());
