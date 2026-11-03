@@ -404,6 +404,24 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
             Ok(if m == "git.status" { git::status(&cwd) } else { git::diff(&cwd) })
         }
+        // FR-71: worktree hanya lewat kanal UI (SEC-20); folder repo dari pane, bukan parameter
+        "git.worktree_add" => {
+            let pane = st.pane(p)?;
+            let cwd = pty::cwd_of(pane.sid).ok_or("io")?;
+            git::worktree_add(&cwd, p["name"].as_str().unwrap_or_default(), p["dir"].as_str())
+        }
+        "git.worktree_remove" => {
+            let dir = std::path::PathBuf::from(p["dir"].as_str().filter(|d| d.starts_with('/')).ok_or("bad_dir")?);
+            let me = dir.canonicalize().map_err(|_| "io")?;
+            let used = st.panes.lock().unwrap().values().any(|q| {
+                let pid = pty::busy(&q.master, q.sid).map_or(q.sid, |(pid, _)| pid);
+                [pty::cwd_of(pid), pty::cwd_of(q.sid)].into_iter().flatten().any(|c| c.canonicalize().is_ok_and(|c| c.starts_with(&me)))
+            });
+            if used {
+                return Err("pane_in_worktree");
+            }
+            git::worktree_remove(&dir, p["force"].as_bool() == Some(true))
+        }
         "layout.load" => {
             let text = std::fs::read_to_string(config::layout_path()).unwrap_or_default();
             Ok(serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).unwrap_or(Value::Null))

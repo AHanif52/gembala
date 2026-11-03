@@ -205,6 +205,53 @@
   );
   // FR-72: agent dengan pemilih sesi bawaan (OpenCode tidak punya dari baris perintah)
   const pickable = $derived(startProfiles.filter((p) => ["claude", "codex", "omp"].includes(p.agent)));
+  // FR-71: agent di worktree baru (pen layar 07): nama, folder (bawaan `<repo>.<nama>`), profil
+  let wt = $state<{ pane: number; wi: number; root: string; name: string; dir: string; dirSet: boolean; prof: number; err: string } | null>(null);
+  const WT_ERR: Record<string, string> = {
+    bad_name: "Nama cuma boleh huruf, angka, titik, _ dan - (maks 40)",
+    bad_dir: "Folder harus path lengkap (/… atau ~/…)",
+    dir_exists: "Folder itu sudah ada",
+    not_repo: "Pane yang fokus bukan repo git",
+    repo_filter: "Repo ini memakai filter git lokal; worktree tidak dibuat (SEC-29)",
+    worktree_failed: "git worktree gagal, mungkin branch-nya sudah ada",
+  };
+  function openWorktree(wi = at.ws) {
+    const w = wss[wi];
+    const pane = wi === at.ws ? tab?.focus : w?.tabs[0]?.focus;
+    const root = pane === undefined ? "" : meta[pane]?.git?.root;
+    if (pane === undefined || !root) return say("Pane yang fokus bukan repo git");
+    const name = `agent-${(w.tabs.length + 1).toString()}`;
+    wt = { pane, wi, root, name, dir: `${root}.${name}`, dirSet: false, prof: 0, err: "" };
+    tick().then(() => document.querySelector<HTMLInputElement>(".wtdlg input")?.select());
+  }
+  async function createWorktree() {
+    if (!wt) return;
+    const p = startProfiles[wt.prof];
+    const r = await call("git.worktree_add", { pane: wt.pane, name: wt.name.trim(), dir: wt.dirSet ? wt.dir : undefined }).catch((e) => ({ error: String(e?.message ?? e) }));
+    if (r.error) return void (wt.err = WT_ERR[r.error] ?? r.error);
+    const wi = wt.wi;
+    wt = null;
+    await newTab(p?.id, wi, p?.account, { cwd: r.dir, from_pane: undefined });
+    say(`Worktree ${home(r.dir)} · branch ${r.branch}`);
+  }
+  /// FR-71: tutup tab lalu hapus worktree-nya; perubahan belum di-commit = konfirmasi berisi daftar file
+  async function removeWorktree(wi: number, t: Tab) {
+    const dir = meta[t.focus]?.git?.root;
+    if (!dir) return;
+    const go = async (force: boolean) => {
+      for (const p of panes(t.tree)) await call("pane.close", { pane: p }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 500));
+      const r = await call("git.worktree_remove", { dir, force }).catch((e) => ({ error: String(e?.message ?? e) }));
+      if (r.error) return say(r.error === "pane_in_worktree" ? "Masih ada pane lain di folder worktree itu" : `Gagal menghapus worktree: ${r.error}`);
+      if (r.dirty) return void (wtDel = { wi, dir, files: r.dirty });
+      say(`Worktree ${home(dir)} dihapus · branch tetap ada`);
+    };
+    wtDel = null;
+    await go(false);
+    wtForce = () => go(true);
+  }
+  let wtDel = $state<{ wi: number; dir: string; files: string[] } | null>(null);
+  let wtForce: () => void = () => {};
   /// pane shell diganti pane profil di posisi yang sama (agent jalan dengan hook resmi, FR-4)
   async function swapToProfile(old: number, profile: string, account?: string, pick = false) {
     const m = meta[old];
@@ -874,6 +921,7 @@
       ...order.map((o, i) => ({ label: title(o.t), hint: `${wss[o.wi].name}${i < 9 ? ` · ⌘${i + 1}` : ""}`, go: () => goto(i) })),
       ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
+      { label: "Agent di worktree baru…", hint: "git worktree dari HEAD repo pane ini", go: () => openWorktree() },
       ...pickable.map((p) => ({ label: `Pilih sesi lama: ${p.label}`, hint: "pemilih sesi bawaan agent", go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
       { label: "Workspace baru…", hint: "", go: addWorkspace },
       { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
@@ -974,6 +1022,8 @@
       ["Warna", colorMenu(t.color, (c) => (t.color = c))],
       others.length ? ["Pindah ke workspace", others] : ["Pindah ke workspace", () => {}, false],
       ["Salin folder", () => copy(meta[t.focus]?.cwd)],
+      ["Agent di worktree baru…", () => ((at = { ws: wi, tab: ti }), openWorktree(wi))],
+      ...(meta[t.focus]?.git?.branch?.startsWith("gembala/") ? [["Tutup dan hapus worktree…", () => removeWorktree(wi, t)] as MItem] : []),
       "-",
       ["Tutup tab", () => closeTabs(wi, [t])],
       ["Tutup tab lain", () => closeTabs(wi, wss[wi].tabs.filter((x) => x !== t)), wss[wi].tabs.length > 1],
@@ -990,6 +1040,7 @@
     popup(e, [
       ...(cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? " (tidak terpasang)" : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem),
       "-",
+      ["Agent di worktree baru…", () => openWorktree(wi)],
       pickable.length
         ? ["Pilih sesi lama…", pickable.map((p) => [p.label, () => newTab(p.id, wi, p.account, { pick: true })] as MItem)]
         : ["Pilih sesi lama…", () => {}, false],
@@ -2113,6 +2164,41 @@
       </span>
     </div>
   {/if}
+  {#if wt}
+    <!-- FR-71: dialog worktree (pen layar 07) -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="confirm wtdlg" role="dialog" aria-label="Agent di worktree baru" tabindex="-1"
+      onkeydown={(e) => (e.key === "Escape" ? (wt = null) : e.key === "Enter" && !e.isComposing && (e.preventDefault(), createWorktree()))}>
+      <b>Agent di worktree baru</b>
+      <span class="m">Diambil dari HEAD {home(wt.root)}. Perubahan yang belum di-commit tidak ikut.</span>
+      <label>Nama <input class="edit" bind:value={wt.name} spellcheck="false" autocapitalize="off"
+        oninput={() => wt && !wt.dirSet && (wt.dir = `${wt.root}.${wt.name.trim()}`)} /></label>
+      <label>Folder <input class="edit" bind:value={wt.dir} spellcheck="false" autocapitalize="off" oninput={() => wt && (wt.dirSet = true)} /></label>
+      <label>Branch baru <input class="edit" value={`gembala/${wt.name.trim()}`} disabled /></label>
+      <label>Profil
+        <select class="edit" bind:value={wt.prof}>
+          {#each startProfiles as p, i (p.key)}<option value={i}>{p.label}</option>{/each}
+        </select>
+      </label>
+      <span class="m note">Menutup pane tidak menghapus worktree. Gabungkan hasilnya lewat git biasa; Gembala tidak merge atau push.</span>
+      {#if wt.err}<span class="err">{wt.err}</span>{/if}
+      <span class="acts">
+        <button class="mini" onclick={() => (wt = null)}>Batal <span class="keys">Esc</span></button>
+        <button class="mini pri" onclick={createWorktree} disabled={!startProfiles.length}>Buat dan jalankan <span class="keys">↩</span></button>
+      </span>
+    </div>
+  {/if}
+  {#if wtDel}
+    <div class="confirm wtdlg" role="alertdialog" aria-label="Hapus worktree">
+      <b>Worktree {home(wtDel.dir)} punya perubahan yang belum di-commit</b>
+      <span class="m">File ini akan hilang kalau dihapus:</span>
+      <pre class="files">{wtDel.files.slice(0, 30).join("\n")}{wtDel.files.length > 30 ? `\n… ${wtDel.files.length - 30} lagi` : ""}</pre>
+      <span class="acts">
+        <button class="mini" onclick={() => (wtDel = null)}>Batal</button>
+        <button class="mini danger" onclick={() => ((wtDel = null), wtForce())}>Hapus beserta perubahannya</button>
+      </span>
+    </div>
+  {/if}
   {#if pal}
     <!-- FR-39: palet perintah -->
     <div class="confirm picker palette" role="dialog" aria-label="Palet perintah">
@@ -3105,6 +3191,10 @@
     color: var(--fg);
     font: inherit;
   }
+  .mini.pri {
+    border-color: #1d4ed8;
+    background: rgba(59, 130, 246, 0.15);
+  }
   .mini.danger {
     border-color: rgba(220, 38, 38, 0.5);
     color: #ef4444;
@@ -3219,6 +3309,38 @@
   }
   .targets .opt {
     grid-template-columns: 10px 1fr auto;
+  }
+  .wtdlg {
+    top: 35%;
+    width: min(460px, 86%);
+    gap: 10px;
+  }
+  .wtdlg label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .wtdlg .edit {
+    color: var(--fg);
+    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .wtdlg .note {
+    padding: 6px 8px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.03);
+    font-size: 11px;
+  }
+  .wtdlg .err {
+    color: #f87171;
+    font-size: 12px;
+  }
+  .wtdlg .files {
+    max-height: 30vh;
+    margin: 0;
+    overflow: auto;
+    font: 11px "SF Mono", Menlo, monospace;
   }
   .palette {
     top: 30%;

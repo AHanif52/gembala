@@ -1,5 +1,6 @@
 //! Panel perubahan dan toolbar (FR-22, FR-55; SEC-29): git milik pengguna, baca saja, tanpa jaringan.
-//! Tidak ada input pengguna yang menjadi argumen git; folder kerja diambil dari pane.
+//! Tidak ada input pengguna yang menjadi argumen git; folder kerja diambil dari pane. Pengecualian FR-71: worktree
+//! (nama tervalidasi, hook repo dimatikan) hanya dari kanal UI.
 
 use serde_json::{Value, json};
 use std::path::Path;
@@ -9,13 +10,72 @@ use std::time::Duration;
 const MAX_DIFF: usize = 200 * 1024;
 
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
+    git_for(cwd, args, Duration::from_secs(3))
+}
+
+fn git_for(cwd: &Path, args: &[&str], limit: Duration) -> Option<String> {
     let mut c = Command::new("git");
-    // SEC-29: config milik repo tidak boleh menjalankan perintah (fsmonitor, repo bare tersemat)
-    c.args(["-c", "core.fsmonitor=false", "-c", "safe.bareRepository=explicit", "-C"]).arg(cwd).args(args);
+    // SEC-29: config milik repo tidak boleh menjalankan perintah (fsmonitor, hook, repo bare tersemat)
+    c.args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "safe.bareRepository=explicit", "-C"]).arg(cwd).args(args);
     c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     crate::pty::scrub_env(&mut c);
-    let out = crate::profile::run_with_timeout(c, Duration::from_secs(3))?;
-    Some(out)
+    crate::profile::run_with_timeout(c, limit)
+}
+
+/// FR-71: nama worktree = bagian folder dan branch `gembala/<nama>`
+pub fn valid_name(n: &str) -> bool {
+    (1..=40).contains(&n.len()) && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) && n.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) && !n.contains("..")
+}
+
+/// FR-71: worktree baru dari HEAD repo `cwd` di `dir` (bawaan `<repo>.<nama>` di samping repo), branch `gembala/<nama>`.
+pub fn worktree_add(cwd: &Path, name: &str, dir: Option<&str>) -> Result<Value, &'static str> {
+    if !valid_name(name) {
+        return Err("bad_name");
+    }
+    let root = git(cwd, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).ok_or("not_repo")?;
+    if repo_runs_filters(cwd) {
+        return Err("repo_filter");
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = match dir.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => std::path::PathBuf::from(d.strip_prefix('~').map_or(d.to_string(), |r| format!("{home}{r}"))),
+        None => std::path::PathBuf::from(format!("{root}.{name}")),
+    };
+    if !dir.is_absolute() || dir.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("bad_dir");
+    }
+    if dir.exists() {
+        return Err("dir_exists");
+    }
+    let branch = format!("gembala/{name}");
+    let d = dir.to_string_lossy().into_owned();
+    git_for(Path::new(&root), &["worktree", "add", "-b", &branch, &d, "HEAD"], Duration::from_secs(120));
+    if !dir.join(".git").exists() {
+        return Err("worktree_failed"); // mis. branch sudah ada
+    }
+    Ok(json!({"dir": d, "branch": branch}))
+}
+
+/// FR-71: hapus worktree tambahan (bukan repo utama). Ada perubahan dan belum `force` = daftar file, tidak dihapus.
+pub fn worktree_remove(dir: &Path, force: bool) -> Result<Value, &'static str> {
+    let list = git(dir, &["worktree", "list", "--porcelain"]).ok_or("not_repo")?;
+    let trees: Vec<&str> = list.lines().filter_map(|l| l.strip_prefix("worktree ")).collect();
+    let me = dir.canonicalize().map_err(|_| "io")?;
+    let main = trees.first().ok_or("not_repo")?;
+    if !trees[1..].iter().any(|t| Path::new(t).canonicalize().is_ok_and(|t| t == me)) {
+        return Err("not_worktree");
+    }
+    let dirty: Vec<String> = git(dir, &["status", "--porcelain", "--untracked-files=all"]).unwrap_or_default().lines().map(|l| redact(l.get(3..).unwrap_or(l))).collect();
+    if !dirty.is_empty() && !force {
+        return Ok(json!({"removed": false, "dirty": dirty}));
+    }
+    let d = me.to_string_lossy().into_owned();
+    let args: &[&str] = if force { &["worktree", "remove", "--force", &d] } else { &["worktree", "remove", &d] };
+    git_for(Path::new(main), args, Duration::from_secs(60));
+    if me.exists() {
+        return Err("remove_failed");
+    }
+    Ok(json!({"removed": true}))
 }
 
 /// SEC-29: filter clean/smudge/process di config lokal repo berjalan saat diff membandingkan worktree dan tidak bisa
@@ -107,6 +167,29 @@ pub fn redact(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_buat_dan_hapus() {
+        let base = std::env::temp_dir().join(format!("gembala-wt-{}", std::process::id()));
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let sh = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success(), "{args:?}");
+        sh(&["init", "-q"]);
+        std::fs::write(repo.join("a.txt"), "a").unwrap();
+        sh(&["add", "a.txt"]);
+        sh(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a"]);
+        assert_eq!(worktree_add(&repo, "../x", None), Err("bad_name"));
+        let r = worktree_add(&repo, "fitur-1", None).unwrap();
+        let dir = std::path::PathBuf::from(r["dir"].as_str().unwrap());
+        assert!(dir.join("a.txt").exists() && r["branch"] == "gembala/fitur-1");
+        assert_eq!(worktree_add(&repo, "fitur-1", None), Err("dir_exists"));
+        assert_eq!(worktree_remove(&repo, false), Err("not_worktree"));
+        std::fs::write(dir.join("b.txt"), "b").unwrap();
+        assert_eq!(worktree_remove(&dir, false).unwrap()["dirty"][0], "b.txt");
+        assert_eq!(worktree_remove(&dir, true).unwrap()["removed"], true);
+        assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(base);
+    }
 
     #[test]
     fn redaksi_rahasia() {
