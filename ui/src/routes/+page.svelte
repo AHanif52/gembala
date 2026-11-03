@@ -845,6 +845,12 @@
       const m = meta[tab.focus];
       m.zoom = arg === "pane_reset" ? 0 : Math.max(-6, Math.min(16, (m.zoom ?? 0) + (arg === "pane_in" ? 1 : -1)));
     }
+    // zoom tanpa tanda = tidak tahu ukuran sekarang; angka sama dengan Pengaturan > Tampilan > Ukuran huruf
+    if (id.startsWith("term.zoom")) {
+      const base = cfg?.values.ui.font_size ?? 13;
+      const pz = id.startsWith("term.zoom.pane") ? (meta[tab.focus]?.zoom ?? 0) : 0;
+      say(`Ukuran huruf ${Math.max(6, base + zoom + pz)}${pz ? " (pane ini)" : ""} · bawaan ${base}`);
+    }
   }
 
   /// FR-39: palet = semua tab + profil + semua aksi beserta pintasannya (sekaligus daftar pintasan)
