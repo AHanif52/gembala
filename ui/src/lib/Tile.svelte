@@ -52,7 +52,12 @@
     black: "#616161", red: "#ff8272", green: "#b4fa72", yellow: "#fefdc2", blue: "#a5d5fe", magenta: "#ff8ffd", cyan: "#d0d1fe", white: "#f1f1f1",
     brightBlack: "#8e8e8e", brightRed: "#ffc4bd", brightGreen: "#d6fcb9", brightYellow: "#fefdd5", brightBlue: "#c1e3fe", brightMagenta: "#ffb1fe", brightCyan: "#e5e6fe", brightWhite: "#feffff",
   };
-  const LIGHT: ITheme = { background: "#fafafa", foreground: "#27272a", cursor: "#27272a", selectionBackground: "#d4d4d8" };
+  // palet ANSI untuk latar terang (GitHub Light): warna xterm bawaan terlalu menyala dan tidak terbaca di putih
+  const LIGHT: ITheme = {
+    background: "#fafafa", foreground: "#27272a", cursor: "#27272a", selectionBackground: "#d4d4d8",
+    black: "#24292f", red: "#cf222e", green: "#116329", yellow: "#7d4e00", blue: "#0969da", magenta: "#8250df", cyan: "#1b7c83", white: "#6e7781",
+    brightBlack: "#57606a", brightRed: "#a40e26", brightGreen: "#1a7f37", brightYellow: "#633c01", brightBlue: "#218bff", brightMagenta: "#a475f9", brightCyan: "#3192aa", brightWhite: "#8c959f",
+  };
   const MATCH = {
     matchBackground: "#854d0e",
     activeMatchBackground: "#ca8a04",
@@ -516,7 +521,7 @@
     box-sizing: border-box;
     /* ala Warp: pemisah blok jelas terlihat; lebar xterm (px saat dibuat) ditimpa supaya ikut pane yang dibesarkan */
     width: 100% !important;
-    border-top: 1px solid rgba(255, 255, 255, 0.16);
+    border-top: 1px solid color-mix(in srgb, var(--fg) 16%, transparent);
     pointer-events: none;
   }
   .term :global(.blk.fail) {
@@ -535,7 +540,7 @@
     top: 0;
     bottom: 0;
     width: 1px;
-    background: #2c2c2c;
+    background: var(--line);
   }
   .term :global(.tl-dot) {
     position: absolute;
@@ -544,7 +549,7 @@
     height: 7px;
     border: 2px solid #16a34a;
     border-radius: 50%;
-    background: #000;
+    background: var(--bg);
   }
   .term :global(.tl.fail .tl-dot) {
     border-color: #dc2626;
@@ -558,10 +563,10 @@
   }
   .term :global(.tl-acts button) {
     padding: 2px 9px;
-    border: 1px solid #333;
+    border: 1px solid var(--line);
     border-radius: 5px;
-    background: #141414;
-    color: #e5e5e5;
+    background: var(--card);
+    color: var(--fg);
     font: 11px system-ui, -apple-system, sans-serif;
     pointer-events: auto;
     cursor: pointer;
@@ -574,14 +579,14 @@
   .term :global(.tl-acts button.ghost) {
     border-color: transparent;
     background: none;
-    color: #8b8b8b;
+    color: var(--muted);
   }
   .term :global(.tl-acts button.ghost:hover) {
-    color: #e5e5e5;
+    color: var(--fg);
   }
   /* FR-58 blok shell: garis + titik di gutter kiri (di luar grid, kolom 0 dipakai prompt), durasi di kanan */
   .term :global(.tl.sh) {
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   }
   .term :global(.tl.sh::before) {
     left: -8px;
@@ -606,7 +611,7 @@
     position: absolute;
     top: 0;
     right: 12px;
-    color: #8b8b8b;
+    color: var(--muted);
     font: 11px system-ui, -apple-system, sans-serif;
     line-height: inherit;
   }
@@ -681,9 +686,9 @@
   }
   .bacts-in button {
     padding: 2px 8px;
-    border: 1px solid #333;
+    border: 1px solid var(--line);
     border-radius: 5px;
-    background: #141414;
+    background: var(--card);
     color: var(--fg);
     font: inherit;
     cursor: pointer;
