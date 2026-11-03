@@ -2190,6 +2190,15 @@
   .side.dragging {
     cursor: grabbing;
   }
+  /* sidebar = chrome app: seret tab/workspace tidak ikut memblok teks; input tetap bisa diblok */
+  .side {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .side input {
+    -webkit-user-select: text;
+    user-select: text;
+  }
   .tab .x {
     display: none;
   }
