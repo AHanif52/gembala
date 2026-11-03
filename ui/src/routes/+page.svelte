@@ -2412,6 +2412,11 @@
     background: color-mix(in srgb, var(--c) 9%, transparent);
     box-shadow: inset 3px 0 0 var(--c);
   }
+  /* isi blok tidak menutupi garis kiri (latar tab aktif/hover dan titik status) */
+  .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > * {
+    margin-left: 6px;
+    margin-right: 3px;
+  }
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .ws {
     margin-top: 4px;
     color: color-mix(in srgb, var(--c) 70%, #fff);
