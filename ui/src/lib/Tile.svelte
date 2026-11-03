@@ -394,6 +394,9 @@
       if (e.event === "pane.output") term.write(unb64(e.params.data));
       // FR-56: agent keluar = layar diganti blok ringkas dari daemon
       if (e.event === "pane.replace") {
+        // blok shell lama (termasuk perintah agent yang baru keluar) tidak berlaku lagi: tanpa ini titik dan durasinya
+        // menumpuk di atas blok ringkas
+        blocks.splice(0).forEach((b) => (b.live?.dispose(), b.a.dispose(), b.c?.dispose(), b.d?.dispose()));
         term.reset();
         term.write(unb64(e.params.data), decorateSummary);
       }
@@ -536,7 +539,7 @@
   .term :global(.tl::before) {
     content: "";
     position: absolute;
-    left: 10px;
+    left: -8px;
     top: 0;
     bottom: 0;
     width: 1px;
@@ -544,7 +547,7 @@
   }
   .term :global(.tl-dot) {
     position: absolute;
-    left: 5px;
+    left: -12px;
     width: 7px;
     height: 7px;
     border: 2px solid #16a34a;
@@ -587,12 +590,6 @@
   /* FR-58 blok shell: garis + titik di gutter kiri (di luar grid, kolom 0 dipakai prompt), durasi di kanan */
   .term :global(.tl.sh) {
     border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
-  }
-  .term :global(.tl.sh::before) {
-    left: -8px;
-  }
-  .term :global(.tl.sh .tl-dot) {
-    left: -12px;
   }
   .term :global(.tl.sh.run .tl-dot) {
     border-color: #3b82f6;
