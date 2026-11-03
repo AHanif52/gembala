@@ -29,6 +29,13 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str).unwrap_or_default() {
         "daemon" => daemon(&args[1..]),
         "hook" => hook(&args[1..]),
+        // FR-61: dipanggil fungsi zsh `claude` sebelum Claude akun lain jalan (tidak tercantum di USAGE: internal)
+        "trust-sync" => {
+            if let Some(dir) = args.get(1) {
+                account::sync_trust(dir);
+            }
+            ExitCode::SUCCESS
+        }
         cmd @ ("send" | "wait" | "read" | "reply" | "status" | "watch" | "token") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");

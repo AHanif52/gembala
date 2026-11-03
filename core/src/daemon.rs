@@ -592,6 +592,10 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                     None => String::new(),
                 },
             };
+            // FR-61: folder yang dipercaya di Utama ikut dipercaya di akun ini sebelum Claude-nya jalan
+            if let Some(a) = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name) {
+                account::sync_trust(&a.dir);
+            }
             let session = profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) };
             let launch = prof.as_ref().and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
             let cmd = launch.as_deref().or(p["cmd"].as_str());

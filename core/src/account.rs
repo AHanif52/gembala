@@ -178,6 +178,45 @@ pub fn config_json(a: Option<&Account>) -> PathBuf {
     }
 }
 
+/// FR-61: folder yang dipercaya di Utama ikut dipercaya di akun `dir`. Satu arah dan hanya menambah:
+/// `.claude.json` Utama hanya dibaca; yang ditulis ke akun hanya `projects.<folder>.hasTrustDialogAccepted`.
+/// Akun yang belum pernah dipakai (file belum ada) dilewati. Hasil = jumlah folder yang ditambahkan.
+pub fn sync_trust(dir: &str) -> usize {
+    let Ok(dir) = valid_dir(dir) else { return 0 };
+    let read = |p: &Path| -> Option<Value> {
+        std::fs::metadata(p).ok().filter(|m| m.len() <= 32 << 20)?;
+        serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+    };
+    let (Some(main), target_path) = (read(&config_json(None)), dir.join(".claude.json")) else { return 0 };
+    let Some(mut target) = read(&target_path) else { return 0 };
+    let n = merge_trust(&main, &mut target);
+    if n == 0 {
+        return 0;
+    }
+    // salinan sebelum ditulis (satu, ditimpa tiap sinkron) supaya file akun bisa dipulihkan
+    let _ = std::fs::copy(&target_path, dir.join(".claude.json.gembala-bak"));
+    if crate::config::write_atomic(&target_path, target.to_string().as_bytes()).is_err() {
+        return 0;
+    }
+    n
+}
+
+fn merge_trust(main: &Value, target: &mut Value) -> usize {
+    let Some(projects) = main["projects"].as_object() else { return 0 };
+    if !target.is_object() || !(target["projects"].is_object() || target["projects"].is_null()) {
+        return 0;
+    }
+    let mut n = 0;
+    for (folder, p) in projects.iter().filter(|(_, p)| p["hasTrustDialogAccepted"] == true) {
+        let t = &mut target["projects"][folder.as_str()];
+        if t["hasTrustDialogAccepted"] != true && (t.is_object() || t.is_null()) && p.is_object() {
+            t["hasTrustDialogAccepted"] = json!(true);
+            n += 1;
+        }
+    }
+    n
+}
+
 pub fn to_json(a: &Account) -> Value {
     json!({"id": a.id, "agent": a.agent, "name": a.name, "dir": a.dir, "share": a.share})
 }
@@ -281,5 +320,28 @@ mod tests {
         assert_eq!(status(&f), json!({"used": true, "email": null}));
         let _ = std::fs::remove_dir_all(&d);
         assert_eq!(slug("Kantor Javan!"), "kantor-javan");
+    }
+
+    #[test]
+    fn trust_utama_ditambahkan_satu_arah() {
+        let main = json!({"oauthAccount": {"emailAddress": "a@b"}, "projects": {
+            "/r/a": {"hasTrustDialogAccepted": true, "allowedTools": ["x"]},
+            "/r/b": {"hasTrustDialogAccepted": false},
+            "/r/c": {"hasTrustDialogAccepted": true}}});
+        let mut t = json!({"oauthAccount": {"emailAddress": "k@b"}, "projects": {
+            "/r/c": {"hasTrustDialogAccepted": false, "history": [1]},
+            "/r/k": {"hasTrustDialogAccepted": true}}});
+        assert_eq!(merge_trust(&main, &mut t), 2);
+        // hanya tanda trust yang disalin; isi lain akun dan login tidak tersentuh
+        assert_eq!(t["projects"]["/r/a"], json!({"hasTrustDialogAccepted": true}));
+        assert_eq!(t["projects"]["/r/c"], json!({"hasTrustDialogAccepted": true, "history": [1]}));
+        assert_eq!(t["projects"]["/r/b"], Value::Null);
+        assert_eq!(t["projects"]["/r/k"]["hasTrustDialogAccepted"], true);
+        assert_eq!(t["oauthAccount"]["emailAddress"], "k@b");
+        assert_eq!(merge_trust(&main, &mut t), 0, "sinkron kedua tidak menulis apa-apa");
+        // akun baru tanpa `projects` tetap diisi; format asing dilewati
+        let mut fresh = json!({"numStartups": 1});
+        assert_eq!(merge_trust(&main, &mut fresh), 2);
+        assert_eq!(merge_trust(&main, &mut json!([])), 0);
     }
 }
