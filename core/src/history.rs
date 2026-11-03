@@ -237,15 +237,15 @@ mod tests {
 
     #[test]
     fn log_pulih_dan_disamarkan() {
-        let d = std::env::temp_dir().join(format!("gembala-log-{}", std::process::id()));
-        // SAFETY: test tunggal yang memakai GEMBALA_CONFIG di modul ini
+        let d = std::env::temp_dir().join(format!("gembala-uji-{}", std::process::id()));
+        // SAFETY: test lain yang memakai GEMBALA_CONFIG menulis nilai yang sama (folder uji per proses)
         unsafe { std::env::set_var("GEMBALA_CONFIG", d.join("config.toml")) };
         save_log("0123456789abcdef", 7, b"\x1b[32mok\x1b[m\r\n\x1b[33mghp_abcd1234abcd1234\x1b[m\r\n");
         let (b, _) = load_log(&json!({"boot": "0123456789abcdef", "pane": 7})).unwrap();
         let t = String::from_utf8(b).unwrap();
         assert!(t.contains("\x1b[32mok") && !t.contains("abcd1234abcd1234"), "{t}");
         assert!(load_log(&json!({"boot": "../../etc/passwd", "pane": 7})).is_none());
-        let _ = std::fs::remove_dir_all(d);
+        let _ = std::fs::remove_dir_all(d.join("history"));
     }
 
     #[test]

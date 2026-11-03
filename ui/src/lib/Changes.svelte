@@ -8,6 +8,14 @@
     onclose,
     onreload,
     onwidth,
+    pname = "",
+    turns = [],
+    turn = null,
+    ask = null,
+    onturn = () => {},
+    onrestore = () => {},
+    onconfirm = () => {},
+    oncancel = () => {},
   }: {
     status: any;
     diff: { repo: boolean; diff?: string; truncated?: boolean; untracked?: string[] } | null;
@@ -15,7 +23,18 @@
     onclose: () => void;
     onreload: () => void;
     onwidth: (w: number) => void;
+    // FR-70: giliran agent pane ini (terbaru dulu), giliran terpilih, kartu kembalikan
+    pname?: string;
+    turns?: { i: number; start: number; end: number; title: string; files: number; add: number; del: number; skipped: string[] }[];
+    turn?: number | null;
+    ask?: { i: number; files: { kind: string; path: string }[]; others: string[]; head_moved: boolean; skipped: string[] } | null;
+    onturn?: (i: number | null) => void;
+    onrestore?: (i: number) => void;
+    onconfirm?: () => void;
+    oncancel?: () => void;
   } = $props();
+  const hm = (t: number) => new Date(t * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+  const askTurn = $derived(ask ? turns.find((t) => t.i === ask.i) : undefined);
 
   function grip(e: PointerEvent) {
     const move = (m: PointerEvent) => onwidth(Math.min(innerWidth * 0.7, Math.max(320, innerWidth - m.clientX)));
@@ -84,6 +103,41 @@
     <button class="mini" onclick={onreload} title="Muat ulang" aria-label="Muat ulang diff">↻</button>
     <button class="mini" onclick={onclose} title="Tutup ⌘⇧+ atau Esc" aria-label="Tutup panel">×</button>
   </header>
+  {#if turns.length}
+    <div class="turns">
+      <span class="m">Giliran {pname} · disimpan di luar repo, 7 hari</span>
+      <button class="trow" class:on={turn == null} onclick={() => onturn(null)}>
+        <i class="tdot"></i><span>Semua sejak commit</span><span class="m"></span>
+        <span class="m">{status?.files ?? 0} file · <span class="add">+{status?.add ?? 0}</span> <span class="del">−{status?.del ?? 0}</span></span>
+      </button>
+      {#each turns as t (t.i)}
+        <button class="trow" class:on={turn === t.i} onclick={() => onturn(t.i)}>
+          <i class="tdot"></i><span>{hm(t.start)} → {hm(t.end)}</span><span class="m ttl">{t.title}</span>
+          <span class="m">{t.files} file{#if t.files} · <span class="add">+{t.add}</span> <span class="del">−{t.del}</span>{/if}</span>
+        </button>
+      {/each}
+      {#if turn != null}
+        <button class="mini undo" onclick={() => onrestore(turn!)}>↶ Kembalikan ke sebelum giliran ini</button>
+      {/if}
+    </div>
+  {/if}
+  {#if ask}
+    <div class="ask" role="alertdialog" aria-label="Kembalikan giliran">
+      <b>Kembalikan ke sebelum giliran {askTurn ? hm(askTurn.start) : ""}?</b>
+      <span class="m">File di folder kerja balik ke kondisi saat itu. Percakapan agent tidak ikut mundur; file yang di-ignore tidak disentuh.</span>
+      <div class="flist">
+        {#each ask.files.slice(0, 40) as f (f.path)}<div><span class={f.kind}>{f.kind}</span> {f.path}</div>{/each}
+        {#if ask.files.length > 40}<div class="m">… {ask.files.length - 40} file lagi</div>{/if}
+      </div>
+      {#if ask.others.length}<span class="warn">Hati-hati: {ask.others.join(", ")} juga mengubah folder ini sejak giliran itu</span>{/if}
+      {#if ask.head_moved}<span class="warn">HEAD sudah berubah sejak giliran itu (commit, checkout, atau rebase)</span>{/if}
+      {#if ask.skipped.length}<span class="m">Dilewati (≥ 100 MB): {ask.skipped.join(", ")}</span>{/if}
+      <span class="acts">
+        <button class="mini" onclick={oncancel}>Batal</button>
+        <button class="mini undo" onclick={onconfirm}>Kembalikan</button>
+      </span>
+    </div>
+  {/if}
   <div class="body">
     {#if !diff}
       <p class="m">Memuat…</p>
@@ -202,6 +256,92 @@
   }
   pre span.del {
     background: rgba(220, 38, 38, 0.12);
+  }
+  /* FR-70: daftar giliran (pen layar 12) */
+  .turns {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .turns > .m {
+    margin-bottom: 4px;
+  }
+  .trow {
+    display: grid;
+    grid-template-columns: 8px auto 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 5px;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .trow.on {
+    background: var(--line);
+  }
+  .tdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #4a4a4a;
+  }
+  .trow.on .tdot {
+    background: #3b82f6;
+  }
+  .ttl {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mini.undo {
+    align-self: flex-start;
+    margin-top: 6px;
+    border-color: rgba(217, 119, 6, 0.5);
+    background: none;
+    color: #fbbf24;
+  }
+  .ask {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 8px 12px;
+    padding: 12px;
+    border: 1px solid rgba(217, 119, 6, 0.5);
+    border-radius: 6px;
+    background: var(--card);
+  }
+  .flist {
+    max-height: 30vh;
+    overflow: auto;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: var(--bg);
+    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .flist .ubah {
+    color: #d97706;
+  }
+  .flist .hapus {
+    color: #f87171;
+  }
+  .warn {
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: rgba(217, 119, 6, 0.1);
+    color: #fbbf24;
+    font-size: 12px;
+  }
+  .acts {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
   }
   .mini {
     padding: 2px 8px;

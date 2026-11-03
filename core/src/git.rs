@@ -9,11 +9,11 @@ use std::time::Duration;
 
 const MAX_DIFF: usize = 200 * 1024;
 
-fn git(cwd: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     git_for(cwd, args, Duration::from_secs(3))
 }
 
-fn git_for(cwd: &Path, args: &[&str], limit: Duration) -> Option<String> {
+pub(crate) fn git_for(cwd: &Path, args: &[&str], limit: Duration) -> Option<String> {
     let mut c = Command::new("git");
     // SEC-29: config milik repo tidak boleh menjalankan perintah (fsmonitor, hook, repo bare tersemat)
     c.args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "safe.bareRepository=explicit", "-C"]).arg(cwd).args(args);
@@ -80,7 +80,7 @@ pub fn worktree_remove(dir: &Path, force: bool) -> Result<Value, &'static str> {
 
 /// SEC-29: filter clean/smudge/process di config lokal repo berjalan saat diff membandingkan worktree dan tidak bisa
 /// dimatikan lewat `-c`; repo seperti itu dianggap bukan repo. Filter dari config global (mis. git-lfs) tetap dipercaya.
-fn repo_runs_filters(cwd: &Path) -> bool {
+pub(crate) fn repo_runs_filters(cwd: &Path) -> bool {
     git(cwd, &["config", "--list", "--show-scope", "--includes"]).is_none_or(|s| {
         s.lines().any(|l| {
             let (scope, kv) = l.split_once('\t').unwrap_or_default();

@@ -12,6 +12,7 @@ use crate::git;
 use crate::profile;
 use crate::grid::Grid;
 use crate::history;
+use crate::snap;
 use crate::pty::{self, Pty};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
@@ -67,6 +68,8 @@ struct Pane {
     hist: std::path::PathBuf,
     /// FR-69: judul terminal terakhir (OSC 0/2) yang dipasang program di pane; RAM saja (SEC-13)
     title: Mutex<String>,
+    /// FR-70: potretan per giliran agent (antrean `snap::queue`)
+    turns: Arc<Mutex<snap::Turns>>,
     /// FR-61: id akun agent pane ini; kosong = Utama. Agent yang diketik: dari `CLAUDE_CONFIG_DIR` prosesnya
     account: Mutex<String>,
     block: Mutex<OpenBlocks>,
@@ -422,6 +425,36 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             git::worktree_remove(&dir, p["force"].as_bool() == Some(true))
         }
+        // FR-70: daftar giliran pane, diff satu giliran, kembalikan ke sebelum giliran (kanal UI saja, SEC-20)
+        "git.turns" => {
+            let pane = st.pane(p)?;
+            let done = pane.turns.lock().unwrap().done.clone();
+            Ok(json!(done.iter().enumerate().rev().map(|(i, t)| {
+                let (files, add, del) = snap::stat(t);
+                json!({"i": i, "start": t.start, "end": t.end, "title": t.title, "files": files, "add": add, "del": del, "skipped": t.skipped})
+            }).collect::<Vec<_>>()))
+        }
+        "git.turn_diff" | "git.turn_preview" | "git.turn_restore" => {
+            let pane = st.pane(p)?;
+            let i = p["i"].as_u64().ok_or("bad_params")? as usize;
+            let t = pane.turns.lock().unwrap().done.get(i).cloned().ok_or("no_such_turn")?;
+            if m == "git.turn_diff" {
+                return Ok(snap::diff(&t));
+            }
+            let files = snap::preview(&t.root, &t.before).ok_or("io")?;
+            if m == "git.turn_restore" {
+                return Ok(json!({"restored": snap::restore(&t.root, &t.before, &files).ok_or("io")?}));
+            }
+            // peringatan: pane lain mengubah repo yang sama sejak giliran ini mulai, atau HEAD berubah
+            let me = p["pane"].as_u64().unwrap_or_default();
+            let others: Vec<String> = st.panes.lock().unwrap().iter().filter(|(k, _)| **k != me).filter_map(|(_, q)| {
+                let tq = q.turns.lock().unwrap();
+                let hit = tq.done.iter().any(|x| x.root == t.root && x.end >= t.start) || tq.open.as_ref().is_some_and(|o| o.root == t.root);
+                hit.then(|| q.name.lock().unwrap().clone())
+            }).collect();
+            let head_moved = snap::head(&t.root) != t.head;
+            Ok(json!({"files": files.iter().map(|(k, f)| json!({"kind": k, "path": f})).collect::<Vec<_>>(), "others": others, "head_moved": head_moved, "skipped": t.skipped}))
+        }
         "layout.load" => {
             let text = std::fs::read_to_string(config::layout_path()).unwrap_or_default();
             Ok(serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).unwrap_or(Value::Null))
@@ -711,6 +744,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 pre_agent: Mutex::new(Vec::new()),
                 hist: history::path(&st.boot, id),
                 title: Mutex::new(String::new()),
+                turns: Arc::default(),
                 account: Mutex::new(st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name).map(|a| a.id.clone()).unwrap_or_default()),
                 block: Mutex::new((None, None)),
                 manual: Mutex::new(None),
@@ -1249,10 +1283,40 @@ fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from:
     if cur.is_empty() || *cur == status || only_from.is_some_and(|f| *cur != f) {
         return;
     }
-    *cur = status;
+    let prev = std::mem::replace(&mut *cur, status);
     drop(cur);
     *pane.status_at.lock().unwrap() = std::time::Instant::now();
+    turn_edge(pane, prev, status);
     status_changed(st, id, pane, status);
+}
+
+/// FR-70: giliran mulai (bekerja) dan selesai (diam/selesai) = potret folder kerja agent, di antrean
+fn turn_edge(pane: &Pane, prev: &str, status: &str) {
+    let busy = |s: &str| matches!(s, "working" | "blocked");
+    let turns = pane.turns.clone();
+    if status == "working" && !busy(prev) {
+        let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
+        let Some(cwd) = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)) else { return };
+        snap::queue(move || {
+            let Some(root) = snap::root_of(&cwd) else { return };
+            if let Some((before, _)) = snap::take(&root) {
+                let head = snap::head(&root);
+                turns.lock().unwrap().open = Some(snap::Open { start: history::now(), root, before, head });
+            }
+        });
+    } else if busy(prev) && matches!(status, "idle" | "done") {
+        let title = pane.title.lock().unwrap().clone();
+        snap::queue(move || {
+            let Some(open) = turns.lock().unwrap().open.take() else { return };
+            if let Some(t) = snap::finish(open, history::now(), title) {
+                let mut cur = turns.lock().unwrap();
+                cur.done.push(t);
+                if cur.done.len() > snap::MAX_TURNS {
+                    cur.done.remove(0);
+                }
+            }
+        });
+    }
 }
 
 /// Kabari UI dan pelanggan kanal pane (FR-8). Pelanggan hanya menerima pane yang boleh ia baca (SEC-21).
@@ -1368,6 +1432,7 @@ fn save_logs_loop(st: Arc<State>) {
     for n in (0..5760u32).cycle() {
         if n == 0 {
             history::sweep(); // saat mulai lalu tiap hari (5760 x 15 dtk)
+            snap::sweep();
         }
         thread::sleep(Duration::from_secs(15));
         save_logs(&st, &mut saved);

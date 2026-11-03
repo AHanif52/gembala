@@ -10,6 +10,7 @@ mod profile;
 mod pty;
 mod rundir;
 mod sign;
+mod snap;
 
 use std::fs::File;
 use std::io::Write;

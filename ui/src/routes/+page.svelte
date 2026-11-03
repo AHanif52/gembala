@@ -112,7 +112,7 @@
   let upgrade = $state<{ daemon: string; app: string; panes: number } | null>(null); // FR-21
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
   let rich = $state<{ pane: number; text: string } | null>(null); // FR-14
-  let changes = $state<{ pane: number; diff: any } | null>(null); // FR-22
+  let changes = $state<{ pane: number; diff: any; turns?: any[]; turn?: number | null; ask?: any } | null>(null); // FR-22, FR-70
   let outputOf = $state<number | null>(null); // FR-56
 
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
@@ -619,10 +619,38 @@
 
   /// FR-22: panel menempel ikut pane yang fokus; diff lama tetap tampil sampai yang baru datang
   async function loadChanges(pane: number) {
-    changes = { pane, diff: changes?.pane === pane ? changes.diff : null };
+    const same = changes?.pane === pane;
+    changes = { pane, diff: same ? changes!.diff : null, turns: same ? changes!.turns : [], turn: same ? changes!.turn : null };
     refreshGit(pane);
-    const diff = await call("git.diff", { pane }).catch(() => ({ repo: false }));
+    const turns = await call("git.turns", { pane }).catch(() => []);
+    if (changes?.pane !== pane) return;
+    changes.turns = turns;
+    if (changes.turn != null && !turns.some((t: any) => t.i === changes!.turn)) changes.turn = null;
+    const diff = await (changes.turn == null ? call("git.diff", { pane }) : call("git.turn_diff", { pane, i: changes.turn })).catch(() => ({ repo: false }));
     if (changes?.pane === pane) changes.diff = diff;
+  }
+  /// FR-70: pilih giliran (null = semua sejak commit)
+  function pickTurn(i: number | null) {
+    if (!changes) return;
+    changes.turn = i;
+    changes.diff = null;
+    loadChanges(changes.pane);
+  }
+  async function askRestore(i: number) {
+    if (!changes) return;
+    const pane = changes.pane;
+    const r = await call("git.turn_preview", { pane, i }).catch((e) => ({ error: String(e) }));
+    if (r.error) return say(`Gagal memeriksa giliran: ${r.error}`);
+    if (!r.files.length) return say("Folder kerja sudah sama dengan sebelum giliran ini");
+    if (changes?.pane === pane) changes.ask = { i, ...r };
+  }
+  async function doRestore() {
+    const c = changes;
+    if (!c?.ask) return;
+    const r = await call("git.turn_restore", { pane: c.pane, i: c.ask.i }).catch((e) => ({ error: String(e) }));
+    c.ask = null;
+    say(r.error ? `Gagal mengembalikan: ${r.error}` : `${r.restored} file dikembalikan`);
+    pickTurn(null);
   }
   let panelW = $state(460); // FR-22: lebar panel perubahan, disimpan di layout
   $effect(() => {
@@ -2117,6 +2145,8 @@
   {/if}
   {#if changes}
     <Changes status={meta[changes.pane]?.git} diff={changes.diff} width={panelW} onwidth={(w: number) => (panelW = w)}
+      pname={meta[changes.pane]?.name ?? ""} turns={changes.turns ?? []} turn={changes.turn ?? null} ask={changes.ask ?? null}
+      onturn={pickTurn} onrestore={askRestore} onconfirm={doRestore} oncancel={() => changes && (changes.ask = null)}
       onreload={() => changes && loadChanges(changes.pane)} onclose={() => (changes = null)} />
   {/if}
   {#if renameError}
