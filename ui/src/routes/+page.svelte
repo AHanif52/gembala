@@ -3193,16 +3193,10 @@
   .add:hover {
     color: var(--fg);
   }
-  /* pintu ke palet ⌘P, bentuk kotak cari supaya mudah ditemukan */
-  .add.find {
-    border: 1px solid var(--line);
-  }
+  /* pintu ke palet ⌘P, bentuk kotak cari supaya mudah ditemukan; Gembala.pen 02: "+ Workspace" kotak yang sama */
+  .add.find,
   .add.wsnew {
-    font-size: 12px;
-  }
-  /* kepala workspace pertama langsung di bawah "+ Workspace", tanpa celah ganda */
-  .add.wsnew + .ws {
-    margin-top: 2px;
+    border: 1px solid var(--line);
   }
   .body {
     position: absolute;
