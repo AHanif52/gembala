@@ -557,7 +557,16 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
     if p.summarize {
         s += "printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\"; ";
     }
-    s += &format!("[ \"$s\" -eq 127 ] && printf '\\n%s\\n' {}; exec \"$SHELL\" -l", q(&hint));
+    s += &format!("[ \"$s\" -eq 127 ] && printf '\\n%s\\n' {}; ", q(&hint));
+    // FR-58/59: `.zlogin` hook sudah mengembalikan ZDOTDIR pengguna, jadi zsh sesudah agent keluar dipasangi folder
+    // hook lagi (sama dengan pane shell); tanpa ini tidak ada penanda blok dan input editor
+    match h {
+        Some(h) => s += &format!(
+            "case \"$SHELL\" in */zsh) exec env ZDOTDIR={} GEMBALA_USER_ZDOTDIR=\"${{ZDOTDIR:-$HOME}}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac",
+            q(&h.dir.to_string_lossy())
+        ),
+        None => s += "exec \"$SHELL\" -l",
+    }
     Some(s)
 }
 
@@ -750,6 +759,11 @@ mod tests {
         let claude = launch(&by("claude"), Some(&h), None).unwrap();
         assert!(claude.contains("'claude' '--settings' '{\"hooks\":"), "{claude}");
         assert!(claude.contains("hook claude stop"), "{claude}");
+        // zsh sesudah agent keluar memuat hook lagi (input editor + blok), ZDOTDIR pengguna dibawa
+        assert!(claude.ends_with("exec env ZDOTDIR='/cfg/hooks' GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac"), "{claude}");
+        let tail = "case \"$SHELL\" in */zsh) exec env ZDOTDIR=/h GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac";
+        let out = std::process::Command::new("/bin/sh").args(["-c", &tail.replace("\"$SHELL\" -l ;; *)", "sh -c 'echo $ZDOTDIR $GEMBALA_USER_ZDOTDIR' ;; *)")]).env("SHELL", "/bin/zsh").env("ZDOTDIR", "/u").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/h /u");
         // petunjuk `gembala` lewat flag resmi; tanda kutip tunggal di dalamnya akan merusak kutipan shell
         assert!(!PETUNJUK.contains('\'') && claude.contains(&format!("'--append-system-prompt' '{PETUNJUK}'")), "{claude}");
         assert!(launch(&by("omp"), Some(&h), None).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK} {OMP_TOOLS}'")));
