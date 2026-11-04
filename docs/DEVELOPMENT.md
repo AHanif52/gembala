@@ -1,99 +1,101 @@
-# Catatan pengembangan
+# Development notes
 
-Nomor seperti FR-61, SEC-20, atau "TECH bagian 17" di kode merujuk ke dokumen kebutuhan pemilik repo yang tidak
-dibuka; konteks yang lu perlu ada di issue. Alur kerja dan aturan PR ada di [CONTRIBUTING.md](../CONTRIBUTING.md).
+Numbers like FR-61, SEC-20, or "TECH section 17" in code refer to the repo owner's requirements documents, which aren't
+public; the context you need lives in the issue. Workflow and PR rules are in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-## Struktur
+## Structure
 
 ```
-core/                    binary `gembala`: daemon + CLI (satu binary, juga jadi sidecar app)
-  src/main.rs            subcommand: daemon, hook, send, wait, read, reply, status, watch
-  src/daemon.rs          socket ui.sock + pane.sock, registri pane, attach, status, mesin pesan (glue)
-  src/pty.rs             spawn login shell (setsid, env bersih SEC-35), busy/nama/cwd/argumen proses
-  src/grid.rs            grid VT (vt100) + snapshot attach + teks untuk read/pola layar
-  src/config.rs          config.toml (toml_edit): validasi per kunci, set/profil/pintasan, tulis atomik
-  src/profile.rs         profil agent, deteksi, perintah launch + flag hook + sesi, status hook/pola layar
-  src/msg.rs             aturan pesan murni: penyaring, label, keputusan kirim
-  src/bus.rs             antrean, riwayat, log audit HMAC (SEC-11)
-  src/git.rs             git status/diff baca saja + redaksi rahasia (SEC-12, 29)
-  src/rundir.rs          folder socket privat (SEC-1, 25)
-  src/sign.rs            kanal UI dikenali dari tanda tangan kode peer (SEC-20)
-  tests/daemon.rs        uji integrasi daemon nyata lewat socket
-ui/                      Tauri 2 + SvelteKit static + Svelte 5 + xterm.js (renderer DOM)
-  src-tauri/src/lib.rs   klien daemon (tidak membuka PTY), menu native + [keys], notifikasi, dialog, paste
-  src-tauri/src/daemon.rs  sambung/jalankan daemon
-  src/routes/+page.svelte  workspace → tab → pohon split, sidebar, toolbar, kartu, pemulihan
-  src/lib/               Tile (satu xterm per pane), Settings, Changes, Messages, OutputView, layout (murni)
-scripts/                 pasang.sh + alat uji app asli di folder run + config terpisah (tidak menyentuh data pengguna)
+core/                    `gembala` binary: daemon + CLI (one binary, also the app's sidecar)
+  src/main.rs            subcommands: daemon, hook, send, wait, read, reply, status, watch
+  src/daemon.rs          ui.sock + pane.sock sockets, pane registry, attach, status, message engine (glue)
+  src/pty.rs             spawns the login shell (setsid, clean env SEC-35), process busy/name/cwd/args
+  src/grid.rs            VT grid (vt100) + attach snapshot + text for read/screen patterns
+  src/config.rs          config.toml (toml_edit): per-key validation, set/profile/shortcuts, atomic write
+  src/profile.rs         agent profiles, detection, launch command + hook flags + session, hook/screen-pattern status
+  src/msg.rs             pure message rules: sanitizer, labels, send decision
+  src/bus.rs             queue, history, HMAC audit log (SEC-11)
+  src/git.rs             read-only git status/diff + secret redaction (SEC-12, 29)
+  src/rundir.rs          private socket folder (SEC-1, 25)
+  src/sign.rs            UI channel recognized by the peer's code signature (SEC-20)
+  tests/daemon.rs        integration tests against a real daemon over the socket
+ui/                      Tauri 2 + SvelteKit static + Svelte 5 + xterm.js (DOM renderer)
+  src-tauri/src/lib.rs   daemon client (doesn't open PTYs), native menu + [keys], notifications, dialogs, paste
+  src-tauri/src/daemon.rs  connects to / launches the daemon
+  src/routes/+page.svelte  workspace → tab → split tree, sidebar, toolbar, cards, restore
+  src/lib/               Tile (one xterm per pane), Settings, Changes, Messages, OutputView, layout (pure)
+scripts/                 pasang.sh + real-app test tools in a separate run folder + config (don't touch user data)
 ```
 
-Data pengguna: `~/Library/Application Support/Gembala/` (config.toml, layout.json, hooks/, audit/), socket di
-`$TMPDIR/gembala/`. Bisa dialihkan dengan `GEMBALA_CONFIG` dan `GEMBALA_RUNDIR` (dipakai uji).
+User data: `~/Library/Application Support/Gembala/` (config.toml, layout.json, hooks/, audit/), sockets in
+`$TMPDIR/gembala/`. Both can be redirected with `GEMBALA_CONFIG` and `GEMBALA_RUNDIR` (used by tests).
 
-Method baru dari UI ke daemon wajib didaftarkan di `ALLOWED` (`ui/src-tauri/src/lib.rs`); kalau tidak, panggilannya
-ditolak diam-diam.
+New UI-to-daemon methods must be registered in `ALLOWED` (`ui/src-tauri/src/lib.rs`); otherwise the call is silently
+rejected.
 
-## Jalankan dan uji
+## Run and test
 
-Butuh Rust (`brew install rustup`; PATH `/opt/homebrew/opt/rustup/bin`) dan Node.
+You need Rust (`brew install rustup`; PATH `/opt/homebrew/opt/rustup/bin`) and Node.
 
 ```
 export PATH=/opt/homebrew/opt/rustup/bin:$PATH
-cargo test -p gembala                           # unit + integrasi daemon (~30 dtk)
-cargo test -p ui                                # sisi Rust app
+cargo test -p gembala                           # unit + daemon integration (~30 s)
+cargo test -p ui                                # the app's Rust side
 cargo clippy --workspace --all-targets -- -D warnings
 cd ui && npm install --ignore-scripts && npm run check && npm test
-npm run tauri build                             # app rilis: target/release/bundle/macos/Gembala.app (+ .dmg)
-npm run tauri build -- --debug                  # app debug, untuk scripts/ di bawah
+npm run tauri build                             # release app: target/release/bundle/macos/Gembala.app (+ .dmg)
+npm run tauri build -- --debug                  # debug app, for scripts/ below
 ```
 
-Alat uji dengan app debug asli (rahasia lewat `GEMBALA_DEV_SECRET`, jalur itu hanya ada di build debug):
+Test tools that drive the real debug app (the secret goes through `GEMBALA_DEV_SECRET`, a path that only exists in
+debug builds):
 
 ```
-python3 -I scripts/restore_check.py target/debug/bundle/macos/Gembala.app   # buka ulang + daemon baru
-python3 -I scripts/lost_check.py target/debug/bundle/macos/Gembala.app      # daemon dibunuh
-python3 -I scripts/quit_check.py target/debug/bundle/macos/Gembala.app      # Cmd+Q, agent tetap hidup
-python3 -I scripts/ram_ui.py target/debug/bundle/macos/Gembala.app 4        # RAM 4 pane (perlu layar menyala)
-python3 -I scripts/ukur.py target/release/gembala $TMPDIR/gbl-ukur          # latensi + throughput daemon
+python3 -I scripts/restore_check.py target/debug/bundle/macos/Gembala.app   # reopen + new daemon
+python3 -I scripts/lost_check.py target/debug/bundle/macos/Gembala.app      # daemon killed
+python3 -I scripts/quit_check.py target/debug/bundle/macos/Gembala.app      # Cmd+Q, agents stay alive
+python3 -I scripts/ram_ui.py target/debug/bundle/macos/Gembala.app 4        # RAM with 4 panes (needs the screen on)
+python3 -I scripts/ukur.py target/release/gembala $TMPDIR/gbl-ukur          # daemon latency + throughput
 ```
 
-Instal npm selalu dengan `--ignore-scripts` (SEC-16).
+Always install npm packages with `--ignore-scripts` (SEC-16).
 
-## Proses yang dijalankan Gembala
+## Processes Gembala runs
 
-| Nama di Activity Monitor | Peran |
+| Name in Activity Monitor | Role |
 |---|---|
-| `gembala-ui` (atau "Gembala") | Jendela aplikasi |
-| `tauri://localhost` | Tampilan WebKit: terminal dan sidebar |
-| WebKit GPU dan Networking | Bagian bawaan WebKit untuk menggambar dan memuat tampilan dari dalam app |
-| `gembala` | Daemon penjaga pane: shell dan agent berjalan di bawahnya |
-| `zsh`, `claude`, `codex`, … | Proses yang dijalankan di pane |
+| `gembala-ui` (or "Gembala") | The app window |
+| `tauri://localhost` | WebKit view: terminal and sidebar |
+| WebKit GPU and Networking | Built-in WebKit parts that draw and load the view from inside the app |
+| `gembala` | Pane-keeping daemon: shells and agents run under it |
+| `zsh`, `claude`, `codex`, … | Processes running in panes |
 
-- CSP di `ui/src-tauri/tauri.conf.json` hanya mengizinkan kanal internal app; daemon hanya membuka socket Unix di
-  folder `0700`.
-- Daemon tetap hidup setelah jendela ditutup hanya bila ada pane yang masih menjalankan proses (FR-20); notifikasi
-  macOS menyebut alasannya. Tanpa itu, daemon berhenti sendiri dalam beberapa detik.
+- The CSP in `ui/src-tauri/tauri.conf.json` only allows the app's internal channel; the daemon only opens Unix sockets
+  in a `0700` folder.
+- The daemon stays alive after the window closes only while some pane is still running a process (FR-20); the macOS
+  notification says why. Otherwise it stops by itself within a few seconds.
 
-## Jebakan yang sudah ketemu
+## Gotchas we've already hit
 
-- WKWebView tidak meneruskan banyak kombinasi Cmd ke keydown JS: semua pintasan lewat menu native; Cmd+Shift+Enter
-  justru dimakan WebKit sebelum menu, jadi ditangkap keydown (dengan penjaga 150 ms).
-- Build rilis ditandatangani "Gembala Dev" (`bundle.macOS.signingIdentity`, sertifikat self-signed di keychain login):
-  designated requirement = identifier + hash sertifikat, sama tiap build. Item Keychain app tanpa TeamIdentifier
-  terikat ke cdhash build, jadi "Always Allow" tidak bertahan antar build. Karena itu kanal UI dikenali daemon dari
-  tanda tangan peer (`core/src/sign.rs`). Alat uji pakai build debug + `GEMBALA_DEV_SECRET`.
-- App yang dibuka dari dalam sesi agent mewarisi env sesi itu: dibuang di `pty::scrub_env` (SEC-35).
-- Lock `Mutex` std tidak reentrant: jangan memegang `panes` sambil memanggil fungsi yang menguncinya lagi.
-- RAM: renderer DOM xterm lebih hemat dan datar per pane daripada WebGL.
-- Daemon tetap hidup setelah UI ditutup. UI build baru yang tersambung ke daemon build lama menampilkan
-  `gagal sambung ke daemon: unknown_method`: tutup Gembala lalu buka lagi supaya daemon baru yang jalan
-  (pane yang hidup ikut mati). `scripts/pasang.sh` memindah bundle lama ke Trash, jadi daemon lama tetap bisa jalan
-  sampai app dibuka ulang.
-- Tool Bash Claude Code membuat sesi proses baru (setsid): identitas pane harus lewat rantai proses induk, bukan
-  `getsid` peer saja (SEC-3, `pane_of_pid`).
-- Deteksi agent manual memakai nama file proses (`proc_pidpath`); agent yang dibungkus interpreter (nama proses
-  `node`/`bun`) tidak terdeteksi.
-- Salinan `/bin/sleep` dibunuh macOS (tanda tangan platform): agent palsu di uji = salinan biner `gembala` bernama
-  `omp` menjalankan `watch`.
-- Codex yang baru di-update menolak hook plugin pihak ketiga ("plugin contents changed; hook approval required"):
-  bukan dari Gembala; setujui ulang hook di Codex.
+- WKWebView doesn't forward many Cmd combinations to JS keydown: all shortcuts go through the native menu;
+  Cmd+Shift+Enter is swallowed by WebKit before the menu, so it's caught by keydown instead (with a 150 ms guard).
+- Release builds are signed "Gembala Dev" (`bundle.macOS.signingIdentity`, a self-signed certificate in the login
+  keychain): designated requirement = identifier + certificate hash, the same on every build. App Keychain items without
+  a TeamIdentifier are bound to the build's cdhash, so "Always Allow" doesn't survive across builds. That's why the
+  daemon recognizes the UI channel from the peer's signature (`core/src/sign.rs`). Test tools use the debug build +
+  `GEMBALA_DEV_SECRET`.
+- An app opened from inside an agent session inherits that session's env: it's scrubbed in `pty::scrub_env` (SEC-35).
+- The std `Mutex` isn't reentrant: don't hold `panes` while calling a function that locks it again.
+- RAM: the xterm DOM renderer is lighter and flatter per pane than WebGL.
+- The daemon stays alive after the UI closes. A new UI build connected to an old daemon build shows a
+  "failed to connect to daemon: unknown_method" error: quit Gembala and open it again so the new daemon runs (live panes
+  die with it). `scripts/pasang.sh` moves the old bundle to the Trash, so the old daemon can keep running until the app
+  is reopened.
+- Claude Code's Bash tool creates a new process session (setsid): pane identity has to go through the parent process
+  chain, not just the peer's `getsid` (SEC-3, `pane_of_pid`).
+- Manual agent detection uses the process file name (`proc_pidpath`); agents wrapped in an interpreter (process name
+  `node`/`bun`) aren't detected.
+- A copy of `/bin/sleep` gets killed by macOS (platform signature): the fake agent in tests is a copy of the `gembala`
+  binary named `omp` running `watch`.
+- A freshly updated Codex rejects third-party plugin hooks ("plugin contents changed; hook approval required"): not
+  caused by Gembala; re-approve the hook in Codex.

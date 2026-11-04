@@ -1,16 +1,17 @@
-# Berkontribusi ke Gembala
+# Contributing to Gembala
 
-Kebutuhan (BRD) dan catatan teknis (TECH) dikelola pemilik repo di tempat terpisah yang tidak dibuka. Nomor seperti
-FR-61, SEC-20, atau "TECH bagian 17" di kode dan dokumen merujuk ke sana. Isi yang lu perlu ada di issue: kerjakan
-issue yang sudah ada, atau buka issue dulu sebelum fitur baru supaya dapat nomor FR dan kriteria terimanya.
+Requirements (BRD) and technical notes (TECH) are maintained by the repo owner in a separate place that isn't public.
+Numbers like FR-61, SEC-20, or "TECH section 17" in code and docs refer to them. What you need to know lives in the
+issue: pick up an existing issue, or open one before starting a new feature so it gets an FR number and acceptance
+criteria.
 
-## Siapkan mesin
+## Set up your machine
 
-macOS (Apple Silicon), Rust (`brew install rustup`), Node. Struktur kode, perintah uji, dan jebakan yang
-sudah ketemu ada di [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+macOS (Apple Silicon), Rust (`brew install rustup`), Node. Code structure, test commands, and the gotchas we've
+already hit are in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
-Build rilis ditandatangani sertifikat self-signed bernama **Gembala Dev** (`ui/src-tauri/tauri.conf.json`).
-Tanpa sertifikat itu `npm run tauri build` gagal. Buat sekali di mesin lu:
+Release builds are signed with a self-signed certificate named **Gembala Dev** (`ui/src-tauri/tauri.conf.json`).
+Without it `npm run tauri build` fails. Create it once on your machine:
 
 ```
 cd "$(mktemp -d)"
@@ -22,28 +23,37 @@ security import gembala-dev.p12 -k ~/Library/Keychains/login.keychain-db -P gemb
 rm key.pem gembala-dev.p12
 ```
 
-Sertifikat tiap mesin beda, jadi app hasil build lu hanya dipercaya daemon hasil build lu sendiri (SEC-20).
-Uji otomatis dan `scripts/` memakai build debug, tidak butuh sertifikat.
+Every machine's certificate is different, so the app you build is only trusted by the daemon you built yourself
+(SEC-20). Automated tests and `scripts/` use the debug build and don't need the certificate.
 
-Instal npm selalu `npm install --ignore-scripts` (SEC-16). Jangan tambah dependency tanpa dibahas di PR.
+Always install npm packages with `npm install --ignore-scripts` (SEC-16). Don't add a dependency without discussing it
+in the PR.
 
-## Alur kerja
+## Workflow
 
-1. Branch dari `main`: `fr-61-pilih-akun`, `fix-seret-workspace`, dll.
-2. Sebelum push, semua harus hijau:
+1. Branch from `main`: `fr-61-pick-account`, `fix-drag-workspace`, etc.
+2. Before you push, everything must be green:
    ```
    cargo clippy --workspace --all-targets -- -D warnings
    cargo test -p gembala && cargo test -p ui
    cd ui && npm run check && npm test
    ```
-3. Pesan commit: awali nomor FR/SEC bila ada, lalu ringkas dalam bahasa Indonesia
-   (`FR-61: claude-<akun> di pane shell`). Pakai email noreply GitHub
+3. Commit messages are in English: start with the FR/SEC number if there is one, then a short summary
+   (`FR-61: claude-<account> in a shell pane`). Use your GitHub noreply email
    (`git config user.email <id>+<user>@users.noreply.github.com`).
-4. Buka PR ke `main`. Perubahan UI: sertakan screenshot atau rekaman. Perubahan perilaku: sebut butir FR/kriteria
-   yang terpenuhi dan uji yang menutupinya.
-5. Temuan yang mengubah kebutuhan atau desain: tulis di PR/issue, pemilik yang memperbarui BRD/TECH.
+4. Open a PR against `main`. UI changes: include a screenshot or recording. Behavior changes: name the FR item or
+   criterion it satisfies and the test that covers it.
+5. Findings that change a requirement or design: write them in the PR/issue; the owner updates the BRD/TECH.
 
-## Keamanan
+## Language
 
-Celah keamanan jangan dibuka di issue publik; kirim lewat
+- Commit messages and code comments are in English. This applies from 4 Nov 2026; earlier history is in Indonesian and
+  is not rewritten.
+- All `.md` files in this repo are in English. The only Indonesian document is `README.id.md`, the translation of
+  `README.md`; when you change one, update the other.
+- UI text is not covered by this rule: the app is localized (Indonesian and English).
+
+## Security
+
+Don't report security holes in a public issue; send them through
 [GitHub private vulnerability reporting](https://github.com/AHanif52/gembala/security/advisories/new).

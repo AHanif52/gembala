@@ -1,3 +1,5 @@
+<p align="center"><b>English</b> | <a href="README.id.md">Bahasa Indonesia</a></p>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/logo-terang.svg">
@@ -8,129 +10,129 @@
 <h1 align="center">Gembala</h1>
 
 <p align="center">
-  Terminal macOS untuk ngegembalain banyak AI coding agent sekaligus.<br>
-  Claude Code, Codex, OpenCode, dan Oh My Pi jalan berdampingan, dan bisa saling lempar tugas tanpa copy-paste.
+  A macOS terminal for herding a bunch of AI coding agents at once.<br>
+  Claude Code, Codex, OpenCode, and Oh My Pi run side by side and can hand each other tasks without copy-paste.
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/lisensi-MIT-blue" alt="Lisensi MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="macOS">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Alpha">
 </p>
 
 ---
 
-Kalau lu biasa buka tiga-empat agent di tab terminal terpisah, lu pasti kenal rasanya: bolak-balik ngecek mana yang
-udah kelar, mana yang nunggu izin, terus nyalin hasil agent satu ke agent lain pakai tangan. Gembala ngumpulin semua
-agent itu di satu jendela, nunjukin status tiap agent, dan ngasih jalur resmi buat agent saling kirim pesan. Lu tetap
-yang megang kendali.
+If you usually keep three or four agents open in separate terminal tabs, you know the drill: flipping back and forth to
+check which one's done, which one's waiting for permission, then copying one agent's output into another by hand.
+Gembala puts all those agents in one window, shows each agent's status, and gives them an official way to message each
+other. You stay in control.
 
-Gembala cuma wadah terminal. Agent dijalankan dari binary resminya sendiri, apa adanya, dan ngobrol langsung ke
-penyedianya. Gembala nggak jadi proxy, nggak baca token, dan nggak ngubah config agent lu.
+Gembala is just a terminal container. Agents run from their own official binaries, as-is, and talk straight to their
+providers. Gembala isn't a proxy, doesn't read tokens, and doesn't touch your agent config.
 
-## ✨ Fitur
+## ✨ Features
 
-### 🪟 Terminal dan workspace
+### 🪟 Terminal and workspaces
 
-| Fitur | Keterangan |
+| Feature | Description |
 |---|---|
-| **Workspace dan tab** | Satu workspace = satu folder project. Tab vertikal di sidebar, bisa diseret dan diwarnai. |
-| **Split pane** | Bagi layar ke kanan atau bawah sesuka lu. Tata letak balik lagi saat app dibuka ulang. |
-| **Kotak ketik ala editor** | Shift+Enter buat baris baru, saran perintah muncul di atas kotak. |
-| **Blok perintah** | Tiap perintah jadi blok sendiri, gampang dicari dan disalin. |
-| **Palet perintah** | Cmd+P buat lompat ke tab, workspace, atau aksi apa pun. |
-| **Tampilan** | Tema terang dan gelap, zoom per pane, ikon Nerd Font sudah ikut di app. |
+| **Workspaces and tabs** | One workspace = one project folder. Vertical tabs in the sidebar, draggable and color-coded. |
+| **Split panes** | Split the screen right or down however you like. The layout comes back when you reopen the app. |
+| **Editor-style input box** | Shift+Enter for a new line, command suggestions show up above the box. |
+| **Command blocks** | Every command becomes its own block, easy to search and copy. |
+| **Command palette** | Cmd+P to jump to any tab, workspace, or action. |
+| **Look and feel** | Light and dark themes, per-pane zoom, Nerd Font icons built in. |
 
-### 🤖 Ngurus banyak agent
+### 🤖 Managing many agents
 
-| Fitur | Keterangan |
+| Feature | Description |
 |---|---|
-| **Profil agent** | Claude Code, Codex, OpenCode, dan Oh My Pi siap pakai dari tab baru. |
-| **Agent yang diketik sendiri** | Ngetik `claude` atau `codex` di shell biasa? Tetap dikenali dan statusnya kelihatan. |
-| **Status per agent** | Kerja, selesai, diam, atau butuh izin, tampil di tab dan sidebar. |
-| **Antrean "Butuh lu"** | Semua pane yang nunggu izin dikumpulin di atas sidebar. Cmd+Shift+U lompat ke sana. |
-| **Tetap jalan saat ditutup** | Cmd+Q nutup jendela, agent tetap kerja. Buka lagi, semua masih di tempatnya. |
-| **Lanjutkan sesi** | Agent keluar jadi satu blok ringkas dengan tombol Lanjutkan. Sesi lama bisa dipilih lagi. |
-| **Worktree** | Jalankan agent di git worktree baru biar nggak saling tabrak. |
-| **Banyak akun Claude** | Akun pribadi dan kantor di satu mesin, tiap pane jelas pakai akun yang mana. |
-| **Template peran** | Koordinator, planner, pekerja, reviewer: bagi kerja antar agent dari awal. |
+| **Agent profiles** | Claude Code, Codex, OpenCode, and Oh My Pi ready to go from a new tab. |
+| **Agents you type yourself** | Typing `claude` or `codex` in a plain shell? Still recognized, and the status shows. |
+| **Per-agent status** | Working, done, idle, or needs permission, shown on the tab and in the sidebar. |
+| **"Needs you" queue** | Every pane waiting for permission is collected at the top of the sidebar. Cmd+Shift+U jumps there. |
+| **Keeps running when closed** | Cmd+Q closes the window, agents keep working. Open it again and everything's where you left it. |
+| **Resume sessions** | When an agent exits it collapses into one compact block with a Resume button. Old sessions can be picked again. |
+| **Worktrees** | Run an agent in a fresh git worktree so agents don't step on each other. |
+| **Multiple Claude accounts** | Personal and work accounts on one machine, with each pane clearly showing which account it uses. |
+| **Role templates** | Coordinator, planner, worker, reviewer: split the work between agents from the start. |
 
-### 📨 Pesan antar agent, diawasi
+### 📨 Messages between agents, supervised
 
-| Fitur | Keterangan |
+| Feature | Description |
 |---|---|
-| **Lempar tugas** | Ketik `@shell-2` atau tekan Cmd+Shift+K, tugas sampai lengkap dengan konteksnya. |
-| **CLI `gembala`** | Agent bisa `send`, `wait`, `read`, dan `reply` ke agent lain dari dalam pane. |
-| **Aturan akses** | Per workspace: siapa boleh kirim dan baca ke siapa. |
-| **Label asal** | Tiap pesan ditandai pengirimnya, jadi agent tahu itu bukan perintah dari lu. |
-| **Batas laju dan hop** | Pesan nggak bisa mantul-mantul tanpa ujung antar agent. |
-| **Ditahan saat butuh izin** | Agent yang lagi nunggu izin nggak dikirimi apa pun. |
-| **Tombol henti** | Cmd+Shift+. menghentikan semua pesan sekaligus. |
-| **Laci pesan dan log audit** | Cmd+J buka riwayat. Semua pesan dicatat di log bertanda tangan HMAC. |
+| **Hand off tasks** | Type `@shell-2` or press Cmd+Shift+K, and the task arrives with its context. |
+| **`gembala` CLI** | Agents can `send`, `wait`, `read`, and `reply` to other agents from inside a pane. |
+| **Access rules** | Per workspace: who may send to and read from whom. |
+| **Origin label** | Every message is tagged with its sender, so the agent knows it isn't a command from you. |
+| **Rate and hop limits** | Messages can't bounce between agents forever. |
+| **Held while blocked** | An agent waiting for permission doesn't get sent anything. |
+| **Stop button** | Cmd+Shift+. stops all messages at once. |
+| **Message drawer and audit log** | Cmd+J opens the history. Every message is recorded in an HMAC-signed log. |
 
-### 🌿 Git dan perubahan
+### 🌿 Git and changes
 
-| Fitur | Keterangan |
+| Feature | Description |
 |---|---|
-| **Panel perubahan** | Cmd+Shift+= buka diff git, dipisah per giliran agent. |
-| **Titik kembali** | Hasil satu giliran agent nggak sesuai? Kembalikan ke sebelum giliran itu. |
-| **Toolbar agent** | Branch, jumlah commit di depan/belakang, dan file yang berubah, langsung di bawah pane. |
-| **Rahasia disamarkan** | Token dan password di diff ditutup sebelum tampil. |
+| **Changes panel** | Cmd+Shift+= opens the git diff, split per agent turn. |
+| **Restore points** | An agent turn didn't go the way you wanted? Roll back to before that turn. |
+| **Agent toolbar** | Branch, commits ahead/behind, and changed files, right under the pane. |
+| **Secrets masked** | Tokens and passwords in diffs are covered before they're shown. |
 
 ## 📸 Screenshots
 
-### Agent saling kirim pesan
+### Agents messaging each other
 
-Codex nambah tes, lalu ngirim ringkasan ke Claude pakai `gembala send`. Pesan sampai dengan label asalnya, dan Claude
-balas setelah ngecek sendiri.
+Codex adds a test, then sends a summary to Claude with `gembala send`. The message arrives with its origin label, and
+Claude replies after checking for itself.
 
-![Codex dan Claude saling kirim pesan di Gembala](docs/images/pesan-antar-agent.png)
+![Codex and Claude messaging each other in Gembala](docs/images/pesan-antar-agent.png)
 
-### Butuh lu
+### Needs you
 
-Codex minta izin jalanin perintah. Pane-nya langsung masuk strip "Butuh lu" di sidebar, dan Gembala nggak pernah
-ngejawab izin itu sendiri.
+Codex asks permission to run a command. Its pane goes straight into the "Needs you" strip in the sidebar, and Gembala
+never answers that permission prompt on its own.
 
-![Strip Butuh lu saat Codex menunggu izin](docs/images/butuh-izin.png)
+![The Needs you strip while Codex waits for permission](docs/images/butuh-izin.png)
 
-## 🔐 Privasi dan keamanan
+## 🔐 Privacy and security
 
-| Janji | Artinya |
+| Promise | What it means |
 |---|---|
-| **Lokal penuh** | Nggak ada telemetri, pembaruan otomatis, atau koneksi internet dari Gembala. |
-| **Tanpa port jaringan** | Daemon cuma buka socket Unix di folder `0700` milik akun lu. |
-| **Token agent nggak disentuh** | Gembala nggak baca, nyimpen, atau neruskan token OAuth maupun API key. |
-| **Config agent nggak diubah** | `~/.claude`, `~/.codex`, `~/.config/opencode`, dan Keychain agent aman. Hook dipasang lewat flag. |
-| **Manusia yang mutusin** | Dialog izin agent nggak pernah dijawab otomatis. Aksi penting cuma bisa dari jendela app. |
-| **Prompt injection dibatasi** | Label asal, aturan akses, batas laju, dan tombol henti mencegah instruksi jahat nyebar antar agent. |
+| **Fully local** | No telemetry, auto-updates, or internet connections from Gembala. |
+| **No network ports** | The daemon only opens Unix sockets in a `0700` folder owned by your account. |
+| **Agent tokens untouched** | Gembala doesn't read, store, or forward OAuth tokens or API keys. |
+| **Agent config untouched** | `~/.claude`, `~/.codex`, `~/.config/opencode`, and the agents' Keychain items are safe. Hooks are installed via flags. |
+| **Humans decide** | Agent permission dialogs are never answered automatically. Important actions only work from the app window. |
+| **Prompt injection contained** | Origin labels, access rules, rate limits, and the stop button keep malicious instructions from spreading between agents. |
 
-Nemu celah keamanan? Jangan buka issue publik, kirim lewat
+Found a security hole? Don't open a public issue, send it through
 [private vulnerability reporting](https://github.com/AHanif52/gembala/security/advisories/new).
 
-## 📦 Pasang
+## 📦 Install
 
-### Kebutuhan
+### Requirements
 
-| Butuh | Catatan |
+| You need | Notes |
 |---|---|
-| **macOS** | Diuji di Apple Silicon. |
-| **Rust dan Node** | Untuk build dari source: `brew install rustup node`. |
-| **Minimal satu agent** | Lihat tabel di bawah. |
+| **macOS** | Tested on Apple Silicon. |
+| **Rust and Node** | To build from source: `brew install rustup node`. |
+| **At least one agent** | See the table below. |
 
-| Agent | Perintah pasang |
+| Agent | Install command |
 |---|---|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `brew install --cask claude-code` |
 | [Codex](https://github.com/openai/codex) | `npm install -g @openai/codex` |
 | [OpenCode](https://opencode.ai) | `brew install anomalyco/tap/opencode` |
 | Oh My Pi | `brew install can1357/tap/omp` |
 
-### Build dari source
+### Build from source
 
-Belum ada rilis siap unduh; rilis lewat Homebrew menyusul.
+There's no ready-to-download release yet; a Homebrew release is coming.
 
-1. Buat sertifikat penanda tangan lokal **Gembala Dev** sekali di mesin lu: langkahnya di
-   [CONTRIBUTING.md](CONTRIBUTING.md#siapkan-mesin). Daemon pakai tanda tangan ini buat ngenalin jendela app.
-2. Build dan pasang ke `/Applications`:
+1. Create the local signing certificate **Gembala Dev** once on your machine: the steps are in
+   [CONTRIBUTING.md](CONTRIBUTING.md#set-up-your-machine). The daemon uses this signature to recognize the app window.
+2. Build and install to `/Applications`:
 
    ```sh
    git clone https://github.com/AHanif52/gembala.git
@@ -138,91 +140,91 @@ Belum ada rilis siap unduh; rilis lewat Homebrew menyusul.
    scripts/pasang.sh
    ```
 
-Versi lama dipindah ke Trash, bukan ditimpa. Agent yang lagi jalan nggak keganggu; versi baru kepakai setelah
-Gembala ditutup lalu dibuka lagi.
+The old version is moved to the Trash, not overwritten. Agents that are running aren't disturbed; the new version
+takes effect after you quit Gembala and open it again.
 
-## 🚀 Cara pakai
+## 🚀 Usage
 
-Buka Gembala, pilih folder workspace, lalu mulai agent dari panel Mulai atau Cmd+T.
+Open Gembala, pick a workspace folder, then start an agent from the Start panel or with Cmd+T.
 
-### Pintasan
+### Shortcuts
 
-| Pintasan | Aksi |
+| Shortcut | Action |
 |---|---|
-| Cmd+T | Tab baru dari profil |
-| Cmd+D / Cmd+Shift+D | Split kanan / bawah |
-| Cmd+Option+panah | Pindah fokus pane |
-| Cmd+P | Palet perintah |
-| Cmd+Shift+K | Kirim ke agent lain |
-| Cmd+Shift+U | Lompat ke pane yang butuh izin |
-| Cmd+J | Laci pesan |
-| Cmd+Shift+. | Hentikan semua pesan |
-| Cmd+Shift+= | Panel perubahan |
-| Cmd+F | Cari |
-| Cmd+, | Pengaturan |
+| Cmd+T | New tab from a profile |
+| Cmd+D / Cmd+Shift+D | Split right / down |
+| Cmd+Option+arrow | Move pane focus |
+| Cmd+P | Command palette |
+| Cmd+Shift+K | Send to another agent |
+| Cmd+Shift+U | Jump to the pane that needs permission |
+| Cmd+J | Message drawer |
+| Cmd+Shift+. | Stop all messages |
+| Cmd+Shift+= | Changes panel |
+| Cmd+F | Search |
+| Cmd+, | Settings |
 
-Semua pintasan bisa diganti di Pengaturan > Pintasan atau bagian `[keys]` di config.
+Every shortcut can be changed in Settings > Shortcuts or in the `[keys]` section of the config.
 
-### CLI untuk agent
+### CLI for agents
 
-`gembala` otomatis ada di PATH tiap pane, jadi agent bisa manggil langsung:
+`gembala` is on the PATH in every pane, so agents can call it directly:
 
-| Perintah | Fungsi |
+| Command | What it does |
 |---|---|
-| `gembala status` | Daftar agent lain di workspace ini |
-| `gembala send <pane> <pesan…>` | Kirim pesan (`--queue` untuk antre, `--reply-to <id>` untuk balasan) |
-| `gembala wait [<pane>]` | Tunggu balasan, pola layar, atau timeout |
-| `gembala read <pane> [-n <baris>]` | Baca isi layar pane, rahasia disamarkan |
-| `gembala reply <msg_id> <teks…>` | Balas pesan yang masuk |
-| `gembala watch` | Pantau perubahan status, satu baris JSON per event |
+| `gembala status` | List the other agents in this workspace |
+| `gembala send <pane> <message…>` | Send a message (`--queue` to queue it, `--reply-to <id>` for a reply) |
+| `gembala wait [<pane>]` | Wait for a reply, a screen pattern, or a timeout |
+| `gembala read <pane> [-n <lines>]` | Read the pane's screen, secrets masked |
+| `gembala reply <msg_id> <text…>` | Reply to an incoming message |
+| `gembala watch` | Watch status changes, one JSON line per event |
 
-Keluarannya satu baris JSON. Kode keluar 0 = diterima, 1 = ditolak/timeout, 2 = salah pakai.
+Output is one JSON line. Exit code 0 = accepted, 1 = rejected/timeout, 2 = misuse.
 
-### Data dan config
+### Data and config
 
-| Apa | Di mana |
+| What | Where |
 |---|---|
-| Config, tata letak, hook, log audit | `~/Library/Application Support/Gembala/` |
-| Socket daemon | `$TMPDIR/gembala/` |
-| Proses yang jalan + RAM/CPU | Pengaturan > Proses |
+| Config, layout, hooks, audit log | `~/Library/Application Support/Gembala/` |
+| Daemon sockets | `$TMPDIR/gembala/` |
+| Running processes + RAM/CPU | Settings > Processes |
 
-## 🏗️ Cara kerjanya
+## 🏗️ How it works
 
 ```
 Gembala.app (Tauri 2 + Svelte 5 + xterm.js)
-      │  socket Unix, kanal UI (dikenali dari tanda tangan kode)
+      │  Unix socket, UI channel (recognized by code signature)
       ▼
-gembala daemon (Rust) ── memegang PTY ──► zsh, claude, codex, opencode, omp
+gembala daemon (Rust) ── holds the PTYs ──► zsh, claude, codex, opencode, omp
       ▲
-      │  socket Unix, kanal pane
-CLI gembala di dalam pane (send / wait / read / reply)
+      │  Unix socket, pane channel
+gembala CLI inside the pane (send / wait / read / reply)
 ```
 
-| Bagian | Peran |
+| Part | Role |
 |---|---|
-| **Daemon** (`core/`, Rust) | Memegang semua terminal, status agent, dan aturan pesan. Tetap hidup saat jendela ditutup. |
-| **App** (`ui/`, Tauri 2 + Svelte 5) | Cuma klien: menggambar terminal dan ngirim aksi lu ke daemon. |
-| **CLI** (`gembala`) | Jalur agent ke daemon dari dalam pane, dibatasi aturan akses. |
+| **Daemon** (`core/`, Rust) | Holds all terminals, agent status, and message rules. Stays alive when the window closes. |
+| **App** (`ui/`, Tauri 2 + Svelte 5) | Just a client: draws the terminal and sends your actions to the daemon. |
+| **CLI** (`gembala`) | The agents' path to the daemon from inside a pane, limited by the access rules. |
 
-Ringan: sekitar 110–190 MB RAM dengan 4 pane, `.dmg` sekitar 3 MB.
+Lightweight: around 110–190 MB of RAM with 4 panes, and the `.dmg` is about 3 MB.
 
 ## 🗺️ Status
 
-Alpha: masih bakal ada perubahan besar sebelum 1.0.
+Alpha: expect big changes before 1.0.
 
-| Tahap | Isi | Status |
+| Stage | What | Status |
 |---|---|---|
-| Fondasi | Daemon, PTY, hook status per agent | Selesai |
-| GUI | Workspace, tab, split, profil, notifikasi, pengaturan | Selesai, dipakai harian |
-| Orkestrasi | Pesan antar agent beserta kontrol keamanannya | Selesai, dipakai harian |
-| Berikutnya | Rilis Homebrew bertanda tangan dan ternotarisasi, lalu Linux | Direncanakan |
+| Foundation | Daemon, PTY, per-agent status hooks | Done |
+| GUI | Workspaces, tabs, splits, profiles, notifications, settings | Done, used daily |
+| Orchestration | Messages between agents with their security controls | Done, used daily |
+| Next | Signed and notarized Homebrew release, then Linux | Planned |
 
-## 🤝 Berkontribusi
+## 🤝 Contributing
 
-Kontribusi dipersilakan. Baca [CONTRIBUTING.md](CONTRIBUTING.md) untuk alur kerja dan
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) untuk struktur kode, cara uji, dan jebakan yang udah ketemu. Fitur baru:
-buka issue dulu biar dibahas sebelum dikerjain.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for code structure, how to test, and the gotchas we've already hit. New
+feature? Open an issue first so it can be discussed before you build it.
 
-## 📄 Lisensi
+## 📄 License
 
 [MIT](LICENSE)
