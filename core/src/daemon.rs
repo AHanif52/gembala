@@ -871,6 +871,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "session": *pane.session.lock().unwrap(), // FR-68: kartu lanjut walau daemon berhenti
                 "title": *pane.title.lock().unwrap(), // FR-69: label pane
                 "account": acct_label(st, &pane.account.lock().unwrap()), // FR-61: chip akun
+                "account_id": *pane.account.lock().unwrap(), // FR-68: kartu lanjut `claude-<akun>` walau daemon berhenti
                 // FR-61: sesi milik akun lain: nama untuk label, id untuk Lanjutkan ("utama" = Utama)
                 "owner": pane.owner.lock().unwrap().as_ref().map(|o| if o.is_empty() { "Utama".into() } else { acct_label(st, o) }),
                 "owner_id": pane.owner.lock().unwrap().as_ref().map(|o| if o.is_empty() { "utama" } else { o.as_str() }.to_string()),

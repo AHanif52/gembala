@@ -10,6 +10,7 @@
   import { Unicode11Addon } from "@xterm/addon-unicode11";
   import "@xterm/xterm/css/xterm.css";
   import { call, b64, unb64 } from "./daemon";
+  import { safeResume } from "./resume";
   import { encodeKey, onCsi } from "./kitty";
   import type { Ui } from "./config";
 
@@ -278,8 +279,9 @@
         if (buf.getLine(y)?.isWrapped) continue;
         const t = text(y).trim();
         if (!t) continue;
+        // perintah panjang terpotong keras (zle, log replay) = baris kedua masih perintah: ambil baris lanjut yang sah
         if (!cmd) cmd = t;
-        else if (!resume) (resume = t.replace(/^↳ /, "")), (ry = y);
+        else if (!resume && safeResume(t.replace(/^↳ /, ""))) (resume = t.replace(/^↳ /, "")), (ry = y);
       }
       // baris tombol (pen: di bawah perintah lanjut) = baris kosong pertama sesudahnya
       let by = ry + 1;

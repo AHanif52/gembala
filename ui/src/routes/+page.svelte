@@ -49,6 +49,7 @@
     ended?: { resume: string | null }; // FR-56: blok agent selesai dengan tombol, hilang saat proses baru jalan
     acct?: string; // FR-61: id akun yang dipilih saat pane dibuat (dipakai lagi saat dijalankan ulang)
     accountName?: string; // FR-61: nama akun dari daemon untuk chip; kosong = Utama
+    accountId?: string; // FR-68: id akun Claude yang jalan (`claude-<id>`); kosong = Utama
     owner?: { name: string; id: string }; // FR-61: sesi Claude yang jalan milik akun lain (Lanjutkan memakai akun ini)
     login?: string; // FR-61: kartu "masuk ke akun …" setelah tombol Login
   };
@@ -812,7 +813,9 @@
     if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: kartu sesi selesai ikut ke shell pengganti
     // FR-68: agent yang diketik ikut berhenti bersama daemon = kartu lanjut dari id sesinya (perintah lolos pola aman)
     else if (shell && m && !AGENTS.includes(m.agent) && m.busy && m.session) {
-      const cmd = { claude: `claude --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}` }[m.busy];
+      // sama dengan daemon (FR-61): sesi milik akun lain = `claude-<pemilik>`, selain itu akun proses; `claude` polos = akun shell
+      const who = m.owner?.id ?? m.accountId;
+      const cmd = { claude: `${who ? `claude-${who}` : "claude"} --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}` }[m.busy];
       if (safeResume(cmd)) meta[id].ended = { resume: cmd ?? null };
     }
     for (const w of wss)
@@ -1685,6 +1688,7 @@
       if (meta[p].readable !== i.readable) meta[p].readable = i.readable;
       if (i.session && meta[p].session !== i.session) meta[p].session = i.session; // FR-68
       if ((i.account ?? "") !== (meta[p].accountName ?? "")) meta[p].accountName = i.account || undefined; // FR-61
+      if ((i.account_id ?? "") !== (meta[p].accountId ?? "")) meta[p].accountId = i.account_id || undefined; // FR-68
       if ((i.owner_id ?? "") !== (meta[p].owner?.id ?? "")) meta[p].owner = i.owner_id ? { name: i.owner, id: i.owner_id } : undefined;
     }
   }
