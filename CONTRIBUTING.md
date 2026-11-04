@@ -1,13 +1,13 @@
 # Berkontribusi ke Gembala
 
 Kebutuhan (BRD) dan catatan teknis (TECH) dikelola pemilik repo di tempat terpisah yang tidak dibuka. Nomor seperti
-FR-61, SEC-20, atau "TECH bagian 17" di kode dan README merujuk ke sana. Isi yang lu perlu ada di issue: kerjakan
+FR-61, SEC-20, atau "TECH bagian 17" di kode dan dokumen merujuk ke sana. Isi yang lu perlu ada di issue: kerjakan
 issue yang sudah ada, atau buka issue dulu sebelum fitur baru supaya dapat nomor FR dan kriteria terimanya.
 
 ## Siapkan mesin
 
-macOS (Apple Silicon), Rust (`brew install rustup`), Node. Detail perintah uji ada di `README.md` bagian
-"Jalankan dan uji".
+macOS (Apple Silicon), Rust (`brew install rustup`), Node. Struktur kode, perintah uji, dan jebakan yang
+sudah ketemu ada di [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 Build rilis ditandatangani sertifikat self-signed bernama **Gembala Dev** (`ui/src-tauri/tauri.conf.json`).
 Tanpa sertifikat itu `npm run tauri build` gagal. Buat sekali di mesin lu:

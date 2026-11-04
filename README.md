@@ -1,170 +1,167 @@
-# Gembala (app)
+<p align="center">
+  <img src="ui/src-tauri/icons/128x128@2x.png" width="96" alt="">
+</p>
 
-Terminal GUI ala Warp untuk banyak TUI agent (Claude Code, Codex, OpenCode, Oh My Pi) dalam satu layar, dengan
-pesan antar agent yang diawasi. Kebutuhan: repo gembala-brd, privat, hanya pemilik (`BRD.md` = apa/kenapa, sumber utama; `TECH.md` = cara,
-catatan per milestone, dan tabel "Sisa Fase 1").
+<h1 align="center">Gembala</h1>
 
-## Status (1 Nov 2026)
+<p align="center">
+  Terminal macOS untuk ngegembalain banyak AI coding agent sekaligus.<br>
+  Claude Code, Codex, OpenCode, dan Oh My Pi jalan berdampingan, dan bisa saling lempar tugas tanpa copy-paste.
+</p>
 
-| Fase | Status |
-| --- | --- |
-| 0 Fondasi | Selesai. T1–T8 diputus (TECH bagian 14) |
-| 1 GUI (M1–M7) | Kode selesai, semua uji otomatis lolos. Menunggu uji langsung + kriteria 2, 15, 16 (pemakaian nyata) |
-| 2 Orkestrasi (O1–O4) | Kode selesai. Kriteria 1, 3–11, 17 punya uji otomatis yang lolos |
-| 3 Lanjutan | Belum. Menurut BRD bagian 16 ditentukan setelah Fase 2 dipakai sendiri 2 minggu |
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/lisensi-MIT-blue" alt="Lisensi MIT"></a>
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="macOS">
+  <img src="https://img.shields.io/badge/status-alpha-orange" alt="Alpha">
+</p>
 
-Diputus 1 Nov 2026: pintasan Fase 2 tetap (`⌘⇧K` kirim, `⌘J` laci, `⌘⇧.` henti); app ditandatangani sertifikat
-self-signed "Gembala Dev" di keychain login; trailer Co-Authored-By dihapus dari riwayat (force-push; cadangan
-lokal di branch `cadangan/sebelum-hapus-trailer`, tidak di-push).
+---
 
-**Uji langsung 1 Nov 2026 (pengguna, app rilis):** jalan: Shift+Enter baris baru, × tutup tab, konfirmasi ⌘W,
-kirim ⌘⇧K, split, panel perubahan, ⌘F, dialog folder workspace, blok ringkas saat agent keluar dengan id sesi
-(Claude, OMP; Codex ditambahkan setelahnya), pesan antar agent dua arah (`send` + `reply`). Diperbaiki di sesi itu:
-`not_a_pane` dari tool Bash Claude (SEC-3 rantai induk), ⌘K merusak TUI, autokoreksi textarea, pane mati saat app
-dibuka (FR-45 jadi shell baru), agent manual tak terlihat di `status`, `gembala` belum di PATH pane, tutup jendela
-tidak keluar dari app. Pengguna menilai UI/UX belum cukup untuk pemakaian 2 minggu: backlog di TECH bagian 17.
+Kalau lu biasa buka tiga-empat agent di tab terminal terpisah, lu pasti kenal rasanya: bolak-balik ngecek mana yang
+udah kelar, mana yang nunggu izin, terus nyalin hasil agent satu ke agent lain pakai tangan. Gembala ngumpulin semua
+agent itu di satu jendela, nunjukin status tiap agent, dan ngasih jalur resmi buat agent saling kirim pesan. Lu tetap
+yang megang kendali.
 
-**UI/UX (TECH 17, 1 Nov 2026):** 14 butir dikerjakan: palet `⌘P`, menu klik kanan tab/workspace/terminal, seret tab
-dan workspace, workspace kosong, status bertulisan, warna tab, lebar sidebar, kepala pane, kartu agent selesai, huruf
-ikon Nerd Font, pemilih tujuan kirim. Uji otomatis lolos; menu native dan seret belum diuji tangan.
+Gembala cuma wadah terminal. Agent dijalankan dari binary resminya sendiri, apa adanya, dan ngobrol langsung ke
+penyedianya. Gembala nggak jadi proxy, nggak baca token, dan nggak ngubah config agent lu.
 
-**Menunggu:** (1) uji langsung UI/UX di atas; (2) id pesan dari pengguna dibuang dari label supaya agent
-tidak mencoba `reply` (opsi a, dikerjakan sesi lain di pane, cek BRD/daemon sebelum lanjut); (3) agent belum tahu
-perintah `gembala`: usulan paragraf petunjuk di `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, dan setara OMP
-(ditulis atas izin pengguna; Gembala sendiri tidak boleh, SEC-15); (4) ukur RAM dengan agent jalan (`footprint`).
+## Fitur
 
-## Struktur
+**Terminal ala Warp**
+- Workspace, tab, dan split pane bebas. Tata letak dan isi pane balik lagi saat app dibuka ulang.
+- Kotak ketik ala editor (Shift+Enter baris baru), blok perintah per giliran, cari, palet perintah (Cmd+P).
+- Tema terang/gelap, warna tab dan workspace, zoom per pane, pintasan bisa diganti semua.
 
-```
-core/                    binary `gembala`: daemon + CLI (satu binary, juga jadi sidecar app)
-  src/main.rs            subcommand: daemon, hook, send, wait, read, reply, status, watch
-  src/daemon.rs          socket ui.sock + pane.sock, registri pane, attach, status, mesin pesan (glue)
-  src/pty.rs             spawn login shell (setsid, env bersih SEC-35), busy/nama/cwd/argumen proses
-  src/grid.rs            grid VT (vt100) + snapshot attach + teks untuk read/pola layar
-  src/config.rs          config.toml (toml_edit): validasi per kunci, set/profil/pintasan, tulis atomik
-  src/profile.rs         profil agent, deteksi, perintah launch + flag hook + sesi, status hook/pola layar
-  src/msg.rs             aturan pesan murni: penyaring, label, keputusan kirim (BRD bagian 8)
-  src/bus.rs             antrean, riwayat, log audit HMAC (SEC-11)
-  src/git.rs             git status/diff baca saja + redaksi rahasia (SEC-12, 29)
-  src/rundir.rs          folder socket privat (SEC-1, 25)
-  tests/daemon.rs        uji integrasi daemon nyata lewat socket (termasuk kriteria BRD)
-ui/                      Tauri 2 + SvelteKit static + Svelte 5 + xterm.js (renderer DOM)
-  src-tauri/src/lib.rs   klien daemon (tidak membuka PTY, R-5), menu native + [keys], notifikasi, dialog, paste
-  src-tauri/src/daemon.rs  sambung/jalankan daemon, rahasia kanal UI di Keychain
-  src/routes/+page.svelte  workspace → tab → pohon split, sidebar, toolbar, kartu, pemulihan
-  src/lib/               Tile (satu xterm per pane), Settings, Changes, Messages, OutputView, layout (murni)
-scripts/                 alat uji app asli di folder run + config terpisah (tidak menyentuh data pengguna)
-```
+**Ngurus banyak agent**
+- Profil siap pakai untuk Claude Code, Codex, OpenCode, dan Oh My Pi. Agent yang lu ketik sendiri di shell juga
+  dikenali.
+- Status tiap agent kelihatan di tab dan sidebar: kerja, selesai, diam, atau butuh izin. Notifikasi macOS dan Dock
+  cuma "lompat" saat agent butuh lu.
+- Agent tetap jalan walau jendela ditutup (Cmd+Q). Buka lagi, semua masih di tempatnya.
+- Lanjutkan sesi lama, jalankan agent di git worktree baru, dan beberapa akun Claude di satu mesin.
+- Panel perubahan: diff git per giliran agent, plus titik kembali kalau hasilnya nggak sesuai.
+- Template peran (koordinator, planner, pekerja, reviewer) untuk bagi kerja antar agent.
 
-Data pengguna: `~/Library/Application Support/Gembala/` (config.toml, layout.json, hooks/, audit/), socket di
-`$TMPDIR/gembala/`. Bisa dialihkan dengan `GEMBALA_CONFIG` dan `GEMBALA_RUNDIR` (dipakai uji).
+**Agent saling kirim pesan, diawasi**
+- Ketik `@shell-2` di kotak ketik atau tekan Cmd+Shift+K buat ngelempar tugas ke agent lain lengkap dengan konteksnya.
+- Dari dalam pane, agent bisa pakai CLI `gembala` (`send`, `wait`, `read`, `reply`, `status`) buat ngobrol sama
+  agent lain.
+- Tiap pesan dikasih label asal, dibatasi aturan akses per workspace, batas laju, dan batas hop. Pesan ke agent yang
+  lagi nunggu izin ditahan. Satu tombol (Cmd+Shift+.) buat ngehentiin semua pesan.
+- Laci pesan (Cmd+J) nyimpen riwayat, dan semua pesan tercatat di log audit yang ditandatangani HMAC.
 
-## Jalankan dan uji
+## Privasi dan keamanan
 
-Butuh Rust (`brew install rustup`; PATH `/opt/homebrew/opt/rustup/bin`) dan Node. JDK tidak perlu.
+- **Lokal penuh.** Nggak ada telemetri, nggak ada pembaruan otomatis, nggak ada koneksi internet dari Gembala. Daemon
+  cuma buka socket Unix di folder `0700` milik akun lu, tanpa port TCP.
+- **Token agent nggak disentuh.** Gembala nggak baca, nyimpen, atau neruskan token OAuth maupun API key, dan nggak
+  ngubah `~/.claude`, `~/.codex`, `~/.config/opencode`, atau Keychain milik agent. Hook status dipasang lewat flag saat
+  agent dijalankan.
+- **Manusia yang mutusin.** Gembala nggak pernah ngejawab dialog izin agent. Aksi seperti setujui pesan, paksa kirim,
+  atau ubah aturan cuma bisa dari jendela app, nggak bisa dari dalam pane.
+- **Prompt injection dibatasi.** Ancaman utama sistem multi-agent adalah instruksi jahat yang nyebar dari agent ke
+  agent. Label asal, aturan akses, batas laju/hop, dan tombol henti ada buat itu.
 
-```
-export PATH=/opt/homebrew/opt/rustup/bin:$PATH
-cargo test -p gembala                           # unit + integrasi daemon (~30 dtk)
-cargo test -p ui                                # sisi Rust app
-cargo clippy --workspace --all-targets -- -D warnings
-cd ui && npm install --ignore-scripts && npm run check && npm test
-npm run tauri build                             # app rilis: target/release/bundle/macos/Gembala.app (+ .dmg)
-npm run tauri build -- --debug                  # app debug, untuk scripts/ di bawah
-```
+Nemu celah keamanan? Jangan buka issue publik, kirim lewat
+[private vulnerability reporting](https://github.com/AHanif52/gembala/security/advisories/new).
 
-Alat uji dengan app debug asli (rahasia lewat `GEMBALA_DEV_SECRET`, jalur itu hanya ada di build debug):
+## Kebutuhan
 
-```
-python3 -I scripts/restore_check.py target/debug/bundle/macos/Gembala.app   # FR-45: buka ulang + daemon baru
-python3 -I scripts/lost_check.py target/debug/bundle/macos/Gembala.app      # kriteria 17: daemon dibunuh
-python3 -I scripts/ram_ui.py target/debug/bundle/macos/Gembala.app 4        # RAM 4 pane (perlu layar menyala)
-python3 -I scripts/ukur.py target/release/gembala $TMPDIR/gbl-ukur          # latensi + throughput daemon
-```
+- macOS (diuji di Apple Silicon)
+- Minimal satu agent terpasang:
 
-Instal npm selalu dengan `--ignore-scripts` (SEC-16).
+  | Agent | Pasang |
+  |---|---|
+  | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `brew install --cask claude-code` |
+  | [Codex](https://github.com/openai/codex) | `npm install -g @openai/codex` |
+  | [OpenCode](https://opencode.ai) | `brew install anomalyco/tap/opencode` |
+  | Oh My Pi | `brew install can1357/tap/omp` |
 
-## Pintasan bawaan
+## Pasang
 
-`⌘T` tab baru dari profil · `⌘D`/`⌘⇧D` split · `⌘⌥←→↑↓` fokus · `⌃⌘←→↑↓` geser pemisah · `⌘⇧↩` maksimalkan ·
-`⌘.` hentikan proses · `⌘W` tutup pane · `⌘1–9` tab · `⌘P` palet perintah · `⌘B` sidebar · `⌘F` cari · `⌘K` bersihkan ·
-`⌘=`/`⌘-`/`⌘0` zoom · `⌥⌘=`… zoom pane · `⌘G` Rich Input · `⌘⇧+` panel perubahan · `⌘,` Pengaturan ·
-`⌘⇧K` kirim ke agent · `⌘J` laci pesan · `⌘⇧.` henti semua pesan. Ganti di Pengaturan > Pintasan atau `[keys]`.
+Belum ada rilis siap unduh. Untuk sekarang build dari source (rilis lewat Homebrew menyusul).
 
-## CLI untuk agent (di dalam pane)
+1. Siapkan [Rust](https://rustup.rs) (`brew install rustup`) dan Node.
+2. Buat sertifikat penanda tangan lokal **Gembala Dev** sekali di mesin lu: langkahnya di
+   [CONTRIBUTING.md](CONTRIBUTING.md#siapkan-mesin). Daemon pakai tanda tangan ini buat ngenalin jendela app.
+3. Build dan pasang ke `/Applications`:
 
-`gembala` ada di PATH tiap pane (folder binary daemon). Agent yang diketik sendiri di pane shell (claude, codex,
-opencode, omp; dikenali dari nama proses) ikut terlihat di `status` dan bisa dikirimi. Nama pane-nya tetap
-`shell-<n>`; label tujuan di ⌘⇧K menampilkan nama agentnya.
+   ```sh
+   git clone https://github.com/AHanif52/gembala.git
+   cd gembala/ui && npm install --ignore-scripts && cd ..
+   scripts/pasang.sh
+   ```
+
+Versi lama dipindah ke Trash, bukan ditimpa. Agent yang lagi jalan nggak keganggu; versi baru kepakai setelah
+Gembala ditutup lalu dibuka lagi.
+
+## Cara pakai
+
+Buka Gembala, pilih folder workspace, terus mulai agent dari panel Mulai atau Cmd+T. Pintasan yang paling sering
+kepakai:
+
+| Pintasan | Aksi |
+|---|---|
+| Cmd+T | Tab baru dari profil |
+| Cmd+D / Cmd+Shift+D | Split kanan / bawah |
+| Cmd+Option+panah | Pindah fokus pane |
+| Cmd+P | Palet perintah |
+| Cmd+Shift+K | Kirim ke agent lain |
+| Cmd+Shift+U | Lompat ke pane yang butuh izin |
+| Cmd+J | Laci pesan |
+| Cmd+Shift+. | Hentikan semua pesan |
+| Cmd+Shift+= | Panel perubahan |
+| Cmd+F | Cari |
+| Cmd+, | Pengaturan |
+
+Semua pintasan bisa diganti di Pengaturan > Pintasan atau bagian `[keys]` di config.
+
+### CLI untuk agent
+
+`gembala` otomatis ada di PATH tiap pane, jadi agent bisa manggil langsung:
 
 ```
 gembala status                                   # agent lain di workspace ini
 gembala send <pane> <pesan…> [--queue] [--reply-to <msg_id>]
 gembala wait [<pane>] [--reply <msg_id>] [--pattern <regex>] [--timeout <detik>]
-gembala read <pane> [-n <baris>]                 # teks polos tersamar, dibungkus pembatas
+gembala read <pane> [-n <baris>]                 # isi layar pane, rahasia disamarkan
 gembala reply <msg_id> <teks…>
 gembala watch                                    # event status, satu baris JSON per perubahan
 ```
 
-Keluaran satu baris JSON; kode keluar 0 diterima, 1 ditolak/timeout, 2 salah pakai.
+Keluarannya satu baris JSON. Kode keluar 0 = diterima, 1 = ditolak/timeout, 2 = salah pakai.
 
-## Apa yang dijalankan Gembala (FR-60)
+### Data dan config
 
-| Nama di Activity Monitor | Peran |
-|---|---|
-| `gembala-ui` (atau "Gembala") | Jendela aplikasi |
-| `tauri://localhost` | Tampilan WebKit: terminal dan sidebar |
-| WebKit GPU dan Networking | Bagian bawaan WebKit untuk menggambar dan memuat tampilan dari dalam app |
-| `gembala` | Daemon penjaga pane: shell dan agent berjalan di bawahnya |
-| `zsh`, `claude`, `codex`, … | Proses yang kamu jalankan di pane |
+Semua data ada di `~/Library/Application Support/Gembala/` (`config.toml`, tata letak, hook, log audit). Daftar
+proses yang dijalankan Gembala beserta RAM dan CPU-nya ada di Pengaturan > Proses.
 
-- Tidak ada koneksi internet: CSP di `ui/src-tauri/tauri.conf.json` hanya mengizinkan kanal internal app, dan daemon
-  hanya membuka socket Unix di folder `0700` milik akunmu. Tidak ada telemetri dan tidak ada pembaruan otomatis.
-- Daemon tetap hidup setelah jendela ditutup hanya bila ada pane yang masih menjalankan proses (FR-20); notifikasi
-  macOS menyebut alasannya. Tanpa itu, daemon berhenti sendiri dalam beberapa detik.
-- Daftar langsung beserta RAM dan CPU ada di Pengaturan › Proses, lengkap dengan tombol "Hentikan semua". Cek sendiri
-  lewat Activity Monitor › View › All Processes, Hierarchically.
+## Cara kerjanya
 
-## Jebakan yang sudah ketemu
+```
+Gembala.app (Tauri 2 + Svelte 5 + xterm.js)
+      │  socket Unix, kanal UI (dikenali dari tanda tangan kode)
+      ▼
+gembala daemon (Rust) ── memegang PTY ──► zsh, claude, codex, opencode, omp
+      ▲
+      │  socket Unix, kanal pane
+CLI gembala di dalam pane (send / wait / read / reply)
+```
 
-- WKWebView tidak meneruskan banyak kombinasi ⌘ ke keydown JS: semua pintasan lewat menu native; `⌘⇧↩` justru
-  dimakan WebKit sebelum menu, jadi ditangkap keydown (dengan penjaga 150 ms).
-- Build rilis ditandatangani "Gembala Dev" (`bundle.macOS.signingIdentity`, sertifikat self-signed di keychain login,
-  tidak perlu dipercaya untuk codeSign): designated requirement = identifier + hash sertifikat, sama tiap build.
-  Tetapi item Keychain app tanpa TeamIdentifier terikat ke cdhash build, jadi "Always Allow" TIDAK bertahan antar build
-  (uji langsung 1 Nov 2026). Karena itu kanal UI dikenali daemon dari tanda tangan peer (`core/src/sign.rs`, SEC-20);
-  Keychain hanya cadangan untuk daemon lama. Mesin tanpa sertifikat itu: build gagal tanda tangan; buat dengan
-  `openssl req -x509` (extendedKeyUsage=codeSigning) lalu `security import`. Item Keychain dari CLI `security -A`
-  tetap ditanya (partition list). Alat uji pakai build debug + `GEMBALA_DEV_SECRET`.
-- App dibuka dari dalam sesi agent mewarisi env sesi itu: dibuang di `pty::scrub_env` (SEC-35).
-- Lock `Mutex` std tidak reentrant: jangan memegang `panes` sambil memanggil fungsi yang menguncinya lagi.
-- RAM: renderer DOM xterm lebih hemat dan datar per pane daripada WebGL (TECH catatan M1).
-- Daemon tetap hidup setelah UI ditutup. UI build baru yang tersambung ke daemon build lama menampilkan
-  `gagal sambung ke daemon: unknown_method`. Tiap rebuild release: matikan daemon lama
-  (`pkill -f 'Gembala.app/Contents/MacOS/gembala daemon'`, pane yang hidup ikut mati), ganti
-  `/Applications/Gembala.app` dengan `target/release/bundle/macos/Gembala.app`, buka dari `/Applications` saja.
-  Bila hanya UI yang berubah (core dan PROTO sama), cukup matikan proses `ui`; pane tetap hidup, kecuali semua pane
-  diam: daemon tanpa UI berhenti sendiri 5–10 detik kemudian (FR-20). UI yang tersambung tepat saat daemon berhenti
-  dapat "Broken pipe" di tengah hello; sekarang UI menunggu 0,5 detik lalu sambung/jalankan daemon lagi sekali.
-  Pasang dari folder mana pun: `G=…/app/target/release/bundle/macos/Gembala.app; [ -d "$G" ] && rm -rf
-  /Applications/Gembala.app && cp -R "$G" /Applications/` (cek dulu supaya app lama tidak terhapus bila build gagal).
-- Tool Bash Claude Code membuat sesi proses baru (setsid): identitas pane harus lewat rantai proses induk, bukan
-  `getsid` peer saja (SEC-3, `pane_of_pid`).
-- Deteksi agent manual memakai nama file proses (`proc_pidpath`); agent yang dibungkus interpreter (nama proses
-  `node`/`bun`) tidak terdeteksi. Claude (Homebrew Cask), Codex 0.166, dan OMP terdeteksi.
-- Salinan `/bin/sleep` dibunuh macOS (tanda tangan platform): agent palsu di uji = salinan biner `gembala` bernama
-  `omp` menjalankan `watch`.
-- Sebelum commit kode Rust: `cargo clippy --workspace --all-targets -- -D warnings` (TECH bagian 16), bukan cuma
-  `cargo test`.
-- Push lewat OMP kadang ditolak OMP ("tunjukkan diff dulu"): sertakan daftar commit + diff stat di prompt.
-- Codex yang baru di-update menolak hook plugin pihak ketiga ("plugin contents changed; hook approval required"):
-  bukan dari Gembala; setujui ulang hook di Codex.
+Daemon yang megang semua terminal, jendela app cuma klien. Makanya agent tetap hidup waktu jendela ditutup atau
+app di-update. Ringan: sekitar 110–190 MB RAM dengan 4 pane, `.dmg` sekitar 3 MB.
 
-## Cara kerja di repo ini
+## Status
 
-Contributor: lihat `CONTRIBUTING.md` (branch + PR, sertifikat Gembala Dev). Butir di bawah alur pemilik repo.
+Alpha. Fondasi, GUI, dan orkestrasi pesan udah jalan dan lagi dipakai harian oleh pembuatnya. Masih bakal ada perubahan
+besar sebelum 1.0. Yang direncanakan berikutnya: rilis Homebrew yang ditandatangani dan dinotarisasi, lalu Linux.
 
-- Urutan: BRD → TECH → kode/mockup.
-- Tiap pekerjaan selesai dan uji hijau: commit (path spesifik, tanpa trailer Co-Authored-By karena remote GitHub),
-  push lewat OMP: `omp -p --no-session "Jalankan PERSIS … git -C app push origin main …" < /dev/null`
-  (tanpa `< /dev/null` omp menunggu stdin).
+## Berkontribusi
+
+Kontribusi dipersilakan. Baca [CONTRIBUTING.md](CONTRIBUTING.md) untuk alur kerja dan
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) untuk struktur kode, cara uji, dan jebakan yang udah ketemu. Fitur baru:
+buka issue dulu biar dibahas sebelum dikerjain.
+
+## Lisensi
+
+[MIT](LICENSE)
