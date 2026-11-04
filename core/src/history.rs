@@ -180,9 +180,9 @@ pub fn block_text(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&s
         .map_or(String::new(), |(_, g)| format!("{g}\x1b[0m\x1b[2m "));
     let cmd = cmd.replace('\n', &format!("\r\n{GUTTER}"));
     let mut t = format!("{GUTTER}\x1b[2m{icon}{cwd} · {}{exit}\x1b[0m\r\n{GUTTER}\x1b[1m{cmd}\x1b[0m\r\n", dur(secs));
-    // pen layar 02: perintah lanjut redup tanpa tanda, lalu satu baris untuk tombol yang digambar UI
+    // pen layar 02: perintah lanjut redup tanpa tanda, lalu dua baris untuk tombol yang digambar UI
     if let Some(r) = resume {
-        t += &format!("{GUTTER}\x1b[2m{r}\x1b[0m\r\n\r\n");
+        t += &format!("{GUTTER}\x1b[2m{r}\x1b[0m\r\n\r\n\r\n");
     }
     t + "\r\n"
 }

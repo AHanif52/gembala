@@ -2406,7 +2406,7 @@
       --muted: #71717a;
       --line: #e4e4e7;
       --card: #ffffff;
-      --dim: rgba(250, 250, 250, 0.5);
+      --dim: rgba(250, 250, 250, 0.25);
     }
   }
   :global(:root[data-theme="light"]) {
@@ -2415,7 +2415,7 @@
     --muted: #71717a;
     --line: #e4e4e7;
     --card: #ffffff;
-    --dim: rgba(250, 250, 250, 0.5);
+    --dim: rgba(250, 250, 250, 0.25);
   }
   :global(html, body) {
     margin: 0;

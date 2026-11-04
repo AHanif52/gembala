@@ -272,7 +272,7 @@
       const short = parts.length > 3 ? `${parts[0]}/…/${parts.slice(-2).join("/")}` : path;
       if (agent && resume) {
         // kartu blok sesi (pen layar 02): latar sedikit terang dari kepala sampai baris tombol
-        term.registerDecoration({ marker, width: term.cols, height: by - h.y + 1, layer: "bottom" })?.onRender((el) => el.classList.add("tl-card"));
+        term.registerDecoration({ marker, width: term.cols, height: by - h.y + 2, layer: "bottom" })?.onRender((el) => el.classList.add("tl-card"));
       }
       const d = term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "top" });
       d?.onRender((el) => {
@@ -639,10 +639,18 @@
     align-items: center;
     gap: 6px;
   }
+  /* dua baris terminal untuk baris tombol: tombol setebal di pen (huruf 12px, tinggi ±1,5 baris) */
   .term :global(.tl-acts.row) {
     top: calc(var(--rh, 20px) * var(--k, 3));
     left: 0;
     right: auto;
+    height: calc(var(--rh, 20px) * 2);
+    gap: 8px;
+  }
+  .term :global(.tl-acts.row button) {
+    height: max(22px, calc(var(--rh, 20px) * 1.5));
+    padding: 0 12px;
+    font-size: 12px;
   }
   .term :global(.tl.agent::before) {
     top: calc(var(--rh, 20px) / 2 + 9px);
