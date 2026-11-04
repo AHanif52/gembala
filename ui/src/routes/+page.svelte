@@ -48,6 +48,7 @@
     from?: { boot: string; pane: number }; // FR-62: pane lama (daemon sebelumnya) untuk riwayat blok
     ended?: { resume: string | null }; // FR-56: blok agent selesai dengan tombol, hilang saat proses baru jalan
     acct?: string; // FR-61: id akun yang dipilih saat pane dibuat (dipakai lagi saat dijalankan ulang)
+    aliases?: string[]; // FR-79: nama lama pane, dibawa ke pane pengganti supaya tetap jadi alamat
     accountName?: string; // FR-61: nama akun dari daemon untuk chip; kosong = Utama
     accountId?: string; // FR-68: id akun Claude yang jalan (`claude-<id>`); kosong = Utama
     owner?: { name: string; id: string }; // FR-61: sesi Claude yang jalan milik akun lain (Lanjutkan memakai akun ini)
@@ -290,7 +291,7 @@
       if (!p) continue;
       const id = await createPane({ profile: p.id, account: p.account, workspace: w.id, from_pane: from, cwd: from === undefined ? w.root : undefined, role: r.role });
       ids.push(id);
-      if (r.name.trim()) call("pane.rename", { pane: id, name: r.name.trim().toLowerCase() }).then((x) => meta[id] && (meta[id].name = x.name)).catch(() => {});
+      if (r.name.trim()) call("pane.rename", { pane: id, name: r.name.trim().toLowerCase() }).then((x) => renamed(id, x)).catch(() => {});
     }
     if (!ids.length) return;
     // 2 = kiri|kanan, 3 = kiri | kanan atas/bawah, 4 = kotak 2x2
@@ -626,9 +627,17 @@
     const r = await call("pane.create", { workspace: ws?.id, ...opts, session, account: acct, brief });
     // FR-13: peran baca saja di agent tanpa pembatas tool = cuma petunjuk, ditandai di kepala pane
     const roleWarn = ["koordinator", "planner", "reviewer"].includes(opts.role as string) && agent !== "claude";
-    meta[r.pane] = { profile, cwd: null, agent, name: r.name, session, sig: sig(profile), acct, roleWarn };
+    meta[r.pane] = { profile, cwd: null, agent, name: r.name, aliases: r.aliases, session, sig: sig(profile), acct, roleWarn };
     return r.pane;
   }
+
+  /// FR-79: sama dengan daemon: nama lama jadi alias pane ini, nama baru bukan lagi alias pane lain
+  function renamed(pane: number, r: { name: string; aliases: string[] }) {
+    for (const [k, m] of Object.entries(meta)) if (+k !== pane && m.aliases?.includes(r.name)) m.aliases = m.aliases.filter((a) => a !== r.name);
+    if (meta[pane]) Object.assign(meta[pane], { name: r.name, aliases: r.aliases });
+  }
+  /// FR-79: pane pengganti membawa nama dan alias pane lama sebagai alias
+  const oldNames = (m?: Meta) => (m?.name ? [m.name, ...(Array.isArray(m.aliases) ? m.aliases : [])] : []); // layout.json tidak tepercaya
 
   const sig = (id: string) => JSON.stringify(cfg?.values.profiles.find((p) => p.id === id) ?? null);
 
@@ -648,6 +657,7 @@
       session: m.session,
       resume: AGENTS.includes(m.agent),
       account: m.owner?.id ?? m.acct, // FR-61: sesi milik akun lain dilanjutkan di akun pemiliknya
+      aliases: oldNames(m),
     });
     for (const w of wss)
       for (const t of w.tabs)
@@ -808,6 +818,7 @@
       workspace: wsIdOf(old),
       history: m?.from, // FR-62
       account: shell ? undefined : m?.acct,
+      aliases: oldNames(m),
     });
     if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session, acct: m.acct };
     if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: kartu sesi selesai ikut ke shell pengganti
@@ -1405,7 +1416,7 @@
       const pane = +editing.id;
       editing = null;
       call("pane.rename", { pane, name: v.toLowerCase() })
-        .then((r) => meta[pane] && (meta[pane].name = r.name))
+        .then((r) => renamed(pane, r))
         .catch((e) => (renameError = e === "name_taken" ? `Nama "${v}" sudah dipakai pane lain` : "Nama hanya huruf kecil, angka, dan '-'"));
       return;
     }

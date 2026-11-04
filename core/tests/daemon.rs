@@ -550,9 +550,35 @@ fn ganti_nama_pane() {
     assert_eq!(ui.call("pane.rename", json!({"pane": b, "name": "review-1"}))["error"]["code"], "name_taken");
     assert_eq!(ui.call("pane.rename", json!({"pane": b, "name": "Ada Spasi"}))["error"]["code"], "bad_name");
     assert_eq!(ui.call("pane.info", json!({"pane": a}))["result"]["pane_name"], "review-1");
-    // nama otomatis berikutnya tidak bentrok dengan yang sudah dipakai
+    // nama otomatis berikutnya tidak bentrok dengan yang sudah dipakai, termasuk nama lama (FR-79: shell-1, shell-2)
     ui.call("pane.rename", json!({"pane": b, "name": "shell-3"}));
-    assert_eq!(ui.call("pane.create", json!({}))["result"]["name"], "shell-1");
+    assert_eq!(ui.call("pane.create", json!({}))["result"]["name"], "shell-4");
+}
+
+/// FR-79: nama lama tetap jadi alamat; nama sekarang menang; pane pengganti membawa alias dari tata letak.
+#[test]
+fn fr79_nama_lama_tetap_alamat() {
+    let d = start("alias");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let kirim = format!("sleep 2; '{g}' send terima-1 'halo' --queue; '{g}' status; echo SELESAI-79; sleep 30");
+    profiles(&d, &mut ui, &(sh_profile("terima", "sleep 30") + &sh_profile("kirim", &kirim)), "SELESAI-79");
+    let t = ui.call("pane.create", json!({"profile": "terima", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let r = ui.call("pane.rename", json!({"pane": t, "name": "kantor-1"}))["result"].clone();
+    assert_eq!(r["aliases"], json!(["terima-1"]), "{r}");
+    let a = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(a, &["SELESAI-79"]).replace(['\r', '\n'], "");
+    assert!(out.contains("\"to\":\"kantor-1\""), "{out}");
+    assert!(out.contains("\"aliases\":[\"terima-1\"]"), "{out}");
+    // pane lain mengambil nama itu = alias dilepas
+    let s = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    assert_eq!(ui.call("pane.rename", json!({"pane": s, "name": "terima-1"}))["result"]["aliases"], json!(["shell-1"]));
+    assert_eq!(ui.call("pane.rename", json!({"pane": t, "name": "kantor-2"}))["result"]["aliases"], json!(["kantor-1"]));
+    // pane pengganti: alias dari layout (tidak tepercaya) disaring, maks 8
+    let many: Vec<String> = (0..10).map(|i| format!("lama-{i}")).collect();
+    let r = ui.call("pane.create", json!({"aliases": ["Bukan Nama", "kantor-2"]}))["result"].clone();
+    assert_eq!(r["aliases"], json!(["kantor-2"]), "{r}");
+    assert_eq!(ui.call("pane.create", json!({"aliases": many}))["result"]["aliases"].as_array().unwrap().len(), 8);
 }
 
 /// FR-56: agent keluar = layar diganti blok ringkas; output lengkap tetap bisa dibuka selama pane hidup.

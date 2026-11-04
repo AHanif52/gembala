@@ -37,6 +37,8 @@ const SCROLLBACK: usize = 1_000;
 /// Antrean per koneksi. Penuh = klien terlalu lambat: koneksinya diputus (attach ulang dapat snapshot)
 /// supaya RAM daemon tidak membengkak dan agent tidak tertahan.
 const QUEUE: usize = 256;
+/// FR-79: nama lama per pane yang tetap jadi alamat
+const ALIAS_MAX: usize = 8;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Chan {
@@ -50,6 +52,8 @@ struct Pane {
     sid: i32,
     /// Nama otomatis `<agent>-<n>` (FR-30), bisa diganti, unik per daemon (FR-3); agent profilnya ("shell" bila tanpa profil).
     name: Mutex<String>,
+    /// FR-79: nama lama pane ini (yang tertua di depan, maks `ALIAS_MAX`), tetap jadi alamat `send`/`wait`/`read`
+    aliases: Mutex<Vec<String>>,
     agent: String,
     /// FR-4: idle | working | blocked | done; kosong = tidak dilacak (shell, profil tanpa hook)
     status: Mutex<&'static str>,
@@ -413,6 +417,11 @@ fn hello(st: &State, chan: Chan, peer: i32, signed: bool, p: &Value) -> Res {
     Ok(json!({"proto": PROTO, "daemon": env!("CARGO_PKG_VERSION"), "pane": pane, "boot": st.boot, "signed": signed}))
 }
 
+/// FR-3: huruf kecil, angka, '-', maks 32
+fn valid_name(n: &str) -> bool {
+    (1..=32).contains(&n.len()) && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 fn dim(v: &Value, default: u16) -> u16 {
     v.as_u64().and_then(|n| u16::try_from(n).ok()).filter(|&n| n > 0).unwrap_or(default)
 }
@@ -767,10 +776,12 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 sid: pty.child.id() as i32,
                 name: {
                     let label = prof.as_ref().map_or("shell", |x| if x.agent == "custom" { x.id.as_str() } else { x.agent.as_str() });
-                    let taken: Vec<String> = st.panes.lock().unwrap().values().map(|q| q.name.lock().unwrap().clone()).collect();
+                    // FR-79: nama lama pane lain juga dilewati supaya alamatnya tidak diam-diam pindah
+                    let taken: Vec<String> = st.panes.lock().unwrap().values().flat_map(|q| std::iter::once(q.name.lock().unwrap().clone()).chain(q.aliases.lock().unwrap().clone())).collect();
                     let n = (1..).find(|n| !taken.contains(&format!("{label}-{n}"))).unwrap_or(1);
                     Mutex::new(format!("{label}-{n}"))
                 },
+                aliases: Mutex::default(),
                 session: Mutex::new(session.id.clone().filter(|s| profile::valid_session(&agent, s))),
                 agent_log: Mutex::new(None),
                 last_output: Mutex::new(Vec::new()),
@@ -816,10 +827,15 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 None => pane.view.lock().unwrap().0.feed(&history::render(&prev)),
             }
             st.panes.lock().unwrap().insert(id, pane.clone());
+            // FR-79: pane pengganti (jalankan ulang, daemon restart) membawa nama lama dari tata letak (tidak tepercaya)
+            for a in p["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|a| valid_name(a)).take(ALIAS_MAX) {
+                st.add_alias(&pane, a);
+            }
             let name = pane.name.lock().unwrap().clone();
+            let aliases = pane.aliases.lock().unwrap().clone();
             let st = st.clone();
             thread::spawn(move || pump(st, id, pane, pty));
-            Ok(json!({"pane": id, "name": name}))
+            Ok(json!({"pane": id, "name": name, "aliases": aliases}))
         }
         "pane.write" => {
             let pane = st.pane(p)?;
@@ -850,14 +866,19 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         "pane.rename" => {
             // FR-3: huruf kecil, angka, '-', maks 32, unik
             let pane = st.pane(p)?;
-            let name = p["name"].as_str().filter(|n| (1..=32).contains(&n.len()) && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
-            let name = name.ok_or("bad_name")?;
-            let panes = st.panes.lock().unwrap();
-            if panes.values().any(|q| !Arc::ptr_eq(q, &pane) && *q.name.lock().unwrap() == name) {
+            let name = p["name"].as_str().filter(|n| valid_name(n)).ok_or("bad_name")?;
+            if st.panes.lock().unwrap().values().any(|q| !Arc::ptr_eq(q, &pane) && *q.name.lock().unwrap() == name) {
                 return Err("name_taken");
             }
-            *pane.name.lock().unwrap() = name.to_string();
-            Ok(json!({"name": name}))
+            let old = std::mem::replace(&mut *pane.name.lock().unwrap(), name.to_string());
+            // FR-79: nama lama jadi alias; nama baru dilepas dari alias pane mana pun (nama sekarang menang)
+            for q in st.panes.lock().unwrap().values() {
+                q.aliases.lock().unwrap().retain(|a| a != name);
+            }
+            if old != name {
+                st.add_alias(&pane, &old);
+            }
+            Ok(json!({"name": name, "aliases": *pane.aliases.lock().unwrap()}))
         }
         "pane.info" => {
             let pane = st.pane(p)?;
@@ -1150,7 +1171,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 .iter()
                 .filter(|(id, x)| **id != me && *x.workspace.lock().unwrap() == my_ws)
                 .filter_map(|(_, x)| Some((x, x.agent_name()?)))
-                .map(|(x, agent)| json!({"name": *x.name.lock().unwrap(), "agent": agent, "status": *x.status.lock().unwrap(), "policy": x.policy.lock().unwrap().name()}))
+                .map(|(x, agent)| json!({"name": *x.name.lock().unwrap(), "aliases": *x.aliases.lock().unwrap(), "agent": agent, "status": *x.status.lock().unwrap(), "policy": x.policy.lock().unwrap().name()}))
                 .collect();
             Ok(json!({"me": my_name, "panes": list}))
         }
@@ -1165,8 +1186,12 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             let hop = eng.hop_for(reply_to.as_deref());
             let id = eng.new_id(&st.boot);
             drop(eng);
-            let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to.name.lock().unwrap().clone(), body, reply_to, hop, at: std::time::SystemTime::now() };
-            Ok(try_send(st, m, p["queue"].as_bool() == Some(true), false))
+            let to_name = to.name.lock().unwrap().clone();
+            let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to_name.clone(), body, reply_to, hop, at: std::time::SystemTime::now() };
+            // FR-79: nama sekarang ikut jawaban, supaya pengirim yang memakai nama lama beralih
+            let mut r = try_send(st, m, p["queue"].as_bool() == Some(true), false);
+            r["to"] = json!(to_name);
+            Ok(r)
         }
         "reply" => {
             // FR-19: hanya penerima pesan yang bisa membalasnya; balasan diambil pengirim lewat `wait --reply`
@@ -1761,8 +1786,26 @@ impl State {
         self.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.name.lock().unwrap().clone())).collect()
     }
 
+    /// FR-79: nama sekarang dulu, baru nama lama (alias) pane
     fn by_name(&self, name: &str) -> Option<(u64, Arc<Pane>)> {
-        self.panes.lock().unwrap().iter().find(|(_, p)| *p.name.lock().unwrap() == name).map(|(id, p)| (*id, p.clone()))
+        let panes = self.panes.lock().unwrap();
+        let find = |hit: &dyn Fn(&Pane) -> bool| panes.iter().find(|(_, p)| hit(p)).map(|(id, p)| (*id, p.clone()));
+        find(&|p| *p.name.lock().unwrap() == name).or_else(|| find(&|p| p.aliases.lock().unwrap().iter().any(|a| a == name)))
+    }
+
+    /// FR-79: alias pindah ke `pane` (pemilik terbaru menang), yang tertua dilepas lewat `ALIAS_MAX`
+    fn add_alias(&self, pane: &Arc<Pane>, alias: &str) {
+        if *pane.name.lock().unwrap() == alias {
+            return;
+        }
+        for q in self.panes.lock().unwrap().values() {
+            q.aliases.lock().unwrap().retain(|a| a != alias);
+        }
+        let mut a = pane.aliases.lock().unwrap();
+        a.push(alias.to_string());
+        if a.len() > ALIAS_MAX {
+            a.remove(0);
+        }
     }
 
     fn workspace_of(&self, id: u64) -> String {
