@@ -6,12 +6,11 @@
   import Changes from "$lib/Changes.svelte";
   import OutputView from "$lib/OutputView.svelte";
   import Messages from "$lib/Messages.svelte";
+  import ContextMenu, { type MenuAt, type MItem } from "$lib/ContextMenu.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getVersion } from "@tauri-apps/api/app";
   import { pretty, UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
-  import { Menu } from "@tauri-apps/api/menu";
-  import { Image } from "@tauri-apps/api/image";
   import { homeDir } from "@tauri-apps/api/path";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -75,12 +74,10 @@
   /// FR-61: nama akun Claude pane yang sedang menjalankan Claude; begitu ada akun lain, Utama ikut berlabel
   const acctOf = (p: number) =>
     meta[p]?.accountName || (agentOf(p) === "claude" && (cfg?.values.accounts ?? []).some((a) => a.agent === "claude") ? "Utama" : "");
-  const HEX: Record<string, string> = { red: "#ef4444", orange: "#f97316", yellow: "#eab308", green: "#22c55e", blue: "#3b82f6", purple: "#a855f7", pink: "#ec4899", cyan: "#06b6d4", brown: "#a16207" };
-  /// submenu Warna: bulatan + nama, ✓ = warna sekarang
+  /// Color submenu = swatch panel (Gembala.pen 08): colors, then the empty circle for no color; ring = current
   const colorMenu = (cur: string | null | undefined, set: (c: string | undefined) => void): MItem[] => [
-    [`Tanpa warna${cur ? "" : "  ✓"}`, () => set(undefined), true, "none"],
-    "-",
-    ...COLORS.map(([c, name]) => [`${name}${cur === c ? "  ✓" : ""}`, () => set(c), true, c] as MItem),
+    ...COLORS.map(([c, name]) => [name, () => set(c), true, c, { on: cur === c }] as MItem),
+    ["Tanpa warna", () => set(undefined), true, "none", { on: !cur }],
   ];
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   /// status yang ditampilkan: "selesai" yang sudah dilihat pudar (FR-40)
@@ -1075,39 +1072,14 @@
     if (editing) sidebar = true; // ganti nama terjadi di sidebar
   }
 
-  /// Menu klik kanan native (FR-37, FR-44, FR-52). Item: [label, aksi, aktif?], "-" pemisah, [label, sub-item[]] submenu.
-  // elemen ke-4 = warna: bulatan digambar sebagai ikon item menu native (bukan emoji)
-  type MItem = "-" | [string, (() => void) | MItem[], boolean?, string?];
-  const opts = (items: MItem[]): any[] =>
-    items.map((it) =>
-      it === "-"
-        ? { item: "Separator" }
-        : Array.isArray(it[1])
-          ? { text: it[0], items: opts(it[1]) }
-          : { text: it[0], action: it[1], enabled: it[2] ?? true, ...(it[3] && dots[it[3]] ? { icon: dots[it[3]] } : {}) },
-    );
-  /// FR-44/52: bulatan warna 36px (menu macOS menampilkan ikon setinggi 18pt); "none" = lingkaran kosong
-  let dots: Record<string, Image> = {};
-  async function makeDots() {
-    const hex: Record<string, string> = { ...HEX, none: "" };
-    const out: Record<string, Image> = {};
-    for (const [k, c] of Object.entries(hex)) {
-      const cv = Object.assign(document.createElement("canvas"), { width: 36, height: 36 });
-      const g = cv.getContext("2d")!;
-      g.beginPath();
-      g.arc(18, 18, c ? 13 : 12, 0, Math.PI * 2);
-      if (c) (g.fillStyle = c), g.fill();
-      else (g.strokeStyle = "#8b8b8b"), (g.lineWidth = 2.5), g.stroke();
-      out[k] = await Image.new(g.getImageData(0, 0, 36, 36).data.buffer, 36, 36);
-    }
-    dots = out;
-  }
-  async function popup(e: MouseEvent, items: MItem[]) {
+  /// Right-click menu (FR-37, FR-44, FR-52), HTML so the color submenu can be a swatch panel (Gembala.pen 08).
+  /// Opened by keyboard (no pointer position) = below the element that was activated.
+  let menu = $state<MenuAt | null>(null);
+  function popup(e: MouseEvent, items: MItem[]) {
     e.preventDefault();
     e.stopPropagation();
-    // bulatan warna belum ada (gagal saat app dibuka) = coba lagi sebelum menu dibangun
-    if (!Object.keys(dots).length) await makeDots().catch((err) => say(`Ikon warna gagal dimuat: ${err}`));
-    (await Menu.new({ items: opts(items) })).popup().catch(() => {});
+    const r = (e.target as Element | null)?.getBoundingClientRect();
+    menu = e.clientX || e.clientY || !r ? { x: e.clientX, y: e.clientY, items } : { x: r.left, y: r.bottom, items };
   }
   const copy = (text: string | null | undefined) =>
     text && invoke("copy_text", { text }).then(() => say("Tersalin"), () => say("Gagal menyalin"));
@@ -1121,20 +1093,26 @@
     toastTimer = setTimeout(() => (toast = ""), 1800);
   }
 
-  function tabMenu(e: MouseEvent, wi: number, t: Tab) {
+  /// Gembala.pen 08 order. No rename shortcut exists, so none is shown; the close-pane key closes this tab
+  /// only when it is the active tab with a single pane, so only then is it shown.
+  async function tabMenu(e: MouseEvent, wi: number, t: Tab) {
+    e.preventDefault();
+    e.stopPropagation();
     const ti = wss[wi].tabs.indexOf(t);
     const others = wss.map((w, j) => [w.name, () => moveTab(wi, wss[wi].tabs.indexOf(t), j, w.tabs.length)] as MItem).filter((_, j) => j !== wi);
+    const [keys] = await invoke<[[string, string, string][], string[]]>("shortcuts").catch(() => [[], []] as [[string, string, string][], string[]]);
+    const closeKey = t === tab && panes(t.tree).length === 1 ? keys.find(([id]) => id === "pane.proc.close")?.[2] : "";
     popup(e, [
-      ["Ganti nama", () => (editing = { kind: "tab", id: t.id, value: title(t) })],
-      ["Warna", colorMenu(t.color, (c) => (t.color = c))],
-      others.length ? ["Pindah ke workspace", others] : ["Pindah ke workspace", () => {}, false],
-      ["Salin folder", () => copy(meta[t.focus]?.cwd)],
-      ["Agent di worktree baru…", () => ((at = { ws: wi, tab: ti }), openWorktree(wi))],
-      ...(meta[t.focus]?.git?.branch?.startsWith("gembala/") ? [["Tutup dan hapus worktree…", () => removeWorktree(wi, t)] as MItem] : []),
-      "-",
-      ["Tutup tab", () => closeTabs(wi, [t])],
+      ["Ganti nama", () => (editing = { kind: "tab", id: t.id, value: title(t) }), true, undefined, { icon: "rename" }],
+      ["Warna", colorMenu(t.color, (c) => (t.color = c)), true, undefined, { icon: "color", title: "Warna tab", hint: "Muncul sebagai garis tipis di kiri tab" }],
+      ["Tutup tab", () => closeTabs(wi, [t]), true, undefined, { icon: "close", key: closeKey ? pretty(closeKey) : "" }],
       ["Tutup tab lain", () => closeTabs(wi, wss[wi].tabs.filter((x) => x !== t)), wss[wi].tabs.length > 1],
       ["Tutup tab di bawahnya", () => closeTabs(wi, wss[wi].tabs.slice(ti + 1)), ti < wss[wi].tabs.length - 1],
+      "-",
+      ["Pindah ke workspace", others.length ? others : () => {}, others.length > 0, undefined, { icon: "move" }],
+      ["Salin folder", () => copy(meta[t.focus]?.cwd), true, undefined, { icon: "copy" }],
+      ["Agent di worktree baru…", () => ((at = { ws: wi, tab: ti }), openWorktree(wi))],
+      ...(meta[t.focus]?.git?.branch?.startsWith("gembala/") ? [["Tutup dan hapus worktree…", () => removeWorktree(wi, t), true, undefined, { danger: true }] as MItem] : []),
     ]);
   }
 
@@ -1155,24 +1133,21 @@
     ]);
   }
 
+  /// Gembala.pen 13 order
   function wsMenu(e: MouseEvent, wi: number) {
     const w = wss[wi];
+    // FR-61: akun Claude bawaan pane baru di workspace ini (pilihan manusia, C-9)
+    const accts = [{ id: "utama", name: "Utama" }, ...(cfg?.values.accounts ?? []).filter((a) => a.agent === "claude")];
+    const cur = accts.find((a) => a.id === (w.accounts?.claude ?? "utama"));
     popup(e, [
-      ["Ganti nama", () => (editing = { kind: "ws", id: w.id, value: w.name })],
-      ["Ganti folder…", () => changeRoot(w)],
-      ["Warna", colorMenu(w.color, (c) => (w.color = c ?? null))],
-      // FR-61: akun Claude bawaan pane baru di workspace ini (pilihan manusia, C-9)
-      ...((cfg?.values.accounts ?? []).some((a) => a.agent === "claude")
-        ? [
-            "-" as MItem,
-            ...[{ id: "utama", name: "Utama" }, ...(cfg?.values.accounts ?? []).filter((a) => a.agent === "claude")].map(
-              (a): MItem => [`${(w.accounts?.claude ?? "utama") === a.id ? "✓ " : ""}Akun Claude bawaan: ${a.name}`, () => void (w.accounts = { ...w.accounts, claude: a.id })],
-            ),
-          ]
+      ["Ganti nama", () => (editing = { kind: "ws", id: w.id, value: w.name }), true, undefined, { icon: "rename" }],
+      ["Ganti folder…", () => changeRoot(w), true, undefined, { icon: "folder" }],
+      ["Warna", colorMenu(w.color, (c) => (w.color = c ?? null)), true, undefined, { icon: "color", title: "Warna workspace", hint: "Mewarnai blok workspace di sidebar" }],
+      ...(accts.length > 1
+        ? [[`Akun bawaan: ${cur?.name ?? "Utama"}`, accts.map((a): MItem => [a.name, () => void (w.accounts = { ...w.accounts, claude: a.id }), true, undefined, { on: a === cur }]), true, undefined, { icon: "account" }] as MItem]
         : []),
-      [w.collapsed ? "Buka" : "Ciutkan", () => (w.collapsed = !w.collapsed)],
-      "-",
-      ["Hapus workspace", () => askRemoveWorkspace(wss.indexOf(w)), wss.length > 1],
+      [w.collapsed ? "Buka" : "Ciutkan", () => (w.collapsed = !w.collapsed), true, undefined, { icon: "collapse" }],
+      ["Hapus workspace…", () => askRemoveWorkspace(wss.indexOf(w)), wss.length > 1, undefined, { icon: "delete", danger: true }],
     ]);
   }
 
@@ -1779,8 +1754,6 @@
     (async () => {
       try {
         cfg = await call("config.get");
-        // ikon gagal dibuat = menu tetap jalan tanpa bulatan; sebabnya ditampilkan supaya tidak hilang diam-diam
-        makeDots().catch((e) => say(`Ikon warna gagal dimuat: ${e}`));
         // FR-59: bahan autocomplete
         homePath = (await homeDir().catch(() => "")).replace(/\/$/, "");
         call("agents.detect", {}).then((a: Agent[]) => (installed = a.filter((x) => x.installed).map((x) => x.agent))).catch(() => {});
@@ -2506,6 +2479,7 @@
     <Settings {cfg} {meta} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
   {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
+  <ContextMenu bind:menu />
   <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
 </div>
 
