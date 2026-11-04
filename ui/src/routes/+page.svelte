@@ -1006,8 +1006,10 @@
     }
   }
 
-  /// FR-39: palet = semua tab + profil + semua aksi beserta pintasannya (sekaligus daftar pintasan)
-  type PalItem = { label: string; hint: string; go: () => void };
+  /// FR-39: palet = tab, profil, dan semua aksi beserta pintasannya (sekaligus daftar pintasan).
+  /// Gembala.pen 03: grup berjudul, ikon agent, pintasan rata kanan, kaki petunjuk.
+  type PalItem = { label: string; hint: string; kind: "tab" | "profile" | "action"; agent?: string; go: () => void };
+  type PalGroup = { title: string; items: PalItem[] };
   async function openPalette() {
     // ⌘P lagi = tutup
     if (pal) return void (pal = null);
@@ -1018,21 +1020,40 @@
     document.querySelector<HTMLInputElement>(".palette input")?.focus();
     setTimeout(() => pal && document.querySelector<HTMLInputElement>(".palette input")?.focus(), 50);
   }
-  const palItems = $derived.by((): PalItem[] => {
+  const palGroups = $derived.by((): PalGroup[] => {
     if (!pal) return [];
-    const items: PalItem[] = [
-      ...order.map((o, i) => ({ label: title(o.t), hint: `${wss[o.wi].name}${i < 9 ? ` · ⌘${i + 1}` : ""}`, go: () => goto(i) })),
-      ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
-      ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
-      { label: "Agent di worktree baru…", hint: "git worktree dari HEAD repo pane ini", go: () => openWorktree() },
-      { label: "Dari template peran…", hint: "koordinator, pekerja, reviewer + brief workspace", go: () => openTemplate() },
-      ...pickable.map((p) => ({ label: `Pilih sesi lama: ${p.label}`, hint: "pemilih sesi bawaan agent", go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
-      { label: "Workspace baru…", hint: "", go: addWorkspace },
-      { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
-      { label: "Ganti nama tab", hint: "", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
-      { label: "Ganti nama workspace", hint: "", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
-      { label: "Pengaturan", hint: "⌘,", go: () => (settingsOpen = true) },
-      { label: "Keluar dan hentikan semua agent…", hint: "", go: askQuitAll },
+    // ikon dan status baris tab memakai aturan yang sama dengan sidebar (FR-4/52), bukan salinan baru
+    const tabs: PalItem[] = order.map((o, i) => {
+      const st = tabStatus(o.t);
+      const agent = panes(o.t.tree).map(agentOf).find(Boolean) ?? "";
+      // satu workspace = pintasan saja (Gembala.pen 03); lebih dari satu = nama workspace ikut, tab kembar bisa dibedakan
+      const key = i < 9 ? `⌘${i + 1}` : "";
+      return {
+        label: [meta[o.t.focus]?.name ?? "", title(o.t), STATUS[st] ?? ""].filter(Boolean).join(" · "),
+        hint: wss.length > 1 ? [wss[o.wi].name, key].filter(Boolean).join(" · ") : key,
+        kind: "tab",
+        agent,
+        go: () => goto(i),
+      };
+    });
+    const profiles: PalItem[] = (cfg?.values.profiles ?? []).map((p) => ({
+      label: p.name,
+      hint: p.command || "$SHELL",
+      kind: "profile",
+      agent: p.agent === "shell" ? "" : p.agent,
+      go: () => newTab(p.id === "shell" ? undefined : p.id),
+    }));
+    const actions: PalItem[] = [
+      ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), kind: "action" as const, go: () => run(id) })),
+      { label: "Agent di worktree baru…", hint: "git worktree dari HEAD repo pane ini", kind: "action", go: () => openWorktree() },
+      { label: "Dari template peran…", hint: "koordinator, pekerja, reviewer + brief workspace", kind: "action", go: () => openTemplate() },
+      ...pickable.map((p) => ({ label: `Pilih sesi lama: ${p.label}`, hint: "pemilih sesi bawaan agent", kind: "action" as const, go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
+      { label: "Workspace baru…", hint: "", kind: "action", go: addWorkspace },
+      { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", kind: "action", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
+      { label: "Ganti nama tab", hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
+      { label: "Ganti nama workspace", hint: "", kind: "action", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
+      { label: "Pengaturan", hint: "⌘,", kind: "action", go: () => (settingsOpen = true) },
+      { label: "Keluar dan hentikan semua agent…", hint: "", kind: "action", go: askQuitAll },
     ];
     const words = pal.q.toLowerCase().split(/\s+/).filter(Boolean);
     const hay = (it: PalItem) => `${it.label} ${it.hint}`.toLowerCase();
@@ -1041,7 +1062,31 @@
       const r = recent.indexOf(it.label);
       return (words.every((w) => hay(it).includes(w)) ? 0 : 1000) + (r < 0 ? 100 : r);
     };
-    return items.filter((it) => words.every((w) => fuzzy(hay(it), w))).sort((a, b) => rank(a) - rank(b));
+    const matched = [...tabs, ...profiles, ...actions].filter((it) => words.every((w) => fuzzy(hay(it), w))).sort((a, b) => rank(a) - rank(b));
+    // baris muncul sekali: hasil teratas dulu, lalu yang terakhir dipakai, sisanya per jenis
+    const top = words.length ? matched.slice(0, 3) : [];
+    const rest = matched.slice(top.length);
+    const recycled = rest.filter((it) => recent.includes(it.label)).sort((a, b) => recent.indexOf(a.label) - recent.indexOf(b.label));
+    const left = rest.filter((it) => !recent.includes(it.label));
+    const group = (title: string, items: PalItem[]) => ({ title, items });
+    return [
+      group("cocok", top),
+      group("terakhir dipakai", recycled),
+      group("tab", left.filter((it) => it.kind === "tab")),
+      group("tab baru dari profil", left.filter((it) => it.kind === "profile")),
+      group("aksi", left.filter((it) => it.kind === "action")),
+    ].filter((g) => g.items.length > 0);
+  });
+  const palItems = $derived(palGroups.flatMap((g) => g.items));
+  /// yang digambar: judul grup lalu barisnya; nomor pilihan mengikuti urutan ini supaya ↑↓ tidak berhenti di judul
+  const palRows = $derived.by(() => {
+    const rows: ({ kind: "head"; h: string } | { kind: "item"; it: PalItem; i: number })[] = [];
+    let i = 0;
+    for (const g of palGroups) {
+      rows.push({ kind: "head", h: g.title });
+      for (const it of g.items) rows.push({ kind: "item", it, i: i++ });
+    }
+    return rows;
   });
   /// huruf kata dicari berurutan (boleh berjarak): "spl kn" cocok "split ke kanan"
   const fuzzy = (hay: string, w: string) => {
@@ -2440,27 +2485,38 @@
     </div>
   {/if}
   {#if pal}
-    <!-- FR-39: palet perintah -->
+    <!-- FR-39: palet perintah (Gembala.pen 03) -->
     <div class="confirm picker palette" role="dialog" aria-label="Palet perintah">
-      <!-- svelte-ignore a11y_autofocus -->
-      <input class="edit" bind:value={pal.q} autofocus placeholder="Cari tab atau aksi" aria-label="Cari tab atau aksi" spellcheck="false" autocapitalize="off"
-        oninput={() => pal && (pal.sel = 0)}
-        onkeydown={(e) => {
-          const n = palItems.length;
-          if (e.key === "ArrowDown" && n) (e.preventDefault(), pal && (pal.sel = (pal.sel + 1) % n));
-          if (e.key === "ArrowUp" && n) (e.preventDefault(), pal && (pal.sel = (pal.sel + n - 1) % n));
-          if (e.key === "Enter") (e.preventDefault(), palRun(pal?.sel ?? 0));
-          if (e.key === "Escape") (e.preventDefault(), (pal = null));
-        }} onblur={() => setTimeout(() => (pal = null), 150)} />
+      <div class="psearch">
+        <svg class="pfind" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input class="edit" bind:value={pal.q} autofocus placeholder="Cari tab atau aksi" aria-label="Cari tab atau aksi" spellcheck="false" autocapitalize="off"
+          oninput={() => pal && (pal.sel = 0)}
+          onkeydown={(e) => {
+            const n = palItems.length;
+            if (e.key === "ArrowDown" && n) (e.preventDefault(), pal && (pal.sel = (pal.sel + 1) % n));
+            if (e.key === "ArrowUp" && n) (e.preventDefault(), pal && (pal.sel = (pal.sel + n - 1) % n));
+            if (e.key === "Enter") (e.preventDefault(), palRun(pal?.sel ?? 0));
+            if (e.key === "Escape") (e.preventDefault(), (pal = null));
+          }} onblur={() => setTimeout(() => (pal = null), 150)} />
+        <button class="esc" aria-label="Tutup palet" onclick={() => (pal = null)}>Esc</button>
+      </div>
       <div class="pallist" role="listbox" aria-label="Hasil">
-        {#each palItems as it, i (i)}
-          <button class="opt" class:on={i === pal.sel} role="option" aria-selected={i === pal.sel} onpointerdown={(e) => e.preventDefault()} onclick={() => palRun(i)}>
-            <span></span><span>{it.label}</span><span class="keys">{it.hint}</span>
-          </button>
+        {#each palRows as row}
+          {#if row.kind === "head"}
+            <span class="ph" role="presentation">{row.h}</span>
+          {:else}
+            <button class="opt" class:on={row.i === pal.sel} role="option" aria-selected={row.i === pal.sel} onpointerdown={(e) => e.preventDefault()} onclick={() => palRun(row.i)}>
+              <span class="pico">{#if row.it.agent}<span class="aico {row.it.agent}">{GLYPH[row.it.agent] ?? "›"}</span>{:else}→{/if}</span>
+              <span class="plbl">{row.it.label}</span>
+              <span class="keys">{row.it.hint}</span>
+            </button>
+          {/if}
         {:else}
-          <span class="keys">Tidak ada yang cocok</span>
+          <span class="pempty">Tidak ada yang cocok</span>
         {/each}
       </div>
+      <span class="pfoot">↑↓ pilih · Enter jalanin · huruf berurutan udah cukup, mis. "spl kn"</span>
     </div>
   {/if}
   {#if picker}
@@ -3928,19 +3984,102 @@
     overflow: auto;
     font: 11px "SF Mono", Menlo, monospace;
   }
+  /* Gembala.pen 03: kotak 560 px di tengah atas, baris cari bergaris, grup berjudul, baris pilihan biru penuh */
   .palette {
-    top: 30%;
-    width: min(520px, 80%);
+    top: 96px;
+    width: min(560px, 86%);
+    padding: 0;
+    gap: 0;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .psearch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+  }
+  .pfind {
+    flex: none;
+    width: 13px;
+    height: 13px;
+  }
+  .psearch .edit {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    outline: none;
+  }
+  .psearch .esc {
+    flex: none;
+    padding: 1px 5px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+    font: 11px "SF Mono", Menlo, monospace;
+    cursor: pointer;
   }
   .pallist {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
     max-height: 50vh;
+    padding: 2px 0 6px;
     overflow-y: auto;
   }
+  .ph {
+    padding: 8px 12px 4px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
   .palette .opt {
-    grid-template-columns: 0 1fr auto;
+    grid-template-columns: 16px 1fr auto;
+    padding: 5px 12px;
+    border-radius: 0;
+  }
+  .palette .opt.on {
+    background: var(--pri-bg, #2563eb);
+    color: #ffffff;
+  }
+  .palette .opt.on .keys,
+  .palette .opt.on .pico {
+    color: rgba(255, 255, 255, 0.85);
+  }
+  .palette .opt.on .aico {
+    color: #ffffff;
+  }
+  .pico {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .plbl {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pempty {
+    padding: 10px 12px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .pfoot {
+    padding: 7px 12px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
   }
   .compose textarea {
     padding: 6px 8px;
