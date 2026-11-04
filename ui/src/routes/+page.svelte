@@ -1845,7 +1845,7 @@
           {#if w.collapsed}
             <!-- FR-44: diciutkan tetap menampilkan jumlah tab dan status terberat -->
             {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
-            <span class="wsum">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{STATUS[st]}</span> · {/if}{w.tabs.length} tab</span>
+            <span class="wsum">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{STATUS[st]}</span>{" · "}{/if}{w.tabs.length} tab</span>
           {/if}
           <!-- FR-52: tab baru di workspace INI; klik kanan/Option = pilih profil -->
           <button class="wsadd" title="Tab baru di {w.name} · klik kanan: pilih profil" aria-label="Tab baru di workspace {w.name}"
@@ -2641,9 +2641,6 @@
     visibility: hidden;
     cursor: pointer;
   }
-  .wsum + .wsadd {
-    margin-left: 4px;
-  }
   .ws:hover .wsadd,
   .wsadd:focus-visible {
     visibility: visible;
@@ -2661,8 +2658,8 @@
     color: var(--muted);
     font-size: 10px;
   }
+  /* pen 02: summary sits right after the name; the + button keeps the right edge */
   .wsum {
-    margin-left: auto;
     flex-shrink: 0; /* nama panjang yang dipotong, ringkasan tetap satu baris */
     white-space: nowrap;
   }
