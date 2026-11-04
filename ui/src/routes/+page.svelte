@@ -115,7 +115,7 @@
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
   let upgrade = $state<{ daemon: string; app: string; panes: number } | null>(null); // FR-21
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
-  let rich = $state<{ pane: number; text: string } | null>(null); // FR-14
+  let rich = $state<{ pane: number; text: string; files?: string[] } | null>(null); // FR-14; files = attachment chips (pen 04)
   let changes = $state<{ pane: number; diff: any; turns?: any[]; turn?: number | null; ask?: any } | null>(null); // FR-22, FR-70
   let outputOf = $state<number | null>(null); // FR-56
 
@@ -333,7 +333,7 @@
   }
   const IMG: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
   /// ⌘V gambar di editor: disimpan ke folder sementara Gembala (SEC-34) lalu path-nya disisipkan, seperti di terminal (FR-54)
-  async function pasteToEditor(pane: number, e: ClipboardEvent) {
+  async function pasteToEditor(pane: number, e: ClipboardEvent, add = (path: string) => insertPaths(pane, [path])) {
     const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === "file" && IMG[i.type]);
     const file = item?.getAsFile();
     if (!item || !file) return; // teks biasa: textarea yang menangani
@@ -341,7 +341,7 @@
     const path = await invoke<string>("save_paste", { data: b64(new Uint8Array(await file.arrayBuffer())), ext: IMG[item.type] }).catch(() => "");
     if (!path) return say("Gagal menyimpan gambar");
     if (meta[pane]) meta[pane].pastes = [...(meta[pane].pastes ?? []), path];
-    insertPaths(pane, [path]);
+    add(path);
   }
 
   /// Tab/Esc: teks pindah ke baris zsh, kendali ke terminal (autocomplete zsh tetap jalan)
@@ -727,11 +727,20 @@
   /// dan kontrol C1 dibuang supaya isi tidak bisa menutup paste lebih awal.
   function sendRich() {
     if (!rich) return;
-    const clean = rich.text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+    const files = (rich.files ?? []).map(quote).join(" ");
+    const clean = [rich.text, files].filter(Boolean).join(" ").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
     const bytes = new TextEncoder().encode(`\x1b[200~${clean}\x1b[201~\r`);
     call("pane.write", { pane: rich.pane, data: b64(bytes) });
     rich = null;
   }
+
+  /// autofocus loses to the terminal that held focus (same as the palette): focus explicitly
+  async function openRich(pane: number) {
+    rich = { pane, text: "" };
+    await tick();
+    document.querySelector<HTMLTextAreaElement>(".rich textarea")?.focus();
+  }
+  const addRichFiles = (paths: string[]) => rich && (rich.files = [...new Set([...(rich.files ?? []), ...paths])]);
 
   /// FR-15: path asli (symlink diselesaikan) ber-quote ditempel ke prompt sebagai bracketed paste, tanpa Enter
   async function attach(pane: number, paths: string[], resolved = false) {
@@ -977,7 +986,7 @@
     }
     else if (id === "pane.zoom.toggle") zoomed = !zoomed;
     else if (id === "pane.move.newtab") moveToNewTab();
-    else if (id === "pane.input.rich") rich = { pane: tab.focus, text: "" };
+    else if (id === "pane.input.rich") openRich(tab.focus);
     else if (id === "pane.diff.toggle") openChanges(tab.focus);
     else if (id === "pane.proc.kill") call("pane.kill", { pane: tab.focus });
     else if (id === "pane.proc.close") askClose(tab.focus);
@@ -1757,6 +1766,7 @@
     const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type !== "drop" || !tab || dead[tab.focus] || !payload.paths.length) return;
       const pane = tab.focus;
+      if (rich?.pane === pane) return void invoke<string[]>("resolve_paths", { paths: payload.paths }).then(addRichFiles).catch(() => {});
       // FR-59: editor tampil = path masuk ke editor, bukan langsung ke shell
       if (editorShown(pane)) invoke<string[]>("resolve_paths", { paths: payload.paths }).then((p) => insertPaths(pane, p)).catch(() => {});
       else attach(pane, payload.paths);
@@ -1822,7 +1832,7 @@
   {:else if c === "diff" && g?.repo && g.files}
     <button class="chip box" title="Panel perubahan ⌘⇧=" onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
-    <button class="chip box" onclick={() => (rich = { pane, text: "" })}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
+    <button class="chip box" onclick={() => openRich(pane)}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
   {:else if c === "cwd"}
     <span class="chip box quiet" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{short(meta[pane]?.cwd) || "~"}</span>
   {:else if c === "branch" && g?.repo && g.branch}
@@ -2006,7 +2016,7 @@
             {/if}
             {@const ed = editorShown(pane)}
             <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
-              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
+              <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
@@ -2201,21 +2211,37 @@
               <OutputView {pane} onclose={() => (outputOf = null)} />
             {/if}
             {#if rich?.pane === pane}
-              <div class="rich">
+              <!-- pen 04: titled card; attachments as chips, sent as quoted paths after the text -->
+              {@const agName = cfg?.values.profiles.find((p) => p.agent === agentOf(pane))?.name}
+              <div class="rich" role="dialog" aria-label="Rich Input" tabindex="-1" onkeydown={(e) => e.key === "Escape" && (e.preventDefault(), (rich = null))}>
+                <div class="rhead"><b>Rich Input</b><span class="rto">ke {meta[pane]?.name}{agName ? ` · ${agName}` : ""}</span><span class="n">⌘G</span></div>
                 <!-- svelte-ignore a11y_autofocus -->
                 <textarea
                   bind:value={rich.text}
                   autofocus
                   rows="4"
                   aria-label="Rich Input"
-                  placeholder="Tulis prompt · Enter kirim · Shift+Enter baris baru · Esc tutup"
+                  placeholder="Tulis prompt di sini"
                   spellcheck="false"
                   autocapitalize="off"
+                  onpaste={(e) => pasteToEditor(pane, e, (p) => addRichFiles([p]))}
                   onkeydown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), sendRich());
-                    if (e.key === "Escape") (e.preventDefault(), (rich = null));
+                    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) (e.preventDefault(), sendRich());
                   }}
                 ></textarea>
+                {#if rich.files?.length}
+                  <div class="rfiles">
+                    {#each rich.files as f (f)}
+                      <span class="rfile" title={f}>{@render icon("file")}{f.split("/").pop()}<button aria-label="Buang {f.split('/').pop()}"
+                          onclick={() => rich && (rich.files = rich.files?.filter((x) => x !== f))}>×</button></span>
+                    {/each}
+                  </div>
+                {/if}
+                <div class="rfoot">
+                  <button class="mini" onclick={async () => addRichFiles(await invoke<string[]>("pick_files").catch(() => []))}>+ Lampirkan</button>
+                  <span class="rhint">Enter kirim · Shift+Enter baris baru · tempel gambar langsung bisa</span>
+                  <button class="mini pri" onclick={sendRich}>Kirim <span class="keys">Enter</span></button>
+                </div>
               </div>
             {/if}
           {/if}
@@ -3583,8 +3609,31 @@
   }
   .rich {
     position: absolute;
-    inset: auto 8px 32px 8px;
+    inset: auto 12px 40px 12px;
     z-index: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--fg);
+    font: 13px system-ui, -apple-system, sans-serif;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+  .rhead {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .rto {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .rhead .n {
+    margin-left: auto;
+    font-family: "SF Mono", Menlo, monospace;
   }
   .rich textarea {
     width: 100%;
@@ -3592,11 +3641,55 @@
     padding: 8px 10px;
     border: 1px solid var(--line);
     border-radius: 6px;
-    background: var(--card);
+    background: var(--bg);
     color: var(--fg);
     font: 13px/1.4 "SF Mono", Menlo, monospace;
     resize: vertical;
     outline: none;
+  }
+  .rich textarea:focus {
+    border-color: var(--tx-blue, #3b82f6);
+  }
+  .rfiles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .rfile {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 240px;
+    padding: 2px 4px 2px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .rfile button {
+    padding: 0 3px;
+    border: 0;
+    background: none;
+    color: var(--muted);
+  }
+  .rfile button:hover {
+    color: var(--fg);
+  }
+  .rfoot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .rhint {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 12px;
   }
   .dead {
     position: absolute;
