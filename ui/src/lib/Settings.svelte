@@ -207,7 +207,7 @@
     }).sort((a, b) => +a.idle - +b.idle || b.rss - a.rss);
   });
   let openGroups = $state<string[]>([]);
-  let sec = $state<(typeof SECTIONS)[number][0]>("tampilan");
+  let sec = $state<(typeof SECTIONS)[number][0]>("umum");
   let failed = $state("");
   let keys = $state<[string, string, string][]>([]);
   let keyErrors = $state<string[]>([]);
@@ -315,8 +315,8 @@
         <label>Akun bawaan <small>Dipakai bila tidak dipilih lain saat membuka pane (FR-61)</small>
           <select bind:value={form.account}><option value="">Utama</option>{#each cfg.values.accounts.filter((a) => a.agent === "claude") as a (a.id)}<option value={a.id}>{a.name}</option>{/each}</select></label>
       {/if}
-      <label class="inline"><input type="checkbox" bind:checked={form.summarize} /> Ringkas output saat agent keluar</label>
-      <label class="inline"><input type="checkbox" bind:checked={form.notify} /> Notifikasi untuk pane dari profil ini</label>
+      <label class="inline"><input type="checkbox" role="switch" bind:checked={form.summarize} /> Ringkas output saat agent keluar</label>
+      <label class="inline"><input type="checkbox" role="switch" bind:checked={form.notify} /> Notifikasi untuk pane dari profil ini</label>
       <span class="acts"><button class="mini" onclick={() => (form = null)}>Batal</button> <button class="mini" onclick={saveForm}>Simpan</button></span>
     </div>
   {/if}
@@ -529,7 +529,7 @@
             <label>Folder <small>Di bawah folder home; dibuat dengan izin 0700</small><input bind:value={accForm.dir} placeholder={`~/.claude-${slug(accForm.name) || "nama"}`} spellcheck="false" /></label>
             <span class="lbl">Bawa dari Utama <small>Tautan, bukan salinan. Login, token, dan MCP pengguna tidak pernah dibawa; MCP diatur per akun (claude mcp add di pane akun itu) atau per proyek lewat .mcp.json</small></span>
             {#each shareOpts as s (s)}
-              <label class="inline"><input type="checkbox" checked={accForm.share.includes(s)} onchange={(e) => (accForm.share = e.currentTarget.checked ? [...accForm.share, s] : accForm.share.filter((x) => x !== s))} /> {s === "projects" ? "projects (memori + riwayat sesi)" : s}</label>
+              <label class="inline"><input type="checkbox" role="switch" checked={accForm.share.includes(s)} onchange={(e) => (accForm.share = e.currentTarget.checked ? [...accForm.share, s] : accForm.share.filter((x) => x !== s))} /> {s === "projects" ? "projects (memori + riwayat sesi)" : s}</label>
             {/each}
             {#if accForm.error}<span class="m err" role="alert">{accForm.error}</span>{/if}
             {#if accForm.info}<span class="m">{accForm.info}</span>{/if}
@@ -742,10 +742,6 @@
         </section>
       {/if}
     </div>
-    <footer>
-      <span>{cfg.path} · perubahan file berlaku tanpa restart</span>
-      <button class="mini" onclick={onclose}>Tutup</button>
-    </footer>
   </div>
 </div>
 
@@ -865,10 +861,10 @@
   }
   .modal {
     display: grid;
-    grid-template-columns: 150px 1fr;
-    grid-template-rows: 1fr auto;
-    width: min(720px, calc(100vw - 32px));
-    height: min(560px, calc(100vh - 32px));
+    grid-template-columns: 132px 1fr;
+    grid-template-rows: 1fr;
+    width: min(780px, calc(100vw - 32px));
+    height: calc(100vh - 80px); /* Gembala.pen 28: 40 px dari tepi atas dan bawah */
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--card);
@@ -887,7 +883,7 @@
     text-align: left;
     padding: 6px 10px;
     border: 0;
-    border-radius: 4px;
+    border-radius: 6px;
     background: transparent;
     color: var(--muted);
     font: inherit;
@@ -898,19 +894,18 @@
   }
   .body {
     overflow: auto;
-    padding: 12px 18px;
+    padding: 14px 22px 22px;
   }
   section {
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: 8px;
   }
   .row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    min-height: 40px;
-    padding: 6px 12px;
+    padding: 9px 12px;
   }
   .row + .row {
     border-top: 1px solid var(--line);
@@ -952,13 +947,16 @@
   .row > span:first-child {
     display: flex;
     flex-direction: column;
+    gap: 2px;
   }
   small,
   .note,
-  code,
-  footer {
+  code {
     color: var(--muted);
     font-size: 12px;
+  }
+  small {
+    line-height: 1.35;
   }
   .m,
   kbd {
@@ -976,6 +974,32 @@
     background: var(--bg);
     color: var(--fg);
     font: inherit;
+  }
+  /* Gembala.pen 28: sakelar ala macOS; knob digambar sebagai background supaya tetap satu elemen
+     (pseudo-element tidak dirender di input) */
+  input[role="switch"] {
+    flex: none;
+    width: 28px;
+    height: 16px;
+    margin: 0;
+    border: 0;
+    border-radius: 999px;
+    background-color: var(--line);
+    background-image: radial-gradient(circle 6px, #ffffff 99%, transparent 100%);
+    background-repeat: no-repeat;
+    background-position: 2px center;
+    background-size: 12px 12px;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+  }
+  input[role="switch"]:checked {
+    background-color: var(--pri-bg, #3b82f6);
+    background-position: right 2px center;
+  }
+  input[role="switch"]:focus-visible {
+    outline: 2px solid var(--pri-bg, #3b82f6);
+    outline-offset: 2px;
   }
   .seg {
     display: flex;
@@ -1047,10 +1071,23 @@
     color: var(--fg);
     font: 12px "SF Mono", Menlo, monospace;
   }
+  /* Gembala.pen 28/30: judul grup tebal di atas kartu, keterangan abu menyambung di kanannya,
+     aksi grup (+ Profil, Periksa ulang) menempel di ujung kanan */
   h4 {
-    margin: 16px 0 8px;
-    font: 600 12px system-ui, -apple-system, sans-serif;
-    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 18px 0 8px;
+    font: 600 13px system-ui, -apple-system, sans-serif;
+    color: var(--fg);
+  }
+  h4:first-child {
+    margin-top: 0;
+  }
+  h4 > .mini {
+    margin-left: auto;
+    color: var(--fg);
+    font-weight: 400;
   }
   /* judul bagian + aksinya di kanan (Gembala.pen 31: "+ Tambah akun") */
   h4.hrow {
@@ -1074,14 +1111,5 @@
   }
   .errs b {
     font: 600 13px system-ui, -apple-system, sans-serif;
-  }
-  footer {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--line);
   }
 </style>
