@@ -466,6 +466,7 @@
     el.addEventListener("paste", onPaste, true);
 
     let attached = false;
+    let sized = false; // snapshot attach sudah ditulis di ukuran daemon dan dipaskan ke pane
     // daemon baru mengirim penanda pane.attached sesudah snapshot: event sebelumnya sudah ada di snapshot (dibuang),
     // sesudahnya belum. Daemon lama tanpa penanda (balasan tanpa `sync`) = semua event dipakai seperti dulu
     let synced = false;
@@ -492,17 +493,25 @@
     (async () => {
       try {
         await unlisten; // listener siap sebelum attach: penanda tidak boleh terlewat
-        await call("pane.resize", { pane, rows: term.rows, cols: term.cols });
         // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
         const a = await call("pane.attach", { pane });
         if (!a.sync) synced = true;
         const snap = unb64(a.snapshot);
-        term.write(snap, decorateSummary);
+        // TECH 19 #10: snapshot ditulis di ukuran grid daemon (mis. 80 kolom sebelum UI menempel), baru dipaskan ke pane;
+        // xterm membungkus ulang baris panjang, grid daemon (vt100) yang dikecilkan duluan malah memotongnya
+        if (a.cols && a.rows) term.resize(a.cols, a.rows);
+        term.write(snap, () => {
+          sized = true;
+          if (el.offsetParent) fit.fit();
+          call("pane.resize", { pane, rows: term.rows, cols: term.cols }).catch(() => {});
+          decorateSummary();
+        });
         if (a.prompt) onprompt(true); // FR-59: penanda B sebelum attach tidak ikut snapshot
         if (/\S/.test(new TextDecoder().decode(snap).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
         attached = true;
         if (synced) early.splice(0).forEach(onEvent); // belum: penanda yang datang nanti membuang yang tertahan
       } catch (e) {
+        sized = true;
         term.write(`\x1b[31mgagal attach pane ${pane}: ${e}\x1b[0m\r\n`);
       }
     })();
@@ -537,8 +546,9 @@
       call("pane.write", { pane, data: b64(enc.encode(d)) });
     });
     term.onBinary((d) => call("pane.write", { pane, data: btoa(d) }));
-    term.onResize(({ rows, cols }) => call("pane.resize", { pane, rows, cols }));
-    const ro = new ResizeObserver(() => el.offsetParent && fit.fit());
+    // grid daemon baru ikut ukuran pane sesudah snapshot tertulis (lihat attach): sebelum itu vt100 memotong baris
+    term.onResize(({ rows, cols }) => sized && call("pane.resize", { pane, rows, cols }));
+    const ro = new ResizeObserver(() => sized && el.offsetParent && fit.fit());
     ro.observe(el);
     if (focused) term.focus();
 
