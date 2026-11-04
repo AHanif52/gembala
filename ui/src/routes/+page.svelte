@@ -2421,6 +2421,7 @@
       --pri-line: #0969da;
       --pri-fg: #ffffff;
       --ws-mix: #000000;
+      --ws-base: transparent;
     }
   }
   :global(:root[data-theme="light"]) {
@@ -2442,6 +2443,7 @@
     --pri-line: #0969da;
     --pri-fg: #ffffff;
     --ws-mix: #000000;
+    --ws-base: transparent;
   }
   :global(html, body) {
     margin: 0;
@@ -2739,7 +2741,9 @@
     margin-top: 6px;
     padding: 0 0 4px;
     border-radius: 6px;
-    background: color-mix(in srgb, var(--c) 5%, transparent); /* tipis: blok tidak lebih terang dari pane (masukan pengguna 4 Nov) */
+    /* gelap: dasar warna pane, bukan sidebar, jadi blok lebih gelap dari sidebar (masukan pengguna 4 Nov);
+       terang: tint di atas sidebar (--ws-base transparent), karena sidebar terang sudah lebih gelap dari pane */
+    background: color-mix(in srgb, var(--c) 5%, var(--ws-base, var(--bg)));
     box-shadow: inset 3px 0 0 var(--c);
   }
   /* isi blok tidak menutupi garis kiri (latar tab aktif/hover dan titik status) */
