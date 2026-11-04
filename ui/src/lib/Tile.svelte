@@ -676,7 +676,8 @@
     width: calc(100% + 18px) !important;
     margin-left: -18px;
     border-radius: 6px;
-    background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+    /* tembus pandang: lapisan dekorasi tetap di atas teks terminal, latar solid menutupi perintahnya */
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
     pointer-events: none;
   }
   .term :global(.tl-sep) {
