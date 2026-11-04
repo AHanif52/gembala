@@ -1,7 +1,7 @@
 // @ts-nocheck -- dijalankan `npm test` (node --test), bukan bagian build app
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, swap, valid, type Node } from "./layout.ts";
+import { dividers, neighbor, nudge, panes, place, rects, remove, replace, setRatio, split, swap, valid, type Node } from "./layout.ts";
 
 // [1 | 2/3] : 1 kiri, 2 kanan atas, 3 kanan bawah
 const t3 = (): Node => split(split({ pane: 1 }, 1, "row", 2), 2, "col", 3);
@@ -17,6 +17,20 @@ test("remove menaikkan saudara, pane terakhir jadi null", () => {
   assert.deepEqual(remove(t3(), 2), { dir: "row", ratio: 0.5, a: { pane: 1 }, b: { pane: 3 } });
   assert.equal(remove({ pane: 1 }, 1), null);
   assert.deepEqual(remove(t3(), 9), t3());
+});
+
+test("place memindah pane ke sisi pane lain", () => {
+  // 3 (kanan bawah) ke kiri 1: [3 | 1 | 2]
+  const n = place(t3(), 3, 1, "left");
+  assert.deepEqual(panes(n), [3, 1, 2]);
+  assert.equal(neighbor(n, 3, "right"), 1);
+  // 1 ke bawah 2: 2 di atas 1, 3 di bawahnya
+  const m = place(t3(), 1, 2, "down");
+  assert.deepEqual(panes(m), [2, 1, 3]);
+  assert.deepEqual(rects(m).get(2), { x: 0, y: 0, w: 1, h: 0.25 });
+  // ke diri sendiri, atau pane satu-satunya = tidak berubah
+  assert.deepEqual(place(t3(), 2, 2, "up"), t3());
+  assert.deepEqual(place({ pane: 1 }, 1, 9, "up"), { pane: 1 });
 });
 
 test("neighbor mengikuti geometri", () => {

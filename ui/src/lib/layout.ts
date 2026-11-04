@@ -52,6 +52,17 @@ export function swap(n: Node, a: number, b: number): Node {
   return { ...n, a: swap(n.a, a, b), b: swap(n.b, a, b) };
 }
 
+/// FR-37: pane diseret ke sisi pane lain = keluar dari tempatnya, lalu pane tujuan di-split di sisi itu.
+export function place(n: Node, pane: number, target: number, side: Arrow): Node {
+  const rest = pane === target ? null : remove(n, pane);
+  if (!rest) return n;
+  const dir: Dir = side === "left" || side === "right" ? "row" : "col";
+  const first = side === "left" || side === "up";
+  const put = (m: Node): Node =>
+    isLeaf(m) ? (m.pane === target ? { dir, ratio: 0.5, a: first ? { pane } : m, b: first ? m : { pane } } : m) : { ...m, a: put(m.a), b: put(m.b) };
+  return put(rest);
+}
+
 /// Pohon dari file layout dianggap tidak tepercaya: bentuk salah = null.
 export function valid(n: unknown, depth = 0): n is Node {
   if (depth > 32 || typeof n !== "object" || n === null) return false;

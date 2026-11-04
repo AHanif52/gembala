@@ -16,7 +16,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { call, b64 } from "$lib/daemon";
   import {
-    dividers, neighbor, nudge, panes, rects, remove, replace, setRatio, split, swap, valid,
+    dividers, neighbor, nudge, panes, place, rects, remove, replace, setRatio, split, swap, valid,
     type Arrow, type Dir, type Divider, type Node,
   } from "$lib/layout";
   import { safeResume } from "$lib/resume";
@@ -110,6 +110,8 @@
   let pal = $state<{ q: string; sel: number; keys: [string, string, string][] } | null>(null); // FR-39 palet
   /// `line` = garis sisip (koordinat layar) di tempat jatuh
   let dragging = $state<{ kind: "tab" | "ws"; wi: number; ti: number; over: { wi: number; ti: number }; line: { top: number; left: number; width: number } } | null>(null);
+  /// FR-37: seret kepala pane; `zone` = kotak sorot (koordinat layar) + tulisan tujuan
+  let paneDrag = $state<{ zone: { left: number; top: number; width: number; height: number; label: string } | null } | null>(null);
   let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
   let renameError = $state("");
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
@@ -1481,6 +1483,115 @@
     zoomed = false;
   }
 
+  /// FR-37: seret kepala pane (ala Warp). Di atas pane lain: zona kiri/kanan/atas/bawah = split di sisi itu, tengah =
+  /// tukar tempat; di atas tab lain di sidebar = pindah ke tab itu. Esc = batal. Pola pointer sama dengan `startDrag`.
+  function startPaneDrag(e: PointerEvent, from: Tab, pane: number) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    e.preventDefault(); // tanpa ini seretan ikut memblok teks kepala dan toolbar
+    const [x0, y0] = [e.clientX, e.clientY];
+    let ghost: HTMLElement | null = null;
+    let esc = false;
+    let drop: (() => void) | null = null;
+    const move = (m: PointerEvent) => {
+      if (esc || (!paneDrag && Math.hypot(m.clientX - x0, m.clientY - y0) < 5)) return;
+      if (!ghost) {
+        ghost = document.createElement("div");
+        ghost.className = "dragghost panedrag";
+        ghost.textContent = meta[pane]?.name ?? "pane";
+        document.body.append(ghost);
+      }
+      Object.assign(ghost.style, { left: `${m.clientX + 12}px`, top: `${m.clientY + 12}px` });
+      drop = null;
+      let zone: NonNullable<typeof paneDrag>["zone"] = null;
+      const row = document.elementFromPoint(m.clientX, m.clientY)?.closest<HTMLElement>(".tab[data-ti]");
+      const g = box?.getBoundingClientRect();
+      if (row) {
+        const [wi, ti] = [+row.dataset.wi!, +row.dataset.ti!];
+        const to = wss[wi]?.tabs[ti];
+        if (to && to !== from) {
+          const r = row.getBoundingClientRect();
+          zone = { left: r.left, top: r.top, width: r.width, height: r.height, label: "Pindah ke tab ini" };
+          drop = () => movePaneToTab(from, pane, to);
+        }
+      } else if (g) {
+        // pane tujuan = kotak di tab ini yang memuat kursor (pecahan grid)
+        const [fx, fy] = [(m.clientX - g.left) / g.width, (m.clientY - g.top) / g.height];
+        const hit = [...rects(from.tree)].find(([, r]) => fx >= r.x && fx < r.x + r.w && fy >= r.y && fy < r.y + r.h);
+        if (hit && hit[0] !== pane) {
+          const [target, r] = hit;
+          const [L, T, W, H] = [g.left + r.x * g.width, g.top + r.y * g.height, r.w * g.width, r.h * g.height];
+          const [u, v] = [(m.clientX - L) / W, (m.clientY - T) / H];
+          // sisi terdekat bila dalam 25% dari tepi; selain itu tengah
+          const side = (
+            [["left", u], ["right", 1 - u], ["up", v], ["down", 1 - v]] as [Arrow, number][]
+          ).reduce((a, b) => (b[1] < a[1] ? b : a));
+          if (side[1] < 0.25) {
+            const s = side[0];
+            const half = s === "left" || s === "right" ? { width: W / 2, height: H } : { width: W, height: H / 2 };
+            zone = { left: s === "right" ? L + W / 2 : L, top: s === "down" ? T + H / 2 : T, ...half,
+              label: { left: "Split ke kiri", right: "Split ke kanan", up: "Split ke atas", down: "Split ke bawah" }[s] };
+            drop = () => (from.tree = place(from.tree, pane, target, s));
+          } else {
+            zone = { left: L, top: T, width: W, height: H, label: "Tukar tempat" };
+            drop = () => (from.tree = swap(from.tree, pane, target));
+          }
+        }
+      }
+      paneDrag = { zone };
+    };
+    const key = (k: KeyboardEvent) => {
+      if (k.key !== "Escape" || !paneDrag) return;
+      k.preventDefault();
+      k.stopPropagation();
+      esc = true;
+      stop();
+      window.addEventListener("pointerup", up);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", stop, true);
+      window.removeEventListener("keydown", key, true);
+      ghost?.remove();
+      const d = paneDrag;
+      paneDrag = null;
+      return d;
+    };
+    const up = () => {
+      const d = stop();
+      window.removeEventListener("pointerup", up);
+      if (!d && !esc) return;
+      const eat = (c: MouseEvent) => c.stopPropagation();
+      window.addEventListener("click", eat, true);
+      setTimeout(() => window.removeEventListener("click", eat, true), 0);
+      if (d && drop) {
+        drop();
+        if (from.tree && panes(from.tree).includes(pane)) from.focus = pane;
+      }
+    };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", stop, true);
+    window.addEventListener("keydown", key, true);
+  }
+
+  /// FR-37: pane pindah ke tab lain (split kanan dari pane fokus tab itu); tab asal yang kosong ditutup.
+  /// Beda workspace = daemon diberi tahu (aturan akses SEC-4/21, sama dengan `moveTab`).
+  function movePaneToTab(from: Tab, pane: number, to: Tab) {
+    const rest = remove(from.tree, pane);
+    const src = wss.findIndex((w) => w.tabs.includes(from));
+    if (rest) {
+      from.tree = rest;
+      if (from.focus === pane) from.focus = panes(rest)[0];
+    } else wss[src].tabs.splice(wss[src].tabs.indexOf(from), 1);
+    to.tree = split(to.tree, to.focus, "row", pane);
+    to.focus = pane;
+    const wi = wss.findIndex((w) => w.tabs.includes(to));
+    if (wi !== src && !dead[pane]) call("pane.workspace", { pane, workspace: wss[wi].id }).catch(() => {});
+    at = { ws: wi, tab: wss[wi].tabs.indexOf(to) };
+    zoomed = false;
+  }
+
   /// FR-44: workspace = satu folder project dipilih lewat dialog; nama = nama folder (ganti dengan klik dua kali);
   /// tab barunya mulai di folder itu
   async function addWorkspace() {
@@ -1990,6 +2101,10 @@
 
 {#if !sidebar}<div class="drag top" data-tauri-drag-region></div>{/if}
 
+{#if paneDrag?.zone}
+  {@const z = paneDrag.zone}
+  <div class="dropzone" style:left="{z.left}px" style:top="{z.top}px" style:width="{z.width}px" style:height="{z.height}px"><span>{z.label}</span></div>
+{/if}
 <div class="grid" style:left={sidebar ? `${sideW}px` : "0"} style:top={sidebar ? "0" : "28px"} style:right={changes ? `${panelW}px` : "0"} bind:this={box}>
   {#if ws && !tab}
     <div class="empty">
@@ -2030,7 +2145,7 @@
             {#if head}
               <!-- FR-37: kepala tipis, juga saat tab cuma satu pane (Gembala.pen 02) -->
               {@const hs = stat(pane)}
-              <div class="head" class:on={split && pane === t.focus}>
+              <div class="head" class:on={split && pane === t.focus} onpointerdown={(e) => startPaneDrag(e, t, pane)} role="presentation">
                 <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
                 {#if STATUS[hs]}<span class="st {hs}">{STATUS[hs]}</span>{/if}
                 <!-- FR-78: add-ons of the running agent in this workspace, names in the tooltip -->
@@ -2837,6 +2952,30 @@
     border-radius: 1px;
     background: #3b82f6;
     pointer-events: none;
+  }
+  /* FR-37 seret pane: zona jatuh biru dengan tulisan tujuan, salinan nama pane ikut kursor */
+  .dropzone {
+    position: fixed;
+    z-index: 40;
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    border: 2px solid #3b82f6;
+    border-radius: 6px;
+    background: color-mix(in srgb, #3b82f6 22%, transparent);
+    pointer-events: none;
+  }
+  .dropzone span {
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: #3b82f6;
+    color: #fff;
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  :global(.dragghost.panedrag) {
+    width: auto;
+    padding: 3px 8px;
+    font-size: 12px;
   }
   :global(.dragghost) {
     position: fixed;
