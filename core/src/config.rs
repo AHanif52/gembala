@@ -389,6 +389,57 @@ pub fn remove_account(path: &Path, id: &str) -> Result<(), String> {
     commit(path, &doc, &before)
 }
 
+/// Implicit parent table (`[a.b]` without a bare `[a]` header), created when missing.
+fn implicit<'a>(t: &'a mut toml_edit::Table, key: &str) -> Result<&'a mut toml_edit::Table, String> {
+    if !t.contains_key(key) {
+        let mut n = toml_edit::Table::new();
+        n.set_implicit(true);
+        t.insert(key, toml_edit::Item::Table(n));
+    }
+    t[key].as_table_mut().ok_or_else(|| format!("{key}: harus tabel"))
+}
+
+/// FR-78: add or change `[addons.plugin.<id>]` (only the given fields), or remove it; validated by `load` via `commit`.
+pub fn set_plugin(path: &Path, id: &str, dir: Option<&str>, scope: Option<&str>, workspaces: Option<&[String]>, remove: bool) -> Result<(), String> {
+    let (mut doc, before) = read_doc(path)?;
+    let plugins = implicit(implicit(doc.as_table_mut(), "addons")?, "plugin")?;
+    if remove {
+        plugins.remove(id);
+        return commit(path, &doc, &before);
+    }
+    if !plugins.contains_key(id) && dir.is_none() {
+        return Err(format!("plugin \"{id}\" tidak ada"));
+    }
+    let t = implicit(plugins, id)?;
+    t.set_implicit(false);
+    if let Some(d) = dir {
+        t["path"] = toml_edit::value(d);
+    }
+    if let Some(s) = scope {
+        t["scope"] = toml_edit::value(s);
+    }
+    if let Some(w) = workspaces {
+        t["workspaces"] = toml_edit::value(w.iter().map(String::as_str).collect::<toml_edit::Array>());
+    }
+    commit(path, &doc, &before)
+}
+
+/// FR-78: `[workspace.<id>.mcp]` = file + strict, or removed (`None`).
+pub fn set_mcp(path: &Path, ws: &str, mcp: Option<(&str, bool)>) -> Result<(), String> {
+    let (mut doc, before) = read_doc(path)?;
+    let w = implicit(implicit(doc.as_table_mut(), "workspace")?, ws)?;
+    match mcp {
+        Some((file, strict)) => {
+            let t = implicit(w, "mcp")?;
+            t.set_implicit(false);
+            t["file"] = toml_edit::value(file);
+            t["strict"] = toml_edit::value(strict);
+        }
+        None => drop(w.remove("mcp")),
+    }
+    commit(path, &doc, &before)
+}
+
 /// FR-29: profil bawaan kembali ke asal / profil tambahan dihapus = semua `[[profile]]` dengan id itu dibuang.
 pub fn reset_profile(path: &Path, id: &str) -> Result<(), String> {
     let (mut doc, before) = read_doc(path)?;

@@ -652,6 +652,14 @@ pub fn detect() -> Value {
     Value::Array(rows)
 }
 
+/// FR-78/FR-27: RTK installed (same PATH as the panes)? Gembala only shows it; switching it is Fase 3.
+pub fn rtk_version() -> Option<String> {
+    let path = [user_path(), std::env::var("PATH").ok()].into_iter().flatten().collect::<Vec<_>>().join(":");
+    let mut c = Command::new("rtk");
+    c.arg("--version").env("PATH", path).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    run_with_timeout(c, Duration::from_secs(3)).and_then(|out| version_of(&out))
+}
+
 fn version_of(raw: &str) -> Option<String> {
     raw.split(|c: char| !(c.is_ascii_digit() || c == '.'))
         .find(|t| t.split('.').filter(|p| !p.is_empty()).count() >= 2)

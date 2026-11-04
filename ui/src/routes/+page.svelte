@@ -10,7 +10,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getVersion } from "@tauri-apps/api/app";
-  import { pretty, UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
+  import { activeAddons, pretty, UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
   import { homeDir } from "@tauri-apps/api/path";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -72,6 +72,8 @@
   /// agent yang sedang jalan di pane (dari profil atau diketik sendiri); "" = tidak ada
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
   /// FR-61: nama akun Claude pane yang sedang menjalankan Claude; begitu ada akun lain, Utama ikut berlabel
+  /// FR-78: by current config; a pane launched before a change keeps its old flags until it is restarted
+  const addonsOf = (p: number) => activeAddons(cfg?.values.addons, agentOf(p), wsIdOf(p) ?? "");
   const acctOf = (p: number) =>
     meta[p]?.accountName || (agentOf(p) === "claude" && (cfg?.values.accounts ?? []).some((a) => a.agent === "claude") ? "Utama" : "");
   /// Color submenu = swatch panel (Gembala.pen 08): colors, then the empty circle for no color; ring = current
@@ -2025,6 +2027,8 @@
               <div class="head" class:on={split && pane === t.focus}>
                 <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
                 {#if STATUS[hs]}<span class="st {hs}">{STATUS[hs]}</span>{/if}
+                <!-- FR-78: add-ons of the running agent in this workspace, names in the tooltip -->
+                {#if addonsOf(pane).length}<span class="hadd" title="Add-on: {addonsOf(pane).join(', ')}">{addonsOf(pane).length} add-on</span>{/if}
                 <!-- folder cukup sekali: toolbar agent sudah menampilkannya -->
                 {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd" title={home(meta[pane]?.cwd)}>{short(meta[pane]?.cwd)}</span>{/if}
                 <span class="grow"></span>
@@ -2532,7 +2536,7 @@
     </div>
   {/if}
   {#if settingsOpen && cfg}
-    <Settings {cfg} {meta} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} onlogin={loginAccount} />
+    <Settings {cfg} {meta} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
   {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
   <ContextMenu bind:menu />
@@ -3512,6 +3516,10 @@
   .hcwd {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .hadd {
+    flex: none;
+    color: var(--muted);
   }
   .hb {
     padding: 0 5px;

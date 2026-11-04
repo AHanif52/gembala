@@ -688,6 +688,58 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             reload_config(st);
             Ok(json!({}))
         }
+        // FR-78: Settings › Agent › Add-on. A plugin folder is only ever one the user picked, never the repo or cwd.
+        "addon.plugin" => {
+            let dir = p["path"].as_str();
+            let id = match (p["id"].as_str(), dir) {
+                (Some(id), _) => id.to_string(),
+                (None, Some(d)) => {
+                    let base = account::slug(&std::path::Path::new(d).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                    let base = if base.is_empty() { "plugin".to_string() } else { base };
+                    let taken: Vec<String> = st.addons.lock().unwrap().plugins.iter().map(|x| x.id.clone()).collect();
+                    std::iter::once(base.clone()).chain((2..).map(|n| format!("{base}-{n}"))).find(|i| !taken.contains(i)).unwrap_or(base)
+                }
+                (None, None) => return Err("bad_params"),
+            };
+            if !addon::valid_key(&id) {
+                return Err("bad_params");
+            }
+            let ws: Option<Vec<String>> = p["workspaces"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect());
+            if let Err(why) = config::set_plugin(&config::path(), &id, dir, p["scope"].as_str(), ws.as_deref(), p["remove"].as_bool() == Some(true)) {
+                return Ok(json!({"error": why}));
+            }
+            reload_config(st);
+            Ok(json!({"id": id}))
+        }
+        "addon.mcp.get" => {
+            let ws = p["workspace"].as_str().filter(|w| addon::valid_key(w)).ok_or("bad_params")?;
+            let a = st.addons.lock().unwrap();
+            let m = a.mcp.iter().find(|m| m.workspace == ws);
+            Ok(json!({"text": m.and_then(|m| std::fs::read_to_string(&m.path).ok()).unwrap_or_default(), "strict": m.is_some_and(|m| m.strict)}))
+        }
+        // text = Claude's `--mcp-config` JSON, saved as a 0600 file inside the Gembala config folder; empty = off
+        "addon.mcp.set" => {
+            let ws = p["workspace"].as_str().filter(|w| addon::valid_key(w)).ok_or("bad_params")?;
+            let text = p["text"].as_str().unwrap_or_default().trim();
+            let cfg = config::path();
+            let file = st.addons.lock().unwrap().mcp.iter().find(|m| m.workspace == ws).map_or(format!("mcp/{ws}.json"), |m| m.file.clone());
+            let full = cfg.parent().unwrap_or(std::path::Path::new("/")).join(&file);
+            let r = if text.is_empty() {
+                config::set_mcp(&cfg, ws, None).map(|_| drop(std::fs::remove_file(&full)))
+            } else if text.len() > 64 * 1024 || !serde_json::from_str::<Value>(text).is_ok_and(|v| v["mcpServers"].is_object()) {
+                Err("isinya harus JSON {\"mcpServers\": {…}}, maks 64 KB".to_string())
+            } else {
+                config::write_atomic(&full, format!("{text}\n").as_bytes())
+                    .map_err(|e| e.to_string())
+                    .and_then(|_| config::set_mcp(&cfg, ws, Some((&file, p["strict"].as_bool() == Some(true)))))
+            };
+            if let Err(why) = r {
+                return Ok(json!({"error": why}));
+            }
+            reload_config(st);
+            Ok(json!({}))
+        }
+        "addon.status" => Ok(json!({"rtk": profile::rtk_version()})),
         "pane.create" => {
             // batas bagian 11 BRD, bisa diubah lewat [limits] max_panes
             let max = st.config.lock().unwrap()["values"]["limits"]["max_panes"].as_u64().unwrap_or(32) as usize;

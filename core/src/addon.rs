@@ -23,6 +23,8 @@ pub struct Mcp {
     pub path: PathBuf,
     /// "Cuma ini": Claude skips the global MCP servers
     pub strict: bool,
+    /// server names in the file, for the Settings page
+    pub servers: Vec<String>,
 }
 
 #[derive(Default)]
@@ -33,7 +35,7 @@ pub struct Addons {
 
 const SCOPES: &[&str] = &["off", "all", "workspaces"];
 
-fn valid_key(s: &str) -> bool {
+pub fn valid_key(s: &str) -> bool {
     (1..=64).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
@@ -89,7 +91,8 @@ pub fn from_config(doc: Option<&toml_edit::DocumentMut>, base: &Path) -> (Addons
             continue;
         }
         let strict = m.get("strict").and_then(|v| v.as_bool()).unwrap_or(false);
-        out.mcp.push(Mcp { workspace: ws.to_string(), file: file.to_string(), path, strict });
+        let servers = servers(&path).into_iter().map(|(n, _)| n).collect();
+        out.mcp.push(Mcp { workspace: ws.to_string(), file: file.to_string(), path, strict, servers });
     }
     (out, errors)
 }
@@ -128,9 +131,8 @@ pub fn args(a: &Addons, agent: &str, ws: &str) -> Vec<String> {
 /// JSON strings and string arrays are valid TOML values.
 /// ponytail: `env` is not passed, its values would show in the process list; add Codex `env_vars` if a server needs it
 fn codex_mcp(file: &Path) -> Vec<String> {
-    let v: Value = std::fs::read_to_string(file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let mut out = Vec::new();
-    for (name, s) in v["mcpServers"].as_object().into_iter().flatten().filter(|(n, _)| valid_key(n)) {
+    for (name, s) in servers(file) {
         let mut set = |k: &str, v: &Value| out.extend(["-c".to_string(), format!("mcp_servers.{name}.{k}={v}")]);
         if let Some(cmd) = s["command"].as_str() {
             set("command", &json!(cmd));
@@ -144,11 +146,17 @@ fn codex_mcp(file: &Path) -> Vec<String> {
     out
 }
 
+/// `mcpServers` entries with a usable name; unreadable or malformed file = none
+fn servers(file: &Path) -> Vec<(String, Value)> {
+    let v: Value = std::fs::read_to_string(file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    v["mcpServers"].as_object().into_iter().flatten().filter(|(n, _)| valid_key(n)).map(|(n, s)| (n.clone(), s.clone())).collect()
+}
+
 /// For the Settings page (FR-78): what is configured, not the files' contents.
 pub fn to_json(a: &Addons) -> Value {
     json!({
         "plugins": a.plugins.iter().map(|p| json!({"id": p.id, "path": p.path, "scope": p.scope, "workspaces": p.workspaces})).collect::<Vec<_>>(),
-        "mcp": a.mcp.iter().map(|m| json!({"workspace": m.workspace, "file": m.file, "strict": m.strict})).collect::<Vec<_>>(),
+        "mcp": a.mcp.iter().map(|m| json!({"workspace": m.workspace, "file": m.file, "strict": m.strict, "servers": m.servers})).collect::<Vec<_>>(),
     })
 }
 

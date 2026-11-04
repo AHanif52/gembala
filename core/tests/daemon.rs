@@ -479,6 +479,36 @@ fn addon_per_workspace() {
     assert!(!out.contains("--plugin-dir") && !out.contains("--mcp-config"), "{out}");
 }
 
+/// FR-78: Settings writes plugins and per-workspace MCP; bad input is refused, the file stays valid.
+#[test]
+fn addon_dari_pengaturan() {
+    let d = start("addonset");
+    let plug = d.dir.join("Caveman Plug");
+    std::fs::create_dir_all(plug.join(".claude-plugin")).unwrap();
+    std::fs::write(plug.join(".claude-plugin/plugin.json"), "{}").unwrap();
+    let mut ui = Cli::ui(&d);
+    let r = ui.call("addon.plugin", json!({"path": plug}))["result"].clone();
+    assert_eq!(r["id"], "caveman-plug", "{r}");
+    let bad = ui.call("addon.plugin", json!({"path": d.dir}))["result"].clone();
+    assert!(bad["error"].as_str().is_some_and(|e| e.contains("plugin.json")), "{bad}");
+    ui.call("addon.plugin", json!({"id": "caveman-plug", "scope": "workspaces", "workspaces": ["w1"]}));
+    let mcp = r#"{"mcpServers": {"probe": {"command": "node"}}}"#;
+    assert!(ui.call("addon.mcp.set", json!({"workspace": "w1", "text": "{}"}))["result"]["error"].is_string());
+    assert_eq!(ui.call("addon.mcp.set", json!({"workspace": "w1", "text": mcp, "strict": true}))["result"], json!({}));
+    let got = ui.call("addon.mcp.get", json!({"workspace": "w1"}))["result"].clone();
+    assert_eq!((got["text"].as_str().map(str::trim), got["strict"].as_bool()), (Some(mcp), Some(true)));
+    let a = ui.call("config.get", json!({}))["result"]["values"]["addons"].clone();
+    assert_eq!(a["plugins"][0]["workspaces"], json!(["w1"]), "{a}");
+    assert_eq!(a["mcp"][0]["servers"], json!(["probe"]), "{a}");
+    let text = std::fs::read_to_string(d.dir.join("cfg/config.toml")).unwrap();
+    assert!(text.contains("[addons.plugin.caveman-plug]") && text.contains("[workspace.w1.mcp]") && !text.contains("[addons]\n"), "{text}");
+    ui.call("addon.plugin", json!({"id": "caveman-plug", "remove": true}));
+    ui.call("addon.mcp.set", json!({"workspace": "w1", "text": ""}));
+    let a = ui.call("config.get", json!({}))["result"]["values"]["addons"].clone();
+    assert_eq!(a, json!({"plugins": [], "mcp": []}));
+    assert!(!d.dir.join("cfg/mcp/w1.json").exists());
+}
+
 /// FR-28: deteksi lewat login shell; tiap agent didukung punya baris.
 #[test]
 fn deteksi_agent() {

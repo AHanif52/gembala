@@ -43,6 +43,20 @@ export type Agent = {
   install: string;
 };
 
+/// FR-78: `[addons.plugin.*]` and `[workspace.*.mcp]` that passed validation (core/src/addon.rs `to_json`)
+export type Addons = {
+  plugins: { id: string; path: string; scope: "off" | "all" | "workspaces"; workspaces: string[] }[];
+  mcp: { workspace: string; file: string; strict: boolean; servers: string[] }[];
+};
+
+/// FR-78: add-ons a pane of `agent` in workspace `ws` gets, by name (same rules as `addon::args`)
+export function activeAddons(a: Addons | undefined, agent: string, ws: string): string[] {
+  const mcp = a?.mcp.find((m) => ws && m.workspace === ws);
+  const mcpName = mcp ? [`MCP: ${mcp.servers.join(", ") || "kosong"}${mcp.strict && agent === "claude" ? " (cuma ini)" : ""}`] : [];
+  if (agent === "claude") return [...(a?.plugins ?? []).filter((p) => p.scope === "all" || (p.scope === "workspaces" && p.workspaces.includes(ws))).map((p) => p.id), ...mcpName];
+  return agent === "codex" ? mcpName : [];
+}
+
 export type Config = {
   values: {
     ui: Ui;
@@ -52,6 +66,7 @@ export type Config = {
     keys: Record<string, string>;
     profiles: Profile[];
     accounts?: Account[];
+    addons?: Addons;
   };
   errors: string[];
   path: string;

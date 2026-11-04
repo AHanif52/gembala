@@ -14,8 +14,10 @@
     onclose,
     onquitall,
     onlogin,
+    workspaces = [],
   }: {
     cfg: Config;
+    workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
     meta: Record<number, { name: string; agent: string; profile: string; status?: string }>;
     onclose: () => void;
     onquitall: () => void;
@@ -306,7 +308,42 @@
   let agents = $state<Agent[]>([]);
   let detecting = $state(false);
   // Gembala.pen 31: halaman akun, dibuka dari baris Claude Code; nav Agent kembali ke halaman induk
-  let agentPage = $state<"main" | "akun">("main");
+  let agentPage = $state<"main" | "akun" | "addon">("main");
+  // FR-78 (Gembala.pen 32): add-ons per launch; the daemon writes config.toml and the MCP file, the page follows cfg
+  const addons = $derived(cfg.values.addons ?? { plugins: [], mcp: [] });
+  const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? id;
+  const MCP_TEMPLATE = '{\n  "mcpServers": {\n    "nama": { "command": "npx", "args": ["-y", "paket-mcp"] }\n  }\n}';
+  let addonErr = $state("");
+  let mcpEdit = $state<{ ws: string; text: string; strict: boolean; had: boolean; error: string } | null>(null);
+  let rtk = $state<string | null | undefined>(undefined);
+  $effect(() => {
+    if (agentPage === "addon" && rtk === undefined) call("addon.status", {}).then((r) => (rtk = r?.rtk ?? null), () => (rtk = null));
+  });
+  async function plugin(params: Record<string, unknown>) {
+    const r = await call("addon.plugin", params).catch((e) => ({ error: String(e) }));
+    addonErr = r?.error ?? "";
+  }
+  async function addPlugin() {
+    const path = await invoke<string | null>("pick_folder");
+    if (path) plugin({ path });
+  }
+  async function openMcp(ws: string) {
+    const r = await call("addon.mcp.get", { workspace: ws }).catch(() => null);
+    const pretty = (t: string) => {
+      try {
+        return JSON.stringify(JSON.parse(t), null, 2);
+      } catch {
+        return t;
+      }
+    };
+    mcpEdit = { ws, text: r?.text?.trim() ? pretty(r.text) : MCP_TEMPLATE, strict: r?.strict ?? false, had: !!r?.text, error: "" };
+  }
+  async function saveMcp(off = false) {
+    if (!mcpEdit) return;
+    const r = await call("addon.mcp.set", { workspace: mcpEdit.ws, text: off ? "" : mcpEdit.text, strict: mcpEdit.strict }).catch((e) => ({ error: String(e) }));
+    if (r?.error) mcpEdit.error = r.error;
+    else mcpEdit = null;
+  }
   /// Jenis hook yang dipasang daemon (core/src/profile.rs `hook_files`); sumber status pane tiap agent.
   const HOOK: Record<string, string> = {
     claude: "hook resmi",
@@ -659,6 +696,74 @@
           </div>
           {/if}
         </section>
+        {:else if agentPage === "addon"}
+          <!-- Gembala.pen 32 (FR-78): add-on per launch; config agent nggak disentuh (SEC-15) -->
+          <button class="back" onclick={() => ((agentPage = "main"), (mcpEdit = null))}>‹ Agent</button>
+          <h4>Plugin Claude Code<span class="hint">lewat --plugin-dir; settings.json nggak disentuh</span><button class="mini" onclick={addPlugin}>+ Folder plugin</button></h4>
+          <section>
+            {#each addons.plugins as p (p.id)}
+              <div class="row">
+                <span class="grow">{p.id}<small>{p.path}{p.scope === "workspaces" ? ` · ${p.workspaces.length ? `cuma di ${p.workspaces.map(wsName).join(", ")}` : "belum ada workspace dipilih"}` : ""}</small></span>
+                <span class="acts">
+                  <span class="seg" role="group" aria-label="Plugin {p.id}">
+                    {#each [["off", "Mati"], ["all", "Semua"], ["workspaces", "Per workspace"]] as [v, t] (v)}
+                      <button class:on={p.scope === v} onclick={() => p.scope !== v && plugin({ id: p.id, scope: v })}>{t}</button>
+                    {/each}
+                  </span>
+                  <button class="mini" aria-label="Buang plugin {p.id}" onclick={() => plugin({ id: p.id, remove: true })}>×</button>
+                </span>
+              </div>
+              {#if p.scope === "workspaces"}
+                <div class="form">
+                  {#each workspaces as w (w.id)}
+                    <label class="inline"><input type="checkbox" role="switch" checked={p.workspaces.includes(w.id)}
+                      onchange={(e) => plugin({ id: p.id, workspaces: e.currentTarget.checked ? [...p.workspaces, w.id] : p.workspaces.filter((x) => x !== w.id) })} /> {w.name}</label>
+                  {/each}
+                </div>
+              {/if}
+            {:else}
+              <div class="row"><span>Belum ada plugin<small>Pilih folder plugin yang udah ada di disk (berisi .claude-plugin/plugin.json); Gembala nggak ngunduh apa-apa</small></span></div>
+            {/each}
+          </section>
+          {#if addonErr}<span class="m err" role="alert">{addonErr}</span>{/if}
+          <h4>MCP per workspace<span class="hint">cuma MCP yang perlu; tiap server MCP ikut kekirim di tiap giliran</span></h4>
+          <section>
+            {#each workspaces as w (w.id)}
+              {@const m = addons.mcp.find((x) => x.workspace === w.id)}
+              <div class="row">
+                <span class="grow">{w.name}<small>{m ? `${m.servers.join(", ") || "tanpa server"} · ${m.strict ? "cuma ini (MCP global nggak dimuat)" : "ditambah ke MCP global"}` : "ikut MCP global dari settings.json"}</small></span>
+                {#if mcpEdit?.ws !== w.id}<button class="mini" onclick={() => openMcp(w.id)}>{m ? "Ubah" : "+ Atur"}</button>{/if}
+              </div>
+              {#if mcpEdit?.ws === w.id}
+                <div class="row col">
+                  <small>Format --mcp-config Claude. Rahasia tulis {"${NAMA_ENV}"}, jangan nilai aslinya. Codex dapat command/args/url-nya aja (tanpa env).</small>
+                  <textarea class="tin mono" rows="8" spellcheck="false" aria-label="MCP workspace {w.name}" bind:value={mcpEdit.text}></textarea>
+                  <label class="inline"><input type="checkbox" role="switch" bind:checked={mcpEdit.strict} /> Cuma ini <small>MCP global nggak ikut dimuat (Claude)</small></label>
+                  {#if mcpEdit.error}<span class="m err" role="alert">{mcpEdit.error}</span>{/if}
+                  <span class="acts">
+                    {#if mcpEdit.had}<button class="mini" onclick={() => saveMcp(true)}>Matikan</button>{/if}
+                    <button class="mini" onclick={() => (mcpEdit = null)}>Batal</button>
+                    <button class="mini pri" onclick={() => saveMcp()}>Simpan</button>
+                  </span>
+                </div>
+              {/if}
+            {:else}
+              <div class="row"><span>Belum ada workspace</span></div>
+            {/each}
+          </section>
+          <h4>Hemat token<span class="hint">lihat juga FR-27</span></h4>
+          <section>
+            <div class="row">
+              <span>RTK<small>{rtk === undefined ? "memeriksa…" : rtk ? `terpasang ${rtk} · motong output perintah shell sebelum masuk ke agent` : "belum terpasang · motong output perintah shell sebelum masuk ke agent"}</small></span>
+              <span class="state">{rtk ? "✓ terpasang" : rtk === null ? "✗ tidak ada" : ""}</span>
+            </div>
+          </section>
+          <h4>Agent lain</h4>
+          <section>
+            <div class="row"><span>Codex<small>MCP per workspace lewat -c mcp_servers; plugin belum didukung (cuma bisa lewat ~/.codex)</small></span><span class="state">sebagian</span></div>
+            <div class="row"><span>Oh My Pi · OpenCode<small>Belum ada flag setara</small></span><span class="state">belum didukung</span></div>
+          </section>
+          <p class="warnbox">⚠ Plugin bisa jalanin hook di laptop lu. Tambahin folder yang lu percaya aja; Gembala nggak pernah ngambil plugin dari repo atau folder kerja.</p>
         {:else}
           <h4>Terpasang<span class="hint">dicari lewat login shell</span>
             <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? "Memeriksa…" : "Periksa ulang"}</button></h4>
@@ -673,7 +778,8 @@
                   ></span
                 >
                 <span class="acts">
-                  {#if a.agent === "claude" && a.installed}<button class="mini" onclick={() => (agentPage = "akun")}>Akun ({accRows.length})…</button>{/if}
+                  {#if a.agent === "claude" && a.installed}<button class="mini" onclick={() => (agentPage = "akun")}>Akun ({accRows.length})…</button>
+                    <button class="mini" onclick={() => (agentPage = "addon")}>Add-on ({addons.plugins.length + addons.mcp.length})…</button>{/if}
                   <span class="state" class:warn={a.installed && !a.tested}>{a.installed ? (a.tested ? "✓ terpasang" : "! belum diuji") : "✗ tidak ada"}</span>
                 </span>
               </div>
@@ -1388,5 +1494,20 @@
   }
   .errs b {
     font: 600 13px system-ui, -apple-system, sans-serif;
+  }
+  /* Gembala.pen 32: trusted-folder note at the end of the add-on page; switch label inside the MCP editor */
+  .warnbox {
+    margin: 18px 0 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .row.col label.inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
   }
 </style>
