@@ -2739,7 +2739,7 @@
     margin-top: 6px;
     padding: 0 0 4px;
     border-radius: 6px;
-    background: color-mix(in srgb, var(--c) 9%, transparent);
+    background: color-mix(in srgb, var(--c) 5%, transparent); /* tipis: blok tidak lebih terang dari pane (masukan pengguna 4 Nov) */
     box-shadow: inset 3px 0 0 var(--c);
   }
   /* isi blok tidak menutupi garis kiri (latar tab aktif/hover dan titik status) */
