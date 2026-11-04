@@ -1853,7 +1853,7 @@
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
             <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
-            <span class="n"><span class="k">{n < 9 ? `Cmd+${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
+            <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
             <!-- FR-61: akun selain Utama tampil di keterangan tab -->
