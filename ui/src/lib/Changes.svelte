@@ -101,7 +101,7 @@
     {/if}
     <span class="m">{copied}</span>
     <button class="mini" onclick={onreload} title="Muat ulang" aria-label="Muat ulang diff">↻</button>
-    <button class="mini" onclick={onclose} title="Tutup ⌘⇧+ atau Esc" aria-label="Tutup panel">×</button>
+    <button class="mini" onclick={onclose} title="Tutup Cmd+Shift+= atau Esc" aria-label="Tutup panel">×</button>
   </header>
   {#if turns.length}
     <div class="turns">

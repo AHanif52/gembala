@@ -329,9 +329,11 @@ fn zsh_file(name: &str, extra: &str) -> String {
 
 const ZSH_MARKS: &str = r#"__gembala_precmd() {
   local s=$?
-  builtin print -n "\e]133;D;$s\a\e]133;A\a"
+  # A membawa folder prompt (tanpa karakter kontrol) untuk kepala blok di UI
+  builtin print -rn -- $'\e]133;D;'"$s"$'\a\e]133;A;'"${PWD//[[:cntrl:]]/}"$'\a'
   if [[ -n $GEMBALA_EDITOR ]]; then
-    PS1="%{"$'\e]133;B\a'"%}" RPROMPT=  # FR-59: editor Gembala menggantikan prompt
+    # FR-59: editor Gembala menggantikan prompt; baris kosong di atas perintah = tempat kepala blok (Gembala.pen 02)
+    PS1=$'\n'"%{"$'\e]133;B\a'"%}" RPROMPT=
     (( ${#zle_highlight} )) || zle_highlight=(default:bold)  # perintah tebal = kepala blok (ala Warp)
   else
     [[ $PS1 == *'133;B'* ]] || PS1="$PS1%{"$'\e]133;B\a'"%}"

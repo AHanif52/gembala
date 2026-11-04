@@ -150,7 +150,7 @@
 
   /// FR-58: blok per perintah dari penanda OSC 133 shell (A prompt, C perintah jalan + teks base64, D selesai + exit code).
   /// Hanya blok dari stream sejak attach; snapshot attach tidak memuat penanda.
-  type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; code?: number; t0?: number; ms?: number; live?: { dispose(): void } };
+  type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; dir?: string; code?: number; t0?: number; ms?: number; live?: { dispose(): void } };
   let blocks: Block[] = [];
   let kitty: number[] = []; // tumpukan flag protokol keyboard kitty yang diminta app di pane ini
   function onMark(data: string) {
@@ -161,15 +161,24 @@
     if (k === "A") {
       kitty = []; // shell kembali ke prompt: flag keyboard app yang crash tidak ikut ke shell
       const a = term.registerMarker(0);
-      if (a) blocks.push({ a, cmd: "" });
+      if (a) blocks.push({ a, cmd: "", dir: data.slice(2) }); // `A;<folder>`: folder boleh berisi `;`
       if (blocks.length > 1000) blocks.shift()?.a.dispose(); // ponytail: 1000 blok terakhir, sisanya ikut scrollback
-    } else if (k === "C" && last && !last.c) {
-      last.c = term.registerMarker(0);
-      last.t0 = Date.now();
+    } else if (k === "C") {
+      // prompt yang tercetak sebelum UI menempel tidak punya penanda A (snapshot): blok dimulai dari baris perintah,
+      // atau baris kosong di atasnya (prompt editor) supaya tetap punya titik dan kepala
+      let b = last && !last.c ? last : undefined;
+      if (!b) {
+        const buf = term.buffer.active;
+        const a = term.registerMarker(buf.getLine(buf.baseY + buf.cursorY - 2)?.translateToString(true).trim() ? -1 : -2);
+        if (!a) return true;
+        blocks.push((b = { a, cmd: "" }));
+      }
+      b.c = term.registerMarker(0);
+      b.t0 = Date.now();
       try {
-        last.cmd = new TextDecoder().decode(unb64(arg));
+        b.cmd = new TextDecoder().decode(unb64(arg));
       } catch {}
-      if (last.cmd) last.live = decorate(last); // titik biru berdenyut selama jalan
+      if (b.cmd) b.live = decorate(b); // titik biru berdenyut selama jalan
     } else if (k === "D" && last?.c && !last.d) {
       last.d = term.registerMarker(0);
       last.code = Number(arg) || 0;
@@ -180,17 +189,26 @@
     return true; // penanda tidak menggambar apa pun
   }
   const dur = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1).replace(".", ",")} dtk` : `${Math.round(ms / 1000)} dtk`);
-  /// linimasa blok shell (Gembala.pen layar 01): garis + titik di gutter kiri luar grid, durasi/exit code di kanan baris perintah
+  /// pen: "~/…/gembala/app" (dua folder terakhir)
+  const short = (p: string) => {
+    const a = p.replace(/^\/Users\/[^/]+/, "~").split("/");
+    return a.length > 3 ? `${a[0]}/…/${a.slice(-2).join("/")}` : a.join("/");
+  };
+  /// linimasa blok shell (Gembala.pen layar 02): garis + titik di gutter kiri luar grid. Prompt editor diawali baris
+  /// kosong (zsh hook): kepala `~/…/app · 0,4 dtk · keluar 1` di baris itu; prompt pengguna = durasi di kanan perintah
   function decorate(b: Block) {
     const height = Math.max(1, (b.d?.line ?? b.a.line) - b.a.line);
+    const hd = !term.buffer.active.getLine(b.a.line)?.translateToString(true).trim();
     const d = term.registerDecoration({ marker: b.a, width: term.cols, height, layer: "top" });
-    const meta = !b.d ? "" : (b.ms !== undefined ? dur(b.ms) : "") + (b.code ? ` <b>· keluar ${b.code}</b>` : "");
+    const info = [hd && b.dir ? short(b.dir) : "", !b.d ? (hd ? "jalan" : "") : b.ms !== undefined ? dur(b.ms) : ""].filter(Boolean).join(" · ");
     d?.onRender((el) => {
       if (!el.dataset.tl) {
         el.dataset.tl = "1";
-        el.className += " tl sh" + (b.code ? " fail" : "") + (b.d ? "" : " run");
+        el.className += " tl sh" + (b.code ? " fail" : "") + (b.d ? "" : " run") + (hd ? " hd" : "");
         el.innerHTML = `<i class="tl-dot"></i><span class="tl-meta"></span>`;
-        (el.querySelector(".tl-meta") as HTMLElement).innerHTML = meta; // hanya angka, aman
+        const m = el.querySelector(".tl-meta") as HTMLElement;
+        m.textContent = info; // folder dari shell: teks, bukan HTML
+        if (b.code) m.append(Object.assign(document.createElement("b"), { textContent: ` · keluar ${b.code}` }));
       }
       // tinggi baris bisa 0 saat render pertama: posisi dihitung ulang tiap render
       el.style.setProperty("--rh", `${rowHeight()}px`);
@@ -271,9 +289,6 @@
       const roomy = end - by >= 2;
       const agent = !!h.icon;
       const [path = "", ...rest] = (h.info ?? "").split(" · ");
-      // pen: "~/…/gembala/app" (dua folder terakhir)
-      const parts = path.split("/");
-      const short = parts.length > 3 ? `${parts[0]}/…/${parts.slice(-2).join("/")}` : path;
       if (agent && resume) {
         // kartu blok sesi (pen layar 02): latar sedikit terang dari kepala sampai baris tombol
         const ch = roomy ? by - h.y + 2 : Math.max(1, Math.min(by, end) - h.y);
@@ -293,7 +308,7 @@
         el.innerHTML = `<i class="tl-dot"></i><div class="tl-hd"><span class="tl-info"></span><b class="tl-x"></b></div><span class="tl-acts"></span>`;
         const dot = el.querySelector(".tl-dot") as HTMLElement;
         if (agent) (dot.textContent = h.icon!), (dot.dataset.a = h.icon!);
-        (el.querySelector(".tl-info") as HTMLElement).textContent = [short, ...rest].join(" · ");
+        (el.querySelector(".tl-info") as HTMLElement).textContent = [short(path), ...rest].join(" · ");
         const x = el.querySelector(".tl-x") as HTMLElement;
         x.textContent = h.code && h.code !== "0" ? `· keluar ${h.code}` : agent ? "· keluar normal" : "";
         x.classList.toggle("ok", !(h.code && h.code !== "0"));
@@ -603,7 +618,6 @@
   }
   .term :global(.blk.fail) {
     border-left: 3px solid #dc2626;
-    background: rgba(220, 38, 38, 0.07);
   }
   /* FR-56 linimasa (mockup-blok-sesi E): garis kiri di kolom kosong 3 sel, titik per sesi, tombol di kanan */
   .term :global(.tl) {
@@ -764,7 +778,7 @@
     color: var(--fg);
   }
   /* FR-58 blok shell: garis + titik di gutter kiri (di luar grid, kolom 0 dipakai prompt), durasi di kanan */
-  .term :global(.tl.sh) {
+  .term :global(.tl.sh:not(.hd)) {
     border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   }
   .term :global(.tl.sh.run .tl-dot) {
@@ -777,8 +791,10 @@
       opacity: 0.35;
     }
   }
-  .term :global(.tl.sh.fail) {
-    background: rgba(220, 38, 38, 0.06);
+  /* gagal: latar tetap netral, merah cukup di titik dan "keluar n" (Gembala.pen 02) */
+  .term :global(.tl.sh.hd .tl-meta) {
+    left: 0;
+    right: auto;
   }
   .term :global(.tl-meta) {
     position: absolute;

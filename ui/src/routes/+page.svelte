@@ -588,17 +588,16 @@
   const uid = () => Math.random().toString(36).slice(2, 10);
   const base = (p: string | null | undefined) => (p ? p.split("/").filter(Boolean).at(-1) ?? "/" : "");
   const home = (p: string | null | undefined) => (p ?? "").replace(/^\/Users\/[^/]+/, "~");
-  /// sidebar sempit: folder perantara disingkat ke huruf awal, yang terakhir utuh (`~/P/m/g/app`)
-  const short = (p: string | null | undefined) =>
-    home(p)
-      .split("/")
-      .map((s, i, a) => (i === 0 || i === a.length - 1 ? s : [...s].slice(0, s.startsWith(".") ? 2 : 1).join("")))
-      .join("/");
-  /// FR-52 subjudul tab: hanya yang beda dari workspace. Folder = akar workspace → kosong; di dalamnya → relatif.
+  /// kepala pane dan bar bawah: dua folder terakhir saja (`~/…/gembala/app`, Gembala.pen 02); path penuh di tooltip
+  const short = (p: string | null | undefined) => {
+    const a = home(p).split("/");
+    return a.length > 4 ? [a[0], "…", ...a.slice(-2)].join("/") : a.join("/");
+  };
+  /// FR-52 subjudul tab: hanya yang beda dari workspace. Folder = akar workspace → kosong; selain itu nama folder saja
+  /// (Gembala.pen 02: `main · requirements`); path lengkap ada di tooltip
   const where = (cwd: string | null | undefined, root: string) => {
     const c = home(cwd);
-    if (!c || c === root) return "";
-    return root !== "~" && c.startsWith(root + "/") ? c.slice(root.length + 1) : short(cwd);
+    return !c || c === root ? "" : base(c);
   };
   /// FR-52: judul bawaan = agent yang sedang jalan di pane fokus, lalu folder (`~` untuk home)
   const title = (t: Tab) => {
@@ -999,7 +998,7 @@
   const palItems = $derived.by((): PalItem[] => {
     if (!pal) return [];
     const items: PalItem[] = [
-      ...order.map((o, i) => ({ label: title(o.t), hint: `${wss[o.wi].name}${i < 9 ? ` · ⌘${i + 1}` : ""}`, go: () => goto(i) })),
+      ...order.map((o, i) => ({ label: title(o.t), hint: `${wss[o.wi].name}${i < 9 ? ` · Cmd+${i + 1}` : ""}`, go: () => goto(i) })),
       ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
       { label: "Agent di worktree baru…", hint: "git worktree dari HEAD repo pane ini", go: () => openWorktree() },
@@ -1009,7 +1008,7 @@
       { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
       { label: "Ganti nama tab", hint: "", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
       { label: "Ganti nama workspace", hint: "", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
-      { label: "Pengaturan", hint: "⌘,", go: () => (settingsOpen = true) },
+      { label: "Pengaturan", hint: "Cmd+,", go: () => (settingsOpen = true) },
       { label: "Keluar dan hentikan semua agent…", hint: "", go: askQuitAll },
     ];
     const words = pal.q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -1756,13 +1755,14 @@
   {#if c === "attach"}
     <button class="chip box" title="Lampirkan file (atau seret file ke pane)" aria-label="Lampirkan file" onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
   {:else if c === "diff" && g?.repo && g.files}
-    <button class="chip box" title="Panel perubahan ⌘⇧+" onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+    <button class="chip box" title="Panel perubahan Cmd+Shift+=" onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
-    <button class="chip box" onclick={() => (rich = { pane, text: "" })}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
+    <button class="chip box" onclick={() => (rich = { pane, text: "" })}>{@render icon("rich")}Rich Input <span class="n">Cmd+G</span></button>
   {:else if c === "cwd"}
-    <span class="chip box quiet" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{home(meta[pane]?.cwd) || "~"}</span>
+    <span class="chip box quiet" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{short(meta[pane]?.cwd) || "~"}</span>
   {:else if c === "branch" && g?.repo && g.branch}
-    <span class="chip box quiet">{@render icon("branch")}{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
+    <!-- branch tidak dipotong; yang mengalah folder (TECH 19 #9) -->
+    <span class="chip box">{@render icon("branch")}{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
   {:else if c === "settings"}
     <button class="chip box" title="Pengaturan" aria-label="Pengaturan profil" onclick={() => (settingsOpen = true)}>{@render icon("sliders")}</button>
   {/if}
@@ -1772,7 +1772,7 @@
   <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging} class:full={fullscreen}>
     <!-- title bar transparan: area tombol jendela + geser jendela -->
     <div class="drag" data-tauri-drag-region></div>
-    <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
+    <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">Cmd+P</span></button>
     <!-- FR-44: di bawah kotak cari, selalu terlihat walau daftar tab panjang -->
     {#if queue.length}
       <!-- FR-65: antrean perhatian; hilang bila tidak ada yang menunggu -->
@@ -1837,12 +1837,13 @@
             <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama tab" />
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
-            <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{!t.title && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
-            <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
+            <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
+            <span class="n"><span class="k">{n < 9 ? `Cmd+${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
             <!-- FR-61: akun selain Utama tampil di keterangan tab -->
-            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents, acctOf(t.focus)].filter(Boolean).join(" · ")}
+            <!-- agent sudah tampil sebagai ikon; proses lain (npm, vim) tetap disebut -->
+            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus)].filter((x) => x && x !== title(t)).join(" · ")}
             {#if STATUS[st] || rest}
               <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {STATUS[stat(p)] ?? 'diam'}"></span>{/each}{:else if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}
@@ -1861,7 +1862,7 @@
   {#if ws && !tab}
     <div class="empty">
       <span>Workspace {ws.name} kosong</span>
-      <button class="mini" onclick={openPicker}>+ Tab <span class="keys">⌘T</span></button>
+      <button class="mini" onclick={openPicker}>+ Tab <span class="keys">Cmd+T</span></button>
     </div>
   {/if}
   {#if error}<p class="error">{error}</p>{/if}
@@ -1873,7 +1874,8 @@
         {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
         <!-- FR-55: toolbar untuk pane agent dari profil, dan agent yang diketik sendiri selama jalan -->
         {@const bar = !dead[pane] && ([...AGENTS, "custom"].includes(meta[pane]?.agent ?? "") || AGENTS.includes(meta[pane]?.busy ?? ""))}
-        {@const head = !zoomed && panes(t.tree).length > 1}
+        {@const split = panes(t.tree).length > 1}
+        {@const head = !zoomed}
         {@const g = meta[pane]?.git}
         <div
           class="tile"
@@ -1894,17 +1896,17 @@
             </div>
           {:else}
             {#if head}
-              <!-- FR-37: kepala tipis saat tab punya lebih dari satu pane -->
+              <!-- FR-37: kepala tipis, juga saat tab cuma satu pane (Gembala.pen 02) -->
               {@const hs = stat(pane)}
-              <div class="head" class:on={pane === t.focus}>
+              <div class="head" class:on={split && pane === t.focus}>
                 <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
                 {#if STATUS[hs]}<span class="st {hs}">{STATUS[hs]}</span>{/if}
                 <!-- folder cukup sekali: toolbar agent sudah menampilkannya -->
-                {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd">{home(meta[pane]?.cwd)}</span>{/if}
+                {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd" title={home(meta[pane]?.cwd)}>{short(meta[pane]?.cwd)}</span>{/if}
                 <span class="grow"></span>
-                <button class="hb" title="Split ke kanan ⌘D" aria-label="Split ke kanan" onclick={() => splitFocused("row")}>◫</button>
-                <button class="hb" title="Split ke bawah ⌘⇧D" aria-label="Split ke bawah" onclick={() => splitFocused("col")}>⊟</button>
-                <button class="hb" title="Tutup pane ⌘W" aria-label="Tutup pane" onclick={() => askClose(pane)}>×</button>
+                <button class="hb" title="Split ke kanan Cmd+D" aria-label="Split ke kanan" onclick={() => splitFocused("row")}>◫</button>
+                <button class="hb" title="Split ke bawah Cmd+Shift+D" aria-label="Split ke bawah" onclick={() => splitFocused("col")}>⊟</button>
+                <button class="hb" title="Tutup pane Cmd+W" aria-label="Tutup pane" onclick={() => askClose(pane)}>×</button>
               </div>
             {/if}
             {@const ed = editorShown(pane)}
@@ -1956,17 +1958,17 @@
               <div class="editor" class:withbar={bar}>
                 <!-- konteks ala Warp: folder dan branch, menggantikan prompt shell -->
                 <div class="ctx">
-                  <button class="cchip" title="Lampirkan file · bisa juga seret file atau ⌘V gambar" aria-label="Lampirkan file"
+                  <button class="cchip" title="Lampirkan file · bisa juga seret file atau Cmd+V gambar" aria-label="Lampirkan file"
                     onclick={async () => insertPaths(pane, await invoke<string[]>("pick_files").catch(() => [] as string[]))}>{@render icon("plus")}</button>
                   <!-- FR-59: klik = pemilih folder ala Warp -->
-                  <button class="cchip" title="Pindah folder · {meta[pane]?.cwd ?? ''}" onclick={() => openDirs(pane)}>
+                  <button class="cchip dir" title="Pindah folder · {meta[pane]?.cwd ?? ''}" onclick={() => openDirs(pane)}>
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" fill="none" stroke="currentColor" /></svg>
-                    {home(meta[pane]?.cwd) || "~"}
+                    {short(meta[pane]?.cwd) || "~"}
                   </button>
                   {#if meta[pane]?.git?.repo && meta[pane].git.branch}
                     <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${meta[pane].git.files} file` : ""}</span>
                   {/if}
-                  <span class="ehint" class:off={!active || pane !== t.focus}>Enter jalankan · ⇧Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan</span>
+                  <span class="ehint" class:off={!active || pane !== t.focus}>Enter jalankan · Shift+Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan</span>
                 </div>
                 {#if dirs?.pane === pane}
                   <div class="mention complist acct dirs" role="listbox" aria-label="Pilih folder">
@@ -2049,7 +2051,7 @@
               <div class="lempar" class:withbar={bar}>
                 <span class="to">→ {lempar.name}</span>
                 <!-- svelte-ignore a11y_autofocus -->
-                <textarea bind:value={lempar.body} rows="2" autofocus aria-label="Pesan ke {lempar.name}" placeholder="Pesan · Enter kirim · ⇧Enter baris baru · Esc batal"
+                <textarea bind:value={lempar.body} rows="2" autofocus aria-label="Pesan ke {lempar.name}" placeholder="Pesan · Enter kirim · Shift+Enter baris baru · Esc batal"
                   spellcheck="false" autocapitalize="off"
                   onkeydown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), sendLempar());
@@ -2073,7 +2075,7 @@
             {#if bar}
               <!-- FR-55: toolbar agent; chip tanpa data (bukan repo) disembunyikan -->
               <!-- pane tak fokus di tab ber-split: isi toolbar disembunyikan (tinggi tetap, terminal tidak reflow), tampil saat hover -->
-              <div class="bar" class:rest={head && pane !== t.focus}>
+              <div class="bar" class:rest={split && !zoomed && pane !== t.focus}>
                 {#if editing?.kind === "pane" && editing.id === String(pane)}
                   <!-- svelte-ignore a11y_autofocus -->
                   <input class="edit pname" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama pane" />
@@ -2104,7 +2106,7 @@
                   autofocus
                   rows="4"
                   aria-label="Rich Input"
-                  placeholder="Tulis prompt · Enter kirim · ⇧Enter baris baru · Esc tutup"
+                  placeholder="Tulis prompt · Enter kirim · Shift+Enter baris baru · Esc tutup"
                   spellcheck="false"
                   autocapitalize="off"
                   onkeydown={(e) => {
@@ -2131,7 +2133,7 @@
               <span><b>{confirm?.name}</b> masih jalan. Tutup {confirm?.what}?</span>
               <span class="acts">
                 <button class="mini" onclick={() => (confirm = null)}>Batal <span class="keys">Esc</span></button>
-                <button class="mini danger" onclick={() => { confirm?.close.forEach((p) => call("pane.close", { pane: p }).catch(() => {})); confirm = null; }}>Tutup <span class="keys">↩</span></button>
+                <button class="mini danger" onclick={() => { confirm?.close.forEach((p) => call("pane.close", { pane: p }).catch(() => {})); confirm = null; }}>Tutup <span class="keys">Enter</span></button>
               </span>
             </div>
           {/if}
@@ -2164,7 +2166,7 @@
     </div>
   {/if}
   {#if msgData?.paused}
-    <div class="paused" role="status">Pesan antar agent dijeda · ⌘⇧. untuk lanjut</div>
+    <div class="paused" role="status">Pesan antar agent dijeda · Cmd+Shift+. untuk lanjut</div>
   {/if}
   {#if drawer}
     <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} />
@@ -2188,7 +2190,7 @@
         onkeydown={(e) => e.key === "Enter" && e.metaKey && sendCompose()}></textarea>
       <label class="inline"><input type="checkbox" bind:checked={compose.force} /> Paksa bila status target tidak diketahui</label>
       {#if compose.error}<span class="err">{compose.error}</span>{/if}
-      <span class="acts"><button class="mini" onclick={() => (compose = null)}>Batal</button> <button class="mini" onclick={sendCompose}>Kirim ⌘↩</button></span>
+      <span class="acts"><button class="mini" onclick={() => (compose = null)}>Batal</button> <button class="mini" onclick={sendCompose}>Kirim Cmd+Enter</button></span>
     </div>
   {/if}
   {#if changes}
@@ -2208,7 +2210,7 @@
       <span><b>{wsAsk.busy} pane</b> di workspace {wss[wsAsk.wi]?.name} masih menjalankan proses. Hapus dan hentikan?</span>
       <span class="acts">
         <button class="mini" onclick={() => (wsAsk = null)}>Batal <span class="keys">Esc</span></button>
-        <button class="mini danger" onclick={() => wsAsk && removeWorkspace(wsAsk.wi)}>Hapus <span class="keys">↩</span></button>
+        <button class="mini danger" onclick={() => wsAsk && removeWorkspace(wsAsk.wi)}>Hapus <span class="keys">Enter</span></button>
       </span>
     </div>
   {/if}
@@ -2218,9 +2220,9 @@
       {#each welcome as a (a.agent)}
         <span>{a.installed ? "✓" : "·"} {a.name} <span class="keys">{a.installed ? a.version : "tidak terpasang"}</span></span>
       {/each}
-      <span class="keys">⌘P cari tab dan aksi · ⌘T tab baru dari profil · ⌘, Pengaturan</span>
+      <span class="keys">Cmd+P cari tab dan aksi · Cmd+T tab baru dari profil · Cmd+, Pengaturan</span>
       <span class="keys">Ketik perintah di kotak bawah · @@ di prompt agent = lempar ke agent lain</span>
-      <span class="acts"><button class="mini" onclick={() => (welcome = null)}>Mulai <span class="keys">↩</span></button></span>
+      <span class="acts"><button class="mini" onclick={() => (welcome = null)}>Mulai <span class="keys">Enter</span></button></span>
     </div>
   {/if}
   {#if quitAsk}
@@ -2228,7 +2230,7 @@
       <span><b>{quitAsk} pane</b> masih menjalankan proses. Keluar dan hentikan semua?</span>
       <span class="acts">
         <button class="mini" onclick={() => (quitAsk = 0)}>Batal <span class="keys">Esc</span></button>
-        <button class="mini danger" onclick={quitAll}>Keluar <span class="keys">↩</span></button>
+        <button class="mini danger" onclick={quitAll}>Keluar <span class="keys">Enter</span></button>
       </span>
     </div>
   {/if}
@@ -2238,7 +2240,7 @@
       <code class="url">{linkAsk}</code>
       <span class="acts">
         <button class="mini" onclick={() => (linkAsk = "")}>Batal <span class="keys">Esc</span></button>
-        <button class="mini" onclick={openLink}>Buka <span class="keys">↩</span></button>
+        <button class="mini" onclick={openLink}>Buka <span class="keys">Enter</span></button>
       </span>
     </div>
   {/if}
@@ -2298,7 +2300,7 @@
       {#if wt.err}<span class="err">{wt.err}</span>{/if}
       <span class="acts">
         <button class="mini" onclick={() => (wt = null)}>Batal <span class="keys">Esc</span></button>
-        <button class="mini pri" onclick={createWorktree} disabled={!startProfiles.length}>Buat dan jalankan <span class="keys">↩</span></button>
+        <button class="mini pri" onclick={createWorktree} disabled={!startProfiles.length}>Buat dan jalankan <span class="keys">Enter</span></button>
       </span>
     </div>
   {/if}
@@ -2352,7 +2354,7 @@
   {#if settingsOpen && cfg}
     <Settings {cfg} {meta} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
-  {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
+  {#if zoomed}<span class="zoom">maksimal · Cmd+Shift+Enter</span>{/if}
   <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
 </div>
 
@@ -2569,9 +2571,7 @@
     margin-top: 8px;
     padding: 2px 8px;
     color: var(--muted);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-size: 12px;
   }
   .wsname {
     min-width: 0;
@@ -2623,8 +2623,6 @@
     margin-left: auto;
     flex-shrink: 0; /* nama panjang yang dipotong, ringkasan tetap satu baris */
     white-space: nowrap;
-    text-transform: none;
-    letter-spacing: 0;
   }
   .x {
     border: 0;
@@ -2725,7 +2723,8 @@
   .tab.pink { box-shadow: inset 3px 0 0 #ec4899; }
   .tab.cyan { box-shadow: inset 3px 0 0 #06b6d4; }
   .tab.brown { box-shadow: inset 3px 0 0 #a16207; }
-  /* FR-44 (mockup-warna-tab varian D): blok workspace berwarna; tanpa warna = polos seperti dulu */
+  /* FR-44 (mockup-warna-tab varian D, Gembala.pen 02): kartu tipis bertint warna workspace, tanpa garis kiri;
+     tanpa warna = polos seperti dulu */
   .wsg {
     display: flex;
     flex-direction: column;
@@ -2747,16 +2746,14 @@
     /* gelap: dasar warna pane, bukan sidebar, jadi blok lebih gelap dari sidebar (masukan pengguna 4 Nov);
        terang: tint di atas sidebar (--ws-base transparent), karena sidebar terang sudah lebih gelap dari pane */
     background: color-mix(in srgb, var(--c) 5%, var(--ws-base, var(--bg)));
-    box-shadow: inset 3px 0 0 var(--c);
-  }
-  /* isi blok tidak menutupi garis kiri (latar tab aktif/hover dan titik status) */
-  .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > * {
-    margin-left: 6px;
-    margin-right: 3px;
   }
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .ws {
     margin-top: 4px;
     color: color-mix(in srgb, var(--c) 70%, var(--ws-mix, #fff));
+  }
+  /* Gembala.pen 02: nama workspace tebal berwarna workspace */
+  .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .ws .wsname {
+    color: inherit;
   }
   /* tab aktif/hover di blok berwarna: tint warna blok, bukan kotak abu */
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .tab:hover:not(.on) {
@@ -2861,6 +2858,9 @@
   .st.done {
     color: var(--tx-green, #16a34a);
   }
+  .st.working {
+    color: var(--tx-blue, #60a5fa);
+  }
   .n {
     color: var(--muted);
     font-size: 11px;
@@ -2937,7 +2937,10 @@
     flex: 1;
     min-width: 0;
   }
+  /* pane sempit: petunjuk mengalah duluan (hilang), lalu folder dipotong; branch utuh (TECH 19 #9) */
   .ehint {
+    flex: 0 1000 auto;
+    min-width: 0;
     margin-left: auto;
     overflow: hidden;
     color: var(--muted);
@@ -2966,15 +2969,21 @@
     bottom: 26px;
   }
   .ctx {
+    container-type: inline-size;
     display: flex;
     gap: 6px;
     font: 11px system-ui, -apple-system, sans-serif;
   }
+  @container (max-width: 600px) {
+    .ehint {
+      display: none;
+    }
+  }
   .cchip {
     display: inline-flex;
+    flex: none;
     align-items: center;
     gap: 5px;
-    max-width: 50%;
     padding: 2px 7px;
     border: 1px solid var(--line);
     border-radius: 4px;
@@ -2982,6 +2991,10 @@
     color: var(--fg);
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  .cchip.dir {
+    flex: 0 1 auto;
+    min-width: 0;
   }
   button.cchip {
     background: none;

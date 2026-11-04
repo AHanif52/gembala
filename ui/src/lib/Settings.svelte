@@ -395,7 +395,7 @@
             </select>
           </div>
           <div class="row">
-            <span>Ukuran<small>⌘= dan ⌘- mengubah sementara, ⌘0 kembali ke sini</small></span>
+            <span>Ukuran<small>Cmd+= dan Cmd+- mengubah sementara, Cmd+0 kembali ke sini</small></span>
             <select aria-label="Ukuran huruf" value={ui.font_size} onchange={(e) => set("font_size", +e.currentTarget.value)}>
               {#each [10, 11, 12, 13, 14, 15, 16, 18, 20] as n}<option value={n}>{n} px</option>{/each}
             </select>
@@ -419,7 +419,7 @@
             <input type="checkbox" role="switch" aria-label="Kursor berkedip" checked={ui.cursor_blink} onchange={(e) => set("cursor_blink", e.currentTarget.checked)} />
           </div>
           <div class="row">
-            <span>Option sebagai Meta<small>Yang bukan Meta mengetik simbol (mis. ⌥⇧2 = €)</small></span>
+            <span>Option sebagai Meta<small>Yang bukan Meta mengetik simbol (mis. Option+Shift+2 = €)</small></span>
             <select aria-label="Option sebagai Meta" value={ui.option_as_meta} onchange={(e) => set("option_as_meta", e.currentTarget.value as Ui["option_as_meta"])}>
               <option value="left">Kiri saja</option>
               <option value="right">Kanan saja</option>
@@ -461,7 +461,7 @@
             <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? "Memeriksa…" : "Periksa"}</button>
           </div>
         </section>
-        <h4>Akun Claude Code</h4>
+        <h4 class="hrow">Akun Claude Code{#if !accOpen}<button class="mini" onclick={() => (accOpen = true)}>+ Tambah akun</button>{/if}</h4>
         <section>
           {#each accRows as r (r.account.id)}
             <div class="row">
@@ -523,9 +523,7 @@
           {/each}
           {#if removeAsk}<span class="m">Sesi dan pengaturan akun itu hilang; isi Utama aman. Login tetap di Keychain: /logout dulu bila ingin dicabut</span>{/if}
           {#if accErr}<span class="m err" role="alert">{accErr}</span>{/if}
-          {#if !accOpen}
-            <div class="row"><span class="grow">Akun lain<small>Mis. akun kantor; tiap akun punya folder dan login sendiri</small></span><span class="acts"><button class="mini" onclick={() => (accOpen = true)}>Tambah akun</button></span></div>
-          {:else}
+          {#if accOpen}
           <div class="form">
             <label>Tambah akun · nama <input bind:value={accForm.name} placeholder="mis. Kantor" /></label>
             <label>Folder <small>Di bawah folder home; dibuat dengan izin 0700</small><input bind:value={accForm.dir} placeholder={`~/.claude-${slug(accForm.name) || "nama"}`} spellcheck="false" /></label>
@@ -594,7 +592,7 @@
                     {#if custom}<button class="link" title="Kembali ke pintasan bawaan" onclick={() => saveKey(id, "")}>Bawaan</button>{/if}
                     {#if !goto}<button class="link" onclick={() => (keyEdit = { id, combo: key.toLowerCase() })}>Ubah</button>{/if}
                   </span>
-                  <kbd class:custom>{goto ? "⌘1 … ⌘9" : key ? pretty(key) : "—"}</kbd>
+                  <kbd class:custom>{goto ? "Cmd+1 … Cmd+9" :key ? pretty(key) : "—"}</kbd>
                 {/if}
               </div>
             {/each}
@@ -602,12 +600,12 @@
         {/each}
         <h4 class="khead">Lainnya</h4>
         <section>
-          <div class="krow"><span class="klabel">Salin / tempel</span><kbd>⌘C ⌘V</kbd></div>
-          <div class="krow"><span class="klabel">Pengaturan</span><kbd>⌘,</kbd></div>
+          <div class="krow"><span class="klabel">Salin / tempel</span><kbd>Cmd+C Cmd+V</kbd></div>
+          <div class="krow"><span class="klabel">Pengaturan</span><kbd>Cmd+,</kbd></div>
           <div class="krow"><span class="klabel">Shift+Tab, Ctrl, dan tombol lain</span><span class="m">diteruskan ke terminal</span></div>
         </section>
         <p class="note">
-          ⌘ milik aplikasi; tombol lain milik terminal, jadi kombinasi wajib memakai <code>cmd</code>. "Ubah" menulis ke bagian
+          Cmd milik aplikasi; tombol lain milik terminal, jadi kombinasi wajib memakai <code>cmd</code>. "Ubah" menulis ke bagian
           <code>[keys]</code> di config.toml (mis. <code>"cmd+t" = "pane.split.right"</code>); berlaku tanpa restart, bentrok ditandai di atas.
         </p>
       {:else if sec === "toolbar"}
@@ -1053,6 +1051,16 @@
     margin: 16px 0 8px;
     font: 600 12px system-ui, -apple-system, sans-serif;
     color: var(--muted);
+  }
+  /* judul bagian + aksinya di kanan (Gembala.pen 31: "+ Tambah akun") */
+  h4.hrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  h4.hrow .mini {
+    color: var(--fg);
+    font-weight: normal;
   }
   .errs {
     display: flex;

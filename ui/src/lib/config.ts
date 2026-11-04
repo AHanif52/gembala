@@ -71,13 +71,10 @@ export const UI_DEFAULT: Ui = {
   on_quit: "keep",
 };
 
-// tampilkan pintasan dengan simbol Mac
+// pintasan ditulis sebagai teks (`Cmd+Shift+[`), bukan simbol ⌘⇧ yang nempel dan susah dibaca (TECH 19 #4);
+// kunci dari config bisa huruf kecil (`cmd+e`)
 export const pretty = (k: string) =>
   k
-    .replace("Cmd", "⌘")
-    .replace("Shift", "⇧")
-    .replace("Alt", "⌥")
-    .replace("Ctrl", "⌃")
-    .replace("Enter", "↩")
-    .replace(/Left|Right|Up|Down/, (d) => ({ Left: "←", Right: "→", Up: "↑", Down: "↓" })[d]!)
-    .replaceAll("+", "");
+    .split("+")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("+");
