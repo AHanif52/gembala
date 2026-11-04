@@ -334,7 +334,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     Ok(json!({}))
                 }
                 ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons", Some(me)) => pane_method(&st, me, method, p),
-                // "start" = SessionStart Claude: hanya id sesi dan pemiliknya, status tidak berubah
+                // "start" = SessionStart Claude: id sesi, pemiliknya, dan status diam (kecuali compact di tengah giliran)
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
                         // FR-66: pesan terakhir giliran agent bersandbox = balasan untuk pesan yang menunggu
@@ -362,6 +362,10 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                             }
                             if status != "start" {
                                 set_status(&st, me, &pane, status, None);
+                            } else if p["source"].as_str() != Some("compact") {
+                                // SessionStart = agent menunggu prompt; tebakan layar sebelum hook pertama (spinner
+                                // startup `claude` diketik = "bekerja") tidak lagi diperbaiki layar setelah pane ber-hook
+                                set_status(&st, me, &pane, "idle", None);
                             }
                         }
                         Ok(json!({}))
