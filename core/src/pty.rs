@@ -26,7 +26,8 @@ fn cloexec(fd: libc::c_int) -> io::Result<()> {
 }
 
 // ponytail: daftar tetap dari env sesi Claude Code 2.1 yang teramati; tambah prefix saat agent lain ketahuan menurunkan penanda
-const INHERITED_DROP: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFORT", "CODEX_", "OPENCODE_", "GEMBALA_"];
+// FR-61: `CLAUDE_CONFIG_DIR` app yang dibuka dari sesi akun lain jangan jadi akun pane; akun hanya dari profil/`claude-<akun>`
+const INHERITED_DROP: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CONFIG_DIR", "CODEX_", "OPENCODE_", "GEMBALA_"];
 
 /// SEC-35: penanda sesi agent yang menjalankan Gembala (termasuk socket + token pesannya) tidak ikut ke pane.
 pub fn scrub_env(c: &mut Command) {

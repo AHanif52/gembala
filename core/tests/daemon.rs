@@ -49,6 +49,7 @@ fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> D
         .env("CLAUDECODE", "1")
         .env("CLAUDE_CODE_MESSAGING_TOKEN", "token-bocor-uji")
         .env("CODEX_THREAD_ID", "thread-bocor-uji")
+        .env("CLAUDE_CONFIG_DIR", "/akun-bocor-uji")
         .envs(extra.iter().map(|(k, v)| (*k, *v)));
     unsafe {
         c.pre_exec(move || {
@@ -258,7 +259,7 @@ fn env_pane_bersih() {
     assert!(out.contains("GEMBALA_SOCKET="), "{out}");
     // daemon dijalankan dari cwd `/` (seperti app dari Finder), pane tetap mulai di home
     assert!(out.contains(&format!("CWD={}", std::env::var("HOME").unwrap())), "{out}");
-    for bocor in ["CLAUDECODE=", "token-bocor-uji", "thread-bocor-uji", "GEMBALA_RUNDIR="] {
+    for bocor in ["CLAUDECODE=", "token-bocor-uji", "thread-bocor-uji", "akun-bocor-uji", "GEMBALA_RUNDIR="] {
         assert!(!out.contains(bocor), "{bocor} bocor ke pane");
     }
 }
