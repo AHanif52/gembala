@@ -56,6 +56,8 @@ pub struct Config {
     pub broken: bool,
     /// FR-61: `[[account]]` yang lolos validasi
     pub accounts: Vec<crate::account::Account>,
+    /// FR-78: plugin and per-workspace MCP add-ons that passed validation
+    pub addons: crate::addon::Addons,
 }
 
 pub fn path() -> PathBuf {
@@ -122,7 +124,7 @@ pub fn load(text: Option<&str>) -> Config {
     let doc = match text.map(str::parse::<DocumentMut>) {
         Some(Err(e)) => {
             errors.push(format!("config.toml tidak bisa diurai: {}", e.to_string().trim()));
-            return Config { values: defaults(), errors, broken: true, profiles: crate::profile::builtin(), accounts: Vec::new() };
+            return Config { values: defaults(), errors, broken: true, profiles: crate::profile::builtin(), accounts: Vec::new(), addons: Default::default() };
         }
         Some(Ok(d)) => Some(d),
         None => None,
@@ -191,7 +193,10 @@ pub fn load(text: Option<&str>) -> Config {
     }
     values.insert("profiles".into(), profiles.iter().map(crate::profile::to_json).collect());
     values.insert("accounts".into(), accounts.iter().map(crate::account::to_json).collect());
-    Config { values: Value::Object(values), errors, broken: false, profiles, accounts }
+    let (addons, aerr) = crate::addon::from_config(doc.as_ref(), path().parent().unwrap_or(Path::new("/")));
+    errors.extend(aerr);
+    values.insert("addons".into(), crate::addon::to_json(&addons));
+    Config { values: Value::Object(values), errors, broken: false, profiles, accounts, addons }
 }
 
 fn defaults() -> Value {

@@ -5,6 +5,7 @@
 //! rahasianya benar. Kanal pane (SEC-3): identitas dari `getsid(peer_pid)`, bukan isi pesan.
 
 use crate::account;
+use crate::addon;
 use crate::bus;
 use crate::config;
 use crate::msg;
@@ -143,6 +144,8 @@ struct State {
     profiles: Mutex<Vec<profile::Profile>>,
     /// FR-61: `[[account]]` dari config
     accounts: Mutex<Vec<account::Account>>,
+    /// FR-78: add-ons from config
+    addons: Mutex<addon::Addons>,
     /// Hasil deteksi agent terakhir (FR-28); Null = belum pernah.
     agents: Mutex<Value>,
     /// Id acak per run daemon: id pane dari run lain tidak boleh dianggap pane yang sama (FR-45).
@@ -183,6 +186,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         config: Mutex::new(Value::Null),
         profiles: Mutex::new(profile::builtin()),
         accounts: Mutex::default(),
+        addons: Mutex::default(),
         agents: Mutex::new(Value::Null),
         boot: new_secret()?[..16].to_string(),
         hooks: profile::Hooks {
@@ -326,7 +330,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
                     Ok(json!({}))
                 }
-                ("send" | "reply" | "wait" | "read" | "status" | "token", Some(me)) => pane_method(&st, me, method, p),
+                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons", Some(me)) => pane_method(&st, me, method, p),
                 // "start" = SessionStart Claude: hanya id sesi dan pemiliknya, status tidak berubah
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
@@ -699,6 +703,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 let role = profile::ROLES.iter().find(|r| p["role"].as_str() == Some(r.0));
                 let brief = p["brief"].as_str().map(|b| b.chars().take(4000).collect::<String>()).and_then(|b| msg::sanitize(&b).ok()).filter(|b| !b.trim().is_empty());
                 x.readonly = role.is_some_and(|r| r.1);
+                // FR-78: add-ons of the workspace the pane opens in
+                x.addons = addon::args(&st.addons.lock().unwrap(), &x.agent, p["workspace"].as_str().unwrap_or_default());
                 x.brief = [role.map(|r| r.2.to_string()), brief.map(|b| format!("Workspace brief from the user (read only):\n{b}"))].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
             }
             // FR-61, C-9: akun = pilihan manusia saat membuka pane (UI, termasuk bawaan workspace) > akun profil > Utama
@@ -1160,6 +1166,8 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
         Ok((id, pane))
     };
     match method {
+        // FR-78: typed `claude`/`codex` (zsh function) gets the add-ons of this pane's workspace now
+        "addons" => Ok(json!({"args": addon::args(&st.addons.lock().unwrap(), p["agent"].as_str().unwrap_or_default(), &my_ws)})),
         "token" => {
             // FR-66: token pane untuk proses bersandbox (jalur spool); dibuat sekali, dicabut saat pane ditutup
             let pane = st.panes.lock().unwrap().get(&me).cloned().ok_or("not_a_pane")?;
@@ -1455,6 +1463,7 @@ fn reload_config(st: &State) {
         }
         *st.profiles.lock().unwrap() = c.profiles;
         *st.accounts.lock().unwrap() = c.accounts;
+        *st.addons.lock().unwrap() = c.addons;
     }
     *cur = json!({"values": values, "errors": c.errors, "path": path.to_string_lossy()});
     let ev = line(json!({"event": "config.changed", "params": *cur}));

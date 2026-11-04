@@ -1,4 +1,5 @@
 mod account;
+mod addon;
 mod bus;
 mod config;
 mod daemon;
@@ -40,7 +41,8 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        cmd @ ("send" | "wait" | "read" | "reply" | "status" | "watch" | "token") => agent_cli(cmd, &args[1..]),
+        // FR-78: `addons <agent>` is called by the zsh `claude`/`codex` functions (internal, not in USAGE)
+        cmd @ ("send" | "wait" | "read" | "reply" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -161,6 +163,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
             "timeout_ms": opt.get("timeout").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok()).map(|s| s * 1000),
         }),
         "status" | "watch" | "token" => json!({}),
+        "addons" if rest.len() == 1 => json!({"agent": rest[0]}),
         _ => return usage(),
     };
     let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else {
@@ -209,6 +212,8 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
             match out["token"].as_str() {
                 // `GEMBALA_SPOOL="$(gembala token)"`: token polos
                 Some(t) if cmd == "token" => println!("{t}"),
+                // one argument per line for zsh `${(f)…}`; an error (older daemon) prints nothing, so no stray argument
+                _ if cmd == "addons" => out["args"].as_array().into_iter().flatten().filter_map(Value::as_str).for_each(|a| println!("{a}")),
                 _ => println!("{out}"),
             }
             let ok = v.get("result").is_some_and(|r| r["result"] != "rejected" && r.get("timeout").is_none());

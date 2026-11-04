@@ -446,6 +446,39 @@ fn pane_dari_profil() {
     assert_eq!(ui.call("pane.create", json!({"profile": "tidak-ada"}))["error"]["code"], "no_such_profile");
 }
 
+/// FR-78: the zsh `claude` function asks `gembala addons claude`; the answer follows the pane's workspace.
+#[test]
+fn addon_per_workspace() {
+    let d = start("addon");
+    let cfg = d.dir.join("cfg");
+    let plug = d.dir.join("plug");
+    std::fs::create_dir_all(cfg.join("mcp")).unwrap();
+    std::fs::create_dir_all(plug.join(".claude-plugin")).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(plug.join(".claude-plugin/plugin.json"), "{}").unwrap();
+    std::fs::write(cfg.join("mcp/w1.json"), r#"{"mcpServers": {}}"#).unwrap();
+    std::fs::write(
+        cfg.join("config.toml"),
+        format!("[addons.plugin.p]\npath = \"{}\"\nscope = \"workspaces\"\nworkspaces = [\"w1\"]\n[workspace.w1.mcp]\nfile = \"mcp/w1.json\"\nstrict = true\n", plug.display()),
+    )
+    .unwrap();
+    let mut ui = Cli::ui(&d);
+    let t0 = Instant::now();
+    while ui.call("config.get", json!({}))["result"]["values"]["addons"]["mcp"].as_array().is_none_or(|a| a.is_empty()) {
+        assert!(t0.elapsed() < Duration::from_secs(10), "menunggu config add-on");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let run = |ui: &mut Cli, ws: &str| {
+        let pane = ui.call("pane.create", json!({"cmd": "echo; gembala addons claude; echo ADDON-END", "workspace": ws}))["result"]["pane"].as_u64().unwrap();
+        ui.attach_until(pane, &["ADDON-END"])
+    };
+    let out = run(&mut ui, "w1");
+    assert!(out.contains(&format!("--plugin-dir\r\n{}\r\n--mcp-config\r\n", plug.display())), "{out}");
+    assert!(out.contains("mcp/w1.json\r\n--strict-mcp-config\r\nADDON-END"), "{out}");
+    let out = run(&mut ui, "w2");
+    assert!(!out.contains("--plugin-dir") && !out.contains("--mcp-config"), "{out}");
+}
+
 /// FR-28: deteksi lewat login shell; tiap agent didukung punya baris.
 #[test]
 fn deteksi_agent() {

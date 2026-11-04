@@ -35,6 +35,8 @@ pub struct Profile {
     pub brief: String,
     /// FR-13: peran baca saja; Claude dikunci lewat `--disallowedTools`, agent lain hanya petunjuk
     pub readonly: bool,
+    /// FR-78: add-on flags for this pane's workspace (set at launch, not from the profile config)
+    pub addons: Vec<String>,
 }
 
 /// (agent, nama, perintah, perintah instal yang ditampilkan bila tidak ada, versi teruji major.minor)
@@ -64,6 +66,7 @@ pub fn builtin() -> Vec<Profile> {
         account: String::new(),
         brief: String::new(),
         readonly: false,
+        addons: vec![],
     };
     let agents = AGENTS.iter().map(|(agent, name, cmd, _, _)| Profile {
         id: agent.to_string(),
@@ -260,14 +263,15 @@ Do not look for processes via ps.";
 /// The hint is matched by its opening sentence, not the whole text: the hook file can come from another daemon build.
 /// `--session-id` is added by Gembala's zsh function too; the session card already shows `claude --resume <id>`.
 pub fn shown_args(args: &[String]) -> String {
-    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"");
+    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"") || a.starts_with("mcp_servers.") || a == "--strict-mcp-config";
     let mut out: Vec<&str> = vec![];
     let mut skip = false;
     for a in args {
         if std::mem::take(&mut skip) {
             continue;
         }
-        if a == "--session-id" {
+        // FR-78: add-on flags come from the zsh function too
+        if ["--session-id", "--plugin-dir", "--mcp-config"].contains(&a.as_str()) {
             skip = true;
         } else if ours(a) {
             // flag pemilik nilai ini (`--settings`, `-c`, `--append-system-prompt`) ikut dibuang
@@ -361,6 +365,7 @@ autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hoo
 /// `function name` (bukan `name()`) supaya alias pengguna bernama sama tidak merusak definisi; alias tetap jalan
 /// lewat fungsi ini. Claude/OMP hanya saat membuka TUI (tanpa argumen atau argumen pertama opsi), bukan subperintah.
 /// Claude tanpa flag lanjut diberi `--session-id` sejak mulai (FR-68): daemon membacanya dari argumen proses.
+/// FR-78: Claude and Codex ask the daemon for the add-ons of the pane's current workspace (one argument per line).
 /// ponytail: `claude "prompt"` positional tidak diberi petunjuk.
 fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let f = q(&dir.join("gembala.md").to_string_lossy());
@@ -372,9 +377,9 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     // FR-61: Claude diketik cuma dapat SessionStart (id sesi + akun pemilik); statusnya tetap dari layar
     let start = q(&json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": format!("{} hook claude start", q(exe))}]}]}}).to_string());
     format!(
-        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" --settings {start} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
+        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
-         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c {notify} -c \"$(<{f}.codex)\" \"$@\" }}\n\
+         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
          function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command opencode \"$@\" }}\n\
          [[ -f {acc} ]] && builtin source {acc}\n",
         acc = q(&dir.join("accounts.zsh").to_string_lossy())
@@ -537,6 +542,8 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
     }
     let (mut flags, hook_env) = h.map(|h| hook_flags(p, h)).unwrap_or_default();
     flags.extend(permission_flags(&p.agent, &p.permission));
+    // before the session flags: Codex `resume <id>` is a subcommand, `-c` must come first
+    flags.extend(p.addons.iter().cloned());
     flags.extend(session.map(|s| session_flags(&p.agent, s)).unwrap_or_default());
     // FR-56: penanda tak terlihat untuk daemon (OSC 777), mengapit output sesi agent
     let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
@@ -770,6 +777,10 @@ mod tests {
         assert!(PETUNJUK.starts_with(PETUNJUK_START));
         let typed = ["claude", "--append-system-prompt", "You run in a Gembala pane. Older text.", "--model", "opus", "--session-id", "9e38"];
         assert_eq!(shown_args(&typed.map(String::from)), "claude --model opus");
+        let addons = ["claude", "--plugin-dir", "/p/caveman", "--mcp-config", "/cfg/mcp/w.json", "--strict-mcp-config", "-c"];
+        assert_eq!(shown_args(&addons.map(String::from)), "claude -c");
+        let codex = ["codex", "-c", "mcp_servers.probe.command=\"node\"", "resume"];
+        assert_eq!(shown_args(&codex.map(String::from)), "codex resume");
     }
 
     #[test]
@@ -895,6 +906,31 @@ mod tests {
         let out = run_with_timeout(c, Duration::from_secs(3)).unwrap();
         assert_eq!(out.len(), 1 << 20);
         assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
+    }
+
+    /// FR-78: typed `claude` gets the daemon's add-on lines as separate arguments (spaces kept); no daemon = none
+    #[test]
+    fn claude_diketik_dapat_addon() {
+        let dir = std::env::temp_dir().join(format!("gembala-zsh-addon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = |name: &str, body: &str| {
+            let f = dir.join(name);
+            std::fs::write(&f, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        };
+        bin("claude", "for a in \"$@\"; do printf '<%s>' \"$a\"; done");
+        bin("uuidgen", "echo ID");
+        std::fs::write(dir.join("gembala.md"), "hint").unwrap();
+        let run = |gembala: &str| {
+            bin("gembala", gembala);
+            let script = format!("{}claude --x", zsh_agents(&dir, "/x/gembala"));
+            let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).env("PATH", format!("{}:/usr/bin:/bin", dir.display())).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let out = run("[ \"$1 $2\" = 'addons claude' ] && printf -- '--plugin-dir\\n/p a/x\\n'");
+        assert!(out.ends_with("<--plugin-dir></p a/x><--session-id><id><--x>"), "{out}");
+        assert!(run("exit 1").ends_with("}><--session-id><id><--x>"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
