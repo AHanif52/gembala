@@ -806,6 +806,29 @@ fn agent_manual_terlihat_di_status() {
     assert!(out.contains("\"agent\":\"omp\""), "{out}");
 }
 
+/// FR-4: Claude diketik di pane shell yang mengirim hook = status dari hook saja; output layar (redraw status line)
+/// tidak membuatnya bekerja lalu selesai berulang (notifikasi "selesai" menumpuk).
+#[test]
+fn agent_manual_berhook_tidak_dibaca_dari_layar() {
+    let d = start("manualhook");
+    let claude = d.dir.join("claude");
+    std::fs::copy(env!("CARGO_BIN_EXE_gembala"), &claude).unwrap();
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let mut ui = Cli::ui(&d);
+    let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    // output berkala di layar selagi `claude` di depan, seperti status line yang digambar ulang
+    let cmd = format!("'{g}' hook claude start </dev/null; (while :; do echo tik; sleep 2; done) & '{}' watch\r", claude.display());
+    ui.call("pane.write", json!({"pane": pane, "data": B64.encode(cmd)}));
+    let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
+    assert_eq!(e["params"], json!({"pane": pane, "status": "idle"}), "{e}");
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(6) {
+        assert_eq!(ui.call("pane.info", json!({"pane": pane}))["result"]["status"], "idle", "status berubah karena output layar");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
 /// FR-40: pane yang menunggu password (kanonik + echo mati) terdeteksi; proses biasa tidak.
 #[test]
 fn deteksi_menunggu_password() {

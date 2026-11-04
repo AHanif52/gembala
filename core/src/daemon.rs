@@ -90,6 +90,9 @@ struct Pane {
     last_out: Mutex<std::time::Instant>,
     /// FR-59: shell sedang di prompt (penanda OSC 133 B terakhir, belum C); ikut di attach karena snapshot tanpa OSC
     at_prompt: std::sync::atomic::AtomicBool,
+    /// FR-4: agent manual ini mengirim hook lengkap (Claude, omp, OpenCode; bukan Codex yang hanya `notify`):
+    /// status dari hook saja. Tanpa ini redraw status line Claude terbaca bekerja lalu selesai berulang (notif menumpuk)
+    hooked: std::sync::atomic::AtomicBool,
     screen: bool,
     started: std::time::Instant,
     /// Fase 2: workspace (aturan akses SEC-4/21), kebijakan penerima (SEC-5), kapan status terakhir berubah
@@ -353,6 +356,9 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                                     *pane.owner.lock().unwrap() = (known && owner != cur).then_some(owner);
                                 }
                                 *pane.session.lock().unwrap() = Some(id.to_string());
+                            }
+                            if p["agent"].as_str().is_some_and(|a| a != "codex") {
+                                pane.hooked.store(true, Ordering::Relaxed);
                             }
                             if status != "start" {
                                 set_status(&st, me, &pane, status, None);
@@ -864,6 +870,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
                 at_prompt: std::sync::atomic::AtomicBool::new(false),
+                hooked: std::sync::atomic::AtomicBool::new(false),
                 // FR-68: Codex hanya punya hook `notify` (selesai); bekerja dan butuh izin dari layar
                 screen: agent == "custom" || agent == "codex",
                 started: std::time::Instant::now(),
@@ -1399,7 +1406,13 @@ fn screen_watch(st: Arc<State>) {
                 _ => {}
             }
             let cur = *pane.status.lock().unwrap();
-            let next = if pane.screen || manual {
+            let next = if manual && pane.hooked.load(Ordering::Relaxed) {
+                // hook (mis. SessionStart) bisa datang sebelum agent dikenali: status awal = menunggu tugas
+                if !cur.is_empty() {
+                    continue;
+                }
+                "idle"
+            } else if pane.screen || manual {
                 let tail = pane.view.lock().unwrap().0.tail(12);
                 profile::screen_status(&tail, pane.last_out.lock().unwrap().elapsed(), cur)
             } else if pane.agent == "shell" {
@@ -1739,6 +1752,8 @@ fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8], code: Option<i
 /// `prompt` = baris prompt shell yang sudah tampil (agent manual), ditulis lagi di bawah blok.
 #[allow(clippy::too_many_arguments)]
 fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_dir: Option<std::path::PathBuf>, code: &str, prompt: &[u8]) {
+    // agent berikutnya yang diketik di pane ini (mis. Codex tanpa hook lengkap) dinilai ulang
+    pane.hooked.store(false, Ordering::Relaxed);
     let Some((started, log)) = pane.agent_log.lock().unwrap().take() else { return };
     // agent keluar = tidak ada lagi yang membaca pesan: status kosong, `gembala send` ke pane ini ditolak
     // (target_unknown) alih-alih menempel pesan ke zsh dan pengirim mengira terkirim
