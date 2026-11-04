@@ -1215,7 +1215,7 @@
         // salinan baris dibungkus salinan kosong .wsg-nya, jadi warna blok dan garis aksen tetap kena
         const g = row.parentElement!.getBoundingClientRect();
         ghost = document.createElement("div");
-        ghost.className = "ghost";
+        ghost.className = "dragghost"; // bukan "ghost": kelas global itu menimpa saran editor dan tombol blok
         ghost.append(row.parentElement!.cloneNode(false));
         ghost.firstChild!.appendChild(row.cloneNode(true));
         Object.assign(ghost.style, { left: `${g.left}px`, top: `${row.getBoundingClientRect().top}px`, width: `${g.width}px` });
@@ -2677,7 +2677,7 @@
     background: #3b82f6;
     pointer-events: none;
   }
-  :global(.ghost) {
+  :global(.dragghost) {
     position: fixed;
     z-index: 50;
     box-sizing: border-box;
@@ -2690,11 +2690,11 @@
     pointer-events: none;
     overflow: hidden;
   }
-  :global(.ghost > *) {
+  :global(.dragghost > *) {
     margin: 0 !important;
     padding: 0 !important;
   }
-  :global(.ghost > * > *) {
+  :global(.dragghost > * > *) {
     margin-top: 0 !important;
   }
   /* kursor tangan tetap kelihatan di atas baris mana pun selama seret */
