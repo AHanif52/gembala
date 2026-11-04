@@ -787,6 +787,9 @@
   .term :global(.tl-acts button.ghost:hover) {
     color: var(--fg);
   }
+  .term :global(.tl-acts button:not(.ghost):hover) {
+    filter: brightness(1.25);
+  }
   /* FR-58 blok shell: garis + titik di gutter kiri (di luar grid, kolom 0 dipakai prompt), durasi di kanan */
   .term :global(.tl.sh:not(.hd)) {
     border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);

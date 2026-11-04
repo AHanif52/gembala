@@ -1638,8 +1638,10 @@
   async function poll() {
     now = Date.now();
     const ids = Object.keys(meta).map(Number).filter((p) => !dead[p]);
-    for (const p of ids) {
-      const i = await call("pane.info", { pane: p }).catch(() => null);
+    // dikirim sekaligus (klien daemon memultipleks per id), tidak menunggu satu per satu (TECH 19 Responsif)
+    const infos = await Promise.all(ids.map((p) => call("pane.info", { pane: p }).catch(() => null)));
+    for (const [k, p] of ids.entries()) {
+      const i = infos[k];
       if (!i || !meta[p]) continue;
       if (i.cwd && meta[p].cwd !== i.cwd) {
         meta[p].cwd = i.cwd;
@@ -2410,6 +2412,10 @@
   :global(:focus-visible) {
     outline: 1px solid #3b82f6;
     outline-offset: 1px;
+  }
+  /* umpan balik tekan: tombol mana pun meredup sesaat saat diklik (TECH 19 Responsif) */
+  :global(button:active:not(:disabled)) {
+    opacity: 0.7;
   }
   :global(:root) {
     --bg: #000000;
