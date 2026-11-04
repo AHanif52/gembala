@@ -240,10 +240,10 @@
     font-size: 12px;
   }
   .add {
-    color: #16a34a;
+    color: var(--tx-green, #16a34a);
   }
   .del {
-    color: #dc2626;
+    color: var(--tx-red, #dc2626);
   }
   /* baris diff berlatar penuh ala Warp */
   pre span.add,
@@ -305,7 +305,7 @@
     margin-top: 6px;
     border-color: rgba(217, 119, 6, 0.5);
     background: none;
-    color: #fbbf24;
+    color: var(--tx-amber, #fbbf24);
   }
   .ask {
     display: flex;
@@ -326,16 +326,16 @@
     font: 12px "SF Mono", Menlo, monospace;
   }
   .flist .ubah {
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
   }
   .flist .hapus {
-    color: #f87171;
+    color: var(--tx-red, #f87171);
   }
   .warn {
     padding: 6px 8px;
     border-radius: 4px;
     background: rgba(217, 119, 6, 0.1);
-    color: #fbbf24;
+    color: var(--tx-amber, #fbbf24);
     font-size: 12px;
   }
   .acts {

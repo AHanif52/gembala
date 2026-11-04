@@ -800,7 +800,7 @@
     padding: 0 2px;
     border: 0;
     background: none;
-    color: #ef4444;
+    color: var(--tx-red, #ef4444);
     font: 13px system-ui, -apple-system, sans-serif;
     cursor: pointer;
   }
@@ -1033,7 +1033,7 @@
     display: block;
   }
   .err {
-    color: #ef4444;
+    color: var(--tx-red, #ef4444);
   }
   .form label.inline {
     display: flex;

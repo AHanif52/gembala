@@ -52,9 +52,10 @@
     black: "#616161", red: "#ff8272", green: "#b4fa72", yellow: "#fefdc2", blue: "#a5d5fe", magenta: "#ff8ffd", cyan: "#d0d1fe", white: "#f1f1f1",
     brightBlack: "#8e8e8e", brightRed: "#ffc4bd", brightGreen: "#d6fcb9", brightYellow: "#fefdd5", brightBlue: "#c1e3fe", brightMagenta: "#ffb1fe", brightCyan: "#e5e6fe", brightWhite: "#feffff",
   };
-  // palet ANSI untuk latar terang (GitHub Light): warna xterm bawaan terlalu menyala dan tidak terbaca di putih
+  // palet ANSI untuk latar terang (GitHub Light): warna xterm bawaan terlalu menyala dan tidak terbaca di latar terang;
+  // latar/teks = palet Latte (FR-34), sama dengan --bg/--fg tema terang
   const LIGHT: ITheme = {
-    background: "#fafafa", foreground: "#27272a", cursor: "#27272a", selectionBackground: "#d4d4d8",
+    background: "#eff1f5", foreground: "#4c4f69", cursor: "#4c4f69", selectionBackground: "#ccd0da",
     black: "#24292f", red: "#cf222e", green: "#116329", yellow: "#7d4e00", blue: "#0969da", magenta: "#8250df", cyan: "#1b7c83", white: "#6e7781",
     brightBlack: "#57606a", brightRed: "#a40e26", brightGreen: "#1a7f37", brightYellow: "#633c01", brightBlue: "#218bff", brightMagenta: "#a475f9", brightCyan: "#3192aa", brightWhite: "#8c959f",
   };
@@ -626,7 +627,7 @@
   }
   .term :global(.tl-x) {
     flex: 1;
-    color: #f87171;
+    color: var(--tx-red, #f87171);
     font-weight: normal;
   }
   /* tombol blok perintah: kanan baris kepala; blok sesi agent: baris sendiri di bawah (pen layar 02) */
@@ -666,16 +667,16 @@
     font: 13px/16px system-ui, -apple-system, sans-serif;
   }
   .term :global(.tl-dot[data-a="✳"]) {
-    color: #d97757;
+    color: var(--tx-claude, #d97757);
   }
   .term :global(.tl-dot[data-a="π"]) {
-    color: #a855f7;
+    color: var(--tx-purple, #a855f7);
   }
   .term :global(.tl-dot[data-a="◎"]) {
-    color: #10a37f;
+    color: var(--tx-codex, #10a37f);
   }
   .term :global(.tl-dot[data-a="◇"]) {
-    color: #60a5fa;
+    color: var(--tx-blue, #60a5fa);
   }
   .term :global(.tl-x.ok) {
     color: var(--muted);
@@ -720,9 +721,9 @@
     cursor: pointer;
   }
   .term :global(.tl-acts button.pri) {
-    border-color: #1d4ed8;
-    background: #1e3a8a;
-    color: #dbeafe;
+    border-color: var(--pri-line, #1d4ed8);
+    background: var(--pri-bg, #1e3a8a);
+    color: var(--pri-fg, #dbeafe);
   }
   .term :global(.tl-acts button.ghost) {
     border-color: transparent;
@@ -758,7 +759,7 @@
     font: 11px system-ui, -apple-system, sans-serif;
   }
   .term :global(.tl-meta b) {
-    color: #f87171;
+    color: var(--tx-red, #f87171);
     font-weight: normal;
   }
   /* FR-58: tombol aksi blok (kanan baris perintah) dan kepala blok menempel (atas pane) */
@@ -816,7 +817,7 @@
     white-space: nowrap;
   }
   .scode {
-    color: #f87171;
+    color: var(--tx-red, #f87171);
   }
   /* tombol blok ala Gembala.pen: Salin/Output polos, Ubah berbingkai, Ulangi biru */
   .bacts-in {
@@ -841,9 +842,9 @@
     color: var(--muted);
   }
   .bacts-in button.pri {
-    border-color: #1d4ed8;
-    background: #1e3a8a;
-    color: #dbeafe;
+    border-color: var(--pri-line, #1d4ed8);
+    background: var(--pri-bg, #1e3a8a);
+    color: var(--pri-fg, #dbeafe);
   }
   .bacts-in button:hover:not(:disabled) {
     color: var(--fg);

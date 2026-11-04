@@ -2396,26 +2396,52 @@
     --muted: #8b8b8b;
     --line: #262626;
     --card: #111111;
+    --side: #111111;
     --dim: rgba(0, 0, 0, 0.25); /* teks redup pane tak fokus tetap terbaca; garis biru kepala pane sudah menandai fokus */
   }
-  /* tema mengikuti sistem kecuali [ui] theme memaksa (data-theme) */
+  /* FR-34 tema terang = palet Latte (TECH, Gembala.pen T01–T38): bukan putih polos, sidebar lebih gelap dari pane,
+     teks >= 4,5:1. --tx-* / --pri-* hanya diisi di tema terang; tema gelap memakai warna cadangan di var() */
   @media (prefers-color-scheme: light) {
     :global(:root:not([data-theme="dark"])) {
-      --bg: #fafafa;
-      --fg: #27272a;
-      --muted: #71717a;
-      --line: #e4e4e7;
-      --card: #ffffff;
-      --dim: rgba(250, 250, 250, 0.25);
+      --bg: #eff1f5;
+      --fg: #4c4f69;
+      --muted: #5c5f77;
+      --line: #d5d9e2;
+      --card: #f7f8fb;
+      --side: #dce0e8;
+      --dim: rgba(239, 241, 245, 0.25);
+      --tx-red: #cf222e;
+      --tx-green: #1a7f37;
+      --tx-amber: #9a6700;
+      --tx-blue: #0969da;
+      --tx-purple: #8250df;
+      --tx-codex: #0e8a6b;
+      --tx-claude: #a8502f;
+      --pri-bg: #0969da;
+      --pri-line: #0969da;
+      --pri-fg: #ffffff;
+      --ws-mix: #000000;
     }
   }
   :global(:root[data-theme="light"]) {
-    --bg: #fafafa;
-    --fg: #27272a;
-    --muted: #71717a;
-    --line: #e4e4e7;
-    --card: #ffffff;
-    --dim: rgba(250, 250, 250, 0.25);
+    --bg: #eff1f5;
+    --fg: #4c4f69;
+    --muted: #5c5f77;
+    --line: #d5d9e2;
+    --card: #f7f8fb;
+    --side: #dce0e8;
+    --dim: rgba(239, 241, 245, 0.25);
+    --tx-red: #cf222e;
+    --tx-green: #1a7f37;
+    --tx-amber: #9a6700;
+    --tx-blue: #0969da;
+    --tx-purple: #8250df;
+    --tx-codex: #0e8a6b;
+    --tx-claude: #a8502f;
+    --pri-bg: #0969da;
+    --pri-line: #0969da;
+    --pri-fg: #ffffff;
+    --ws-mix: #000000;
   }
   :global(html, body) {
     margin: 0;
@@ -2458,7 +2484,7 @@
     gap: 2px;
     padding: 40px 8px 10px; /* atas: tombol jendela macOS (title bar transparan) */
     border-right: 1px solid var(--line);
-    background: var(--card); /* ala Warp: sidebar sedikit lebih terang dari terminal */
+    background: var(--side); /* gelap: sedikit lebih terang dari terminal (ala Warp); terang: lebih gelap dari pane */
     overflow-y: auto;
     font: 13px system-ui, -apple-system, sans-serif;
     color: var(--fg);
@@ -2671,7 +2697,7 @@
     display: flex;
     justify-content: space-between;
     padding: 2px 8px;
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
     font-size: 11px;
     font-weight: 600;
   }
@@ -2723,7 +2749,7 @@
   }
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .ws {
     margin-top: 4px;
-    color: color-mix(in srgb, var(--c) 70%, #fff);
+    color: color-mix(in srgb, var(--c) 70%, var(--ws-mix, #fff));
   }
   /* tab aktif/hover di blok berwarna: tint warna blok, bukan kotak abu */
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .tab:hover:not(.on) {
@@ -2810,23 +2836,23 @@
     text-align: center;
   }
   .aico.claude {
-    color: #d97757;
+    color: var(--tx-claude, #d97757);
   }
   .aico.omp {
-    color: #a855f7;
+    color: var(--tx-purple, #a855f7);
   }
   .aico.codex {
-    color: #10a37f;
+    color: var(--tx-codex, #10a37f);
   }
   .aico.opencode {
-    color: #3b82f6;
+    color: var(--tx-blue, #3b82f6);
   }
   .st.blocked {
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
     font-weight: 600;
   }
   .st.done {
-    color: #16a34a;
+    color: var(--tx-green, #16a34a);
   }
   .n {
     color: var(--muted);
@@ -2897,7 +2923,7 @@
     border-color: rgba(59, 130, 246, 0.7);
   }
   .ebox .ps {
-    color: #3b82f6;
+    color: var(--tx-blue, #3b82f6);
     font: 13px/1.5 "SF Mono", Menlo, monospace;
   }
   .ebox .ghostwrap {
@@ -3092,7 +3118,7 @@
     font: 12px system-ui, -apple-system, sans-serif;
   }
   .complist.acct .ico.claude {
-    color: #d97757;
+    color: var(--tx-claude, #d97757);
     font-weight: 700;
   }
   .complist.acct .two {
@@ -3218,7 +3244,7 @@
   /* FR-61: nama akun pane */
   .chip.acc {
     border: 1px solid rgba(59, 130, 246, 0.5);
-    color: #93c5fd;
+    color: var(--tx-blue, #93c5fd);
   }
   /* chip berbingkai + ikon ala toolbar CLI agent Warp */
   .chip.box {
@@ -3243,7 +3269,7 @@
     color: var(--fg);
   }
   .chip.changed {
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
   }
   .chip.pname {
     color: var(--fg);
@@ -3261,10 +3287,10 @@
     flex: 1;
   }
   .plus {
-    color: #16a34a;
+    color: var(--tx-green, #16a34a);
   }
   .minus {
-    color: #dc2626;
+    color: var(--tx-red, #dc2626);
   }
   .rich {
     position: absolute;
@@ -3308,7 +3334,7 @@
   }
   .mini.danger {
     border-color: rgba(220, 38, 38, 0.5);
-    color: #ef4444;
+    color: var(--tx-red, #ef4444);
   }
   .mini .keys {
     margin-left: 4px;
@@ -3353,7 +3379,7 @@
     border: 1px solid #d97706;
     border-radius: 999px;
     background: var(--card);
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
     font: 12px system-ui, -apple-system, sans-serif;
   }
   .compose {
@@ -3477,10 +3503,10 @@
     font-size: 12px;
   }
   .lim.lock {
-    color: #16a34a;
+    color: var(--tx-green, #16a34a);
   }
   .lim.warn {
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
   }
   .lim.edit {
     color: var(--muted);
@@ -3502,7 +3528,7 @@
     font-size: 11px;
   }
   .chip.rwarn {
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
   }
   .wtdlg {
     top: 35%;
@@ -3527,7 +3553,7 @@
     font-size: 11px;
   }
   .wtdlg .err {
-    color: #f87171;
+    color: var(--tx-red, #f87171);
     font-size: 12px;
   }
   .wtdlg .files {
@@ -3566,7 +3592,7 @@
     font-size: 12px;
   }
   .err {
-    color: #dc2626;
+    color: var(--tx-red, #dc2626);
     font-size: 12px;
   }
   .welcome {
@@ -3670,7 +3696,7 @@
     z-index: 3;
   }
   .error {
-    color: #f87171;
+    color: var(--tx-red, #f87171);
     font: 13px Menlo, monospace;
     padding: 8px 12px;
   }

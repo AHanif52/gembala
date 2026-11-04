@@ -10,12 +10,14 @@
   let el: HTMLDivElement;
 
   onMount(() => {
+    // warna ikut tema app (FR-34): token --bg/--fg dibaca saat dibuka
+    const css = getComputedStyle(document.documentElement);
     const term = new Terminal({
       disableStdin: true,
       scrollback: 50_000,
       fontFamily: "'SF Mono', Menlo, monospace",
       fontSize: 12,
-      theme: { background: "#000000", foreground: "#e5e5e5" },
+      theme: { background: css.getPropertyValue("--bg").trim(), foreground: css.getPropertyValue("--fg").trim() },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -49,7 +51,7 @@
     z-index: 4;
     display: flex;
     flex-direction: column;
-    background: #000000;
+    background: var(--bg);
   }
   header {
     display: flex;

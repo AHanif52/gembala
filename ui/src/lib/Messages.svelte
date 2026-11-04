@@ -205,14 +205,14 @@
   }
   .kind.rejected,
   .kind.expired {
-    color: #dc2626;
+    color: var(--tx-red, #dc2626);
   }
   .kind.sent,
   .kind.reply {
-    color: #16a34a;
+    color: var(--tx-green, #16a34a);
   }
   .kind.confirm {
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
   }
   .sw {
     display: flex;
@@ -233,6 +233,6 @@
   }
   .mini.on {
     border-color: #d97706;
-    color: #d97706;
+    color: var(--tx-amber, #d97706);
   }
 </style>
