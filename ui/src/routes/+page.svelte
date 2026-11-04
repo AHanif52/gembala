@@ -1913,6 +1913,9 @@
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
                 onused={() => (ran[pane] = true)}
                 onblock={(kind: string, text: string) => {
+                  if (kind === "output") return void (outputOf = pane);
+                  // sesi terakhir pane agent dari profil: jalankan ulang pane-nya (hook resmi), bukan diketik ke shell
+                  if (kind === "run" && meta[pane]?.ended?.resume === text && AGENTS.includes(meta[pane].agent)) return void resumeEnded(pane);
                   // FR-56 linimasa: Lanjutkan/Ulangi = jalankan perintah di pane ini (lewat editor supaya tercatat di riwayat)
                   if (kind === "run" && editorShown(pane)) return void ((draft[pane] = text), runDraft(pane));
                   if (kind !== "reuse") return void copy(text);
@@ -2064,21 +2067,7 @@
                 <button class="hb" aria-label="Tutup" onclick={() => delete meta[pane].login}>×</button>
               </div>
             {/if}
-            {#if meta[pane]?.ended}
-              {@const resume = meta[pane].ended.resume}
-              <!-- FR-56: blok agent selesai dengan tombol; hilang saat proses baru jalan atau ditutup -->
-              <div class="ended" class:withhead={head} role="status">
-                <span class="etitle">Sesi agent selesai</span>
-                {#if resume}<code>{resume}</code>{/if}
-                <span class="grow"></span>
-                {#if resume}
-                  <button class="mini" onclick={() => resumeEnded(pane)}>Lanjutkan</button>
-                  <button class="mini" onclick={() => copy(resume)}>Salin perintah</button>
-                {/if}
-                <button class="mini" onclick={() => (outputOf = pane)}>Output sesi</button>
-                <button class="hb" aria-label="Tutup blok" onclick={() => delete meta[pane].ended}>×</button>
-              </div>
-            {/if}
+            <!-- FR-56: tombol sesi agent selesai ada di blok linimasa (pen layar 02), tanpa banner di atas pane -->
             {#if bar}
               <!-- FR-55: toolbar agent; chip tanpa data (bukan repo) disembunyikan -->
               <!-- pane tak fokus di tab ber-split: isi toolbar disembunyikan (tinggi tetap, terminal tidak reflow), tampil saat hover -->

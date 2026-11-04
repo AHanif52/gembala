@@ -169,7 +169,7 @@ pub fn dur(secs: u64) -> String {
 const GUTTER: &str = "";
 
 /// Satu blok seperti FR-56 (linimasa): `<ikon> <folder> · <durasi>[ · keluar n]` redup, perintah tebal,
-/// `↳ <perintah lanjut>` redup bila ada, lalu satu baris kosong sebagai jarak antarblok.
+/// perintah lanjut redup bila ada (lalu satu baris untuk tombol UI), lalu satu baris kosong sebagai jarak antarblok.
 pub fn block_text(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&str>) -> String {
     let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
     // ikon agent berwarna seperti di sidebar (FR-52); perintah lain tanpa ikon
@@ -180,8 +180,9 @@ pub fn block_text(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&s
         .map_or(String::new(), |(_, g)| format!("{g}\x1b[0m\x1b[2m "));
     let cmd = cmd.replace('\n', &format!("\r\n{GUTTER}"));
     let mut t = format!("{GUTTER}\x1b[2m{icon}{cwd} · {}{exit}\x1b[0m\r\n{GUTTER}\x1b[1m{cmd}\x1b[0m\r\n", dur(secs));
+    // pen layar 02: perintah lanjut redup tanpa tanda, lalu satu baris untuk tombol yang digambar UI
     if let Some(r) = resume {
-        t += &format!("{GUTTER}\x1b[2m↳ {r}\x1b[0m\r\n");
+        t += &format!("{GUTTER}\x1b[2m{r}\x1b[0m\r\n\r\n");
     }
     t + "\r\n"
 }

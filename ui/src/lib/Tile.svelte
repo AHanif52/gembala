@@ -42,7 +42,7 @@
     ontype: (text: string) => boolean; // FR-59: true = huruf diambil input editor, tidak diteruskan ke shell
     onfocusin: () => void; // FR-59: terminal dapat fokus keyboard (halaman memindahkannya ke editor bila tampil)
     onused: () => void; // FR-59: layar saat attach sudah berisi teks (pane bukan baru)
-    onblock: (kind: "cmd" | "out" | "reuse" | "copy" | "run", text: string) => void; // FR-58: tombol aksi blok; FR-56: linimasa
+    onblock: (kind: "cmd" | "out" | "reuse" | "copy" | "run" | "output", text: string) => void; // FR-58: tombol aksi blok; FR-56: linimasa
   } = $props();
 
   // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
@@ -251,14 +251,28 @@
         d?.onRender((el) => (el.classList.add("blk"), el.classList.toggle("fail", h.fail)));
         return;
       }
-      // perintah = baris tebal sesudah kepala; perintah lanjut = baris "↳ …" (bila ada)
+      // perintah = baris tebal sesudah kepala; perintah lanjut = baris redup sesudahnya (format lama: "↳ …")
       let cmd = "";
       let resume = "";
+      let ry = -1;
       for (let y = h.y + 1; y < end; y++) {
         if (buf.getLine(y)?.isWrapped) continue;
         const t = text(y).trim();
-        if (t.startsWith("↳ ")) resume = t.slice(2);
-        else if (t && !cmd) cmd = t;
+        if (!t) continue;
+        if (!cmd) cmd = t;
+        else if (!resume) (resume = t.replace(/^↳ /, "")), (ry = y);
+      }
+      // baris tombol (pen: di bawah perintah lanjut) = baris kosong pertama sesudahnya
+      let by = ry + 1;
+      while (ry >= 0 && buf.getLine(by)?.isWrapped) by++;
+      const agent = !!h.icon;
+      const [path = "", ...rest] = (h.info ?? "").split(" · ");
+      // pen: "~/…/gembala/app" (dua folder terakhir)
+      const parts = path.split("/");
+      const short = parts.length > 3 ? `${parts[0]}/…/${parts.slice(-2).join("/")}` : path;
+      if (agent && resume) {
+        // kartu blok sesi (pen layar 02): latar sedikit terang dari kepala sampai baris tombol
+        term.registerDecoration({ marker, width: term.cols, height: by - h.y + 1, layer: "bottom" })?.onRender((el) => el.classList.add("tl-card"));
       }
       const d = term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "top" });
       d?.onRender((el) => {
@@ -268,13 +282,16 @@
         el.dataset.tl = "1";
         el.classList.add("tl");
         el.classList.toggle("fail", h.fail);
-        // kepala blok ala pen layar 02: ikon agent, folder · durasi (sans 11px redup), keluar n merah, tombol di kanan
-        el.innerHTML = `<i class="tl-dot"></i><div class="tl-hd"><span class="tl-ico"></span><span class="tl-info"></span><b class="tl-x"></b><span class="tl-acts"></span></div>`;
-        const ico = el.querySelector(".tl-ico") as HTMLElement;
-        ico.textContent = h.icon ?? "";
-        ico.dataset.a = h.icon ?? "";
-        (el.querySelector(".tl-info") as HTMLElement).textContent = h.info ?? "";
-        (el.querySelector(".tl-x") as HTMLElement).textContent = h.code && h.code !== "0" ? `· keluar ${h.code}` : "";
+        el.classList.toggle("agent", agent);
+        el.classList.toggle("card", agent && !!resume);
+        // pen layar 02: blok sesi agent = ikon agent di kolom linimasa; blok perintah = titik
+        el.innerHTML = `<i class="tl-dot"></i><div class="tl-hd"><span class="tl-info"></span><b class="tl-x"></b></div><span class="tl-acts"></span>`;
+        const dot = el.querySelector(".tl-dot") as HTMLElement;
+        if (agent) (dot.textContent = h.icon!), (dot.dataset.a = h.icon!);
+        (el.querySelector(".tl-info") as HTMLElement).textContent = [short, ...rest].join(" · ");
+        const x = el.querySelector(".tl-x") as HTMLElement;
+        x.textContent = h.code && h.code !== "0" ? `· keluar ${h.code}` : agent ? "· keluar normal" : "";
+        x.classList.toggle("ok", !(h.code && h.code !== "0"));
         const acts = el.querySelector(".tl-acts") as HTMLElement;
         const btn = (label: string, cls: string, run: () => void) => {
           const b = Object.assign(document.createElement("button"), { textContent: label, className: cls });
@@ -282,9 +299,17 @@
           b.addEventListener("click", (e) => (e.stopPropagation(), run()));
           acts.append(b);
         };
-        if (resume || h.fail) btn("Salin", "ghost", () => onblock("copy", resume || cmd));
-        if (resume) btn("Lanjutkan", "pri", () => onblock("run", resume));
-        else if (h.fail && cmd) btn("Ulangi", "", () => onblock("run", cmd));
+        if (agent && resume) {
+          // pen: Lanjutkan, Lihat output lengkap, Salin perintah di baris sendiri di bawah blok
+          acts.classList.add("row");
+          acts.style.setProperty("--k", String(by - h.y));
+          btn("Lanjutkan", "pri", () => onblock("run", resume));
+          btn("Lihat output lengkap", "", () => onblock("output", ""));
+          btn("Salin perintah", "", () => onblock("copy", resume));
+        } else if (h.fail && cmd) {
+          btn("Salin", "ghost", () => onblock("copy", cmd));
+          btn("Ulangi", "pri", () => onblock("run", cmd));
+        }
       });
     });
   }
@@ -596,28 +621,63 @@
     color: var(--muted);
     font: 11px system-ui, -apple-system, sans-serif;
   }
-  .term :global(.tl-ico[data-a="✳"]) {
-    color: #d97757;
-  }
-  .term :global(.tl-ico[data-a="π"]) {
-    color: #a855f7;
-  }
-  .term :global(.tl-ico[data-a="◎"]) {
-    color: #10a37f;
-  }
-  .term :global(.tl-ico[data-a="◇"]) {
-    color: #60a5fa;
+  .term :global(.tl.card .tl-hd) {
+    background: color-mix(in srgb, var(--fg) 4%, var(--bg));
   }
   .term :global(.tl-x) {
     flex: 1;
     color: #f87171;
     font-weight: normal;
   }
+  /* tombol blok perintah: kanan baris kepala; blok sesi agent: baris sendiri di bawah (pen layar 02) */
   .term :global(.tl-acts) {
+    position: absolute;
+    top: 0;
+    right: 12px;
+    height: var(--rh, 20px);
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-right: 12px;
+  }
+  .term :global(.tl-acts.row) {
+    top: calc(var(--rh, 20px) * var(--k, 3));
+    left: 0;
+    right: auto;
+  }
+  .term :global(.tl.agent::before) {
+    top: calc(var(--rh, 20px) / 2 + 9px);
+  }
+  .term :global(.tl.agent .tl-dot) {
+    width: auto;
+    height: auto;
+    left: -19px;
+    top: calc(var(--rh, 20px) / 2 - 8px);
+    border: 0;
+    border-radius: 0;
+    background: none;
+    font: 13px/16px system-ui, -apple-system, sans-serif;
+  }
+  .term :global(.tl-dot[data-a="✳"]) {
+    color: #d97757;
+  }
+  .term :global(.tl-dot[data-a="π"]) {
+    color: #a855f7;
+  }
+  .term :global(.tl-dot[data-a="◎"]) {
+    color: #10a37f;
+  }
+  .term :global(.tl-dot[data-a="◇"]) {
+    color: #60a5fa;
+  }
+  .term :global(.tl-x.ok) {
+    color: var(--muted);
+  }
+  .term :global(.tl-card) {
+    width: calc(100% + 18px) !important;
+    margin-left: -18px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+    pointer-events: none;
   }
   .term :global(.tl-sep) {
     display: flex;
