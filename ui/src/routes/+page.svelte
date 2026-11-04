@@ -48,6 +48,7 @@
     ended?: { resume: string | null }; // FR-56: blok agent selesai dengan tombol, hilang saat proses baru jalan
     acct?: string; // FR-61: id akun yang dipilih saat pane dibuat (dipakai lagi saat dijalankan ulang)
     accountName?: string; // FR-61: nama akun dari daemon untuk chip; kosong = Utama
+    owner?: { name: string; id: string }; // FR-61: sesi Claude yang jalan milik akun lain (Lanjutkan memakai akun ini)
     login?: string; // FR-61: kartu "masuk ke akun …" setelah tombol Login
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
@@ -646,7 +647,7 @@
       cwd: m.cwd ?? undefined,
       session: m.session,
       resume: AGENTS.includes(m.agent),
-      account: m.acct,
+      account: m.owner?.id ?? m.acct, // FR-61: sesi milik akun lain dilanjutkan di akun pemiliknya
     });
     for (const w of wss)
       for (const t of w.tabs)
@@ -1664,6 +1665,7 @@
       if (meta[p].readable !== i.readable) meta[p].readable = i.readable;
       if (i.session && meta[p].session !== i.session) meta[p].session = i.session; // FR-68
       if ((i.account ?? "") !== (meta[p].accountName ?? "")) meta[p].accountName = i.account || undefined; // FR-61
+      if ((i.owner_id ?? "") !== (meta[p].owner?.id ?? "")) meta[p].owner = i.owner_id ? { name: i.owner, id: i.owner_id } : undefined;
     }
   }
 
@@ -2079,6 +2081,7 @@
                   <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
                 {/if}
                 {#if acctOf(pane)}<span class="chip acc" title="Akun Claude Code (FR-61)">{acctOf(pane)}</span>{/if}
+                {#if meta[pane]?.owner && agentOf(pane) === "claude"}<span class="chip rwarn" title="Sesi ini dibuat di akun {meta[pane].owner.name}. Di akun lain Claude membuang thinking lama: lebih lambat dan boros token. Keluar, lalu Lanjutkan di blok sesi = dibuka lagi di akun {meta[pane].owner.name} (FR-61)">sesi dari {meta[pane].owner.name}</span>{/if}
                 {#if meta[pane]?.roleWarn}<span class="chip rwarn" title="Peran baca saja hanya lewat petunjuk; agent ini tidak punya pembatas tool (FR-13)">edit tidak diblokir</span>{/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}

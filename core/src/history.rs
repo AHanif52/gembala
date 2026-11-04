@@ -250,6 +250,34 @@ pub fn sweep() {
     }
 }
 
+/// FR-61: akun pemilik sesi Claude ditebak dari perintah lanjut di riwayat (`claude-kantor --resume <id>` = "kantor",
+/// `claude --resume <id>` = "" Utama), blok terbaru menang. Untuk sesi yang dimulai sebelum pemilik dicatat.
+pub fn resume_account(id: &str) -> Option<String> {
+    resume_account_in(&dir(), id)
+}
+
+fn resume_account_in(dir: &Path, id: &str) -> Option<String> {
+    let tail = format!(" --resume {id}");
+    let mut best: Option<(u64, String)> = None;
+    for e in std::fs::read_dir(dir).ok()?.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "jsonl")) {
+        let Ok(f) = std::fs::File::open(e.path()) else { continue };
+        for l in std::io::BufReader::new(f).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
+            let (Some(r), t) = (v["resume"].as_str(), v["t"].as_u64().unwrap_or_default()) else { continue };
+            let Some(cmd) = r.strip_suffix(&tail).filter(|_| safe_resume(r)) else { continue };
+            let acct = match cmd.strip_prefix("claude") {
+                Some("") | Some("-utama") => String::new(),
+                Some(a) => a.trim_start_matches('-').to_string(),
+                None => continue,
+            };
+            if best.as_ref().is_none_or(|(bt, _)| t >= *bt) {
+                best = Some((t, acct));
+            }
+        }
+    }
+    best.map(|(_, a)| a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +351,24 @@ mod tests {
         let b = Block { t: 0, cwd: "~/x".into(), cmd: "claude".into(), code: 0, secs: 75, resume: Some("omp --continue".into()) };
         let t = String::from_utf8(render(&[b])).unwrap();
         assert!(t.contains("~/x · 1 mnt 15 dtk") && t.contains("claude") && t.contains("omp --continue") && t.contains("Sesi sebelumnya"), "{t}");
+    }
+
+    #[test]
+    fn pemilik_sesi_dari_riwayat() {
+        let d = std::env::temp_dir().join(format!("gembala-uji-pemilik-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let id = "9b7c267f-d248-4521-aa3c-fe3293169e49";
+        let blk = |t, r: &str| Block { t, cwd: "~".into(), cmd: "claude".into(), code: 0, secs: 1, resume: Some(r.into()) };
+        append(&d.join("a-1.jsonl"), &blk(10, &format!("claude --resume {id}")));
+        assert_eq!(resume_account_in(&d, id).as_deref(), Some(""));
+        append(&d.join("a-2.jsonl"), &blk(20, &format!("claude-kantor --resume {id}")));
+        assert_eq!(resume_account_in(&d, id).as_deref(), Some("kantor"));
+        append(&d.join("a-3.jsonl"), &blk(30, &format!("claude-utama --resume {id}")));
+        assert_eq!(resume_account_in(&d, id).as_deref(), Some(""));
+        // bentuk asing dan id lain diabaikan
+        append(&d.join("a-4.jsonl"), &blk(40, &format!("claude-x;id --resume {id}")));
+        assert_eq!(resume_account_in(&d, id).as_deref(), Some(""));
+        assert_eq!(resume_account_in(&d, "00000000-0000-0000-0000-000000000000"), None);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

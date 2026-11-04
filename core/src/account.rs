@@ -292,6 +292,33 @@ pub fn slug(name: &str) -> String {
     s.split('-').filter(|x| !x.is_empty()).collect::<Vec<_>>().join("-").chars().take(32).collect()
 }
 
+const MAX_SESSIONS: usize = 2000;
+
+/// FR-61: akun pemilik sesi Claude (id akun, "" = Utama), dicatat di `file` (`sessions.json`, id → akun + waktu).
+/// `new` = sesi baru (SessionStart startup/clear): `cur` jadi pemilik. Selain itu yang tercatat, lalu tebakan dari
+/// riwayat blok, lalu `cur`; hasilnya ikut dicatat. Riwayat sesi yang ditautkan antar akun (FR-61 (2)) membuat
+/// `claude -r` di satu akun bisa memilih sesi akun lain.
+pub fn session_owner(file: &Path, id: &str, cur: &str, new: bool) -> String {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    let mut map: serde_json::Map<String, Value> = std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    if !new && let Some(a) = map.get(id).and_then(|v| v["a"].as_str()) {
+        return a.to_string();
+    }
+    let owner = if new { cur.to_string() } else { crate::history::resume_account(id).unwrap_or_else(|| cur.to_string()) };
+    map.insert(id.into(), json!({"a": owner, "t": crate::history::now()}));
+    // ponytail: sort penuh tiap lewat batas; cukup untuk 2.000 entri
+    if map.len() > MAX_SESSIONS {
+        let mut by_t: Vec<(u64, String)> = map.iter().map(|(k, v)| (v["t"].as_u64().unwrap_or_default(), k.clone())).collect();
+        by_t.sort();
+        for (_, k) in by_t.iter().take(map.len() - MAX_SESSIONS) {
+            map.remove(k);
+        }
+    }
+    let _ = crate::config::write_atomic(file, Value::Object(map).to_string().as_bytes());
+    owner
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +435,24 @@ mod tests {
         let mut fresh = json!({"numStartups": 1});
         assert_eq!(merge_trust(&main, &mut fresh), 2);
         assert_eq!(merge_trust(&main, &mut json!([])), 0);
+    }
+
+    #[test]
+    fn pemilik_sesi_dicatat_saat_mulai() {
+        use std::os::unix::fs::DirBuilderExt;
+        let d = std::env::temp_dir().join(format!("gembala-uji-sesi-{}", std::process::id()));
+        std::fs::DirBuilder::new().mode(0o700).create(&d).unwrap();
+        let f = d.join("sessions.json");
+        let id = "9b7c267f-d248-4521-aa3c-fe3293169e49";
+        // dimulai di Utama, dilanjutkan di Kantor: pemilik tetap Utama
+        assert_eq!(session_owner(&f, id, "", true), "");
+        assert_eq!(session_owner(&f, id, "kantor", false), "");
+        // /clear di Kantor = sesi baru milik Kantor
+        assert_eq!(session_owner(&f, id, "kantor", true), "kantor");
+        assert_eq!(session_owner(&f, id, "", false), "kantor");
+        // file rusak = mulai kosong, tidak panik
+        std::fs::write(&f, b"{rusak").unwrap();
+        assert_eq!(session_owner(&f, id, "kantor", true), "kantor");
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

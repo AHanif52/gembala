@@ -75,6 +75,8 @@ struct Pane {
     turns: Arc<Mutex<snap::Turns>>,
     /// FR-61: id akun agent pane ini; kosong = Utama. Agent yang diketik: dari `CLAUDE_CONFIG_DIR` prosesnya
     account: Mutex<String>,
+    /// FR-61: akun pemilik sesi Claude yang sedang jalan bila beda dari akun pane ("" = Utama); dari hook SessionStart
+    owner: Mutex<Option<String>>,
     block: Mutex<OpenBlocks>,
     /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap, folder kerja agent).
     /// Urutan kunci: `view` lalu `manual`.
@@ -316,7 +318,8 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     Ok(json!({}))
                 }
                 ("send" | "reply" | "wait" | "read" | "status" | "token", Some(me)) => pane_method(&st, me, method, p),
-                ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done"].into_iter().find(|s| *s == x)) {
+                // "start" = SessionStart Claude: hanya id sesi dan pemiliknya, status tidak berubah
+                ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
                         // FR-66: pesan terakhir giliran agent bersandbox = balasan untuk pesan yang menunggu
                         if let Some(text) = p["reply"].as_str() {
@@ -324,13 +327,23 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                         }
                         let pane = st.panes.lock().unwrap().get(&me).cloned();
                         if let Some(pane) = pane {
-                            // FR-68: id sesi dari hook agent (Codex thread-id, OpenCode sessionID)
+                            // FR-68: id sesi dari hook agent (Codex thread-id, OpenCode sessionID, Claude session_id)
                             if let (Some(agent), Some(id)) = (p["agent"].as_str(), p["session"].as_str())
                                 && profile::valid_session(agent, id)
                             {
+                                // FR-61: sesi baru atau ganti sesi (pemilih `claude -r`) = cek akun pemiliknya
+                                if agent == "claude" && (status == "start" || pane.session.lock().unwrap().as_deref() != Some(id)) {
+                                    let cur = acct_of_dir(&st, p["dir"].as_str().map(String::from));
+                                    let new = status == "start" && matches!(p["source"].as_str(), Some("startup" | "clear"));
+                                    let owner = account::session_owner(&config::path().with_file_name("sessions.json"), id, &cur, new);
+                                    let known = owner.is_empty() || st.accounts.lock().unwrap().iter().any(|a| a.id == owner && a.agent == "claude");
+                                    *pane.owner.lock().unwrap() = (known && owner != cur).then_some(owner);
+                                }
                                 *pane.session.lock().unwrap() = Some(id.to_string());
                             }
-                            set_status(&st, me, &pane, status, None);
+                            if status != "start" {
+                                set_status(&st, me, &pane, status, None);
+                            }
                         }
                         Ok(json!({}))
                     }
@@ -757,6 +770,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 title: Mutex::new(String::new()),
                 turns: Arc::default(),
                 account: Mutex::new(st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name).map(|a| a.id.clone()).unwrap_or_default()),
+                owner: Mutex::new(None),
                 block: Mutex::new((None, None)),
                 manual: Mutex::new(None),
                 last_out: Mutex::new(std::time::Instant::now()),
@@ -845,6 +859,9 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "session": *pane.session.lock().unwrap(), // FR-68: kartu lanjut walau daemon berhenti
                 "title": *pane.title.lock().unwrap(), // FR-69: label pane
                 "account": acct_label(st, &pane.account.lock().unwrap()), // FR-61: chip akun
+                // FR-61: sesi milik akun lain: nama untuk label, id untuk Lanjutkan ("utama" = Utama)
+                "owner": pane.owner.lock().unwrap().as_ref().map(|o| if o.is_empty() { "Utama".into() } else { acct_label(st, o) }),
+                "owner_id": pane.owner.lock().unwrap().as_ref().map(|o| if o.is_empty() { "utama" } else { o.as_str() }.to_string()),
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
@@ -1623,9 +1640,17 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let omp = |d: std::path::PathBuf| omp_session(std::path::Path::new(&home), &d, since);
     let resume = match agent {
         "claude" => {
-            // FR-61: sesi tersimpan per akun, jadi lanjut lewat perintah akun yang sama (`claude-kantor`)
-            let acct = pane.account.lock().unwrap().clone();
-            let cmd = if acct.is_empty() { "claude".to_string() } else { format!("claude-{acct}") };
+            // FR-61: sesi tersimpan per akun, jadi lanjut lewat perintah akun pemiliknya (`claude-kantor`); sesi Utama
+            // yang dilanjutkan di akun lain = `claude-utama`, karena `claude` di shell berakun memakai akun shell itu
+            let owner = pane.owner.lock().unwrap().clone();
+            let cmd = match owner {
+                Some(o) if o.is_empty() => "claude-utama".to_string(),
+                Some(o) => format!("claude-{o}"),
+                None => match pane.account.lock().unwrap().as_str() {
+                    "" => "claude".to_string(),
+                    a => format!("claude-{a}"),
+                },
+            };
             pane.session.lock().unwrap().clone().or_else(|| printed_resume(&log)).map(|s| format!("{cmd} --resume {s}"))
         }
         "codex" => Some(printed_resume(&log).or_else(|| pane.session.lock().unwrap().clone()).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),

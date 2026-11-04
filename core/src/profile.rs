@@ -194,6 +194,8 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
     Some(match (agent, event) {
         ("claude", "prompt" | "tool") => "working",
         ("claude", "stop") => "done",
+        // FR-61: SessionStart = id sesi + akun pemilik, status tidak berubah
+        ("claude", "start") => "start",
         // Notification Claude Code: izin alat = blocked; "menunggu input" = siap menerima tugas
         // dibaca dari `notification_type`/`message` saja: payload selalu memuat `permission_mode`, jadi menunggu input ikut "butuh izin"
         ("claude", "notify") if claude_permission(payload) => "blocked",
@@ -288,6 +290,7 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
             let settings = json!({"hooks": {
                 // PostToolUse: status `blocked` kembali `working` begitu izin disetujui (PreToolUse jalan sebelum dialog izin)
                 "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "PostToolUse": one("tool"), "Stop": one("stop"), "Notification": one("notify"),
+                "SessionStart": one("start"),
             }});
             let mut f = vec!["--settings".into(), settings.to_string(), "--append-system-prompt".into(), petunjuk.into()];
             if p.readonly {
@@ -350,8 +353,10 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let oc = q(&dir.join("opencode.json").to_string_lossy());
     // FR-67: omp manual juga mendapat hook (status + tool pesan) dan petunjuk khusus omp
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
+    // FR-61: Claude diketik cuma dapat SessionStart (id sesi + akun pemilik); statusnya tetap dari layar
+    let start = q(&json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": format!("{} hook claude start", q(exe))}]}]}}).to_string());
     format!(
-        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
+        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" --settings {start} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
          function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c {notify} -c \"$(<{f}.codex)\" \"$@\" }}\n\
          function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command opencode \"$@\" }}\n\
@@ -364,6 +369,10 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
 /// Ditulis ulang daemon tiap config dimuat, jadi akun baru ada di pane yang dibuka sesudahnya.
 pub fn zsh_accounts(accounts: &[crate::account::Account]) -> String {
     let mut s = String::from("# dibuat Gembala (FR-61): satu perintah per akun agent\n");
+    // sesi Utama yang dilanjutkan dari shell berakun lain (perintah lanjut `claude-utama --resume <id>`)
+    if accounts.iter().any(|a| a.agent == "claude") {
+        s += "function claude-utama { (unset CLAUDE_CONFIG_DIR; claude \"$@\") }\n";
+    }
     for a in accounts.iter().filter(|a| a.agent == "claude") {
         let (k, v) = crate::account::env(a);
         let flags: String = crate::account::flags(a).iter().map(|f| format!(" {}", q(f))).collect();
@@ -869,5 +878,17 @@ mod tests {
         let script = format!("function claude {{ print -r -- \"$*\" }}\n{}claude-kantor --resume x", zsh_accounts(&[k]));
         let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "--model opus --effort high --resume x");
+        // sesi Utama dari shell berakun Kantor: `claude-utama` membuang folder akun cuma untuk perintah itu
+        let script = format!("export CLAUDE_CONFIG_DIR=/k\nfunction claude {{ print -r -- \"${{CLAUDE_CONFIG_DIR:-utama}} $*\" }}\n{}claude-utama --resume x; print -r -- $CLAUDE_CONFIG_DIR", zsh_accounts(&[a("kantor", "claude", "~/.claude-kantor")]));
+        let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "utama --resume x\n/k");
+        assert!(!zsh_accounts(&[]).contains("claude-utama"));
+    }
+
+    #[test]
+    fn claude_diketik_membawa_session_start() {
+        let rc = zsh_agents(std::path::Path::new("/cfg/hooks"), "/Apps/Gem bala/gembala");
+        assert!(rc.contains("--settings '{\"hooks\":{\"SessionStart\"") && rc.contains("hook claude start"), "{rc}");
+        assert_eq!(hook_status("claude", "start", "{}"), Some("start"));
     }
 }
