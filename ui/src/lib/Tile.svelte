@@ -266,6 +266,9 @@
       // baris tombol (pen: di bawah perintah lanjut) = baris kosong pertama sesudahnya
       let by = ry + 1;
       while (ry >= 0 && buf.getLine(by)?.isWrapped) by++;
+      // baris tombol butuh 2 baris sebelum blok berikutnya / garis "Sesi sebelumnya"; kurang = tombol di kanan kepala
+      // (log lama dan daemon bisa menyisakan 1 baris saja, jadi jangan bergantung pada jaraknya)
+      const roomy = end - by >= 2;
       const agent = !!h.icon;
       const [path = "", ...rest] = (h.info ?? "").split(" · ");
       // pen: "~/…/gembala/app" (dua folder terakhir)
@@ -273,7 +276,8 @@
       const short = parts.length > 3 ? `${parts[0]}/…/${parts.slice(-2).join("/")}` : path;
       if (agent && resume) {
         // kartu blok sesi (pen layar 02): latar sedikit terang dari kepala sampai baris tombol
-        term.registerDecoration({ marker, width: term.cols, height: by - h.y + 2, layer: "bottom" })?.onRender((el) => el.classList.add("tl-card"));
+        const ch = roomy ? by - h.y + 2 : Math.max(1, Math.min(by, end) - h.y);
+        term.registerDecoration({ marker, width: term.cols, height: ch, layer: "bottom" })?.onRender((el) => el.classList.add("tl-card"));
       }
       const d = term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "top" });
       d?.onRender((el) => {
@@ -301,9 +305,8 @@
           acts.append(b);
         };
         if (agent && resume) {
-          // pen: Lanjutkan, Lihat output lengkap, Salin perintah di baris sendiri di bawah blok
-          acts.classList.add("row");
-          acts.style.setProperty("--k", String(by - h.y));
+          // pen: Lanjutkan, Lihat output lengkap, Salin perintah di baris sendiri di bawah blok (kalau muat)
+          if (roomy) acts.classList.add("row"), acts.style.setProperty("--k", String(by - h.y));
           btn("Lanjutkan", "pri", () => onblock("run", resume));
           btn("Lihat output lengkap", "", () => onblock("output", ""));
           btn("Salin perintah", "", () => onblock("copy", resume));
@@ -340,7 +343,14 @@
     if (!rows || term.buffer.active.type === "alternate") return void (hover = null);
     const vy = term.buffer.active.viewportY;
     const b = blockOn(Math.floor((e.clientY - rows.top) / rowHeight()) + vy);
-    hover = b ? { top: (b.a.line - vy) * rowHeight(), b } : null;
+    hover = b ? { top: (b.a.line - vy) * rowHeight() + lift, b } : null;
+  }
+  // FR-58: isi menumpuk dari bawah ke atas (ala Warp): selama buffer belum penuh, layar xterm digeser turun sebanyak
+  // baris kosong di bawah kursor; begitu penuh (ada scrollback) atau TUI layar penuh, tidak digeser
+  let lift = $state(0);
+  function anchor() {
+    const b = term.buffer.active;
+    lift = b.type === "normal" && b.baseY === 0 ? Math.max(0, term.rows - 1 - b.cursorY) * rowHeight() : 0;
   }
   function updateSticky() {
     const top = term.buffer.active.viewportY;
@@ -399,6 +409,7 @@
     host.addEventListener("mousemove", onHover);
     host.addEventListener("mouseleave", leave);
     term.onScroll(updateSticky);
+    term.onRender(anchor); // tiap tulis, resize, dan pindah layar alternatif
     ready = true;
     fit.fit();
 
@@ -530,7 +541,7 @@
   </span>
 {/snippet}
 
-<div class="term" bind:this={el}></div>
+<div class="term" bind:this={el} style:--lift="{lift}px"></div>
 {#if sticky}
   <!-- FR-58: kepala blok menempel -->
   <div class="sticky" class:fail={!!sticky.code} class:run={!sticky.d}>
@@ -567,6 +578,12 @@
     inset: 10px 8px 6px 22px; /* kiri 22px = kolom linimasa (pen layar 02) */
     /* z-index dekorasi xterm (6-7) tetap di dalam pane: tidak menembus palet, panel Pesan, atau pemisah */
     isolation: isolate;
+    /* baris kosong yang tergeser ke bawah (--lift) tidak menutupi input editor; kolom linimasa kiri tetap terlihat */
+    clip-path: inset(0 0 0 -22px);
+  }
+  /* FR-58: isi menempel di bawah selama buffer belum penuh (lihat anchor()) */
+  .term :global(.xterm) {
+    transform: translateY(var(--lift, 0px));
   }
   /* FR-58: dekorasi blok (dibuat xterm di luar komponen, jadi :global) */
   .term :global(.blk) {
