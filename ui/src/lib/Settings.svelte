@@ -775,21 +775,22 @@
           <p class="warnbox">⚠ Plugin bisa jalanin hook di laptop lu. Tambahin folder yang lu percaya aja; Gembala nggak pernah ngambil plugin dari repo atau folder kerja.</p>
         {:else}
           <h4>Terpasang<span class="hint">dicari lewat login shell</span>
-            <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? "Memeriksa…" : "Periksa ulang"}</button></h4>
+            <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? "Memeriksa…" : "Periksa ulang"}</button>
+            <!-- Add-on lintas agent (Claude plugin + MCP, Codex MCP), jadi di kepala grup, bukan di baris Claude -->
+            <button class="mini" onclick={() => (agentPage = "addon")}>Add-on ({addons.plugins.length + addons.mcp.length})…</button></h4>
           <section>
             {#each agents as a (a.agent)}
               <div class="row">
                 <span
                   >{a.name}<small
                     >{a.installed
-                      ? `${a.version ?? "versi tidak terbaca"} · ${a.tested ? "teruji" : "belum dites, statusnya ditebak dari layar"}${HOOK[a.agent] ? ` · ${HOOK[a.agent]}` : ""}`
+                      ? `${a.version ?? "versi tidak terbaca"} · ${a.tested ? "teruji" : "belum dicoba di versi ini, hook tetap dipasang"}${HOOK[a.agent] ? ` · ${HOOK[a.agent]}` : ""}`
                       : `Tidak ditemukan di PATH login shell. Pasang: ${a.install}`}</small
                   ></span
                 >
                 <span class="acts">
-                  {#if a.agent === "claude" && a.installed}<button class="mini" onclick={() => (agentPage = "akun")}>Akun ({accRows.length})…</button>
-                    <button class="mini" onclick={() => (agentPage = "addon")}>Add-on ({addons.plugins.length + addons.mcp.length})…</button>{/if}
-                  <span class="state" class:warn={a.installed && !a.tested}>{a.installed ? (a.tested ? "✓ terpasang" : "! belum diuji") : "✗ tidak ada"}</span>
+                  {#if a.agent === "claude" && a.installed}<button class="mini" onclick={() => (agentPage = "akun")}>Akun ({accRows.length})…</button>{/if}
+                  <span class="state" class:warn={a.installed && !a.tested}>{a.installed ? (a.tested ? "✓ terpasang" : "! belum dicoba") : "✗ tidak ada"}</span>
                 </span>
               </div>
             {:else}
@@ -1398,6 +1399,9 @@
     color: var(--fg);
     font-weight: 400;
   }
+  h4 > .mini + .mini {
+    margin-left: 0;
+  }
   h4 > .hint {
     color: var(--muted);
     font-size: 12px;
@@ -1416,7 +1420,7 @@
   .back:hover {
     color: var(--fg);
   }
-  /* status agent (✓ terpasang / ! belum diuji) dan akun (sudah dipakai) */
+  /* status agent (✓ terpasang / ! belum dicoba) dan akun (sudah dipakai) */
   .state {
     color: var(--muted);
     font-size: 12px;

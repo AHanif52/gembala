@@ -43,9 +43,9 @@ pub struct Profile {
 /// Perintah instal dicek dari cara pasang di mesin pengembang 1 Nov 2026; codex belum (TECH bagian 7).
 const AGENTS: &[(&str, &str, &str, &str, &str)] = &[
     ("claude", "Claude Code", "claude", "brew install --cask claude-code", "2.1"),
-    ("codex", "Codex", "codex", "npm install -g @openai/codex", "0.149"),
-    ("opencode", "OpenCode", "opencode", "brew install anomalyco/tap/opencode", "1.18"),
-    ("omp", "Oh My Pi", "omp", "brew install can1357/tap/omp", "18.13"),
+    ("codex", "Codex", "codex", "npm install -g @openai/codex", "0.166"),
+    ("opencode", "OpenCode", "opencode", "brew install anomalyco/tap/opencode", "1.19"),
+    ("omp", "Oh My Pi", "omp", "brew install can1357/tap/omp", "18.16"),
 ];
 
 pub fn builtin() -> Vec<Profile> {

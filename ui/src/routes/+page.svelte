@@ -2392,7 +2392,7 @@
       <b class="wtitle">Gembala udah siap dipakai</b>
       <span class="wm">{found.length ? "Agent yang ketemu di laptop lu:" : "Belum ada agent yang ketemu. Shell tetap bisa dipakai."}</span>
       {#each found as a (a.agent)}
-        <span class="wrow"><span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span>{a.name}<span class="wver" class:untested={!a.tested}>{a.version ?? ""}{a.tested ? "" : " · belum diuji"}</span></span>
+        <span class="wrow"><span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span>{a.name}<span class="wver" class:untested={!a.tested}>{a.version ?? ""}{a.tested ? "" : " · belum dicoba"}</span></span>
       {/each}
       <span class="wm">Tiga hal yang paling kepake:</span>
       <span class="wrow"><kbd class="wkey">⌘P</kbd>Cari tab atau aksi apa aja</span>
