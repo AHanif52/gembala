@@ -636,8 +636,8 @@
     for (const [k, m] of Object.entries(meta)) if (+k !== pane && m.aliases?.includes(r.name)) m.aliases = m.aliases.filter((a) => a !== r.name);
     if (meta[pane]) Object.assign(meta[pane], { name: r.name, aliases: r.aliases });
   }
-  /// FR-79: pane pengganti membawa nama dan alias pane lama sebagai alias
-  const oldNames = (m?: Meta) => (m?.name ? [m.name, ...(Array.isArray(m.aliases) ? m.aliases : [])] : []); // layout.json tidak tepercaya
+  /// FR-79: pane pengganti memakai nama pane lama (bila belum dipakai pane lain) dan membawa aliasnya; layout.json tidak tepercaya
+  const oldNames = (m?: Meta) => ({ name: m?.name || undefined, aliases: Array.isArray(m?.aliases) ? m.aliases : [] });
 
   const sig = (id: string) => JSON.stringify(cfg?.values.profiles.find((p) => p.id === id) ?? null);
 
@@ -657,7 +657,7 @@
       session: m.session,
       resume: AGENTS.includes(m.agent),
       account: m.owner?.id ?? m.acct, // FR-61: sesi milik akun lain dilanjutkan di akun pemiliknya
-      aliases: oldNames(m),
+      ...oldNames(m),
     });
     for (const w of wss)
       for (const t of w.tabs)
@@ -818,7 +818,7 @@
       workspace: wsIdOf(old),
       history: m?.from, // FR-62
       account: shell ? undefined : m?.acct,
-      aliases: oldNames(m),
+      ...oldNames(m),
     });
     if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session, acct: m.acct };
     if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: kartu sesi selesai ikut ke shell pengganti

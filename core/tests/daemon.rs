@@ -561,7 +561,7 @@ fn fr79_nama_lama_tetap_alamat() {
     let d = start("alias");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
-    let kirim = format!("sleep 2; '{g}' send terima-1 'halo' --queue; '{g}' status; echo SELESAI-79; sleep 30");
+    let kirim = format!("sleep 2; '{g}' send terima-1 'halo' --queue; '{g}' wait terima-1 --pattern TIDAK-ADA --timeout 1; '{g}' status; echo SELESAI-79; sleep 30");
     profiles(&d, &mut ui, &(sh_profile("terima", "sleep 30") + &sh_profile("kirim", &kirim)), "SELESAI-79");
     let t = ui.call("pane.create", json!({"profile": "terima", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let r = ui.call("pane.rename", json!({"pane": t, "name": "kantor-1"}))["result"].clone();
@@ -569,15 +569,20 @@ fn fr79_nama_lama_tetap_alamat() {
     let a = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(a, &["SELESAI-79"]).replace(['\r', '\n'], "");
     assert!(out.contains("\"to\":\"kantor-1\""), "{out}");
+    assert!(out.contains("\"target\":\"kantor-1\""), "{out}");
     assert!(out.contains("\"aliases\":[\"terima-1\"]"), "{out}");
     // pane lain mengambil nama itu = alias dilepas
     let s = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     assert_eq!(ui.call("pane.rename", json!({"pane": s, "name": "terima-1"}))["result"]["aliases"], json!(["shell-1"]));
     assert_eq!(ui.call("pane.rename", json!({"pane": t, "name": "kantor-2"}))["result"]["aliases"], json!(["kantor-1"]));
-    // pane pengganti: alias dari layout (tidak tepercaya) disaring, maks 8
+    // pane pengganti: nama lama dipakai lagi bila bebas; nama dan alias dari layout (tidak tepercaya) disaring, maks 8
+    let r = ui.call("pane.create", json!({"name": "lanjut-1", "aliases": ["Bukan Nama", "kantor-2"]}))["result"].clone();
+    assert_eq!((&r["name"], &r["aliases"]), (&json!("lanjut-1"), &json!(["kantor-2"])), "{r}");
+    // nama masih dipakai pane lain = nama otomatis, nama itu jadi alias terbaru
+    let r = ui.call("pane.create", json!({"name": "kantor-2", "aliases": ["kantor-1"]}))["result"].clone();
+    assert_eq!((&r["name"], &r["aliases"]), (&json!("shell-2"), &json!(["kantor-1", "kantor-2"])), "{r}");
+    assert_eq!(ui.call("pane.create", json!({"name": "Bukan Nama"}))["result"]["name"], "shell-3");
     let many: Vec<String> = (0..10).map(|i| format!("lama-{i}")).collect();
-    let r = ui.call("pane.create", json!({"aliases": ["Bukan Nama", "kantor-2"]}))["result"].clone();
-    assert_eq!(r["aliases"], json!(["kantor-2"]), "{r}");
     assert_eq!(ui.call("pane.create", json!({"aliases": many}))["result"]["aliases"].as_array().unwrap().len(), 8);
 }
 

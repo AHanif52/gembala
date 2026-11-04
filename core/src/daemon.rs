@@ -776,10 +776,17 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 sid: pty.child.id() as i32,
                 name: {
                     let label = prof.as_ref().map_or("shell", |x| if x.agent == "custom" { x.id.as_str() } else { x.agent.as_str() });
-                    // FR-79: nama lama pane lain juga dilewati supaya alamatnya tidak diam-diam pindah
-                    let taken: Vec<String> = st.panes.lock().unwrap().values().flat_map(|q| std::iter::once(q.name.lock().unwrap().clone()).chain(q.aliases.lock().unwrap().clone())).collect();
-                    let n = (1..).find(|n| !taken.contains(&format!("{label}-{n}"))).unwrap_or(1);
-                    Mutex::new(format!("{label}-{n}"))
+                    let names: Vec<String> = st.panes.lock().unwrap().values().map(|q| q.name.lock().unwrap().clone()).collect();
+                    // FR-79: pane pengganti memakai nama lamanya selama tidak dipakai pane lain (nama sekarang menang)
+                    match p["name"].as_str().filter(|n| valid_name(n) && !names.iter().any(|x| x == n)) {
+                        Some(n) => Mutex::new(n.to_string()),
+                        None => {
+                            // nama lama pane lain juga dilewati supaya alamatnya tidak diam-diam pindah
+                            let aliases: Vec<String> = st.panes.lock().unwrap().values().flat_map(|q| q.aliases.lock().unwrap().clone()).collect();
+                            let n = (1..).map(|n| format!("{label}-{n}")).find(|n| !names.contains(n) && !aliases.contains(n)).unwrap_or_default();
+                            Mutex::new(n)
+                        }
+                    }
                 },
                 aliases: Mutex::default(),
                 session: Mutex::new(session.id.clone().filter(|s| profile::valid_session(&agent, s))),
@@ -827,11 +834,14 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 None => pane.view.lock().unwrap().0.feed(&history::render(&prev)),
             }
             st.panes.lock().unwrap().insert(id, pane.clone());
-            // FR-79: pane pengganti (jalankan ulang, daemon restart) membawa nama lama dari tata letak (tidak tepercaya)
-            for a in p["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|a| valid_name(a)).take(ALIAS_MAX) {
+            // FR-79: pane pengganti (jalankan ulang, daemon restart) membawa nama dan alias dari tata letak (tidak tepercaya);
+            // nama yang sedang dipakai pane lain jadi alias, yang terbaru
+            let name = pane.name.lock().unwrap().clone();
+            st.release(&name);
+            let old = p["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).take(ALIAS_MAX);
+            for a in old.chain(p["name"].as_str()).filter(|a| valid_name(a)) {
                 st.add_alias(&pane, a);
             }
-            let name = pane.name.lock().unwrap().clone();
             let aliases = pane.aliases.lock().unwrap().clone();
             let st = st.clone();
             thread::spawn(move || pump(st, id, pane, pty));
@@ -872,12 +882,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             let old = std::mem::replace(&mut *pane.name.lock().unwrap(), name.to_string());
             // FR-79: nama lama jadi alias; nama baru dilepas dari alias pane mana pun (nama sekarang menang)
-            for q in st.panes.lock().unwrap().values() {
-                q.aliases.lock().unwrap().retain(|a| a != name);
-            }
-            if old != name {
-                st.add_alias(&pane, &old);
-            }
+            st.release(name);
+            st.add_alias(&pane, &old);
             Ok(json!({"name": name, "aliases": *pane.aliases.lock().unwrap()}))
         }
         "pane.info" => {
@@ -1255,6 +1261,13 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                     return Err("not_allowed");
                 }
             }
+            // FR-79: nama sekarang target ikut jawaban, supaya pengirim yang memakai nama lama beralih
+            let done = |mut v: Value| {
+                if let Some((_, pane)) = &target {
+                    v["target"] = json!(*pane.name.lock().unwrap());
+                }
+                Ok(v)
+            };
             let t0 = std::time::Instant::now();
             loop {
                 if let Some(r) = &reply {
@@ -1264,17 +1277,17 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 } else if let Some((_, pane)) = &target {
                     if let Some(re) = &pattern {
                         if re.is_match(&pane.view.lock().unwrap().0.text()) {
-                            return Ok(json!({"matched": true}));
+                            return done(json!({"matched": true}));
                         }
                     } else {
                         let s = *pane.status.lock().unwrap();
                         if matches!(s, "idle" | "done" | "blocked") && pane.status_at.lock().unwrap().elapsed() >= msg::STABLE {
-                            return Ok(json!({"status": s}));
+                            return done(json!({"status": s}));
                         }
                     }
                 }
                 if t0.elapsed() > timeout {
-                    return Ok(json!({"timeout": true}));
+                    return done(json!({"timeout": true}));
                 }
                 thread::sleep(std::time::Duration::from_millis(100));
             }
@@ -1793,14 +1806,19 @@ impl State {
         find(&|p| *p.name.lock().unwrap() == name).or_else(|| find(&|p| p.aliases.lock().unwrap().iter().any(|a| a == name)))
     }
 
+    /// FR-79: `name` bukan lagi alias pane mana pun
+    fn release(&self, name: &str) {
+        for q in self.panes.lock().unwrap().values() {
+            q.aliases.lock().unwrap().retain(|a| a != name);
+        }
+    }
+
     /// FR-79: alias pindah ke `pane` (pemilik terbaru menang), yang tertua dilepas lewat `ALIAS_MAX`
     fn add_alias(&self, pane: &Arc<Pane>, alias: &str) {
         if *pane.name.lock().unwrap() == alias {
             return;
         }
-        for q in self.panes.lock().unwrap().values() {
-            q.aliases.lock().unwrap().retain(|a| a != alias);
-        }
+        self.release(alias);
         let mut a = pane.aliases.lock().unwrap();
         a.push(alias.to_string());
         if a.len() > ALIAS_MAX {
