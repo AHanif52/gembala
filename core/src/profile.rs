@@ -240,6 +240,7 @@ pub fn screen_status(tail: &str, quiet: std::time::Duration, prev: &str) -> &'st
 
 /// Petunjuk perintah `gembala` untuk agent dari profil, lewat flag resmi `--append-system-prompt` (Claude, OMP).
 /// Config agent tidak disentuh; agent yang diketik manual memakai paragraf di file instruksi global pengguna.
+const PETUNJUK_START: &str = "You run in a Gembala pane.";
 pub const PETUNJUK: &str = "You run in a Gembala pane. Reach other agents in the same workspace with `gembala` (on PATH, \
 JSON output): `gembala status` = list panes; `gembala send <pane> <message>` = send, wait for the reply with `gembala wait --reply <id>`; \
 a message labeled `[Gembala · dari <pane> · <id>]` is answered with `gembala reply <id> <text>` when done, in 1-2 sentences: what was executed and how (files, commit, \
@@ -256,11 +257,19 @@ Do not look for processes via ps.";
 
 /// FR-56: perintah agent manual untuk blok ringkas, tanpa flag sisipan Gembala (petunjuk, hook) yang
 /// ditambah fungsi zsh: yang tampil cukup yang diketik pengguna.
+/// The hint is matched by its opening sentence, not the whole text: the hook file can come from another daemon build.
+/// `--session-id` is added by Gembala's zsh function too; the session card already shows `claude --resume <id>`.
 pub fn shown_args(args: &[String]) -> String {
-    let ours = |a: &str| a.contains(PETUNJUK) || a.contains("omp-gembala.ts") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"");
+    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"");
     let mut out: Vec<&str> = vec![];
+    let mut skip = false;
     for a in args {
-        if ours(a) {
+        if std::mem::take(&mut skip) {
+            continue;
+        }
+        if a == "--session-id" {
+            skip = true;
+        } else if ours(a) {
             // flag pemilik nilai ini (`--settings`, `-c`, `--append-system-prompt`) ikut dibuang
             if !a.starts_with('-') && out.last().is_some_and(|f| f.starts_with('-') && !f.contains('=')) {
                 out.pop();
@@ -757,6 +766,10 @@ mod tests {
             args.extend(user.iter().map(|s| s.to_string()));
             assert_eq!(shown_args(&args), format!("{agent} {}", user.join(" ")));
         }
+        // hint from another daemon build + session id from the zsh function: only what the user typed is left
+        assert!(PETUNJUK.starts_with(PETUNJUK_START));
+        let typed = ["claude", "--append-system-prompt", "You run in a Gembala pane. Older text.", "--model", "opus", "--session-id", "9e38"];
+        assert_eq!(shown_args(&typed.map(String::from)), "claude --model opus");
     }
 
     #[test]
