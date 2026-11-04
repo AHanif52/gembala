@@ -104,10 +104,8 @@
   let sidebar = $state(true);
   let sideW = $state(220); // FR-52: lebar sidebar, disimpan di layout
   let pal = $state<{ q: string; sel: number; keys: [string, string, string][] } | null>(null); // FR-39 palet
-  let dragging = $state<{ kind: "tab" | "ws"; wi: number; ti: number; dy: number; over?: { wi: number; ti: number }; shift: Record<string, number> } | null>(null);
-  /// geser baris sidebar saat seret: yang diangkat ikut kursor, sisanya bergeser membuka celah (ala Warp)
-  const slide = (k: string, lifted: boolean) =>
-    !dragging ? null : lifted ? `translateY(${dragging.dy}px)` : dragging.shift[k] ? `translateY(${dragging.shift[k]}px)` : null;
+  /// `line` = garis sisip (koordinat layar) di tempat jatuh
+  let dragging = $state<{ kind: "tab" | "ws"; wi: number; ti: number; over: { wi: number; ti: number }; line: { top: number; left: number; width: number } } | null>(null);
   let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
   let renameError = $state("");
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
@@ -1197,65 +1195,81 @@
   }
 
   /// FR-44/52: seret tab dan workspace di sidebar (pointer, bukan drag HTML: WKWebView + drop file Tauri).
-  /// Target = baris terdekat menurut Y (celah antar baris ikut terhitung); item yang diseret ikut kursor dan
-  /// baris di antara asal dan target bergeser sejauh tinggi item itu, jadi celah tempat jatuh langsung kelihatan.
+  /// Pen layar 09: baris asal tetap di tempat (pudar), salinannya ikut kursor, garis sisip biru di tempat jatuh;
+  /// baris lain tidak bergeser. Target = baris terdekat menurut Y (celah antar baris ikut terhitung). Esc = batal.
   function startDrag(e: PointerEvent, kind: "tab" | "ws", wi: number, ti = -1) {
     if (e.button !== 0 || editing) return;
-    const side = (e.currentTarget as HTMLElement).closest<HTMLElement>(".side")!;
+    const row = e.currentTarget as HTMLElement;
+    const side = row.closest<HTMLElement>(".side")!;
     const [x0, y0] = [e.clientX, e.clientY];
+    let ghost: HTMLElement | null = null;
+    let esc = false;
     const move = (m: PointerEvent) => {
-      if (!dragging && Math.hypot(m.clientX - x0, m.clientY - y0) < 5) return;
-      // koordinat isi sidebar; offsetTop tidak ikut transform item yang sedang diseret
-      const y = m.clientY - side.getBoundingClientRect().top + side.scrollTop;
-      // semua baris sidebar urut DOM: kepala workspace, tab, "+ Tab" workspace kosong
-      const els = [...side.querySelectorAll<HTMLElement>("[data-k]")];
-      const rs = els.map((el) => ({ top: el.offsetTop, bottom: el.offsetTop + el.offsetHeight }));
-      const own = els.flatMap((el, i) => (+el.dataset.wi! === wi && (kind === "ws" || el.dataset.ti === `${ti}`) ? [i] : []));
+      if (esc || (!dragging && Math.hypot(m.clientX - x0, m.clientY - y0) < 5)) return;
+      if (!ghost) {
+        // salinan baris dibungkus salinan kosong .wsg-nya, jadi warna blok dan garis aksen tetap kena
+        const g = row.parentElement!.getBoundingClientRect();
+        ghost = document.createElement("div");
+        ghost.className = "ghost";
+        ghost.append(row.parentElement!.cloneNode(false));
+        ghost.firstChild!.appendChild(row.cloneNode(true));
+        Object.assign(ghost.style, { left: `${g.left}px`, top: `${row.getBoundingClientRect().top}px`, width: `${g.width}px` });
+        document.body.append(ghost);
+      }
+      ghost.style.transform = `translate(${m.clientX - x0}px, ${m.clientY - y0}px)`;
+      const y = m.clientY;
       let over: { wi: number; ti: number };
-      let p: number; // posisi sisip di urutan DOM
+      let top: number;
+      let box: DOMRect; // kartu workspace tujuan: lebar garis sisip
       if (kind === "ws") {
-        // blok workspace = kepala + tab-tabnya; sisip sebelum/sesudah blok terdekat
-        const blocks = wss.map((_, j) => {
-          const ix = els.flatMap((el, i) => (+el.dataset.wi! === j ? [i] : []));
-          return { top: rs[ix[0]].top, bottom: rs[ix.at(-1)!].bottom, first: ix[0], end: ix.at(-1)! + 1 };
-        });
-        const j = nearest(blocks, y);
-        const after = y > (blocks[j].top + blocks[j].bottom) / 2;
+        // blok workspace = kartu .wsg; sisip sebelum/sesudah kartu terdekat
+        const gs = [...side.querySelectorAll<HTMLElement>(".wsg")].map((el) => el.getBoundingClientRect());
+        const j = nearest(gs, y);
+        const after = y > (gs[j].top + gs[j].bottom) / 2;
         over = { wi: j + +after, ti: -1 };
-        p = after ? blocks[j].end : blocks[j].first;
+        top = after ? gs[j].bottom + 1 : gs[j].top - 4;
+        box = gs[j];
       } else {
+        // semua baris sidebar urut DOM: kepala workspace, tab, "+ Tab" workspace kosong
+        const els = [...side.querySelectorAll<HTMLElement>("[data-k]")];
+        const rs = els.map((el) => el.getBoundingClientRect());
         const k = nearest(rs, y);
         const el = els[k];
         const head = el.dataset.ti === undefined;
-        // kepala workspace (atau "+ Tab" workspace kosong) = jatuh di posisi pertama workspace itu
+        // kepala workspace (juga yang terlipat, atau "+ Tab" workspace kosong) = jatuh di posisi pertama workspace itu
         const after = head || y > (rs[k].top + rs[k].bottom) / 2;
         over = { wi: +el.dataset.wi!, ti: head ? 0 : +el.dataset.ti! + +after };
-        p = k + +after;
+        top = after ? rs[k].bottom : rs[k].top - 2;
+        box = el.parentElement!.getBoundingClientRect();
       }
-      const [f0, f1] = [own[0], own.at(-1)!];
-      const span = (f1 + 1 < els.length ? rs[f1 + 1].top : rs[f1].bottom + 2) - rs[f0].top;
-      const shift: Record<string, number> = {};
-      els.forEach((el, i) => {
-        if (p > f1 && i > f1 && i < p) shift[el.dataset.k!] = -span;
-        else if (p < f0 && i >= p && i < f0) shift[el.dataset.k!] = span;
-      });
-      dragging = { kind, wi, ti, dy: m.clientY - y0, over, shift };
+      dragging = { kind, wi, ti, over, line: { top, left: box.left, width: box.width } };
+    };
+    const key = (k: KeyboardEvent) => {
+      if (k.key !== "Escape" || !dragging) return;
+      k.preventDefault();
+      k.stopPropagation();
+      esc = true;
+      stop();
+      window.addEventListener("pointerup", up); // klik penutup seretan yang dibatalkan tetap dimakan
     };
     const stop = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("keydown", key, true);
+      ghost?.remove();
       const d = dragging;
       dragging = null;
       return d;
     };
     const up = () => {
       const d = stop();
-      if (!d?.over) return;
+      if (!d && !esc) return;
       // klik yang menutup seretan tidak ikut memindah tab (click datang tepat setelah pointerup, bila ada)
       const eat = (c: MouseEvent) => c.stopPropagation();
       window.addEventListener("click", eat, true);
       setTimeout(() => window.removeEventListener("click", eat, true), 0);
+      if (!d) return;
       if (d.kind === "ws") {
         const to = d.over.wi - +(d.over.wi > d.wi);
         if (to !== d.wi) keepAt(() => wss.splice(to, 0, ...wss.splice(d.wi, 1)));
@@ -1267,6 +1281,7 @@
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", stop);
+    window.addEventListener("keydown", key, true);
   }
   function nearest(rs: { top: number; bottom: number }[], y: number) {
     const gap = (r: { top: number; bottom: number }) => Math.max(r.top - y, y - r.bottom, 0);
@@ -1795,7 +1810,7 @@
       {@const liftWs = dragging?.kind === "ws" && dragging.wi === wi}
       <!-- FR-44: blok workspace berwarna (mockup-warna-tab varian D) -->
       <div class="wsg {w.color ?? ''}">
-      <div class="ws" data-wi={wi} data-k="{w.id}:h" class:lift={liftWs} style:transform={slide(`${w.id}:h`, liftWs)}
+      <div class="ws" data-wi={wi} data-k="{w.id}:h" class:lift={liftWs} class:target={dragging?.kind === "tab" && dragging.over.wi === wi && dragging.wi !== wi}
         role="button" tabindex="0" aria-expanded={!w.collapsed} title={w.root}
         onclick={() => editing?.id !== w.id && (w.collapsed = !w.collapsed)}
         onkeydown={(e) => e.key === "Enter" && e.target === e.currentTarget && (w.collapsed = !w.collapsed)}
@@ -1819,7 +1834,7 @@
         {/if}
       </div>
       {#if !w.collapsed && !w.tabs.length}
-        <button class="add empty-ws" data-wi={wi} data-k="{w.id}:e" class:lift={liftWs} style:transform={slide(`${w.id}:e`, liftWs)}
+        <button class="add empty-ws" data-wi={wi} data-k="{w.id}:e" class:lift={liftWs}
           onclick={() => newTab(undefined, wi)}>+ Tab</button>
       {/if}
       {#each w.collapsed ? [] : w.tabs as t, ti (t.id)}
@@ -1828,7 +1843,7 @@
         {@const st = tabStatus(t)}
         <button class="tab {t.color ?? ''}" class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} data-wi={wi} data-ti={ti}
           class:lift={(dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti) || (dragging?.kind === "ws" && dragging.wi === wi)}
-          data-k={t.id} style:transform={slide(t.id, dragging?.wi === wi && (dragging.kind === "ws" || dragging.ti === ti))}
+          data-k={t.id}
           onpointerdown={(e) => startDrag(e, "tab", wi, ti)} oncontextmenu={(e) => tabMenu(e, wi, t)}
           onclick={() => ((at = { ws: wi, tab: ti }), (zoomed = false))}
           ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
@@ -1852,6 +1867,7 @@
       {/each}
       </div>
     {/each}
+    {#if dragging}<div class="dropline" style:top="{dragging.line.top}px" style:left="{dragging.line.left}px" style:width="{dragging.line.width}px"></div>{/if}
   </aside>
   <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label="Lebar sidebar"></div>
 {/if}
@@ -2631,20 +2647,40 @@
     visibility: hidden;
     cursor: pointer;
   }
-  /* seret tab/workspace ala Warp: yang diangkat ikut kursor, baris lain bergeser halus membuka celah */
+  /* seret tab/workspace (pen layar 09): asal pudar di tempat, salinan ikut kursor, garis sisip biru; tanpa animasi */
   .lift {
-    position: relative;
-    z-index: 2;
-    background: var(--line);
-    box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+    opacity: 0.4;
   }
-  .side.dragging [data-k]:not(.lift) {
-    transition: transform 150ms ease;
+  .ws.target {
+    background: color-mix(in srgb, #3b82f6 14%, transparent);
   }
-  @media (prefers-reduced-motion: reduce) {
-    .side.dragging [data-k]:not(.lift) {
-      transition: none;
-    }
+  .dropline {
+    position: fixed;
+    z-index: 5;
+    height: 2px;
+    border-radius: 1px;
+    background: #3b82f6;
+    pointer-events: none;
+  }
+  :global(.ghost) {
+    position: fixed;
+    z-index: 50;
+    box-sizing: border-box;
+    border: 1px solid #3b82f6;
+    border-radius: 6px;
+    background: var(--side);
+    box-shadow: 0 6px 16px rgb(0 0 0 / 0.35);
+    font: 13px system-ui, -apple-system, sans-serif;
+    color: var(--fg);
+    pointer-events: none;
+    overflow: hidden;
+  }
+  :global(.ghost > *) {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  :global(.ghost > * > *) {
+    margin-top: 0 !important;
   }
   /* kursor tangan tetap kelihatan di atas baris mana pun selama seret */
   .side.dragging,
@@ -2778,11 +2814,6 @@
   }
   .dirs .opt {
     align-items: center;
-  }
-  /* seret workspace: blok polos sementara, isinya yang bergerak */
-  .side.dragging .wsg {
-    background: none;
-    box-shadow: none;
   }
   .tt {
     overflow: hidden;
