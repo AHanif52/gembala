@@ -367,8 +367,8 @@
         <h4>Keluar</h4>
         <section>
           <div class="row">
-            <span>Saat Cmd+Q<small>Biarkan jalan = app ditutup, agent lanjut di latar dan muncul lagi saat app dibuka</small></span>
-            <select aria-label="Saat Cmd+Q" value={ui.on_quit} onchange={(e) => set("on_quit", e.currentTarget.value as Ui["on_quit"])}>
+            <span>Saat ⌘Q<small>Biarkan jalan = app ditutup, agent lanjut di latar dan muncul lagi saat app dibuka</small></span>
+            <select aria-label="Saat ⌘Q" value={ui.on_quit} onchange={(e) => set("on_quit", e.currentTarget.value as Ui["on_quit"])}>
               <option value="keep">Biarkan agent jalan</option>
               <option value="stop">Hentikan semua</option>
             </select>
@@ -395,7 +395,7 @@
             </select>
           </div>
           <div class="row">
-            <span>Ukuran<small>Cmd+= dan Cmd+- mengubah sementara, Cmd+0 kembali ke sini</small></span>
+            <span>Ukuran<small>⌘= dan ⌘- mengubah sementara, ⌘0 kembali ke sini</small></span>
             <select aria-label="Ukuran huruf" value={ui.font_size} onchange={(e) => set("font_size", +e.currentTarget.value)}>
               {#each [10, 11, 12, 13, 14, 15, 16, 18, 20] as n}<option value={n}>{n} px</option>{/each}
             </select>
@@ -592,7 +592,7 @@
                     {#if custom}<button class="link" title="Kembali ke pintasan bawaan" onclick={() => saveKey(id, "")}>Bawaan</button>{/if}
                     {#if !goto}<button class="link" onclick={() => (keyEdit = { id, combo: key.toLowerCase() })}>Ubah</button>{/if}
                   </span>
-                  <kbd class:custom>{goto ? "Cmd+1 … Cmd+9" :key ? pretty(key) : "—"}</kbd>
+                  <kbd class:custom>{goto ? "⌘1 … ⌘9" : key ? pretty(key) : "—"}</kbd>
                 {/if}
               </div>
             {/each}
@@ -600,12 +600,12 @@
         {/each}
         <h4 class="khead">Lainnya</h4>
         <section>
-          <div class="krow"><span class="klabel">Salin / tempel</span><kbd>Cmd+C Cmd+V</kbd></div>
-          <div class="krow"><span class="klabel">Pengaturan</span><kbd>Cmd+,</kbd></div>
+          <div class="krow"><span class="klabel">Salin / tempel</span><kbd>⌘C ⌘V</kbd></div>
+          <div class="krow"><span class="klabel">Pengaturan</span><kbd>⌘,</kbd></div>
           <div class="krow"><span class="klabel">Shift+Tab, Ctrl, dan tombol lain</span><span class="m">diteruskan ke terminal</span></div>
         </section>
         <p class="note">
-          Cmd milik aplikasi; tombol lain milik terminal, jadi kombinasi wajib memakai <code>cmd</code>. "Ubah" menulis ke bagian
+          ⌘ milik aplikasi; tombol lain milik terminal, jadi kombinasi wajib memakai <code>cmd</code>. "Ubah" menulis ke bagian
           <code>[keys]</code> di config.toml (mis. <code>"cmd+t" = "pane.split.right"</code>); berlaku tanpa restart, bentrok ditandai di atas.
         </p>
       {:else if sec === "toolbar"}

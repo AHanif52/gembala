@@ -71,10 +71,11 @@ export const UI_DEFAULT: Ui = {
   on_quit: "keep",
 };
 
-// pintasan ditulis sebagai teks (`Cmd+Shift+[`), bukan simbol ⌘⇧ yang nempel dan susah dibaca (TECH 19 #4);
-// kunci dari config bisa huruf kecil (`cmd+e`)
+// show shortcuts with Mac symbols (`Cmd+Shift+[` → ⌘⇧[); config keys may be lowercase (`cmd+e` → ⌘E)
+const SYM: Record<string, string> = { Cmd: "⌘", Shift: "⇧", Alt: "⌥", Ctrl: "⌃", Enter: "↩", Left: "←", Right: "→", Up: "↑", Down: "↓" };
 export const pretty = (k: string) =>
   k
     .split("+")
     .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-    .join("+");
+    .map((s) => SYM[s] ?? s)
+    .join("");

@@ -46,7 +46,7 @@
   <header>
     <span>Pesan antar agent</span>
     <button class="mini" class:on={data?.paused} onclick={() => act("msg.pause", { on: !data?.paused })}
-      >{data?.paused ? "Lanjutkan semua" : "Henti semua"} <span class="k">Cmd+Shift+.</span></button
+      >{data?.paused ? "Lanjutkan semua" : "Henti semua"} <span class="k">⌘⇧.</span></button
     >
     <button class="mini" onclick={onclose} aria-label="Tutup laci">Esc</button>
   </header>

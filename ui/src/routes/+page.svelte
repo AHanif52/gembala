@@ -998,7 +998,7 @@
   const palItems = $derived.by((): PalItem[] => {
     if (!pal) return [];
     const items: PalItem[] = [
-      ...order.map((o, i) => ({ label: title(o.t), hint: `${wss[o.wi].name}${i < 9 ? ` · Cmd+${i + 1}` : ""}`, go: () => goto(i) })),
+      ...order.map((o, i) => ({ label: title(o.t), hint: `${wss[o.wi].name}${i < 9 ? ` · ⌘${i + 1}` : ""}`, go: () => goto(i) })),
       ...(cfg?.values.profiles ?? []).map((p) => ({ label: `Tab baru: ${p.name}`, hint: p.command || "$SHELL", go: () => newTab(p.id === "shell" ? undefined : p.id) })),
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), go: () => run(id) })),
       { label: "Agent di worktree baru…", hint: "git worktree dari HEAD repo pane ini", go: () => openWorktree() },
@@ -1008,7 +1008,7 @@
       { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
       { label: "Ganti nama tab", hint: "", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
       { label: "Ganti nama workspace", hint: "", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
-      { label: "Pengaturan", hint: "Cmd+,", go: () => (settingsOpen = true) },
+      { label: "Pengaturan", hint: "⌘,", go: () => (settingsOpen = true) },
       { label: "Keluar dan hentikan semua agent…", hint: "", go: askQuitAll },
     ];
     const words = pal.q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -1775,9 +1775,9 @@
   {#if c === "attach"}
     <button class="chip box" title="Lampirkan file (atau seret file ke pane)" aria-label="Lampirkan file" onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
   {:else if c === "diff" && g?.repo && g.files}
-    <button class="chip box" title="Panel perubahan Cmd+Shift+=" onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+    <button class="chip box" title="Panel perubahan ⌘⇧=" onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
-    <button class="chip box" onclick={() => (rich = { pane, text: "" })}>{@render icon("rich")}Rich Input <span class="n">Cmd+G</span></button>
+    <button class="chip box" onclick={() => (rich = { pane, text: "" })}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
   {:else if c === "cwd"}
     <span class="chip box quiet" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{short(meta[pane]?.cwd) || "~"}</span>
   {:else if c === "branch" && g?.repo && g.branch}
@@ -1792,7 +1792,7 @@
   <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging} class:full={fullscreen}>
     <!-- title bar transparan: area tombol jendela + geser jendela -->
     <div class="drag" data-tauri-drag-region></div>
-    <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">Cmd+P</span></button>
+    <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
     <!-- FR-44: di bawah kotak cari, selalu terlihat walau daftar tab panjang -->
     {#if queue.length}
       <!-- FR-65: antrean perhatian; hilang bila tidak ada yang menunggu -->
@@ -1884,7 +1884,7 @@
   {#if ws && !tab}
     <div class="empty">
       <span>Workspace {ws.name} kosong</span>
-      <button class="mini" onclick={openPicker}>+ Tab <span class="keys">Cmd+T</span></button>
+      <button class="mini" onclick={openPicker}>+ Tab <span class="keys">⌘T</span></button>
     </div>
   {/if}
   {#if error}<p class="error">{error}</p>{/if}
@@ -1926,9 +1926,9 @@
                 <!-- folder cukup sekali: toolbar agent sudah menampilkannya -->
                 {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd" title={home(meta[pane]?.cwd)}>{short(meta[pane]?.cwd)}</span>{/if}
                 <span class="grow"></span>
-                <button class="hb" title="Split ke kanan Cmd+D" aria-label="Split ke kanan" onclick={() => splitFocused("row")}>◫</button>
-                <button class="hb" title="Split ke bawah Cmd+Shift+D" aria-label="Split ke bawah" onclick={() => splitFocused("col")}>⊟</button>
-                <button class="hb" title="Tutup pane Cmd+W" aria-label="Tutup pane" onclick={() => askClose(pane)}>×</button>
+                <button class="hb" title="Split ke kanan ⌘D" aria-label="Split ke kanan" onclick={() => splitFocused("row")}>◫</button>
+                <button class="hb" title="Split ke bawah ⌘⇧D" aria-label="Split ke bawah" onclick={() => splitFocused("col")}>⊟</button>
+                <button class="hb" title="Tutup pane ⌘W" aria-label="Tutup pane" onclick={() => askClose(pane)}>×</button>
               </div>
             {/if}
             {@const ed = editorShown(pane)}
@@ -1980,7 +1980,7 @@
               <div class="editor" class:withbar={bar}>
                 <!-- konteks ala Warp: folder dan branch, menggantikan prompt shell -->
                 <div class="ctx">
-                  <button class="cchip" title="Lampirkan file · bisa juga seret file atau Cmd+V gambar" aria-label="Lampirkan file"
+                  <button class="cchip" title="Lampirkan file · bisa juga seret file atau ⌘V gambar" aria-label="Lampirkan file"
                     onclick={async () => insertPaths(pane, await invoke<string[]>("pick_files").catch(() => [] as string[]))}>{@render icon("plus")}</button>
                   <!-- FR-59: klik = pemilih folder ala Warp -->
                   <button class="cchip dir" title="Pindah folder · {meta[pane]?.cwd ?? ''}" onclick={() => openDirs(pane)}>
@@ -2188,7 +2188,7 @@
     </div>
   {/if}
   {#if msgData?.paused}
-    <div class="paused" role="status">Pesan antar agent dijeda · Cmd+Shift+. untuk lanjut</div>
+    <div class="paused" role="status">Pesan antar agent dijeda · ⌘⇧. untuk lanjut</div>
   {/if}
   {#if drawer}
     <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} />
@@ -2212,7 +2212,7 @@
         onkeydown={(e) => e.key === "Enter" && e.metaKey && sendCompose()}></textarea>
       <label class="inline"><input type="checkbox" bind:checked={compose.force} /> Paksa bila status target tidak diketahui</label>
       {#if compose.error}<span class="err">{compose.error}</span>{/if}
-      <span class="acts"><button class="mini" onclick={() => (compose = null)}>Batal</button> <button class="mini" onclick={sendCompose}>Kirim Cmd+Enter</button></span>
+      <span class="acts"><button class="mini" onclick={() => (compose = null)}>Batal</button> <button class="mini" onclick={sendCompose}>Kirim ⌘↩</button></span>
     </div>
   {/if}
   {#if changes}
@@ -2242,7 +2242,7 @@
       {#each welcome as a (a.agent)}
         <span>{a.installed ? "✓" : "·"} {a.name} <span class="keys">{a.installed ? a.version : "tidak terpasang"}</span></span>
       {/each}
-      <span class="keys">Cmd+P cari tab dan aksi · Cmd+T tab baru dari profil · Cmd+, Pengaturan</span>
+      <span class="keys">⌘P cari tab dan aksi · ⌘T tab baru dari profil · ⌘, Pengaturan</span>
       <span class="keys">Ketik perintah di kotak bawah · @@ di prompt agent = lempar ke agent lain</span>
       <span class="acts"><button class="mini" onclick={() => (welcome = null)}>Mulai <span class="keys">Enter</span></button></span>
     </div>
@@ -2376,7 +2376,7 @@
   {#if settingsOpen && cfg}
     <Settings {cfg} {meta} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
-  {#if zoomed}<span class="zoom">maksimal · Cmd+Shift+Enter</span>{/if}
+  {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
   <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
 </div>
 
