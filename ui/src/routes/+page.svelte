@@ -104,6 +104,7 @@
   let zoom = $state(0); // FR-34 ⌘=/⌘- sementara di atas ukuran config; ponytail: zoom per pane menyusul
   let cfg = $state<Config | null>(null);
   let settingsOpen = $state(false);
+  let cfgSeen = $state(""); // config errors already dismissed (FR-42 card)
   let picker = $state<{ items: (Profile & { missing: boolean; key: string; label: string; account?: string })[]; sel: number } | null>(null);
   let sidebar = $state(true);
   let sideW = $state(220); // FR-52: lebar sidebar, disimpan di layout
@@ -2257,8 +2258,9 @@
             </div>
           {/each}
           {#if confirm?.pane === pane}
-            <div class="confirm" role="alertdialog" aria-label="Konfirmasi tutup pane">
-              <span><b>{confirm?.name}</b> masih jalan. Tutup {confirm?.what}?</span>
+            <div class="confirm ask" role="alertdialog" aria-label="Konfirmasi tutup pane">
+              <b class="ctitle">Tutup {confirm.what === "pane" ? meta[pane]?.name || "pane" : confirm.what}?</b>
+              <span>Masih jalanin <b>{confirm?.name}</b>. Kalau ditutup, prosesnya ikut berhenti.</span>
               <span class="acts">
                 <button class="mini" onclick={() => (confirm = null)}>Batal <span class="keys">Esc</span></button>
                 <button class="mini danger" onclick={() => { confirm?.close.forEach((p) => call("pane.close", { pane: p }).catch(() => {})); confirm = null; }}>Tutup <span class="keys">Enter</span></button>
@@ -2284,12 +2286,13 @@
     ></div>
   {/each}
   {#if upgrade}
-    <div class="confirm" role="alertdialog" aria-label="Daemon versi lama">
+    <div class="confirm ask" role="alertdialog" aria-label="Daemon versi lama">
+      <b class="ctitle">Daemon perlu di-restart</b>
       <span>Daemon versi <b>{upgrade.daemon}</b> masih jalan, app sekarang <b>{upgrade.app}</b>.</span>
       <span>Menjalankan ulang daemon menghentikan <b>{upgrade.panes} pane</b>; pane tampil lagi dengan tombol "Jalankan ulang".</span>
       <span class="acts">
         <button class="mini" onclick={() => (upgrade = null)}>Nanti</button>
-        <button class="mini" onclick={() => ((upgrade = null), call("daemon.stop").catch(() => {}))}>Jalankan ulang daemon</button>
+        <button class="mini pri" onclick={() => ((upgrade = null), call("daemon.stop").catch(() => {}))}>Jalankan ulang daemon</button>
       </span>
     </div>
   {/if}
@@ -2327,6 +2330,17 @@
       onturn={pickTurn} onrestore={askRestore} onconfirm={doRestore} oncancel={() => changes && (changes.ask = null)}
       onreload={() => changes && loadChanges(changes.pane)} onclose={() => (changes = null)} />
   {/if}
+  {#if cfg?.errors.length && cfgSeen !== cfg.errors.join("\n")}
+    <!-- FR-42 / pen 13: a broken config is visible without opening Settings; dismissed until the errors change -->
+    <div class="confirm ask warn" role="alert">
+      <b class="ctitle">Sebagian config.toml nggak kepake</b>
+      {#each cfg.errors as e}<code class="url">{e}</code>{/each}
+      <span class="acts">
+        <button class="mini" onclick={() => cfg && (cfgSeen = cfg.errors.join("\n"))}>Tutup</button>
+        <button class="mini" onclick={() => cfg && ((cfgSeen = cfg.errors.join("\n")), (settingsOpen = true))}>Buka Pengaturan</button>
+      </span>
+    </div>
+  {/if}
   {#if renameError}
     <div class="confirm" role="alert">
       <span>{renameError}</span>
@@ -2334,7 +2348,8 @@
     </div>
   {/if}
   {#if wsAsk}
-    <div class="confirm" role="alertdialog" aria-label="Konfirmasi hapus workspace">
+    <div class="confirm ask" role="alertdialog" aria-label="Konfirmasi hapus workspace">
+      <b class="ctitle">Hapus workspace {wss[wsAsk.wi]?.name}?</b>
       <span><b>{wsAsk.busy} pane</b> di workspace {wss[wsAsk.wi]?.name} masih menjalankan proses. Hapus dan hentikan?</span>
       <span class="acts">
         <button class="mini" onclick={() => (wsAsk = null)}>Batal <span class="keys">Esc</span></button>
@@ -2361,7 +2376,8 @@
   <!-- with the Start panel showing, the card sits above it inside the pane (pen 01) -->
   {#if welcome && startHere === null}{@render welcomeCard("confirm")}{/if}
   {#if quitAsk}
-    <div class="confirm" role="alertdialog" aria-label="Konfirmasi keluar">
+    <div class="confirm ask" role="alertdialog" aria-label="Konfirmasi keluar">
+      <b class="ctitle">Keluar dari Gembala?</b>
       <span><b>{quitAsk} pane</b> masih menjalankan proses. Keluar dan hentikan semua?</span>
       <span class="acts">
         <button class="mini" onclick={() => (quitAsk = 0)}>Batal <span class="keys">Esc</span></button>
@@ -2370,8 +2386,8 @@
     </div>
   {/if}
   {#if linkAsk}
-    <div class="confirm" role="alertdialog" aria-label="Konfirmasi buka tautan">
-      <span>Buka di browser?</span>
+    <div class="confirm ask" role="alertdialog" aria-label="Konfirmasi buka tautan">
+      <b class="ctitle">Buka di browser?</b>
       <code class="url">{linkAsk}</code>
       <span class="acts">
         <button class="mini" onclick={() => (linkAsk = "")}>Batal <span class="keys">Esc</span></button>
@@ -4078,6 +4094,22 @@
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
     z-index: 8; /* dialog dan palet di atas pemisah pane (4) dan panel samping (5) */
+  }
+  /* pen 13: confirmation card = bold title, body, Batal · Esc / main action */
+  .confirm.ask {
+    width: min(440px, 90%);
+    box-sizing: border-box;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+  .ctitle {
+    font-size: 14px;
+  }
+  /* not modal: sits near the top so a real confirmation in the middle stays visible */
+  .confirm.warn {
+    top: 48px;
+    transform: translateX(-50%);
+    border-color: var(--tx-amber, #d97706);
   }
   .picker {
     min-width: 320px;
