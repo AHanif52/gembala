@@ -62,6 +62,9 @@ struct Pane {
     /// FR-56: posisi baris perintah terakhir (penanda OSC 133 C) dan isi pane sebelum agent jalan; blok ringkas
     /// ditulis di bawahnya saat agent keluar, riwayat perintah sebelumnya tetap (ala Warp). Urutan kunci: `view` dulu.
     cmd_at: Mutex<(usize, u16)>,
+    /// FR-56: isi pane sebelum perintah terakhir, disalin saat perintah mulai (OSC 133 C). Agent manual baru
+    /// terdeteksi ±1 detik kemudian, saat itu Claude sudah membersihkan layar dan scrollback
+    pre_cmd: Mutex<Vec<u8>>,
     pre_agent: Mutex<Vec<u8>>,
     /// FR-62: file riwayat blok pane ini; blok yang sedang jalan (sejak OSC 133 C) dan blok agent manual yang
     /// sudah selesai tapi menunggu perintah lanjutnya dari `agent_done`.
@@ -748,6 +751,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 agent_log: Mutex::new(None),
                 last_output: Mutex::new(Vec::new()),
                 cmd_at: Mutex::new((0, 0)),
+                pre_cmd: Mutex::new(Vec::new()),
                 pre_agent: Mutex::new(Vec::new()),
                 hist: history::path(&st.boot, id),
                 title: Mutex::new(String::new()),
@@ -1242,7 +1246,8 @@ fn screen_watch(st: Arc<State>) {
                 (false, Some((pid, name)), _) => {
                     let mut v = pane.view.lock().unwrap();
                     let at = *pane.cmd_at.lock().unwrap();
-                    *pane.pre_agent.lock().unwrap() = v.0.before(at);
+                    let pre = std::mem::take(&mut *pane.pre_cmd.lock().unwrap());
+                    *pane.pre_agent.lock().unwrap() = if pre.is_empty() { v.0.before(at) } else { pre };
                     drop(v);
                     let args = pty::args_of(pid);
                     // FR-68: Claude diketik membawa `--session-id` dari fungsi zsh Gembala; selain itu id lama tidak berlaku
@@ -1478,7 +1483,18 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
-    v.0.feed(bytes);
+    // FR-56: perintah mulai (OSC 133 C) = salin isi pane dulu, sebelum output perintah (mis. Claude membersihkan
+    // layar di potongan yang sama) masuk ke grid
+    const C: &[u8] = b"\x1b]133;C";
+    match b_find(bytes, C).and_then(|p| bytes[p..].iter().position(|&c| c == 0x07).map(|e| p + e + 1)) {
+        Some(end) => {
+            v.0.feed(&bytes[..end]);
+            let (sb, row) = v.0.position();
+            *pane.pre_cmd.lock().unwrap() = v.0.before(((sb + row as usize).saturating_sub(1), 0));
+            v.0.feed(&bytes[end..]);
+        }
+        None => v.0.feed(bytes),
+    }
     *pane.last_out.lock().unwrap() = std::time::Instant::now();
     for m in history::marks(bytes) {
         on_block(pane, m);
@@ -1542,6 +1558,10 @@ fn osc_title(b: &[u8]) -> Option<String> {
 
 /// FR-59: penanda OSC 133 terakhir di potongan output: B = shell menunggu di prompt, C = perintah mulai jalan.
 // ponytail: penanda yang terpotong batas baca PTY tidak terlihat; prompt berikutnya membetulkan
+fn b_find(b: &[u8], m: &[u8]) -> Option<usize> {
+    b.windows(m.len()).rposition(|w| w == m)
+}
+
 fn prompt_mark(b: &[u8]) -> Option<bool> {
     let last = |m: &[u8]| b.windows(m.len()).rposition(|w| w == m);
     match (last(b"\x1b]133;B"), last(b"\x1b]133;C")) {

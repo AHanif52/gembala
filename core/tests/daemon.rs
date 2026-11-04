@@ -573,7 +573,8 @@ fn ringkas_agent_manual() {
     std::thread::sleep(Duration::from_secs(1));
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode("echo RIWAYAT-$((40+2))\r")}));
     std::thread::sleep(Duration::from_millis(500));
-    ui.call("pane.write", json!({"pane": pane, "data": B64.encode(format!("'{}' watch\r", omp.display()))}));
+    // agent yang membersihkan layar dan scrollback saat mulai (seperti Claude Code): riwayat sebelumnya tetap ada
+    ui.call("pane.write", json!({"pane": pane, "data": B64.encode(format!("printf '\\033[2J\\033[3J\\033[H'; '{}' watch\r", omp.display()))}));
     std::thread::sleep(Duration::from_secs(3));
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode("\x03")}));
     let e = next_event(&mut ui, "pane.replace", Duration::from_secs(15));

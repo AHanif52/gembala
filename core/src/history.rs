@@ -72,19 +72,29 @@ pub fn load_log(from: &Value) -> Option<(Vec<u8>, u64)> {
 fn trim_separator(log: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(log);
     let ansi = regex_lite::Regex::new("\x1b\\[[0-9;?]*[A-Za-z]").unwrap();
+    let plain = |l: &str| ansi.replace_all(l, "").trim().to_string();
     let mut lines: Vec<&str> = text.split("\r\n").collect();
-    while let Some(l) = lines.last() {
-        let plain = ansi.replace_all(l, "");
-        let plain = plain.trim();
-        if plain.is_empty() || plain.trim_start_matches(['─', ' ']).starts_with("Sesi sebelumnya") {
+    // garis "Sesi sebelumnya" yang hanya diikuti baris kosong dibuang (bisa bertumpuk); baris kosong sebelum garis
+    // (jarak dan baris tombol blok terakhir) tetap
+    let last_sep = |lines: &[&str]| {
+        lines.iter().rposition(|l| plain(l).trim_start_matches(['─', ' ']).starts_with("Sesi sebelumnya")).filter(|&i| lines[i + 1..].iter().all(|l| plain(l).is_empty()))
+    };
+    let mut cut = false;
+    while let Some(i) = last_sep(&lines) {
+        lines.truncate(i);
+        cut = true;
+    }
+    if !cut {
+        while lines.last().is_some_and(|l| plain(l).is_empty()) {
             lines.pop();
-        } else {
-            break;
+        }
+        if !lines.is_empty() {
+            lines.push("");
         }
     }
     let mut out = lines.join("\r\n");
     if !out.is_empty() {
-        out += "\r\n\r\n";
+        out += "\r\n";
     }
     out.into_bytes()
 }
@@ -300,7 +310,11 @@ mod tests {
         assert!(load_log(&json!({"boot": "../../etc/passwd", "pane": 7})).is_none());
         // garis "Sesi sebelumnya" lama di ujung log tidak menumpuk
         let t = String::from_utf8(trim_separator(&[b"ls\r\nok\r\n".as_slice(), &separator(0), &separator(1), b"\r\n"].concat())).unwrap();
-        assert_eq!(t, "ls\r\nok\r\n\r\n");
+        assert_eq!(t, "ls\r\nok\r\n");
+        // baris kosong jatah tombol sebelum garis tetap ada
+        let blk = block_text("~", 1, "0", "claude", Some("claude --resume x"));
+        let t = String::from_utf8(trim_separator(&[blk.as_bytes(), &separator(0)].concat())).unwrap();
+        assert_eq!(t, blk);
         let _ = std::fs::remove_file(d.join("history/0123456789abcdef-7.log")); // folder dipakai test lain
     }
 
