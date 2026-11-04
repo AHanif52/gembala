@@ -1363,6 +1363,10 @@
       drawer = false;
       return stop(e);
     }
+    if (bell && e.key === "Escape") {
+      bell = false;
+      return stop(e);
+    }
     if (changes && e.key === "Escape") {
       changes = null;
       return stop(e);
@@ -1617,6 +1621,7 @@
   /// tidak bisa membedakan klik notifikasi dari Cmd+Tab (gesekan 2 Nov 2026).
   function alert(pane: number, kind: "blocked" | "done", label: string) {
     const m = meta[pane];
+    if (m) note(pane, kind, label);
     if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
     if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
     if (kind === "blocked") invoke("attention").catch(() => {}); // Dock melompat hanya bila perlu tindakan; selesai cukup badge
@@ -1624,6 +1629,26 @@
     const t = tabOf(pane);
     invoke("notify_pane", { body: `${m.name || m.profile}${t ? ` di ${title(t)}` : ""} ${label}`, sound: notify.sound }).catch(() => {});
   }
+  // FR-76: bell history, same content as the macOS banner (pane name + status, SEC-33); newest first, max 100.
+  // ponytail: kept in UI memory, so it clears when the app restarts; move to the daemon if it must outlive the UI
+  type Note = { id: number; pane: number; agent: string; name: string; tab: string; ws: string; kind: string; label: string; at: number; seen?: boolean };
+  let notes = $state<Note[]>([]);
+  let bell = $state(false);
+  let noteId = 0;
+  const unseen = $derived(notes.filter((n) => !n.seen).length);
+  function note(pane: number, kind: string, label: string) {
+    const t = tabOf(pane);
+    const w = wss.find((w) => t && w.tabs.includes(t));
+    const n = { id: ++noteId, pane, agent: agentOf(pane), name: meta[pane].name || meta[pane].profile, tab: t ? title(t) : "", ws: w?.name ?? "", kind, label, at: Date.now() };
+    notes = [n, ...notes].slice(0, 100);
+  }
+  const noteTime = (at: number) => (now - at < 3600_000 ? ago(now - at) : new Date(at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }));
+  $effect(() => {
+    if (!bell) return;
+    const off = (e: PointerEvent) => !(e.target as Element).closest?.(".notes, .bellbtn") && (bell = false);
+    window.addEventListener("pointerdown", off);
+    return () => window.removeEventListener("pointerdown", off);
+  });
   const attention = $derived(
     Object.keys(meta).map(Number).filter((p) => (stat(p) === "blocked" && notify.on_blocked) || (stat(p) === "done" && notify.on_done)).length,
   );
@@ -1783,7 +1808,9 @@
     {:else if name === "branch"}<path d="M5 2.5v11M5 9c0-3 6-2 6-5.5M11 2.5v1" /><circle cx="11" cy="4" r="1.3" /><circle cx="5" cy="13" r="1.3" />
     {:else if name === "history"}<path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2h2M8 5v3l2 1.5" />
     {:else if name === "fork"}<circle cx="4.5" cy="3.5" r="1.3" /><circle cx="11.5" cy="3.5" r="1.3" /><circle cx="8" cy="12.5" r="1.3" /><path d="M4.5 5c0 3 3.5 3 3.5 6M11.5 5c0 3-3.5 3-3.5 6" />
-    {:else if name === "sliders"}<path d="M2 5h7M12 5h2M2 11h2M7 11h7" /><circle cx="10.5" cy="5" r="1.5" /><circle cx="5.5" cy="11" r="1.5" />{/if}
+    {:else if name === "sliders"}<path d="M2 5h7M12 5h2M2 11h2M7 11h7" /><circle cx="10.5" cy="5" r="1.5" /><circle cx="5.5" cy="11" r="1.5" />
+    {:else if name === "gear"}<circle cx="8" cy="8" r="2" /><path d="M12.7 6.2L14.5 6.7L14.5 9.3L12.7 9.8L12.6 10.1L13.5 11.6L11.6 13.5L10.1 12.6L9.8 12.7L9.3 14.5L6.7 14.5L6.2 12.7L5.9 12.6L4.4 13.5L2.5 11.6L3.4 10.1L3.3 9.8L1.5 9.3L1.5 6.7L3.3 6.2L3.4 5.9L2.5 4.4L4.4 2.5L5.9 3.4L6.2 3.3L6.7 1.5L9.3 1.5L9.8 3.3L10.1 3.4L11.6 2.5L13.5 4.4L12.6 5.9z" />
+    {:else if name === "bell"}<path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3" />{/if}
   </svg>
 {/snippet}
 
@@ -1890,7 +1917,35 @@
       </div>
     {/each}
     {#if dragging}<div class="dropline" style:top="{dragging.line.top}px" style:left="{dragging.line.left}px" style:width="{dragging.line.width}px"></div>{/if}
+    <!-- pen 02/11: Settings + bell pinned to the sidebar foot -->
+    <div class="sidefoot">
+      <button class="footbtn" title="Pengaturan ⌘," aria-label="Pengaturan" onclick={() => (settingsOpen = true)}>{@render icon("gear")}</button>
+      <button class="footbtn bellbtn" class:on={bell} title="Notifikasi" aria-label="Notifikasi{unseen ? `, ${unseen} belum dilihat` : ''}" aria-expanded={bell}
+        onclick={() => (bell = !bell)}>{@render icon("bell")}{#if unseen}<span class="badge">{unseen}</span>{/if}</button>
+    </div>
   </aside>
+  {#if bell}
+    <!-- FR-76: event history from every workspace; click = jump to the pane -->
+    <div class="notes" role="dialog" aria-label="Notifikasi">
+      <div class="nhead"><b>Notifikasi</b>{#if unseen}<button class="nlink" onclick={() => notes.forEach((n) => (n.seen = true))}>Tandai semua dilihat</button>{/if}</div>
+      <div class="nlist">
+        {#each notes as n (n.id)}
+          <button class="nrow" class:seen={n.seen} onclick={() => ((n.seen = true), (bell = false), meta[n.pane] && !dead[n.pane] && jumpTo(n.pane))}>
+            <span class="dot {n.kind}" aria-hidden="true"></span>
+            <span class="nmain">
+              <span class="ntitle">{#if GLYPH[n.agent]}<span class="aico {n.agent}">{GLYPH[n.agent]}</span>{/if}{n.name}{n.tab && n.tab !== n.name ? ` · ${n.tab}` : ""}</span>
+              <span class="nwhat">{n.label}</span>
+              {#if n.ws}<span class="nwhere">tab di {n.ws}</span>{/if}
+            </span>
+            <span class="k">{noteTime(n.at)}</span>
+          </button>
+        {:else}
+          <div class="nempty">Belum ada kabar. Nanti muncul di sini kalau agent butuh izin atau udah kelar.</div>
+        {/each}
+      </div>
+      <div class="nfoot">Isinya cuma nama pane dan status. Hilang kalau app ditutup, maks 100.</div>
+    </div>
+  {/if}
   <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label="Lebar sidebar"></div>
 {/if}
 
@@ -2767,6 +2822,145 @@
     padding: 2px 8px;
     color: var(--muted);
     font-size: 11px;
+  }
+  /* pen 02: foot icons stay put while the tab list scrolls */
+  .sidefoot {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    gap: 2px;
+    margin: auto -8px -10px;
+    padding: 6px 8px 8px;
+    background: var(--side);
+  }
+  .footbtn {
+    position: relative;
+    display: flex;
+    padding: 4px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+  }
+  .footbtn .ic {
+    width: 14px;
+    height: 14px;
+  }
+  .footbtn:hover,
+  .footbtn.on {
+    background: var(--line);
+    color: var(--fg);
+  }
+  .badge {
+    position: absolute;
+    top: 9px;
+    left: 13px;
+    min-width: 13px;
+    padding: 0 3px;
+    box-sizing: border-box;
+    border-radius: 7px;
+    background: #d97706;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 13px;
+    text-align: center;
+  }
+  /* FR-76 / pen 11: bell panel over the sidebar foot */
+  .notes {
+    position: fixed;
+    left: 8px;
+    bottom: 40px;
+    z-index: 7;
+    display: flex;
+    flex-direction: column;
+    width: 380px;
+    max-width: calc(100vw - 16px);
+    max-height: min(560px, calc(100vh - 80px));
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--fg);
+    font: 13px system-ui, -apple-system, sans-serif;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .nhead {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .nlink {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--tx-blue, #60a5fa);
+    font: inherit;
+    font-size: 12px;
+  }
+  .nlink:hover {
+    text-decoration: underline;
+  }
+  .nlist {
+    overflow-y: auto;
+  }
+  .nrow {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+  }
+  .nrow:hover {
+    background: color-mix(in srgb, var(--line) 55%, transparent);
+  }
+  .nrow .dot {
+    flex: none;
+    margin: 5px 0 0;
+  }
+  /* seen = ring in the kind's colour, like pen 11 */
+  .nrow.seen .dot {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px #16a34a;
+  }
+  .nrow.seen .dot.blocked {
+    box-shadow: inset 0 0 0 1px #d97706;
+  }
+  .nmain {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+  .ntitle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .nwhat {
+    color: var(--muted);
+  }
+  .nwhere,
+  .nrow .k,
+  .nfoot,
+  .nempty {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .nempty {
+    padding: 14px 12px;
+  }
+  .nfoot {
+    padding: 8px 12px;
+    border-top: 1px solid var(--line);
   }
   /* FR-52: butuh izin paling mencolok */
   .tab.blocked {
