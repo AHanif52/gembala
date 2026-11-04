@@ -32,6 +32,7 @@
     agent: string;
     name: string;
     busy?: string | null;
+    shell?: string | null; // nama proses shell pane (`zsh`), untuk subjudul tab shell diam
     status?: string;
     session?: string; // FR-53, FR-68: id sesi agent di pane (Claude dari Gembala; Codex/OpenCode/diketik dari daemon)
     git?: any; // FR-55: ringkasan git di toolbar
@@ -59,10 +60,11 @@
     ["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"],
     ["purple", "Ungu"], ["pink", "Merah muda"], ["cyan", "Toska"], ["brown", "Cokelat"],
   ];
-  /// FR-44: workspace baru otomatis berwarna: warna yang paling jarang dipakai workspace lain (urut daftar)
+  /// FR-44: workspace baru otomatis berwarna: warna yang paling jarang dipakai workspace lain, mulai biru (Gembala.pen 02)
+  const FIRST = "blue";
   const nextColor = (list: Ws[]) => {
     const used = (c: string) => list.filter((w) => w.color === c).length;
-    return COLORS.map(([c]) => c).reduce((best, c) => (used(c) < used(best) ? c : best));
+    return COLORS.map(([c]) => c).reduce((best, c) => (used(c) < used(best) ? c : best), FIRST);
   };
   // FR-52: tanda per agent (bukan logo merek), warna mendekati warna khas agent
   const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇" };
@@ -1542,7 +1544,7 @@
       if (typeof saved.side === "number") sideW = Math.min(480, Math.max(160, saved.side));
       if (typeof saved.panel === "number") panelW = Math.min(1600, Math.max(320, saved.panel));      return;
     }
-    wss = [{ id: uid(), name: "default", root: "~", tabs: [], color: COLORS[0][0] }];
+    wss = [{ id: uid(), name: "default", root: "~", tabs: [], color: FIRST }];
     const ids = [...alive];
     if (ids.length) for (const p of ids) wss[0].tabs.push({ id: uid(), title: "", tree: { pane: p }, focus: p });
     else await newTab(undefined, 0);
@@ -1672,6 +1674,7 @@
       }
       if (busy && busy !== m.busy && m.ended) delete m.ended; // FR-56: blok selesai hilang begitu proses baru jalan
       if (m.busy !== busy) m.busy = busy;
+      if (m.shell !== i.shell) m.shell = i.shell;
       // FR-69: label hanya selama agent berjalan di pane ini
       const label = AGENTS.includes(m.agent) || AGENTS.includes(busy ?? "") ? cleanTitle(i.title, base(i.cwd)) : "";
       if (label) labels[p] !== label && (labels[p] = label);
@@ -1860,7 +1863,8 @@
             {@const g = meta[t.focus]?.git}
             <!-- FR-61: akun selain Utama tampil di keterangan tab -->
             <!-- agent sudah tampil sebagai ikon; proses lain (npm, vim) tetap disebut -->
-            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus)].filter((x) => x && x !== title(t)).join(" · ")}
+            {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
+            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
             {#if STATUS[st] || rest}
               <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {STATUS[stat(p)] ?? 'diam'}"></span>{/each}{:else if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}

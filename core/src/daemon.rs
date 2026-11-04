@@ -864,6 +864,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let busy = pty::busy(&pane.master, pane.sid);
             Ok(json!({
                 "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)), "pid": pane.sid, // FR-60
+                "shell": pty::proc_name(pane.sid), // Gembala.pen 02: subjudul tab shell diam (`zsh`)
                 "password": busy.is_some() && pty::wants_password(&pane.master),
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
