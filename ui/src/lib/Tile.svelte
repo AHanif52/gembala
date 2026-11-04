@@ -305,11 +305,13 @@
           acts.append(b);
         };
         if (agent && resume) {
-          // pen: Lanjutkan, Lihat output lengkap, Salin perintah di baris sendiri di bawah blok (kalau muat)
+          // pen: Lanjutkan, Lihat output lengkap, Salin perintah di baris sendiri di bawah blok (kalau muat);
+          // tidak muat: tombol ringkas di kanan, tengah blok (mockup varian E), berlatar supaya tidak menimpa teks
           if (roomy) acts.classList.add("row"), acts.style.setProperty("--k", String(by - h.y));
+          else acts.classList.add("side"), acts.style.setProperty("--n", String(Math.max(1, Math.min(by, end) - h.y)));
           btn("Lanjutkan", "pri", () => onblock("run", resume));
-          btn("Lihat output lengkap", "", () => onblock("output", ""));
-          btn("Salin perintah", "", () => onblock("copy", resume));
+          btn(roomy ? "Lihat output lengkap" : "Output", "", () => onblock("output", ""));
+          btn(roomy ? "Salin perintah" : "Salin", "", () => onblock("copy", resume));
         } else if (h.fail && cmd) {
           btn("Salin", "ghost", () => onblock("copy", cmd));
           btn("Ulangi", "pri", () => onblock("run", cmd));
@@ -664,6 +666,11 @@
     right: auto;
     height: calc(var(--rh, 20px) * 2);
     gap: 8px;
+  }
+  .term :global(.tl-acts.side) {
+    height: calc(var(--rh, 20px) * var(--n, 3));
+    padding-left: 8px;
+    background: color-mix(in srgb, var(--fg) 4%, var(--bg));
   }
   .term :global(.tl-acts.row button) {
     height: max(22px, calc(var(--rh, 20px) * 1.5));
