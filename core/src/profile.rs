@@ -297,20 +297,24 @@ pub const ROLES: &[(&str, bool, &str)] = &[
     ("reviewer", true, "Your role: reviewer. Do not modify files. Review the changes you are asked to check and reply with concrete findings (file, line, problem)."),
 ];
 
+/// FR-4: hook status Claude Code, sama untuk profil dan `claude` yang diketik.
+/// PostToolUse: status `blocked` kembali `working` begitu izin disetujui (PreToolUse jalan sebelum dialog izin).
+/// StopFailure: giliran berhenti karena galat API/limit; tanpa ini pane tetap "bekerja".
+fn claude_hooks(exe: &str) -> Value {
+    let one = |ev: &str| json!([{"hooks": [{"type": "command", "command": format!("{} hook claude {ev}", q(exe))}]}]);
+    json!({"hooks": {
+        "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "PostToolUse": one("tool"), "Stop": one("stop"), "StopFailure": one("stop"),
+        "Notification": one("notify"), "SessionStart": one("start"),
+    }})
+}
+
 fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
-    let cmd = |ev: &str| format!("{} hook claude {ev}", q(&h.exe));
     let petunjuk = if p.brief.is_empty() { PETUNJUK.to_string() } else { format!("{PETUNJUK}\n\n{}", p.brief) };
     let petunjuk = petunjuk.as_str();
     let file = |name: &str| h.dir.join(name).to_string_lossy().into_owned();
     match p.agent.as_str() {
         "claude" => {
-            let one = |ev: &str| json!([{"hooks": [{"type": "command", "command": cmd(ev)}]}]);
-            let settings = json!({"hooks": {
-                // PostToolUse: status `blocked` kembali `working` begitu izin disetujui (PreToolUse jalan sebelum dialog izin)
-                "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "PostToolUse": one("tool"), "Stop": one("stop"), "Notification": one("notify"),
-                "SessionStart": one("start"),
-            }});
-            let mut f = vec!["--settings".into(), settings.to_string(), "--append-system-prompt".into(), petunjuk.into()];
+            let mut f = vec!["--settings".into(), claude_hooks(&h.exe).to_string(), "--append-system-prompt".into(), petunjuk.into()];
             if p.readonly {
                 f.push("--disallowedTools".into());
                 f.extend(READONLY_TOOLS.iter().map(|t| t.to_string()));
@@ -374,8 +378,8 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let oc = q(&dir.join("opencode.json").to_string_lossy());
     // FR-67: omp manual juga mendapat hook (status + tool pesan) dan petunjuk khusus omp
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
-    // FR-61: Claude diketik cuma dapat SessionStart (id sesi + akun pemilik); statusnya tetap dari layar
-    let start = q(&json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": format!("{} hook claude start", q(exe))}]}]}}).to_string());
+    // FR-4, FR-61: Claude diketik = hook sama dengan profil (status, id sesi + akun pemilik); daemon tidak membaca layarnya
+    let start = q(&claude_hooks(exe).to_string());
     format!(
         "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
@@ -432,19 +436,32 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
         ("gembala.md.codex", format!("developer_instructions={}", json!(format!("{PETUNJUK} Your final message of a turn is also delivered as the reply to a waiting message.")))),
         (
             "opencode-gembala.js",
-            format!(
-                "// dibuat Gembala; status pane (FR-4)\nimport {{ execFile }} from \"node:child_process\";\n\
-                 const hook = (s, id) => execFile({exe}, [\"hook\", \"opencode\", s, String(id ?? \"\")], () => {{}});\n\
-                 export const Gembala = async () => ({{\n  event: async ({{ event }}) => {{\n\
-                 \x20   const id = event.properties?.sessionID; // FR-68: lanjutkan sesi ini persis\n\
-                 \x20   if (event.type === \"session.status\") hook(event.properties?.status?.type === \"busy\" ? \"busy\" : \"idle\", id);\n\
-                 \x20   else if (event.type === \"session.idle\") hook(\"idle\", id);\n\
-                 \x20   else if (event.type.startsWith(\"permission.\")) hook(\"permission\", id);\n  }},\n}});\n"
-            ),
+            OPENCODE_HOOK.replace("__EXE__", &exe.to_string()),
         ),
         ("omp-gembala.ts", OMP_HOOK.replace("__EXE__", &exe.to_string())),
     ]
 }
+
+/// Plugin OpenCode: status pane (FR-4). Sesi anak (subagent `task`) hanya meneruskan izin/pertanyaan: idle-nya bukan
+/// akhir giliran pane. Status selain `idle` (busy, retry) = bekerja. Pola dari plugin herdr/Warp (5 Nov 2026).
+const OPENCODE_HOOK: &str = r#"// dibuat Gembala; status pane (FR-4)
+import { execFile } from "node:child_process";
+const hook = (s, id) => execFile(__EXE__, ["hook", "opencode", s, String(id ?? "")], () => {});
+const child = new Set();
+export const Gembala = async () => ({
+  event: async ({ event }) => {
+    const t = event.type, p = event.properties ?? {};
+    if (p.info?.id && p.info.parentID) child.add(p.info.id);
+    // FR-68: lanjutkan sesi ini persis; sesi anak tidak menggantikan sesi pane
+    const sub = child.has(p.sessionID), id = sub ? "" : p.sessionID;
+    if (t === "question.asked" || (t.startsWith("permission.") && t !== "permission.replied")) hook("permission", id);
+    else if (t === "permission.replied" || t === "question.replied" || t === "question.rejected") hook("busy", id);
+    else if (sub) return;
+    else if (t === "session.status") hook(p.status?.type === "idle" ? "idle" : "busy", id);
+    else if (t === "session.idle") hook("idle", id);
+  },
+});
+"#;
 
 /// Hook omp: status pane (FR-4) dan tool pesan (FR-67). Tool dari hook tidak lewat bash, jadi pola bash pengguna
 /// (mis. `*psql*` = prompt) tidak menahan pesan yang kebetulan menyebut kata itu.
@@ -456,7 +473,11 @@ const run = (args: string[], signal?: AbortSignal) =>
   new Promise<string>((ok) => execFile(exe, args, { signal, maxBuffer: 1 << 20 }, (e, out, err) => ok(String(out || err || (e ? e.message : "")).trim())));
 export default function (pi: any) {
   pi.on("agent_start", async () => hook("start"));
-  pi.on("agent_end", async () => hook("end"));
+  // omp mengulang otomatis (willContinue) = giliran belum selesai; tanpa ini "selesai" palsu lalu bekerja lagi
+  pi.on("agent_end", async (e: any) => { if (e?.willContinue !== true) hook("end"); });
+  // tool `ask` = agent menunggu jawaban manusia
+  pi.on("tool_execution_start", async (e: any) => { if (e?.toolName === "ask") hook("approval"); });
+  pi.on("tool_execution_end", async (e: any) => { if (e?.toolName === "ask") hook("resolved"); });
   pi.on("tool_approval_requested", async () => hook("approval")); // FR-68: butuh izin
   pi.on("tool_approval_resolved", async () => hook("resolved"));
   const z = pi.zod;
@@ -835,6 +856,9 @@ mod tests {
         let settings: serde_json::Value = serde_json::from_str(hook_flags(&by("claude"), &h).0[1].as_str()).unwrap();
         assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
         assert_eq!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude tool");
+        assert_eq!(settings["hooks"]["StopFailure"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
+        // FR-4: claude diketik membawa hook yang sama (status dari hook, bukan layar)
+        assert!(rc.contains(&q(&settings.to_string())), "{rc}");
     }
 
     #[test]
@@ -966,7 +990,7 @@ mod tests {
     #[test]
     fn claude_diketik_membawa_session_start() {
         let rc = zsh_agents(std::path::Path::new("/cfg/hooks"), "/Apps/Gem bala/gembala");
-        assert!(rc.contains("--settings '{\"hooks\":{\"SessionStart\"") && rc.contains("hook claude start"), "{rc}");
+        assert!(rc.contains("--settings '{\"hooks\":{") && rc.contains("\"SessionStart\"") && rc.contains("hook claude start") && rc.contains("hook claude stop"), "{rc}");
         assert_eq!(hook_status("claude", "start", "{}"), Some("start"));
     }
 }
