@@ -439,7 +439,9 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!(ids))
         }
         "config.get" => Ok(st.config.lock().unwrap().clone()),
-        "daemon.info" => Ok(json!({"boot": st.boot, "daemon": env!("CARGO_PKG_VERSION"), "proto": PROTO})),
+        // `msg` dipakai Pengaturan > Keamanan supaya angka rem tidak ditulis dua kali di UI
+        "daemon.info" => Ok(json!({"boot": st.boot, "daemon": env!("CARGO_PKG_VERSION"), "proto": PROTO,
+                                   "msg": {"rate_per_min": crate::msg::RATE_PER_MIN, "hop_max": crate::msg::HOP_MAX}})),
         "git.status" | "git.diff" => {
             // folder kerja pane itu sendiri (proses foreground atau shell), bukan dari parameter
             let pane = st.pane(p)?;

@@ -78,7 +78,7 @@
     accErr = r?.error ?? "";
     loadAccounts();
   }
-  let daemon = $state<{ daemon: string; proto: number } | null>(null);
+  let daemon = $state<{ daemon: string; proto: number; msg?: { rate_per_min: number; hop_max: number } } | null>(null);
   // FR-29: ubah profil dari layar; satu baris = satu argumen / satu env
   type Form = {
     id: string;
@@ -331,6 +331,19 @@
     detecting = false;
   }
   const ui = $derived(cfg.values.ui);
+  /// Gembala.pen 36: angka rem datang dari daemon (core/src/msg.rs lewat daemon.info), bukan diketik ulang di markup
+  const rate = $derived(daemon?.msg?.rate_per_min);
+  const hops = $derived(daemon?.msg?.hop_max);
+  /// Folder log audit ada di sebelah config.toml (core/src/daemon.rs Audit::open); daemon yang menentukan path-nya.
+  const auditDir = $derived(cfg.path.replace(/\/[^/]+$/, "") + "/audit");
+  /// Pintasan tombol darurat ikut [keys]; cadangannya sama dengan MSG_KEYS di ui/src-tauri/src/lib.rs.
+  const stopKey = $derived(pretty(keys.find(([id]) => id === "msg.stop")?.[2] || "Cmd+Shift+."));
+  /// Folder di sebelah config.toml dibuka dari Finder; daftar yang boleh ada di REVEAL (ui/src-tauri/src/lib.rs).
+  async function reveal(sub: string) {
+    failed = "";
+    const r = await invoke("reveal_dir", { config: cfg.path, sub }).catch((e) => String(e));
+    if (typeof r === "string" && r) failed = r;
+  }
 
   onMount(async () => {
     detect(false);
@@ -828,12 +841,53 @@
           {/if}
         </section>
       {:else if sec === "keamanan"}
+        <!-- Gembala.pen 36: nilai diambil dari aturan daemon, bukan diketik ulang; pengecualian lintas workspace
+             belum ada di daemon (msg.rs same_workspace), jadi tombol "+ Pengecualian" tidak dibuat -->
+        <h4>Agent ngobrol sama agent</h4>
         <section>
-          <div class="row"><span>Folder socket<small>Bukan symlink, milik kamu, izin 0700</small></span><span class="m">$TMPDIR/gembala</span></div>
-          <div class="row"><span>Kanal UI<small>Rahasia acak per daemon, disimpan di Keychain milik app</small></span><span class="m">terkunci</span></div>
-          <div class="row"><span>Env pane<small>Penanda sesi agent yang menjalankan Gembala tidak diteruskan</small></span><span class="m">bersih</span></div>
-          <div class="row"><span>Tautan<small>URL asli ditampilkan dulu; hanya http dan https</small></span><span class="m">konfirmasi</span></div>
-          <div class="row"><span>Jaringan<small>App tidak menghubungi internet</small></span><span class="m">mati</span></div>
+          <div class="row">
+            <span>Agent boleh nyuruh agent lain<small>Dalam workspace yang sama; beda workspace ditolak. Tiap profil punya kebijakan penerima sendiri (otomatis, konfirmasi, tolak)</small></span>
+            <span class="state">sesuai kebijakan profil</span>
+          </div>
+          <div class="row">
+            <span>Agent ngintip tab shell lu<small>Tab shell baru kebuka untuk agent kalau lu centang "boleh dibaca agent" di laci pesan (⌘J)</small></span>
+            <span class="state">nggak boleh</span>
+          </div>
+          <div class="row">
+            <span>Rem otomatis<small>{rate ?? "—"} pesan per menit per pengirim, maksimal {hops ?? "—"} lompatan antar agent</small></span>
+            <span class="state">selalu nyala</span>
+          </div>
+          <div class="row">
+            <span>Tombol darurat<small>Henti atau lanjutkan semua pesan sekaligus</small></span>
+            <kbd>{stopKey}</kbd>
+          </div>
+          <div class="row">
+            <span>Cap "dari siapa"<small>Tiap kiriman diberi label pengirim, dan agent menjawab di layar lewat id itu</small></span>
+            <span class="m nowrap">[Gembala · dari shell-6]</span>
+          </div>
+        </section>
+        <h4>Catatan kiriman<span class="hint">buat ngecek siapa ngirim apa ke siapa</span></h4>
+        <section>
+          <div class="row">
+            <span>Disimpan di<small>Satu file per hari, isinya potongan pesan yang sudah disaring</small></span>
+            <span class="m">{auditDir}</span>
+          </div>
+          <div class="row">
+            <span>Umur catatan<small>Yang lebih tua dibuang saat daemon start</small></span>
+            <span class="m">14 hari</span>
+          </div>
+          <div class="row">
+            <span>Buka folder log</span>
+            <button class="mini" onclick={() => reveal("audit")}>Buka</button>
+          </div>
+        </section>
+        <h4>Di balik layar<span class="hint">dicek otomatis, nggak perlu diatur</span></h4>
+        <section>
+          <div class="row"><span>Pintu masuk agent<small>Socket cuma bisa dibuka akun macOS lu</small></span><span class="m">$TMPDIR/gembala</span></div>
+          <div class="row"><span>Tombol-tombol di app<small>Setujui/Tolak cuma bisa dari jendela ini, bukan dari agent</small></span><span class="m">terkunci</span></div>
+          <div class="row"><span>Terminal baru<small>Nggak kebawa jejak sesi agent lain</small></span><span class="m">bersih</span></div>
+          <div class="row"><span>Link yang diklik<small>Alamat aslinya ditunjukin dulu sebelum dibuka; hanya http dan https</small></span><span class="m">tanya dulu</span></div>
+          <div class="row"><span>Internet<small>App nggak ngontak server mana pun</small></span><span class="m">mati</span></div>
         </section>
       {:else}
         <section>
@@ -1099,6 +1153,10 @@
     color: var(--muted);
     overflow-wrap: anywhere;
     text-align: right;
+  }
+  .m.nowrap {
+    overflow-wrap: normal;
+    white-space: nowrap;
   }
   select,
   .seg button,

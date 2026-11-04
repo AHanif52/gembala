@@ -89,6 +89,24 @@ fn open_url(url: String) -> Result<(), String> {
     std::process::Command::new("/usr/bin/open").arg(&url).spawn().map(drop).map_err(|e| e.to_string())
 }
 
+/// Folder di sebelah config.toml yang boleh dibuka dari Finder (Pengaturan > Keamanan > log audit).
+/// `sub` adalah nama folder dari daftar ini, bukan path, jadi webview tidak bisa meminta folder lain.
+const REVEAL: &[&str] = &["", "audit", "hooks", "history"];
+
+/// Tujuan tombol "Buka": folder di sebelah config.toml, hanya untuk nama di REVEAL.
+fn reveal_target(config: &str, sub: &str) -> Result<std::path::PathBuf, String> {
+    if !REVEAL.contains(&sub) {
+        return Err("folder tidak diizinkan".into());
+    }
+    Ok(std::path::Path::new(config).with_file_name(sub))
+}
+
+#[tauri::command]
+fn reveal_dir(config: String, sub: String) -> Result<(), String> {
+    let dir = reveal_target(&config, &sub)?;
+    std::process::Command::new("/usr/bin/open").arg(&dir).spawn().map(drop).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Result<Value, String> {
     if !ALLOWED.contains(&method.as_str()) {
@@ -554,7 +572,7 @@ pub fn run() {
                 w.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, reveal_dir, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, ev| {
@@ -708,6 +726,15 @@ mod tests {
         assert!(super::url_ok("http://localhost:1420/"));
         for bad in ["javascript:alert(1)", "file:///etc/passwd", "ssh://x", "https://a b", "https://x\n-a", "HTTPS://x"] {
             assert!(!super::url_ok(bad), "{bad}");
+        }
+    }
+
+    /// Tombol "Buka" (Pengaturan > Keamanan) tidak boleh membuka folder di luar folder config Gembala.
+    #[test]
+    fn reveal_hanya_folder_di_sebelah_config() {
+        assert_eq!(super::reveal_target("/u/Library/Application Support/Gembala/config.toml", "audit").unwrap(), std::path::Path::new("/u/Library/Application Support/Gembala/audit"));
+        for bad in ["..", "../../etc", "/etc", "audit/../../..", "Audit"] {
+            assert!(super::reveal_target("/u/cfg/config.toml", bad).is_err(), "{bad}");
         }
     }
 }
