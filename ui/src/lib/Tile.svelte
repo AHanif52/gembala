@@ -150,11 +150,26 @@
   }
   export const focus = () => term.focus();
 
-  /// FR-58: blok per perintah dari penanda OSC 133 shell (A prompt, C perintah jalan + teks base64, D selesai + exit code).
+  /// FR-58: linimasa blok perintah dari penanda OSC 133 shell (A prompt, C perintah jalan + teks base64, D selesai + exit code).
   /// Hanya blok dari stream sejak attach; snapshot attach tidak memuat penanda.
   type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; dir?: string; code?: number; t0?: number; ms?: number; live?: { dispose(): void } };
   let blocks: Block[] = [];
   let kitty: number[] = []; // tumpukan flag protokol keyboard kitty yang diminta app di pane ini
+  /// FR-58: Pengaturan > Tampilan > "Linimasa perintah". Mati = pane shell jadi terminal polos (tanpa garis, titik,
+  /// kepala blok, tombol Ulangi/Ubah/Salin). Penanda OSC 133 tetap dilacak, jadi ⌘↑/⌘↓ lompat blok masih jalan.
+  const timeline = $derived(ui.command_timeline !== false);
+  // sakelar berlaku langsung: dekorasi blok shell yang sudah tergambar ikut hilang/balik tanpa reload pane
+  $effect(() => {
+    if (!ready) return;
+    const on = timeline;
+    blocks.forEach((b) => (b.live?.dispose(), (b.live = undefined)));
+    hover = null;
+    sticky = null;
+    if (on) {
+      blocks.forEach((b) => b.cmd && (b.live = decorate(b)));
+      updateSticky(); // kepala blok menempel langsung balik tanpa menunggu scroll
+    }
+  });
   function onMark(data: string) {
     const [k, arg = ""] = data.split(";", 2);
     const last = blocks.at(-1);
@@ -180,13 +195,13 @@
       try {
         b.cmd = new TextDecoder().decode(unb64(arg));
       } catch {}
-      if (b.cmd) b.live = decorate(b); // titik biru berdenyut selama jalan
+      if (b.cmd && timeline) b.live = decorate(b); // titik biru berdenyut selama jalan
     } else if (k === "D" && last?.c && !last.d) {
       last.d = term.registerMarker(0);
       last.code = Number(arg) || 0;
       if (last.t0) last.ms = Date.now() - last.t0;
       last.live?.dispose();
-      decorate(last);
+      last.live = timeline ? decorate(last) : undefined; // dekorasi selesai ikut dilacak supaya bisa dicabut saat sakelar dimatikan
     }
     return true; // penanda tidak menggambar apa pun
   }
@@ -344,8 +359,9 @@
     for (let y = b.c.line; y < Math.max(b.c.line + 1, b.d.line); y++) rows.push(buf.getLine(y)?.translateToString(true) ?? "");
     return rows.join("\n").replace(/\n+$/, "");
   };
-  /// blok di baris layar `clientY` (klik kanan), atau null
+  /// blok di baris layar `clientY` (klik kanan), atau null; linimasa mati = tidak ada blok yang ditawarkan
   export function blockAt(clientY: number): { cmd: string; output: string; code?: number } | null {
+    if (!timeline) return null;
     const rowsEl = el.querySelector(".xterm-rows");
     if (!rowsEl) return null;
     const r = rowsEl.getBoundingClientRect();
@@ -360,7 +376,7 @@
   const blockOn = (y: number) => blocks.findLast((b) => b.cmd && b.a.line <= y && (!b.d || y < Math.max(b.d.line, b.a.line + 1)));
   function onHover(e: MouseEvent) {
     const rows = el.querySelector(".xterm-rows")?.getBoundingClientRect();
-    if (!rows || term.buffer.active.type === "alternate") return void (hover = null);
+    if (!timeline || !rows || term.buffer.active.type === "alternate") return void (hover = null);
     const vy = term.buffer.active.viewportY;
     const b = blockOn(Math.floor((e.clientY - rows.top) / rowHeight()) + vy);
     hover = b ? { top: (b.a.line - vy) * rowHeight() + lift, b } : null;
@@ -374,7 +390,7 @@
   }
   function updateSticky() {
     const top = term.buffer.active.viewportY;
-    sticky = term.buffer.active.type === "alternate" ? null : (blocks.findLast((b) => b.cmd && b.a.line < top && (!b.d || b.d.line > top)) ?? null);
+    sticky = !timeline || term.buffer.active.type === "alternate" ? null : (blocks.findLast((b) => b.cmd && b.a.line < top && (!b.d || b.d.line > top)) ?? null);
   }
 
   /// FR-58: ⌘↑/⌘↓ lompat ke awal blok sebelum/sesudah baris teratas layar

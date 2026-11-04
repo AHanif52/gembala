@@ -613,6 +613,15 @@
             <input type="checkbox" role="switch" aria-label="Input editor" checked={ui.input_editor} onchange={(e) => set("input_editor", e.currentTarget.checked)} />
           </div>
         </section>
+        <!-- FR-58 (keputusan 4 Nov, mockup-blok-perintah opsi C): satu sakelar global untuk linimasa blok perintah;
+             "ringkas output agent" tetap per profil (FR-56), bukan di grup ini -->
+        <h4>Blok perintah</h4>
+        <section>
+          <div class="row">
+            <span>Linimasa perintah<small>Titik per perintah, kepala folder · durasi · keluar, tombol Ulangi/Ubah/Salin. Mati = pane shell jadi terminal polos</small></span>
+            <input type="checkbox" role="switch" aria-label="Linimasa perintah" checked={ui.command_timeline} onchange={(e) => set("command_timeline", e.currentTarget.checked)} />
+          </div>
+        </section>
       {:else if sec === "agent"}
         {#if agentPage === "akun"}
           <!-- Gembala.pen 31: halaman akun dibuka dari baris agent; nav Agent kembali ke halaman induk -->

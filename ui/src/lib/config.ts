@@ -11,6 +11,7 @@ export type Ui = {
   scrollback_lines: number;
   screen_reader: boolean;
   input_editor: boolean;
+  command_timeline: boolean; // FR-58: linimasa blok perintah di pane shell
   on_quit: "keep" | "stop";
 };
 
@@ -84,6 +85,7 @@ export const UI_DEFAULT: Ui = {
   scrollback_lines: 5000,
   screen_reader: false,
   input_editor: true,
+  command_timeline: true,
   on_quit: "keep",
 };
 

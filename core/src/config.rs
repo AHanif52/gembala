@@ -34,6 +34,9 @@ const UI: &[(&str, Kind)] = &[
     ("screen_reader", Bool(false)),
     // FR-59: input editor di prompt zsh; prompt shell disembunyikan (berlaku untuk pane baru)
     ("input_editor", Bool(true)),
+    // FR-58: linimasa blok perintah di pane shell (garis, titik, kepala blok, tombol Ulangi/Ubah/Salin);
+    // mati = terminal polos, penanda OSC 133 tetap dilacak untuk lompat blok
+    ("command_timeline", Bool(true)),
     // FR-20: Cmd+Q = app ditutup, agent tetap jalan (keep) atau semua pane dihentikan (stop)
     ("on_quit", Enum(&["keep", "stop"], "keep")),
 ];
@@ -489,6 +492,22 @@ mod tests {
         for want in ["ui.font_size", "ui.theme", "ui.warna", "cmd+y"] {
             assert!(all.contains(want), "{want} tidak ditandai: {all}");
         }
+    }
+
+    #[test]
+    fn linimasa_perintah_dari_config() {
+        // FR-58: bawaan nyala; false dari config bertahan, nilai bukan bool jatuh ke bawaan dan ditandai
+        assert_eq!(load(None).values["ui"]["command_timeline"], true);
+        let c = load(Some("[ui]\ncommand_timeline = false\n"));
+        assert_eq!(c.values["ui"]["command_timeline"], false);
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        let c = load(Some("[ui]\ncommand_timeline = \"mati\"\n"));
+        assert_eq!(c.values["ui"]["command_timeline"], true);
+        assert!(c.errors.join("").contains("ui.command_timeline"), "{:?}", c.errors);
+        // ditulis lewat config.set, bukan hanya dibaca
+        let p = scratch("linimasa");
+        set(&p, "ui", "command_timeline", &json!(false)).unwrap();
+        assert_eq!(load(Some(&fs::read_to_string(&p).unwrap())).values["ui"]["command_timeline"], false);
     }
 
     #[test]
