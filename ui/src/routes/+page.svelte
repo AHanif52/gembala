@@ -197,6 +197,8 @@
   // FR-59: panel "Mulai" di pane shell yang belum menjalankan apa pun
   let ran = $state<Record<number, boolean>>({});
   let installed = $state<string[]>([]); // agent terpasang (agents.detect), diisi saat app dibuka
+  /// focused pane that shows the FR-59 Start panel (the welcome card joins it); null = none
+  const startHere = $derived(tab && editorShown(tab.focus) && !ran[tab.focus] && !draft[tab.focus] ? tab.focus : null);
   // FR-61: satu tombol per akun bila agent itu punya akun selain Utama (seperti palet)
   const startProfiles = $derived(
     (cfg?.values.profiles ?? [])
@@ -2032,17 +2034,24 @@
             {#if ed && !ran[pane] && !draft[pane]}
               <!-- FR-59: panel Mulai: hilang begitu ada perintah jalan atau mulai mengetik -->
               <div class="start" class:withhead={head}>
-                <span class="m">Mulai di {home(meta[pane]?.cwd) || "~"}</span>
-                <div class="starts">
-                  {#each startProfiles as p (p.key)}
-                    <button class="sbtn" onclick={() => swapToProfile(pane, p.id, p.account)}><span class="aico {p.agent}">{GLYPH[p.agent] ?? "›"}</span>{p.label}</button>
-                  {/each}
-                  {#if pickable.length}
-                    <button class="sbtn" onclick={(e) => popup(e, pickable.map((p) => [p.label, () => swapToProfile(pane, p.id, p.account, true)] as MItem))}
-                      >{@render icon("history")} Sesi lama…</button
-                    >
+                {#if welcome && pane === startHere}{@render welcomeCard("wcard")}{/if}
+                <div class="scol">
+                  <span class="wm">Mulai dari sini, atau ketik aja di bawah</span>
+                  {#if startProfiles.length}
+                    <div class="starts">
+                      {#each startProfiles as p (p.key)}
+                        <button class="sbtn" onclick={() => swapToProfile(pane, p.id, p.account)}><span class="aico {p.agent}">{GLYPH[p.agent] ?? "›"}</span>{p.label}</button>
+                      {/each}
+                    </div>
                   {/if}
-                  <button class="sbtn" onclick={() => startInFolder(pane)}>{@render icon("folder")} Buka folder…</button>
+                  <div class="starts">
+                    <button class="sbtn" onclick={() => startInFolder(pane)}>{@render icon("folder")} Pindah folder…</button>
+                    {#if pickable.length}
+                      <button class="sbtn" onclick={(e) => popup(e, pickable.map((p) => [p.label, () => swapToProfile(pane, p.id, p.account, true)] as MItem))}
+                        >{@render icon("history")} Pilih sesi lama…</button
+                      >
+                    {/if}
+                  </div>
                 </div>
               </div>
             {/if}
@@ -2307,17 +2316,24 @@
       </span>
     </div>
   {/if}
-  {#if welcome}
-    <div class="confirm welcome" role="dialog" aria-label="Selamat datang">
-      <b>Siap dipakai</b>
-      {#each welcome as a (a.agent)}
-        <span>{a.installed ? "✓" : "·"} {a.name} <span class="keys">{a.installed ? a.version : "tidak terpasang"}</span></span>
+  {#snippet welcomeCard(cls: string)}
+    <!-- FR-43 / pen 01: found agents with their version, then the three things people use most -->
+    {@const found = (welcome ?? []).filter((a) => a.installed)}
+    <div class="{cls} welcome" role="dialog" aria-label="Selamat datang">
+      <b class="wtitle">Gembala udah siap dipakai</b>
+      <span class="wm">{found.length ? "Agent yang ketemu di laptop lu:" : "Belum ada agent yang ketemu. Shell tetap bisa dipakai."}</span>
+      {#each found as a (a.agent)}
+        <span class="wrow"><span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span>{a.name}<span class="wver" class:untested={!a.tested}>{a.version ?? ""}{a.tested ? "" : " · belum diuji"}</span></span>
       {/each}
-      <span class="keys">⌘P cari tab dan aksi · ⌘T tab baru dari profil · ⌘, Pengaturan</span>
-      <span class="keys">Ketik perintah di kotak bawah · @@ di prompt agent = lempar ke agent lain</span>
-      <span class="acts"><button class="mini" onclick={() => (welcome = null)}>Mulai <span class="keys">Enter</span></button></span>
+      <span class="wm">Tiga hal yang paling kepake:</span>
+      <span class="wrow"><kbd class="wkey">⌘P</kbd>Cari tab atau aksi apa aja</span>
+      <span class="wrow"><kbd class="wkey">kotak bawah</kbd>Ketik perintah kayak di Warp; Tab buat lengkapin</span>
+      <span class="wrow"><kbd class="wkey">@@</kbd>Di prompt agent: lempar tugas ke agent lain</span>
+      <span class="acts"><button class="mini pri" onclick={() => (welcome = null)}>Mulai</button></span>
     </div>
-  {/if}
+  {/snippet}
+  <!-- with the Start panel showing, the card sits above it inside the pane (pen 01) -->
+  {#if welcome && startHere === null}{@render welcomeCard("confirm")}{/if}
   {#if quitAsk}
     <div class="confirm" role="alertdialog" aria-label="Konfirmasi keluar">
       <span><b>{quitAsk} pane</b> masih menjalankan proses. Keluar dan hentikan semua?</span>
@@ -3306,21 +3322,26 @@
   .start.withhead {
     top: 22px;
   }
+  /* pen 01: label + agent row + action row, left-aligned in the card's column */
+  .scol {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: min(520px, 90%);
+  }
   .starts {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-    max-width: 80%;
+    gap: 6px;
     pointer-events: auto;
   }
   .sbtn {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 7px 12px;
+    padding: 4px 10px;
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: 4px;
     background: var(--card);
     color: var(--fg);
     font: inherit;
@@ -3863,8 +3884,51 @@
     color: var(--tx-red, #dc2626);
     font-size: 12px;
   }
+  /* pen 01: welcome card, also used inside the Start panel (.wcard) */
   .welcome {
-    min-width: 280px;
+    width: min(520px, 90%);
+    box-sizing: border-box;
+    gap: 8px;
+    padding: 16px 18px;
+  }
+  .wcard {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 16px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    pointer-events: auto;
+  }
+  .wtitle {
+    font-size: 14px;
+  }
+  .wm {
+    margin-top: 2px;
+    color: var(--muted);
+  }
+  .wrow {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  .wver {
+    margin-left: auto;
+    color: var(--muted);
+    font: 11px "SF Mono", Menlo, monospace;
+  }
+  .wver.untested {
+    color: var(--tx-amber, #d97706);
+  }
+  .wkey {
+    flex: none;
+    width: 80px;
+    margin-right: 6px;
+    padding: 1px 6px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font: 11px "SF Mono", Menlo, monospace;
   }
   .tile {
     position: absolute;
