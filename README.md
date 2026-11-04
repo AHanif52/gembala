@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="ui/src-tauri/icons/128x128@2x.png" width="96" alt="">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/logo-terang.svg">
+    <img src="docs/logo-gelap.svg" width="112" alt="">
+  </picture>
 </p>
 
 <h1 align="center">Gembala</h1>
@@ -73,6 +76,22 @@ penyedianya. Gembala nggak jadi proxy, nggak baca token, dan nggak ngubah config
 | **Titik kembali** | Hasil satu giliran agent nggak sesuai? Kembalikan ke sebelum giliran itu. |
 | **Toolbar agent** | Branch, jumlah commit di depan/belakang, dan file yang berubah, langsung di bawah pane. |
 | **Rahasia disamarkan** | Token dan password di diff ditutup sebelum tampil. |
+
+## 📸 Screenshots
+
+### Agent saling kirim pesan
+
+Codex nambah tes, lalu ngirim ringkasan ke Claude pakai `gembala send`. Pesan sampai dengan label asalnya, dan Claude
+balas setelah ngecek sendiri.
+
+![Codex dan Claude saling kirim pesan di Gembala](docs/images/pesan-antar-agent.png)
+
+### Butuh lu
+
+Codex minta izin jalanin perintah. Pane-nya langsung masuk strip "Butuh lu" di sidebar, dan Gembala nggak pernah
+ngejawab izin itu sendiri.
+
+![Strip Butuh lu saat Codex menunggu izin](docs/images/butuh-izin.png)
 
 ## 🔐 Privasi dan keamanan
 

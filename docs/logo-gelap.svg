@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs><linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#26242C"/><stop offset="1" stop-color="#141317"/></linearGradient></defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>
+  <svg x="157.68" y="157.68" width="708.64" height="708.64" viewBox="0 0 256 256"><path fill="#D08A4E" fill-rule="evenodd" d="M88 48 H168 A40 40 0 0 1 208 88 V168 A40 40 0 0 1 168 208 H88 A40 40 0 0 1 48 168 V88 A40 40 0 0 1 88 48 Z M101 208 V108 A45 45 0 0 1 191 108 V122 A25 25 0 0 1 141 122 A11 11 0 0 1 163 122 A3 3 0 0 0 169 122 V108 A23 23 0 0 0 123 108 V208 Z"/></svg>
+</svg>
