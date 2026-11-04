@@ -451,6 +451,9 @@
     el.addEventListener("paste", onPaste, true);
 
     let attached = false;
+    // daemon baru mengirim penanda pane.attached sesudah snapshot: event sebelumnya sudah ada di snapshot (dibuang),
+    // sesudahnya belum. Daemon lama tanpa penanda (balasan tanpa `sync`) = semua event dipakai seperti dulu
+    let synced = false;
     const early: any[] = [];
     const onEvent = (e: any) => {
       if (e.event === "pane.output") term.write(unb64(e.params.data));
@@ -466,21 +469,24 @@
     };
     const unlisten = listen<any>("daemon", ({ payload }) => {
       if (payload.params?.pane !== pane) return;
-      if (attached) onEvent(payload);
+      if (payload.event === "pane.attached") return void ((synced = true), early.splice(0));
+      if (attached && synced) onEvent(payload);
       else early.push(payload);
     });
 
     (async () => {
       try {
+        await unlisten; // listener siap sebelum attach: penanda tidak boleh terlewat
         await call("pane.resize", { pane, rows: term.rows, cols: term.cols });
         // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
         const a = await call("pane.attach", { pane });
+        if (!a.sync) synced = true;
         const snap = unb64(a.snapshot);
         term.write(snap, decorateSummary);
         if (a.prompt) onprompt(true); // FR-59: penanda B sebelum attach tidak ikut snapshot
         if (/\S/.test(new TextDecoder().decode(snap).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
         attached = true;
-        early.splice(0).forEach(onEvent);
+        if (synced) early.splice(0).forEach(onEvent); // belum: penanda yang datang nanti membuang yang tertahan
       } catch (e) {
         term.write(`\x1b[31mgagal attach pane ${pane}: ${e}\x1b[0m\r\n`);
       }

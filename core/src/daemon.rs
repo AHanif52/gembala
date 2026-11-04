@@ -115,7 +115,11 @@ impl Pane {
 struct Sub {
     tx: SyncSender<String>,
     sock: UnixStream,
+    /// id koneksi: satu langganan per koneksi per pane (attach ulang tidak menggandakan event)
+    conn: u64,
 }
+
+static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
 struct State {
     panes: Mutex<HashMap<u64, Arc<Pane>>>,
@@ -261,6 +265,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     // SEC-20: UI bertanda tangan sama dengan daemon dikenali dari audit token saat connect, tanpa rahasia
     let signed = chan == Chan::Ui && st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r));
     let (tx, rx) = sync_channel::<String>(QUEUE);
+    let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let mut w = s.try_clone()?;
     let sock = s.try_clone()?;
     // satu penulis per koneksi: balasan dan event tidak saling potong
@@ -361,9 +366,15 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     let mut v = pane.view.lock().unwrap();
                     let (rows, cols) = v.0.size();
                     let prompt = pane.at_prompt.load(Ordering::Relaxed);
-                    reply(&tx, id, Ok(json!({"snapshot": B64.encode(v.0.replay()), "rows": rows, "cols": cols, "prompt": prompt})));
+                    reply(&tx, id, Ok(json!({"snapshot": B64.encode(v.0.replay()), "rows": rows, "cols": cols, "prompt": prompt, "sync": true})));
+                    // penanda urutan di antrean yang sama: event pane sebelum ini sudah ada di snapshot, sesudahnya belum.
+                    // UI (balasan dan event lewat jalur berbeda di Tauri) membuang event sebelum penanda; tanpa ini event
+                    // yang ditahan selama attach ditulis dua kali dan gambar ulang TUI (kursor relatif) jadi berantakan
+                    let _ = tx.try_send(line(json!({"event": "pane.attached", "params": {"pane": p["pane"]}})));
+                    // attach ulang dari koneksi yang sama (tab pindah workspace) mengganti langganan lama, bukan menambah
+                    v.1.retain(|s| s.conn != conn);
                     if let Ok(sock) = sock.try_clone() {
-                        v.1.push(Sub { tx: tx.clone(), sock });
+                        v.1.push(Sub { tx: tx.clone(), sock, conn });
                     }
                 }
                 Err(e) => reply(&tx, id, Err(e)),

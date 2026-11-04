@@ -171,6 +171,34 @@ fn pane_tulis_resize_attach_ulang() {
     assert_eq!(ui.call("pane.write", json!({"pane": pane, "data": ""}))["error"]["code"], "no_such_pane");
 }
 
+/// Attach ulang dari koneksi yang sama (tab dipindah ke workspace lain) tidak menggandakan output, dan tiap attach
+/// diikuti penanda pane.attached (UI membuang event sebelum penanda karena sudah ada di snapshot)
+#[test]
+fn attach_ulang_tidak_menggandakan_output() {
+    let d = start("reattach");
+    let mut ui = Cli::ui(&d);
+    let pane = ui.call("pane.create", json!({"rows": 24, "cols": 80}))["result"]["pane"].as_u64().unwrap();
+    for _ in 0..3 {
+        let r = ui.call("pane.attach", json!({"pane": pane}));
+        assert_eq!(r["result"]["sync"], true, "{r}");
+        assert!(!next_event(&mut ui, "pane.attached", Duration::from_secs(5)).is_null(), "penanda tidak datang");
+    }
+    ui.events.clear();
+    ui.call("pane.write", json!({"pane": pane, "data": B64.encode("echo SATU-$((1+1))\r")}));
+    let mut out = String::new();
+    for e in std::mem::take(&mut ui.events) {
+        out += &String::from_utf8_lossy(&B64.decode(e["params"]["data"].as_str().unwrap_or("")).unwrap());
+    }
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(3) {
+        let e = ui.recv();
+        if e["event"] == "pane.output" {
+            out += &String::from_utf8_lossy(&B64.decode(e["params"]["data"].as_str().unwrap()).unwrap());
+        }
+    }
+    assert_eq!(out.matches("SATU-2").count(), 1, "{out}");
+}
+
 /// Kriteria 9: skrip di dalam pane, bahkan yang memegang rahasia UI, tidak bisa memakai kanal UI;
 /// lewat kanal pane, aksi manusia ditolak.
 #[test]
