@@ -2,7 +2,35 @@
 
 use std::num::NonZeroU16;
 
-pub struct Grid(vt100::Parser);
+/// Parser, then the prefix of a sequence/UTF-8 char cut off at the end of the stream (see `pending`).
+pub struct Grid(vt100::Parser, Vec<u8>);
+
+/// Start of the incomplete tail of `b`: an escape sequence (CSI, OSC, ESC + intermediates) or a cut-off UTF-8
+/// char; `b.len()` if the end is intact. The vt100 parser keeps that prefix inside itself, a snapshot does not.
+fn pending(b: &[u8]) -> usize {
+    let from = b.len().saturating_sub(4096);
+    if let Some(i) = b[from..].iter().rposition(|&c| c == 0x1b).map(|i| from + i) {
+        let r = &b[i + 1..];
+        let open = match r.first() {
+            None => true,
+            Some(b'[') => r[1..].iter().all(|c| (0x20..=0x3f).contains(c)),
+            Some(b']' | b'P' | b'X' | b'^' | b'_') => !r.contains(&0x07),
+            Some(0x20..=0x2f) => r.iter().all(|c| (0x20..=0x2f).contains(c)),
+            _ => false,
+        };
+        if open {
+            return i;
+        }
+    }
+    let tail = &b[b.len().saturating_sub(3)..];
+    let Some(k) = tail.iter().rposition(|&c| c >= 0xc0) else { return b.len() };
+    let need = match tail[k] {
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    };
+    if tail.len() - k < need { b.len() - (tail.len() - k) } else { b.len() }
+}
 
 /// vt100 menganggap bold dan dim saling ganti (`ESC[2m` saja dari bold ke dim), xterm menganggap keduanya terpisah:
 /// tanpa `22` dulu, baris dim sesudah baris bold tampil bold+dim. Tiap parameter 1/2 didahului 22 (lewati warna 38/48).
@@ -36,11 +64,21 @@ fn nz(n: u16) -> NonZeroU16 {
 
 impl Grid {
     pub fn new(rows: u16, cols: u16, scrollback: usize) -> Grid {
-        Grid(vt100::Parser::new(nz(rows), nz(cols), scrollback))
+        Grid(vt100::Parser::new(nz(rows), nz(cols), scrollback), Vec::new())
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
         self.0.process(bytes);
+        let joined;
+        let all = if self.1.is_empty() {
+            bytes
+        } else {
+            joined = [self.1.as_slice(), bytes].concat();
+            &joined
+        };
+        let p = pending(all);
+        // ponytail: a prefix over 4 KiB (e.g. a long OSC 52) is dropped; the screen stays right, only its rest can leak
+        self.1 = if all.len() - p <= 4096 { all[p..].to_vec() } else { Vec::new() };
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -57,7 +95,10 @@ impl Grid {
             out.push_str("\x1b[?1049h");
         }
         out.push_str(&fix_intensity(&s.state_formatted()));
-        out.into_bytes()
+        // the next pty chunk (a live event) continues the cut-off sequence; xterm has to be mid-sequence too
+        let mut out = out.into_bytes();
+        out.extend_from_slice(&self.1);
+        out
     }
 
     /// FR-2: scrollback layar utama lalu snapshot, supaya riwayat ikut tampil saat app dibuka lagi.
@@ -169,6 +210,23 @@ mod tests {
         g.feed(b"$ ls\r\n\x1b[1;32mhijau\x1b[0m biasa \x1b[48;5;196mmerah\x1b[0m\r\n\x1b[5;10Hdi tengah\x1b[3;1H");
         assert_roundtrip(&g);
         assert!(g.text().contains("di tengah"));
+    }
+
+    /// A pty read can stop mid escape sequence or mid UTF-8 char; the rest arrives as a live event after the snapshot.
+    /// Without its prefix in the snapshot, that rest is printed as text (`[240G`, `46m`, `�`).
+    #[test]
+    fn attach_di_tengah_sequence() {
+        let stream = "\x1b[2Jhalo \x1b[1;32mhijau\x1b[0m ─ \x1b]0;judul\x07\x1b(B\x1b[3;5Hab\x1b[240Gz".as_bytes();
+        let mut whole = Grid::new(5, 40, 0);
+        whole.feed(stream);
+        for cut in 1..stream.len() {
+            let mut a = Grid::new(5, 40, 0);
+            a.feed(&stream[..cut]);
+            let mut b = Grid::new(5, 40, 0);
+            b.feed(&a.replay());
+            b.feed(&stream[cut..]);
+            assert_eq!(b.text(), whole.text(), "dipotong di byte {cut}");
+        }
     }
 
     #[test]
