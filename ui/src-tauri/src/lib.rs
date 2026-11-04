@@ -251,10 +251,11 @@ fn resolve_paths(paths: Vec<String>) -> Vec<String> {
 
 /// FR-40 banner macOS (T5). Isi hanya nama pane + status (SEC-33): bisa tampil di layar kunci.
 #[tauri::command]
-fn notify_pane(app: tauri::AppHandle, body: String, sound: bool) {
+fn notify_pane(app: tauri::AppHandle, body: String, sound: bool, pane: Option<u64>) {
     use tauri_plugin_notification::NotificationExt;
     let body: String = body.chars().filter(|c| !c.is_control()).take(80).collect();
-    let mut n = app.notification().builder().title("Gembala").body(body);
+    // id = pane: klik banner (`on_action` di `run`) memindah ke pane itu
+    let mut n = app.notification().builder().title("Gembala").body(body).id(pane.and_then(|p| i32::try_from(p).ok()).unwrap_or(0));
     if sound {
         n = n.sound("default");
     }
@@ -559,6 +560,22 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Daemon(Mutex::new(None)))
+        // FR-40: klik banner = jendela tampil + pindah ke pane-nya (id notifikasi = id pane, lihat `notify_pane`).
+        // ponytail: plugin menunggu klik di satu thread per banner sampai banner hilang dari Notification Center
+        .setup(|app| {
+            use tauri_plugin_notification::NotificationExt;
+            let h = app.handle().clone();
+            app.notification().on_action(move |a| {
+                let Some(pane) = a.notification().map(|n| n.id()).filter(|id| a.action_id() == "tap" && *id > 0) else { return };
+                if let Some(w) = h.get_webview_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+                let _ = h.emit("notify-click", pane);
+            })?;
+            Ok(())
+        })
         .manage(Shortcuts(Mutex::new(resolve_keys(&serde_json::Map::new()))))
         // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
         .menu(|app| build_menu(app, &resolve_keys(&serde_json::Map::new()).0))

@@ -1651,8 +1651,8 @@
   const notify = $derived(cfg?.values.notify ?? { on_blocked: true, on_done: true, long_command_secs: 30, sound: true });
 
   /// FR-40: banner + Dock melompat saat jendela tidak dilihat; isi nama pane + status saja (SEC-33).
-  /// Kembali ke app tidak memindah pane: plugin tidak memberi callback klik, dan event fokus jendela
-  /// tidak bisa membedakan klik notifikasi dari Cmd+Tab (gesekan 2 Nov 2026).
+  /// Klik banner = pindah ke pane itu (event `notify-click` dari `on_action` plugin, id notifikasi = id pane);
+  /// fokus jendela biasa (Cmd+Tab) tidak memindah pane.
   function alert(pane: number, kind: "blocked" | "done", label: string) {
     const m = meta[pane];
     if (m) note(pane, kind, label);
@@ -1661,7 +1661,7 @@
     if (kind === "blocked") invoke("attention").catch(() => {}); // Dock melompat hanya bila perlu tindakan; selesai cukup badge
     // SEC-33: nama pane, nama tab (FR-65), status; tanpa isi layar
     const t = tabOf(pane);
-    invoke("notify_pane", { body: `${m.name || m.profile}${t ? ` di ${title(t)}` : ""} ${label}`, sound: notify.sound }).catch(() => {});
+    invoke("notify_pane", { body: `${m.name || m.profile}${t ? ` di ${title(t)}` : ""} ${label}`, sound: notify.sound, pane }).catch(() => {});
   }
   // FR-76: bell history, same content as the macOS banner (pane name + status, SEC-33); newest first, max 100.
   // ponytail: kept in UI memory, so it clears when the app restarts; move to the daemon if it must outlive the UI
@@ -1775,6 +1775,11 @@
     onFull();
     const unlistenFull = win.onResized(onFull);
     const unlisten = listen<string>("shortcut", ({ payload }) => run(payload));
+    // FR-40: banner diklik = pindah ke pane-nya; kabar pane itu di lonceng ikut dilihat
+    const unlistenClick = listen<number>("notify-click", ({ payload: p }) => {
+      notes.forEach((n) => n.pane === p && (n.seen = true));
+      if (meta[p] && !dead[p]) jumpTo(p);
+    });
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
@@ -1825,6 +1830,7 @@
       window.removeEventListener("keydown", keepFullscreen);
       unlistenFull.then((f) => f());
       unlisten.then((f) => f());
+      unlistenClick.then((f) => f());
       unlistenCfg.then((f) => f());
       unlistenDrop.then((f) => f());
     };
