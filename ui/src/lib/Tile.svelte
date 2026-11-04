@@ -615,6 +615,7 @@
   }
   .term :global(.tl-acts) {
     display: flex;
+    align-items: center;
     gap: 6px;
     margin-right: 12px;
   }
@@ -634,8 +635,13 @@
     height: 1px;
     background: color-mix(in srgb, var(--fg) 12%, transparent);
   }
+  /* tombol muat di dalam baris kepala (tidak meluber ke atas), tengah vertikal */
   .term :global(.tl-acts button) {
-    padding: 2px 9px;
+    display: flex;
+    align-items: center;
+    height: max(14px, calc(var(--rh, 20px) - 3px));
+    padding: 0 9px;
+    line-height: 1;
     border: 1px solid var(--line);
     border-radius: 5px;
     background: var(--card);
