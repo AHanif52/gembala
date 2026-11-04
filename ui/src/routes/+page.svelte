@@ -1311,7 +1311,8 @@
     delete m.ended;
     if (AGENTS.includes(m.agent)) return relaunch(pane);
     const info = await call("pane.info", { pane }).catch(() => ({ busy: true }));
-    if (!info.busy) call("pane.write", { pane, data: b64(new TextEncoder().encode(`${cmd}\r`)) });
+    // Ctrl+U first: leftover text on the zsh line (e.g. a pasted image path) would become part of the command
+    if (!info.busy) call("pane.write", { pane, data: b64(new TextEncoder().encode(`\x15${cmd}\r`)) });
   }
 
   const stop = (e: KeyboardEvent) => {
