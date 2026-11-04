@@ -75,6 +75,7 @@
   let query = $state("");
   let found = $state("");
   let input = $state<HTMLInputElement>();
+  const FIND_H = 32; // pen 04: find bar height; the terminal moves down below it
   const enc = new TextEncoder();
 
   $effect(() => {
@@ -435,7 +436,7 @@
     const onTheme = () => (systemLight = light.matches);
     light.addEventListener("change", onTheme);
     search.onDidChangeResults(({ resultIndex, resultCount }) => {
-      found = resultCount ? `${resultIndex + 1}/${resultCount}` : query ? "0" : "";
+      found = resultCount ? `${resultIndex + 1} dari ${resultCount}` : query ? "nggak ada" : "";
     });
 
     // FR-35: Option kiri dan kanan diatur terpisah (bawaan: kiri Meta, kanan karakter, mis. ⌥⇧2 = €).
@@ -576,10 +577,10 @@
   </span>
 {/snippet}
 
-<div class="term" bind:this={el} style:--lift="{lift}px"></div>
+<div class="term" class:finding bind:this={el} style:--lift="{lift}px"></div>
 {#if sticky}
   <!-- FR-58: kepala blok menempel -->
-  <div class="sticky" class:fail={!!sticky.code} class:run={!sticky.d}>
+  <div class="sticky" style:top={finding ? `${FIND_H}px` : null} class:fail={!!sticky.code} class:run={!sticky.d}>
     <i class="sdot"></i>
     <span class="scmd">{sticky.cmd}</span>
     <span class="smeta"
@@ -589,20 +590,28 @@
   </div>
 {/if}
 {#if hover && hover.b !== sticky && hover.top >= 0}
-  <div class="bacts" style:top="{hover.top + 10}px">{@render acts(hover.b)}</div>
+  <div class="bacts" style:top="{hover.top + 10 + (finding ? FIND_H : 0)}px">{@render acts(hover.b)}</div>
 {/if}
 {#if finding}
-  <div class="find">
+  <!-- pen 04: full-width bar under the pane head; buttons keep focus in the input -->
+  <div class="find" role="search" style:height="{FIND_H}px">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5l3.5 3.5" /></svg>
     <input
       bind:this={input}
       bind:value={query}
       oninput={() => find()}
       onkeydown={onFindKey}
-      placeholder="Cari"
+      placeholder="Cari di pane ini"
       aria-label="Cari di pane"
       spellcheck="false"
     />
-    <span class="count">{found}</span>
+    <span class="count" aria-live="polite">{found}</span>
+    <button title="Sebelumnya ⇧↩" aria-label="Hasil sebelumnya" onpointerdown={(e) => e.preventDefault()} onclick={() => find(true)}
+      ><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4" /></svg></button>
+    <button title="Berikutnya ↩" aria-label="Hasil berikutnya" onpointerdown={(e) => e.preventDefault()} onclick={() => find()}
+      ><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg></button>
+    <button title="Tutup Esc" aria-label="Tutup cari" onclick={closeFind}
+      ><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg></button>
   </div>
 {/if}
 
@@ -914,31 +923,61 @@
   .bacts-in button:disabled {
     opacity: 0.4;
   }
+  .term.finding {
+    top: 42px; /* 10px gap + FIND_H */
+  }
   .find {
     position: absolute;
-    top: 8px;
-    right: 14px;
+    inset: 0 0 auto 0;
     z-index: 3;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--card);
+    gap: 6px;
+    padding: 0 8px 0 10px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--muted);
     font: 12px system-ui, -apple-system, sans-serif;
   }
+  .find svg {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
   .find input {
-    width: 180px;
-    border: 0;
+    flex: 1;
+    min-width: 0;
+    padding: 3px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
     outline: 0;
     background: transparent;
     color: var(--fg);
-    font: inherit;
+    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .find input:focus {
+    border-color: var(--tx-blue, #3b82f6);
   }
   .count {
-    min-width: 32px;
-    text-align: right;
-    color: var(--muted);
+    flex: none;
+    white-space: nowrap;
+  }
+  .find button {
+    display: flex;
+    padding: 4px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: inherit;
+  }
+  .find button:hover {
+    background: var(--line);
+    color: var(--fg);
   }
 </style>
