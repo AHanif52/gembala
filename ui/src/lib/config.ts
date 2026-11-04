@@ -25,6 +25,7 @@ export type Profile = {
   secret_env: { name: string; ref: string }[];
   summarize: boolean;
   notify: boolean;
+  policy?: string; // SEC-5: pesan dari agent lain — auto | confirm | deny
   permission: string; // FR-64: default | auto
   account?: string; // FR-61: akun bawaan profil; kosong = Utama
 };

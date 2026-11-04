@@ -5,6 +5,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { call } from "./daemon";
+  import { envRows, envPatch, type EnvRow } from "./env";
   import { pretty, type Account, type Agent, type Config, type Profile, type Ui } from "./config";
 
   let {
@@ -79,7 +80,22 @@
   }
   let daemon = $state<{ daemon: string; proto: number } | null>(null);
   // FR-29: ubah profil dari layar; satu baris = satu argumen / satu env
-  type Form = { id: string; name: string; agent: string; command: string; args: string; cwd: string; env: string; secret: string; summarize: boolean; notify: boolean; permission: string; account: string; isNew: boolean };
+  type Form = {
+    id: string;
+    name: string;
+    agent: string;
+    command: string;
+    args: string;
+    cwd: string;
+    env: EnvRow[];
+    secret: string;
+    summarize: boolean;
+    notify: boolean;
+    permission: string;
+    policy: string; // SEC-5 / msg.rs Policy: auto, confirm, deny
+    account: string;
+    isNew: boolean;
+  };
   let form = $state<Form | null>(null);
   const BUILTIN = ["shell", "claude", "codex", "opencode", "omp"];
 
@@ -94,12 +110,35 @@
       command: p.command,
       args: p.args.join("\n"),
       cwd: p.cwd,
-      env: p.env.map((k) => `${k}=`).join("\n"), // nilai env tidak dikirim ke UI; isi ulang bila mengubah
+      env: envRows(p.env), // nilai env tidak dikirim ke UI; isi ulang bila ingin mengubah
       secret: p.secret_env.map((x) => `${x.name}=${x.ref}`).join("\n"),
       summarize: p.summarize,
       notify: p.notify,
       permission: p.permission ?? "default",
+      policy: p.policy ?? "auto",
       isNew: copy,
+    };
+  }
+
+  /// Gembala.pen 30: "+ Profil" menambah profil kosong; id-nya dibuat unik karena id dipakai di config.toml
+  function blank() {
+    let id = "profil";
+    for (let n = 2; cfg.values.profiles.some((x) => x.id === id); n++) id = `profil-${n}`;
+    form = {
+      id,
+      name: "Profil baru",
+      agent: "shell",
+      account: "",
+      command: "",
+      args: "",
+      cwd: "",
+      env: [],
+      secret: "",
+      summarize: true,
+      notify: true,
+      permission: "default",
+      policy: "auto",
+      isNew: true,
     };
   }
 
@@ -110,18 +149,18 @@
     if (!form) return;
     failed = "";
     // hanya env yang diisi; yang dibiarkan kosong tetap memakai nilai lama di file
-    const env = Object.fromEntries(Object.entries(pairs(form.env)).filter(([, v]) => v));
     const profile = {
       id: form.id.trim(),
       name: form.name.trim(),
       command: form.command.trim(),
       args: form.args.split("\n").map((a) => a.trim()).filter(Boolean),
       cwd: form.cwd.trim(),
-      env,
+      env: envPatch(form.env),
       secret_env: pairs(form.secret),
       summarize: form.summarize,
       notify: form.notify,
       permission: form.permission,
+      policy: form.policy,
       account: form.account,
     };
     const r = await call("profile.save", { profile }).catch((e) => ({ error: String(e) }));
@@ -266,6 +305,24 @@
   let version = $state("");
   let agents = $state<Agent[]>([]);
   let detecting = $state(false);
+  // Gembala.pen 31: halaman akun, dibuka dari baris Claude Code; nav Agent kembali ke halaman induk
+  let agentPage = $state<"main" | "akun">("main");
+  /// Jenis hook yang dipasang daemon (core/src/profile.rs `hook_files`); sumber status pane tiap agent.
+  const HOOK: Record<string, string> = {
+    claude: "hook resmi",
+    codex: "hook notify",
+    omp: "hook omp-gembala.ts",
+    opencode: "plugin opencode-gembala.js",
+  };
+  /// Baris Akun ditampilkan untuk profil yang menjalankan Claude: agent claude, atau perintahnya claude.
+  const runsClaude = (f: Form) => f.agent === "claude" || /^claude(\s|-|$)/.test(f.command.trim());
+  /// env: satu baris = satu NAMA dan nilai; baris tanpa nilai dibuang saat simpan (nilai lama tetap)
+  function envAdd() {
+    if (form) form.env = [...form.env, { name: "", value: "" }];
+  }
+  function envDel(i: number) {
+    if (form) form.env = form.env.filter((_, j) => j !== i);
+  }
 
   /// FR-28: deteksi lewat login shell; "Periksa ulang" memaksa deteksi baru
   async function detect(refresh: boolean) {
@@ -301,23 +358,87 @@
 
 {#snippet editor()}
   {#if form}
-    <div class="form">
-      <label>Id <input bind:value={form.id} disabled={!form.isNew} spellcheck="false" /></label>
-      <label>Nama <input bind:value={form.name} /></label>
-      <label>Perintah <input bind:value={form.command} placeholder="kosong = shell" spellcheck="false" /></label>
-      <label>Argumen <small>satu per baris</small><textarea bind:value={form.args} rows="2" spellcheck="false"></textarea></label>
-      <label>Folder <input bind:value={form.cwd} placeholder="kosong = ikut pane yang fokus" spellcheck="false" /></label>
-      <label>Env <small>NAMA=nilai per baris; nilai tidak ditampilkan ulang, isi lagi bila ingin mengubah</small><textarea bind:value={form.env} rows="2" spellcheck="false"></textarea></label>
-      <label>Rujukan rahasia <small>NAMA=op://vault/item/field atau NAMA=keychain:service/akun</small><textarea bind:value={form.secret} rows="2" spellcheck="false"></textarea></label>
-      <label>Mode izin agent <small>Gembala hanya menambah flag launch; izin tetap dijaga agent. OpenCode: belum ada flag, tidak berpengaruh.</small>
-        <select bind:value={form.permission}><option value="default">Bawaan agent (tanya dulu)</option><option value="auto">Auto (claude --permission-mode auto, omp --approval-mode=yolo, codex -a never)</option></select></label>
-      {#if form.agent === "claude" && cfg.values.accounts?.length}
-        <label>Akun bawaan <small>Dipakai bila tidak dipilih lain saat membuka pane (FR-61)</small>
-          <select bind:value={form.account}><option value="">Utama</option>{#each cfg.values.accounts.filter((a) => a.agent === "claude") as a (a.id)}<option value={a.id}>{a.name}</option>{/each}</select></label>
+    {@const claude = runsClaude(form)}
+    <!-- FR-29 + SEC-5: kartu profil terbuka, gaya baris Gembala.pen 30 -->
+    <div class="pcard">
+      <div class="row">
+        <span class="grow">Nama</span>
+        <input class="tin" bind:value={form.name} aria-label="Nama profil" />
+      </div>
+      {#if form.isNew}
+        <div class="row">
+          <span class="grow">Id<small>Huruf kecil, angka, dan tanda minus; dipakai di config.toml</small></span>
+          <input class="tin mono" bind:value={form.id} spellcheck="false" aria-label="Id profil" />
+        </div>
       {/if}
-      <label class="inline"><input type="checkbox" role="switch" bind:checked={form.summarize} /> Ringkas output saat agent keluar</label>
-      <label class="inline"><input type="checkbox" role="switch" bind:checked={form.notify} /> Notifikasi untuk pane dari profil ini</label>
-      <span class="acts"><button class="mini" onclick={() => (form = null)}>Batal</button> <button class="mini" onclick={saveForm}>Simpan</button></span>
+      <div class="row">
+        <span class="grow">Perintah</span>
+        <input class="tin mono" bind:value={form.command} placeholder="kosong = shell" spellcheck="false" aria-label="Perintah" />
+      </div>
+      <div class="row col">
+        <span>Argumen<small>satu per baris</small></span>
+        <textarea class="tin mono" bind:value={form.args} rows="2" spellcheck="false" aria-label="Argumen"></textarea>
+      </div>
+      <div class="row">
+        <span class="grow">Folder<small>kosong = ikut pane yang fokus</small></span>
+        <input class="tin mono" bind:value={form.cwd} placeholder="kosong = ikut pane yang fokus" spellcheck="false" aria-label="Folder" />
+      </div>
+      {#if claude && cfg.values.accounts?.length}
+        <div class="row">
+          <span class="grow">Akun<small>Dipakai bila tidak dipilih lain saat membuka pane (FR-61)</small></span>
+          <select aria-label="Akun bawaan profil" bind:value={form.account}
+            ><option value="">Utama</option>{#each cfg.values.accounts.filter((a) => a.agent === "claude") as a (a.id)}<option value={a.id}>{a.name}</option>{/each}</select
+          >
+        </div>
+      {/if}
+      <div class="row">
+        <span class="grow">Kebijakan penerima<small>Pesan dari agent lain ke pane ini: otomatis jalan, tanya dulu, atau tolak</small></span>
+        <span class="seg" role="group" aria-label="Kebijakan penerima">
+          {#each [["auto", "otomatis"], ["confirm", "konfirmasi"], ["deny", "tolak"]] as [v, t]}
+            <button class:on={form.policy === v} onclick={() => form && (form.policy = v)}>{t}</button>
+          {/each}
+        </span>
+      </div>
+      <div class="row">
+        <span class="grow">Mode izin<small>Gembala hanya menambah flag launch; izin tetap dijaga agent. OpenCode belum punya flag.</small></span>
+        <span class="seg" role="group" aria-label="Mode izin agent">
+          {#each [["default", "Bawaan agent"], ["auto", "Auto"]] as [v, t]}
+            <button class:on={form.permission === v} onclick={() => form && (form.permission = v)}>{t}</button>
+          {/each}
+        </span>
+      </div>
+      <div class="row">
+        <span class="grow">Ringkas output saat agent keluar</span>
+        <input type="checkbox" role="switch" bind:checked={form.summarize} aria-label="Ringkas output saat agent keluar" />
+      </div>
+      <div class="row">
+        <span class="grow">Notifikasi untuk pane dari profil ini</span>
+        <input type="checkbox" role="switch" bind:checked={form.notify} aria-label="Notifikasi untuk pane dari profil ini" />
+      </div>
+      <div class="row col">
+        <span>Env<small>Nama dan nilai; nilai tidak ditampilkan ulang, isi lagi bila ingin mengubah</small></span>
+        {#each form.env as e, i (i)}
+          <div class="envrow">
+            <input class="tin mono" bind:value={e.name} placeholder="NAMA" spellcheck="false" aria-label="Nama env {i + 1}" />
+            <input class="tin mono" bind:value={e.value} placeholder="nilai" spellcheck="false" aria-label="Nilai env {i + 1}" />
+            <button class="mini" aria-label="Buang env {e.name || i + 1}" onclick={() => envDel(i)}>×</button>
+          </div>
+        {/each}
+        <button class="mini addrow" onclick={envAdd}>+ Env</button>
+      </div>
+      <div class="row col">
+        <span>Rujukan rahasia<small><code>NAMA=op://vault/item/field</code> atau <code>NAMA=keychain:service/akun</code></small></span>
+        <textarea class="tin mono" bind:value={form.secret} rows="2" spellcheck="false" aria-label="Rujukan rahasia"></textarea>
+      </div>
+      <div class="row foot">
+        {#if !form.isNew}
+          <button class="link" onclick={() => form && resetProfile(form.id)}>{BUILTIN.includes(form.id) ? "Kembalikan ke bawaan" : "Hapus profil"}</button>
+        {/if}
+        <span class="acts">
+          <button class="mini" onclick={() => (form = null)}>Batal</button>
+          <button class="mini pri" onclick={saveForm}>Simpan</button>
+        </span>
+      </div>
     </div>
   {/if}
 {/snippet}
@@ -326,7 +447,7 @@
   <div class="modal" role="dialog" aria-label="Pengaturan">
     <nav>
       {#each SECTIONS as [k, t]}
-        <button class:on={k === sec} onclick={() => (sec = k)}>{t}</button>
+        <button class:on={k === sec} onclick={() => ((sec = k), (agentPage = "main"))}>{t}</button>
       {/each}
     </nav>
     <div class="body">
@@ -443,39 +564,27 @@
           </div>
         </section>
       {:else if sec === "agent"}
-        <section>
-          {#each agents as a (a.agent)}
-            <div class="row">
-              <span
-                >{a.name}<small
-                  >{a.installed
-                    ? `${a.version ?? "versi tidak terbaca"} · ${a.tested ? "teruji" : "belum diuji, status dari pola layar"}`
-                    : `Tidak ditemukan di PATH login shell. Pasang: ${a.install}`}</small
-                ></span
-              >
-              <span class="m">{a.installed ? "✓ terpasang" : "✗ tidak ada"}</span>
-            </div>
-          {/each}
-          <div class="row">
-            <span>Periksa ulang<small>Mencari agent lewat login shell, sama dengan terminal biasa</small></span>
-            <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? "Memeriksa…" : "Periksa"}</button>
-          </div>
-        </section>
-        <h4 class="hrow">Akun Claude Code{#if !accOpen}<button class="mini" onclick={() => (accOpen = true)}>+ Tambah akun</button>{/if}</h4>
+        {#if agentPage === "akun"}
+          <!-- Gembala.pen 31: halaman akun dibuka dari baris agent; nav Agent kembali ke halaman induk -->
+          <button class="back" onclick={() => (agentPage = "main")}>‹ Agent</button>
+          <h4>Akun Claude Code<span class="hint">tiap akun punya folder dan login sendiri-sendiri</span>{#if !accOpen}<button class="mini" onclick={() => (accOpen = true)}>+ Tambah akun</button>{/if}</h4>
         <section>
           {#each accRows as r (r.account.id)}
             <div class="row">
               <span class="grow"
-                >{r.account.name}{r.account.main ? " · bawaan" : ""}<small
-                  >{r.status.email ?? (r.status.used ? "email tidak terbaca" : "belum login")} · {r.account.dir}{r.account.model || r.account.effort
+                ><span class="name">{r.account.name}{#if r.account.main}<span class="badge">bawaan</span>{/if}</span><small
+                  >{r.status.email ?? "email tidak terbaca"} · {r.account.dir}{r.account.model || r.account.effort
                     ? ` · ${[r.account.model, r.account.effort].filter(Boolean).join(" · ")}`
-                    : ""}</small
+                    : ""}{r.account.main ? " · nggak bisa dihapus" : ""}</small
                 ></span
               >
               <span class="acts">
                 {#if !r.status.used}<button class="mini" onclick={() => onlogin(r.account.id, r.account.name)}>Login</button>{/if}
-                {#if !r.account.main}<button class="mini" aria-expanded={accDetail === r.account.id} onclick={() => (accDetail = accDetail === r.account.id ? "" : r.account.id)}>{accDetail === r.account.id ? "Tutup" : "Atur"}</button>{/if}
-                {#if !r.account.main}<button class="mini" onclick={() => removeAccount(r.account.id)}>{removeAsk === r.account.id ? `Yakin? ${r.account.dir} ikut dihapus` : "Hapus"}</button>{/if}
+                {#if !r.account.main}
+                  <button class="mini pri" aria-expanded={accDetail === r.account.id} onclick={() => (accDetail = accDetail === r.account.id ? "" : r.account.id)}>{accDetail === r.account.id ? "Tutup" : "Ubah"}</button>
+                  <button class="mini" onclick={() => removeAccount(r.account.id)}>{removeAsk === r.account.id ? "Yakin?" : "Hapus"}</button>
+                {/if}
+                <span class="state">{r.status.used ? "sudah dipakai" : "belum login"}</span>
               </span>
             </div>
             {#if accDetail === r.account.id}
@@ -537,33 +646,59 @@
           </div>
           {/if}
         </section>
-        <h4>Profil</h4>
-        <section>
-          {#each cfg.values.profiles as p (p.id)}
-            <div class="row">
-              <span class="grow"
-                >{p.name}<small
-                  >{p.command ? [p.command, ...p.args].join(" ") : "$SHELL -l"} · folder {p.cwd || "ikut pane yang fokus"}{p.env.length
-                    ? ` · env ${p.env.join(", ")}`
-                    : ""}{p.secret_env.length ? ` · rujukan ${p.secret_env.map((x) => x.name).join(", ")}` : ""}</small
-                ></span
-              >
-              <span class="acts">
-                <button class="mini" onclick={() => edit(p)}>Ubah</button>
-                <button class="mini" onclick={() => edit(p, true)}>Duplikat</button>
-                <button class="mini" onclick={() => resetProfile(p.id)} title={BUILTIN.includes(p.id) ? "Hapus ubahan di config" : "Hapus profil"}
-                  >{BUILTIN.includes(p.id) ? "Kembalikan" : "Hapus"}</button
+        {:else}
+          <h4>Terpasang<span class="hint">dicari lewat login shell</span>
+            <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? "Memeriksa…" : "Periksa ulang"}</button></h4>
+          <section>
+            {#each agents as a (a.agent)}
+              <div class="row">
+                <span
+                  >{a.name}<small
+                    >{a.installed
+                      ? `${a.version ?? "versi tidak terbaca"} · ${a.tested ? "teruji" : "belum dites, statusnya ditebak dari layar"}${HOOK[a.agent] ? ` · ${HOOK[a.agent]}` : ""}`
+                      : `Tidak ditemukan di PATH login shell. Pasang: ${a.install}`}</small
+                  ></span
                 >
-              </span>
-            </div>
-            {#if form && form.id === p.id && !form.isNew}{@render editor()}{/if}
-          {/each}
-          {#if form?.isNew}{@render editor()}{/if}
-        </section>
-        <p class="note">
-          Ubah atau tambah lewat <code>[[profile]]</code> di config.toml (id sama = menimpa bawaan). Rahasia hanya sebagai rujukan
-          <code>op://…</code> atau <code>keychain:service/akun</code> di <code>secret_env</code>, dibuka shell pane saat agent dijalankan.
-        </p>
+                <span class="acts">
+                  {#if a.agent === "claude" && a.installed}<button class="mini" onclick={() => (agentPage = "akun")}>Akun ({accRows.length})…</button>{/if}
+                  <span class="state" class:warn={a.installed && !a.tested}>{a.installed ? (a.tested ? "✓ terpasang" : "! belum diuji") : "✗ tidak ada"}</span>
+                </span>
+              </div>
+            {:else}
+              <div class="row"><span>Memeriksa…</span></div>
+            {/each}
+          </section>
+          <h4>Profil<button class="mini" onclick={blank}>+ Profil</button></h4>
+          <section>
+            {#each cfg.values.profiles as p (p.id)}
+              {@const open = !!form && form.id === p.id && !form.isNew}
+              <div class="row">
+                <span class="grow"
+                  >{p.name}<small
+                    >{[p.command ? [p.command, ...p.args].join(" ") : "$SHELL -l", `folder ${p.cwd || "ikut pane yang fokus"}`, p.agent === "shell" ? "" : p.policy]
+                      .filter(Boolean)
+                      .join(" · ")}</small
+                  ></span
+                >
+                <span class="acts">
+                  {#if open}
+                    <button class="mini pri" onclick={() => (form = null)}>Tutup</button>
+                  {:else}
+                    <button class="mini" onclick={() => edit(p)}>Ubah</button>
+                    <button class="mini" onclick={() => edit(p, true)}>Duplikat</button>
+                  {/if}
+                </span>
+              </div>
+              {#if open}{@render editor()}{/if}
+            {/each}
+            {#if form?.isNew}{@render editor()}{/if}
+          </section>
+          <p class="note">
+            Ubah profil pas pane-nya lagi jalan? Kepakenya di pane baru; pane lama tetap pakai isian lama sampai ditutup. Id yang sama
+            menimpa bawaan di <code>[[profile]]</code>; rahasia hanya sebagai rujukan <code>op://…</code> atau
+            <code>keychain:service/akun</code> di <code>secret_env</code>.
+          </p>
+        {/if}
       {:else if sec === "pintasan"}
         {#if keyErrors.length}
           <div class="errs" role="alert">
@@ -944,7 +1079,7 @@
     letter-spacing: 0;
     text-transform: none;
   }
-  .row > span:first-child {
+  .row > span:first-child:not(.acts) {
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -1003,9 +1138,11 @@
   }
   .seg {
     display: flex;
+    flex: none;
   }
   .seg button {
     border-radius: 0;
+    white-space: nowrap;
   }
   .seg button:first-child {
     border-radius: 4px 0 0 4px;
@@ -1062,8 +1199,7 @@
     align-items: center;
     gap: 6px;
   }
-  .form input:not([type]),
-  .form textarea {
+  .form input:not([type]) {
     padding: 5px 8px;
     border: 1px solid var(--line);
     border-radius: 4px;
@@ -1089,15 +1225,98 @@
     color: var(--fg);
     font-weight: 400;
   }
-  /* judul bagian + aksinya di kanan (Gembala.pen 31: "+ Tambah akun") */
-  h4.hrow {
+  h4 > .hint {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  /* Gembala.pen 31: kembali ke halaman induk dari sub-halaman akun */
+  .back {
+    margin: 0 0 10px -4px;
+    padding: 2px 4px;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+  }
+  .back:hover {
+    color: var(--fg);
+  }
+  /* status agent (✓ terpasang / ! belum diuji) dan akun (sudah dipakai) */
+  .state {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .state.warn {
+    color: var(--tx-amber, #f59e0b);
+  }
+  .name {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 6px;
   }
-  h4.hrow .mini {
+  .badge {
+    padding: 0 5px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 15px;
+  }
+  /* kartu profil terbuka: baris label–kontrol, bukan formulir bertumpuk */
+  .pcard {
+    border-top: 1px solid var(--line);
+    padding-bottom: 2px;
+  }
+  .pcard .row {
+    padding-left: 24px;
+  }
+  /* baris penutup kartu profil: aksi utama rata kanan, hapus/kembalikan di kiri */
+  .pcard .row.foot {
+    justify-content: flex-end;
+  }
+  .pcard .row.foot .link {
+    margin-right: auto;
+  }
+  .row.col {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .tin {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 220px;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
     color: var(--fg);
-    font-weight: normal;
+    font: inherit;
+  }
+  .tin.mono {
+    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .row.col .tin {
+    width: 100%;
+    resize: vertical;
+  }
+  .envrow {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 6px;
+    align-items: center;
+  }
+  .addrow {
+    align-self: flex-start;
+  }
+  .mini.pri {
+    border-color: var(--pri-bg, #3b82f6);
+    color: var(--pri-bg, #3b82f6);
   }
   .errs {
     display: flex;
