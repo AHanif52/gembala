@@ -4,6 +4,32 @@ use std::num::NonZeroU16;
 
 pub struct Grid(vt100::Parser);
 
+/// vt100 menganggap bold dan dim saling ganti (`ESC[2m` saja dari bold ke dim), xterm menganggap keduanya terpisah:
+/// tanpa `22` dulu, baris dim sesudah baris bold tampil bold+dim. Tiap parameter 1/2 didahului 22 (lewati warna 38/48).
+fn fix_intensity(s: &str) -> String {
+    let re = regex_lite::Regex::new("\x1b\\[([0-9;]*)m").unwrap();
+    re.replace_all(s, |c: &regex_lite::Captures| {
+        let ps: Vec<&str> = c[1].split(';').collect();
+        let mut out: Vec<&str> = Vec::new();
+        let mut i = 0;
+        while i < ps.len() {
+            match ps[i] {
+                "38" | "48" => {
+                    let n = if ps.get(i + 1) == Some(&"5") { 3 } else { 5 };
+                    out.extend(&ps[i..(i + n).min(ps.len())]);
+                    i += n;
+                    continue;
+                }
+                "1" | "2" => out.extend(["22", ps[i]]),
+                p => out.push(p),
+            }
+            i += 1;
+        }
+        format!("\x1b[{}m", out.join(";"))
+    })
+    .into_owned()
+}
+
 fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n.max(1)).unwrap()
 }
@@ -30,7 +56,7 @@ impl Grid {
         if s.alternate_screen() {
             out.push_str("\x1b[?1049h");
         }
-        out.push_str(&s.state_formatted());
+        out.push_str(&fix_intensity(&s.state_formatted()));
         out.into_bytes()
     }
 
@@ -80,7 +106,7 @@ impl Grid {
             off -= off.min(rows);
         }
         s.set_scrollback(0);
-        out.into_bytes()
+        fix_intensity(&out).into_bytes()
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -118,6 +144,13 @@ mod tests {
     use super::*;
     use crate::pty::{read_to_end, Pty};
     use std::time::Duration;
+
+    #[test]
+    fn bold_ke_dim_diawali_22() {
+        assert_eq!(fix_intensity("\x1b[2mx\x1b[1my"), "\x1b[22;2mx\x1b[22;1my");
+        assert_eq!(fix_intensity("\x1b[38;2;1;2;3;1m"), "\x1b[38;2;1;2;3;22;1m");
+        assert_eq!(fix_intensity("\x1b[38;5;2m\x1b[m"), "\x1b[38;5;2m\x1b[m");
+    }
 
     /// Attach ulang = snapshot A ditulis ke grid baru B; B harus sama persis dengan A.
     fn assert_roundtrip(a: &Grid) {
@@ -158,7 +191,7 @@ mod tests {
         assert_eq!(b.0.screen().contents(), g.0.screen().contents());
         assert_eq!(b.0.screen().cursor_position(), g.0.screen().cursor_position());
         assert!(b.before((b.0.screen().scrollback_len(), 0)).windows(7).any(|w| w == b"baris \x1b"), "riwayat ikut");
-        let teks = String::from_utf8_lossy(&b.before(b.position())).replace("\x1b[m", "").replace("\x1b[1m", "");
+        let teks = String::from_utf8_lossy(&b.before(b.position())).replace("\x1b[m", "").replace("\x1b[22;1m", "");
         assert!(teks.starts_with("baris 0\r\nbaris 1\r\n") && teks.contains("baris 11"), "{teks}");
     }
 

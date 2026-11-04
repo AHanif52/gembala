@@ -185,14 +185,14 @@
     const d = term.registerDecoration({ marker: b.a, width: term.cols, height, layer: "top" });
     const meta = !b.d ? "" : (b.ms !== undefined ? dur(b.ms) : "") + (b.code ? ` <b>· keluar ${b.code}</b>` : "");
     d?.onRender((el) => {
-      if (el.dataset.tl) return;
-      el.dataset.tl = "1";
-      el.className += " tl sh" + (b.code ? " fail" : "") + (b.d ? "" : " run");
-      el.innerHTML = `<i class="tl-dot"></i><span class="tl-meta"></span>`;
-      (el.querySelector(".tl-dot") as HTMLElement).style.top = `${rowHeight() / 2 - 5}px`;
-      const m = el.querySelector(".tl-meta") as HTMLElement;
-      m.innerHTML = meta; // hanya angka, aman
-      m.style.lineHeight = `${rowHeight()}px`;
+      if (!el.dataset.tl) {
+        el.dataset.tl = "1";
+        el.className += " tl sh" + (b.code ? " fail" : "") + (b.d ? "" : " run");
+        el.innerHTML = `<i class="tl-dot"></i><span class="tl-meta"></span>`;
+        (el.querySelector(".tl-meta") as HTMLElement).innerHTML = meta; // hanya angka, aman
+      }
+      // tinggi baris bisa 0 saat render pertama: posisi dihitung ulang tiap render
+      el.style.setProperty("--rh", `${rowHeight()}px`);
     });
     return d;
   }
@@ -204,7 +204,7 @@
     const buf = term.buffer.active;
     if (buf.type === "alternate") return;
     // linimasa (mockup-blok-sesi E): "   [ikon ]<folder> · <durasi>[ · keluar n]"; format lama "<folder> (<durasi>)" = garis saja
-    const head = /^ {3}(?:[✳π◎◇] )?\S.* · \d+ (?:dtk|mnt|jam)(?: \d+ (?:dtk|mnt))?( · keluar (-?\d+))?$/;
+    const head = /^ {0,3}(?:([✳π◎◇]) )?(\S.* · \d+ (?:dtk|mnt|jam)(?: \d+ (?:dtk|mnt))?)( · keluar (-?\d+))?$/;
     const old = /^\S.* \(\d+ (dtk|mnt|jam)[^)]*\)( · keluar (-?\d+))?$/;
     const text = (y: number) => {
       // baris yang terlipat (perintah panjang) disambung
@@ -212,17 +212,35 @@
       for (let k = y + 1; buf.getLine(k)?.isWrapped; k++) t += buf.getLine(k)!.translateToString(true);
       return t;
     };
-    const heads: { y: number; fail: boolean; tl: boolean }[] = [];
+    const heads: { y: number; fail: boolean; tl: boolean; icon?: string; info?: string; code?: string }[] = [];
     const stops: number[] = []; // "Sesi sebelumnya": blok berhenti di sini
     for (let y = 0; y < buf.length; y++) {
       const t = buf.getLine(y)?.translateToString(true) ?? "";
       if (/^\s*(── )?Sesi sebelumnya/.test(t)) stops.push(y);
-      const m = head.exec(t) ?? old.exec(t);
-      if (!m) continue;
-      const tl = m[0] === head.exec(t)?.[0];
-      heads.push({ y, tl, fail: tl ? !!m[2] && m[2] !== "0" : !!m[3] && m[3] !== "0" });
+      const n = head.exec(t);
+      if (n) {
+        heads.push({ y, tl: true, fail: !!n[4] && n[4] !== "0", icon: n[1], info: n[2], code: n[4] });
+        continue;
+      }
+      const m = old.exec(t);
+      if (m) heads.push({ y, tl: false, fail: !!m[3] && m[3] !== "0" });
     }
     const cursor = buf.baseY + buf.cursorY;
+    // "Sesi sebelumnya · <tgl>" (pen layar 02): teks kecil sans + garis sampai kanan, menutupi baris terminalnya
+    for (const y of stops) {
+      const marker = term.registerMarker(y - cursor);
+      if (!marker) continue;
+      summary.push(marker);
+      const label = (buf.getLine(y)?.translateToString(true) ?? "").replace(/[─\s]+$/, "").replace(/^[\s─]+/, "");
+      term.registerDecoration({ marker, width: term.cols, height: 1, layer: "top" })?.onRender((el) => {
+        if (!el.dataset.tl) {
+          el.dataset.tl = "1";
+          el.classList.add("tl-sep");
+          el.append(Object.assign(document.createElement("span"), { textContent: label }), document.createElement("i"));
+        }
+        el.style.setProperty("--rh", `${rowHeight()}px`);
+      });
+    }
     heads.forEach((h, i) => {
       const end = Math.min(heads[i + 1]?.y ?? buf.length, stops.find((s) => s > h.y) ?? buf.length);
       const marker = term.registerMarker(h.y - cursor);
@@ -244,15 +262,20 @@
       }
       const d = term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "top" });
       d?.onRender((el) => {
+        // tinggi baris bisa 0 saat render pertama: posisi dihitung ulang tiap render (CSS memakai --rh)
+        el.style.setProperty("--rh", `${rowHeight()}px`);
         if (el.dataset.tl) return;
         el.dataset.tl = "1";
         el.classList.add("tl");
         el.classList.toggle("fail", h.fail);
-        el.innerHTML = `<i class="tl-dot"></i><span class="tl-acts"></span>`;
-        const rh = rowHeight();
-        (el.querySelector(".tl-dot") as HTMLElement).style.top = `${rh / 2 - 5}px`;
+        // kepala blok ala pen layar 02: ikon agent, folder · durasi (sans 11px redup), keluar n merah, tombol di kanan
+        el.innerHTML = `<i class="tl-dot"></i><div class="tl-hd"><span class="tl-ico"></span><span class="tl-info"></span><b class="tl-x"></b><span class="tl-acts"></span></div>`;
+        const ico = el.querySelector(".tl-ico") as HTMLElement;
+        ico.textContent = h.icon ?? "";
+        ico.dataset.a = h.icon ?? "";
+        (el.querySelector(".tl-info") as HTMLElement).textContent = h.info ?? "";
+        (el.querySelector(".tl-x") as HTMLElement).textContent = h.code && h.code !== "0" ? `· keluar ${h.code}` : "";
         const acts = el.querySelector(".tl-acts") as HTMLElement;
-        acts.style.top = `${rh / 2 - 11}px`; // tombol sejajar baris kepala (folder · durasi)
         const btn = (label: string, cls: string, run: () => void) => {
           const b = Object.assign(document.createElement("button"), { textContent: label, className: cls });
           b.addEventListener("mousedown", (e) => e.preventDefault());
@@ -515,7 +538,7 @@
   /* jarak tepi ala Warp: teks tidak menempel ke pemisah */
   .term {
     position: absolute;
-    inset: 10px 8px 6px 14px;
+    inset: 10px 8px 6px 22px; /* kiri 22px = kolom linimasa (pen layar 02) */
     /* z-index dekorasi xterm (6-7) tetap di dalam pane: tidak menembus palet, panel Pesan, atau pemisah */
     isolation: isolate;
   }
@@ -539,7 +562,7 @@
   .term :global(.tl::before) {
     content: "";
     position: absolute;
-    left: -8px;
+    left: -12px;
     top: 0;
     bottom: 0;
     width: 1px;
@@ -547,7 +570,8 @@
   }
   .term :global(.tl-dot) {
     position: absolute;
-    left: -12px;
+    top: calc(var(--rh, 20px) / 2 - 5px);
+    left: -17px;
     width: 7px;
     height: 7px;
     border: 2px solid #16a34a;
@@ -558,11 +582,57 @@
     border-color: #dc2626;
     background: #dc2626;
   }
-  .term :global(.tl-acts) {
+  /* kepala blok sesi menutupi baris teks terminalnya (latar sama dengan pane) */
+  .term :global(.tl-hd) {
     position: absolute;
-    right: 12px;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--rh, 20px);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg);
+    color: var(--muted);
+    font: 11px system-ui, -apple-system, sans-serif;
+  }
+  .term :global(.tl-ico[data-a="✳"]) {
+    color: #d97757;
+  }
+  .term :global(.tl-ico[data-a="π"]) {
+    color: #a855f7;
+  }
+  .term :global(.tl-ico[data-a="◎"]) {
+    color: #10a37f;
+  }
+  .term :global(.tl-ico[data-a="◇"]) {
+    color: #60a5fa;
+  }
+  .term :global(.tl-x) {
+    flex: 1;
+    color: #f87171;
+    font-weight: normal;
+  }
+  .term :global(.tl-acts) {
     display: flex;
     gap: 6px;
+    margin-right: 12px;
+  }
+  .term :global(.tl-sep) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: var(--rh, 20px) !important;
+    width: 100% !important;
+    background: var(--bg);
+    color: color-mix(in srgb, var(--muted) 70%, transparent);
+    font: 11px system-ui, -apple-system, sans-serif;
+    pointer-events: none;
+  }
+  .term :global(.tl-sep i) {
+    flex: 1;
+    height: 1px;
+    background: color-mix(in srgb, var(--fg) 12%, transparent);
   }
   .term :global(.tl-acts button) {
     padding: 2px 9px;
@@ -608,9 +678,9 @@
     position: absolute;
     top: 0;
     right: 12px;
+    line-height: var(--rh, 20px);
     color: var(--muted);
     font: 11px system-ui, -apple-system, sans-serif;
-    line-height: inherit;
   }
   .term :global(.tl-meta b) {
     color: #f87171;

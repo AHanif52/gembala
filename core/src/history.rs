@@ -64,7 +64,29 @@ pub fn load_log(from: &Value) -> Option<(Vec<u8>, u64)> {
     let file = log_path(from)?;
     let meta = std::fs::metadata(&file).ok().filter(|m| m.len() <= LOG_MAX)?;
     let t = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    Some((std::fs::read(file).ok()?, t))
+    Some((trim_separator(&std::fs::read(file).ok()?), t))
+}
+
+/// Garis "Sesi sebelumnya" (dan baris kosong) di ujung log dibuang: pane yang tidak dipakai sejak restart terakhir
+/// tidak menumpuk garis, cukup satu yang terbaru
+fn trim_separator(log: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(log);
+    let ansi = regex_lite::Regex::new("\x1b\\[[0-9;?]*[A-Za-z]").unwrap();
+    let mut lines: Vec<&str> = text.split("\r\n").collect();
+    while let Some(l) = lines.last() {
+        let plain = ansi.replace_all(l, "");
+        let plain = plain.trim();
+        if plain.is_empty() || plain.trim_start_matches(['─', ' ']).starts_with("Sesi sebelumnya") {
+            lines.pop();
+        } else {
+            break;
+        }
+    }
+    let mut out = lines.join("\r\n");
+    if !out.is_empty() {
+        out += "\r\n\r\n";
+    }
+    out.into_bytes()
 }
 
 /// Garis pemisah di bawah log lama
@@ -143,8 +165,8 @@ pub fn dur(secs: u64) -> String {
     }
 }
 
-/// Kolom kiri blok: tempat titik dan garis linimasa yang digambar UI (FR-56, mockup-blok-sesi varian E)
-const GUTTER: &str = "   ";
+/// Titik dan garis linimasa digambar UI di luar grid (pen layar 02), jadi teks blok mulai di kolom 0
+const GUTTER: &str = "";
 
 /// Satu blok seperti FR-56 (linimasa): `<ikon> <folder> · <durasi>[ · keluar n]` redup, perintah tebal,
 /// `↳ <perintah lanjut>` redup bila ada, lalu satu baris kosong sebagai jarak antarblok.
@@ -275,6 +297,9 @@ mod tests {
         let t = String::from_utf8(b).unwrap();
         assert!(t.contains("\x1b[32mok") && !t.contains("abcd1234abcd1234"), "{t}");
         assert!(load_log(&json!({"boot": "../../etc/passwd", "pane": 7})).is_none());
+        // garis "Sesi sebelumnya" lama di ujung log tidak menumpuk
+        let t = String::from_utf8(trim_separator(&[b"ls\r\nok\r\n".as_slice(), &separator(0), &separator(1), b"\r\n"].concat())).unwrap();
+        assert_eq!(t, "ls\r\nok\r\n\r\n");
         let _ = std::fs::remove_file(d.join("history/0123456789abcdef-7.log")); // folder dipakai test lain
     }
 
