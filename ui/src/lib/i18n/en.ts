@@ -804,4 +804,7 @@ export default {
   "pal.foot": "↑↓ pick · Enter runs · letters in order are enough, e.g. \"spl ri\"",
   "pick.aria": "New pane from profile",
   "pick.hint": "↑↓ pick · Enter opens · Esc cancels · folder follows the focused pane",
+  // add-on chip words (config.ts activeAddons)
+  "pane.addonNone": "none",
+  "pane.addonOnly": "only these",
 } as const;

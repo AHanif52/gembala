@@ -73,7 +73,7 @@
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
   /// FR-61: nama akun Claude pane yang sedang menjalankan Claude; begitu ada akun lain, Utama ikut berlabel
   /// FR-78: by current config; a pane launched before a change keeps its old flags until it is restarted
-  const addonsOf = (p: number) => activeAddons(cfg?.values.addons, agentOf(p), wsIdOf(p) ?? "");
+  const addonsOf = (p: number) => activeAddons(cfg?.values.addons, agentOf(p), wsIdOf(p) ?? "", { none: tt("pane.addonNone"), only: tt("pane.addonOnly") });
   const acctOf = (p: number) =>
     meta[p]?.accountName || (agentOf(p) === "claude" && (cfg?.values.accounts ?? []).some((a) => a.agent === "claude") ? tt("acc.main") : "");
   /// Color submenu = swatch panel (Gembala.pen 08): colors, then the empty circle for no color; ring = current

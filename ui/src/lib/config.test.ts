@@ -12,7 +12,7 @@ test("FR-78: add-on aktif ikut agent dan workspace pane", () => {
     ],
     mcp: [{ workspace: "w1", file: "mcp/w1.json", strict: true, servers: ["context7", "pencil"] }],
   };
-  assert.deepEqual(activeAddons(a, "claude", "w1"), ["caveman", "ponytail", "MCP: context7, pencil (cuma ini)"]);
+  assert.deepEqual(activeAddons(a, "claude", "w1"), ["caveman", "ponytail", "MCP: context7, pencil (only these)"]);
   assert.deepEqual(activeAddons(a, "claude", "w2"), ["caveman"]);
   assert.deepEqual(activeAddons(a, "codex", "w1"), ["MCP: context7, pencil"]);
   assert.deepEqual(activeAddons(a, "omp", "w1"), []);

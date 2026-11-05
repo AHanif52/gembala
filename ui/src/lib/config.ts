@@ -51,10 +51,10 @@ export type Addons = {
   mcp: { workspace: string; file: string; strict: boolean; servers: string[] }[];
 };
 
-/// FR-78: add-ons a pane of `agent` in workspace `ws` gets, by name (same rules as `addon::args`)
-export function activeAddons(a: Addons | undefined, agent: string, ws: string): string[] {
+/// FR-78: add-ons a pane of `agent` in workspace `ws` gets, by name (same rules as `addon::args`); `w` = words in the UI language
+export function activeAddons(a: Addons | undefined, agent: string, ws: string, w = { none: "none", only: "only these" }): string[] {
   const mcp = a?.mcp.find((m) => ws && m.workspace === ws);
-  const mcpName = mcp ? [`MCP: ${mcp.servers.join(", ") || "kosong"}${mcp.strict && agent === "claude" ? " (cuma ini)" : ""}`] : [];
+  const mcpName = mcp ? [`MCP: ${mcp.servers.join(", ") || w.none}${mcp.strict && agent === "claude" ? ` (${w.only})` : ""}`] : [];
   if (agent === "claude") return [...(a?.plugins ?? []).filter((p) => p.scope === "all" || (p.scope === "workspaces" && p.workspaces.includes(ws))).map((p) => p.id), ...mcpName];
   return agent === "codex" ? mcpName : [];
 }

@@ -790,5 +790,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "pal.foot": "↑↓ pilih · Enter jalanin · huruf berurutan udah cukup, mis. \"spl kn\"",
   "pick.aria": "Pane baru dari profil",
   "pick.hint": "↑↓ pilih · Enter buka · Esc batal · folder ikut pane yang fokus",
+  "pane.addonNone": "kosong",
+  "pane.addonOnly": "cuma ini",
 };
 export default id;

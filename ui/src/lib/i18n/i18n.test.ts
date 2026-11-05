@@ -59,3 +59,21 @@ test("errorText: code + at + then from core/src/diag.rs, free text as is", () =>
   assert.equal(errorText("en", "font size salah"), "font size salah");
   assert.equal(errorText("en", "account_exists", { id: "kantor" }), 'account "kantor" already exists');
 });
+
+// heuristic: Indonesian UI words left in strings or template text (comments and <style> skipped); should stay empty
+const ID_WORDS = /\b(yang|dan|tidak|nggak|udah|belum|untuk|dari|pakai|buka|tutup|simpan|batal|hapus|kirim|ubah|salin|sudah|bisa|lagi|semua|baru|saat|bila|atau|gagal|tersalin|berjalan|jalan|lewat|dengan|masih|ini|itu|ada|kosong|butuh|izin|selesai|bekerja|pilih|ganti|nama|warna|pindah|lainnya|sebelumnya|berikutnya)\b/i;
+const ALLOW: string[] = [];
+test("no Indonesian UI text left outside id.ts", () => {
+  const left = [];
+  for (const f of files(SRC).filter((f) => !f.includes("/i18n/") && !f.endsWith(".test.ts"))) {
+    let text = readFileSync(f, "utf8").replace(/<!--[\s\S]*?-->|\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ""));
+    const style = text.indexOf("<style");
+    if (style >= 0) text = text.slice(0, style);
+    text.split("\n").forEach((line, i) => {
+      const code = line.replace(/(^|\s)\/\/.*$/, "");
+      for (const part of code.match(/"[^"]*"|`[^`]*`|'[^']*'|>[^<>{}]*</g) ?? [])
+        if (ID_WORDS.test(part) && !ALLOW.some((a) => part.includes(a))) left.push(`${f.split("/src/")[1]}:${i + 1}: ${part.slice(0, 80)}`);
+    });
+  }
+  assert.deepEqual(left, []);
+});
