@@ -1,4 +1,4 @@
-// @ts-nocheck -- dijalankan `npm test` (node --test), bukan bagian build app
+// @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { activeAddons } from "./config.ts";

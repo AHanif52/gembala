@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Panel perubahan ala Warp (FR-22): baca saja, menempel di kanan (terminal menyempit). Diff disamarkan daemon (SEC-12).
+  // Warp-style changes panel (FR-22): read only, docked on the right (the terminal narrows). The diff is redacted by the daemon (SEC-12).
   import { invoke } from "@tauri-apps/api/core";
   import { errText, loc, t, tn } from "./i18n/state.svelte";
   let {
@@ -28,7 +28,7 @@
     onclose: () => void;
     onreload: () => void;
     onwidth: (w: number) => void;
-    // FR-70: giliran agent pane ini (terbaru dulu), giliran terpilih, kartu kembalikan
+    // FR-70: this pane's agent turns (newest first), the selected turn, the restore card
     pname?: string;
     turns?: { i: number; start: number; end: number; title: string; files: number; add: number; del: number; skipped: string[] }[];
     turn?: number | null;
@@ -76,7 +76,7 @@
     return out;
   });
 
-  /// Baris tidak berubah lebih dari 6 berturut-turut diringkas (FR-22)
+  /// Runs of more than 6 unchanged lines are collapsed (FR-22)
   function compact(lines: string[]): (string | number)[] {
     const out: (string | number)[] = [];
     let run: string[] = [];
@@ -295,7 +295,7 @@
   .del {
     color: var(--tx-red, #dc2626);
   }
-  /* baris diff berlatar penuh ala Warp */
+  /* diff lines with a full background, like Warp */
   pre span.add,
   pre span.del {
     display: inline-block;
@@ -307,7 +307,7 @@
   pre span.del {
     background: rgba(220, 38, 38, 0.12);
   }
-  /* FR-70: daftar giliran (pen layar 12) */
+  /* FR-70: turn list (pen screen 12) */
   .turns {
     display: flex;
     flex-direction: column;

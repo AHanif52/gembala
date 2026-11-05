@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Satu pane = satu xterm yang di-attach ke daemon (FR-1, FR-2), plus FR-34 sampai 36, 41.
+  // One pane = one xterm attached to the daemon (FR-1, FR-2), plus FR-34 to 36, 41.
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -38,24 +38,24 @@
     onexit: (pane: number) => void;
     onlink: (url: string) => void;
     onpasted: (path: string) => void;
-    online: (line: string) => void; // FR-57: teks yang diketik sejak Enter terakhir
-    onkey: (key: string) => boolean; // FR-57: true = tombol dipakai daftar @, tidak diteruskan ke terminal
-    onprompt: (at: boolean) => void; // FR-59: shell menunggu di prompt (penanda OSC 133 B sampai C)
-    ontype: (text: string) => boolean; // FR-59: true = huruf diambil input editor, tidak diteruskan ke shell
-    onfocusin: () => void; // FR-59: terminal dapat fokus keyboard (halaman memindahkannya ke editor bila tampil)
-    onused: () => void; // FR-59: layar saat attach sudah berisi teks (pane bukan baru)
-    onblock: (kind: "cmd" | "out" | "reuse" | "copy" | "run" | "output", text: string) => void; // FR-58: tombol aksi blok; FR-56: linimasa
+    online: (line: string) => void; // FR-57: text typed since the last Enter
+    onkey: (key: string) => boolean; // FR-57: true = the key is used by the @ list, not passed to the terminal
+    onprompt: (at: boolean) => void; // FR-59: shell waiting at the prompt (OSC 133 marker B until C)
+    ontype: (text: string) => boolean; // FR-59: true = letters taken by the input editor, not passed to the shell
+    onfocusin: () => void; // FR-59: the terminal has keyboard focus (the page moves it to the editor when shown)
+    onused: () => void; // FR-59: the screen already had text at attach (pane isn't new)
+    onblock: (kind: "cmd" | "out" | "reuse" | "copy" | "run" | "output", text: string) => void; // FR-58: block action buttons; FR-56: timeline
   } = $props();
 
-  // ponytail: dua palet tetap; palet 16 warna dari config menyusul bila diminta
-  // palet tema Dark bawaan Warp; tanpa palet, xterm memakai warna ANSI bawaannya (biru gelap nyaris tak terbaca)
+  // ponytail: two fixed palettes; a 16-color palette from config comes later if asked for
+  // Warp's default Dark theme palette; without a palette xterm uses its built-in ANSI colors (dark blue barely readable)
   const DARK: ITheme = {
     background: "#000000", foreground: "#ffffff", cursor: "#ffffff", selectionBackground: "#404040",
     black: "#616161", red: "#ff8272", green: "#b4fa72", yellow: "#fefdc2", blue: "#a5d5fe", magenta: "#ff8ffd", cyan: "#d0d1fe", white: "#f1f1f1",
     brightBlack: "#8e8e8e", brightRed: "#ffc4bd", brightGreen: "#d6fcb9", brightYellow: "#fefdd5", brightBlue: "#c1e3fe", brightMagenta: "#ffb1fe", brightCyan: "#e5e6fe", brightWhite: "#feffff",
   };
-  // palet ANSI untuk latar terang (GitHub Light): warna xterm bawaan terlalu menyala dan tidak terbaca di latar terang;
-  // latar/teks = palet Latte (FR-34), sama dengan --bg/--fg tema terang
+  // ANSI palette for light backgrounds (GitHub Light): xterm's built-in colors are too bright and unreadable on light;
+  // background/text = Latte palette (FR-34), same as the light theme's --bg/--fg
   const LIGHT: ITheme = {
     background: "#eff1f5", foreground: "#4c4f69", cursor: "#4c4f69", selectionBackground: "#ccd0da",
     black: "#24292f", red: "#cf222e", green: "#116329", yellow: "#7d4e00", blue: "#0969da", magenta: "#8250df", cyan: "#1b7c83", white: "#6e7781",
@@ -87,8 +87,8 @@
   let systemLight = $state(light.matches);
   const isLight = $derived(ui.theme === "light" || (ui.theme === "system" && systemLight));
 
-  // FR-34: [ui] dari config berlaku langsung tanpa restart; zoom ⌘=/⌘- di atas ukuran config
-  let ready = $state(false); // term bukan state (objek xterm besar); efek di bawah menunggu ini
+  // FR-34: [ui] from config applies right away without a restart; ⌘=/⌘- zoom on top of the config size
+  let ready = $state(false); // term isn't state (big xterm object); the effects below wait for it
   $effect(() => {
     if (!ready) return;
     const o = term.options;
@@ -97,7 +97,7 @@
     o.lineHeight = ui.line_height;
     o.cursorStyle = ui.cursor;
     o.cursorBlink = ui.cursor_blink;
-    o.cursorInactiveStyle = "none"; // ala Warp: terminal yang tidak fokus (atau saat input editor dipakai) tanpa kursor
+    o.cursorInactiveStyle = "none"; // like Warp: an unfocused terminal (or while the input editor is in use) has no cursor
     o.scrollback = ui.scrollback_lines;
     o.screenReaderMode = ui.screen_reader;
     o.macOptionIsMeta = ui.option_as_meta === "left" || ui.option_as_meta === "both";
@@ -133,8 +133,8 @@
     if (e.key === "Escape") closeFind();
   }
 
-  /// FR-57: baris ketikan, hanya huruf yang diketik langsung; tombol khusus (panah, Enter, paste ber-ESC) mengosongkannya.
-  /// ponytail: tidak tahu isi prompt TUI sebenarnya; cukup untuk mengenali `@` di awal baris baru
+  /// FR-57: the typed line, only letters typed directly; special keys (arrows, Enter, pastes with ESC) clear it.
+  /// ponytail: doesn't know the TUI's real prompt content; enough to spot `@` at the start of a new line
   let line = "";
   function track(d: string) {
     if (d === "\x7f") line = line.slice(0, -1);
@@ -146,22 +146,22 @@
     line = "";
     online(line);
   }
-  /// FR-57: isi prompt diubah halaman (mis. `@@q` diganti nama pane), baris yang dilacak ikut
+  /// FR-57: the page changed the prompt content (e.g. `@@q` replaced by a pane name), the tracked line follows
   export function setLine(f: (line: string) => string) {
     line = f(line);
     online(line);
   }
   export const focus = () => term.focus();
 
-  /// FR-58: linimasa blok perintah dari penanda OSC 133 shell (A prompt, C perintah jalan + teks base64, D selesai + exit code).
-  /// Hanya blok dari stream sejak attach; snapshot attach tidak memuat penanda.
+  /// FR-58: command block timeline from the shell's OSC 133 markers (A prompt, C command runs + base64 text, D done + exit code).
+  /// Only blocks from the stream since attach; the attach snapshot holds no markers.
   type Block = { a: IMarker; c?: IMarker; d?: IMarker; cmd: string; dir?: string; code?: number; t0?: number; ms?: number; live?: { dispose(): void } };
   let blocks: Block[] = [];
-  let kitty: number[] = []; // tumpukan flag protokol keyboard kitty yang diminta app di pane ini
-  /// FR-58: Pengaturan > Tampilan > "Linimasa perintah". Mati = pane shell jadi terminal polos (tanpa garis, titik,
-  /// kepala blok, tombol Ulangi/Ubah/Salin). Penanda OSC 133 tetap dilacak, jadi ⌘↑/⌘↓ lompat blok masih jalan.
+  let kitty: number[] = []; // stack of kitty keyboard protocol flags the app in this pane asked for
+  /// FR-58: Settings > Appearance > "Command timeline". Off = shell panes become plain terminals (no line, dot,
+  /// block head, Rerun/Edit/Copy buttons). OSC 133 markers are still tracked, so ⌘↑/⌘↓ block jumps still work.
   const timeline = $derived(ui.command_timeline !== false);
-  // sakelar berlaku langsung: dekorasi blok shell yang sudah tergambar ikut hilang/balik tanpa reload pane
+  // the switch applies right away: shell block decorations already drawn disappear/return without reloading the pane
   $effect(() => {
     if (!ready) return;
     const on = timeline;
@@ -171,7 +171,7 @@
     sticky = null;
     if (on) {
       blocks.forEach((b) => b.cmd && (b.live = decorate(b)));
-      updateSticky(); // kepala blok menempel langsung balik tanpa menunggu scroll
+      updateSticky(); // the sticky block head comes back right away without waiting for a scroll
     }
   });
   // session block heads and "Previous session" lines are drawn in the UI language too
@@ -185,13 +185,13 @@
     if (k === "B") onprompt(true);
     if (k === "C") onprompt(false);
     if (k === "A") {
-      kitty = []; // shell kembali ke prompt: flag keyboard app yang crash tidak ikut ke shell
+      kitty = []; // shell back at the prompt: keyboard flags of an app that crashed don't carry over to the shell
       const a = term.registerMarker(0);
       if (a) blocks.push({ a, cmd: "", dir: data.slice(2) }); // `A;<folder>`: folder boleh berisi `;`
-      if (blocks.length > 1000) blocks.shift()?.a.dispose(); // ponytail: 1000 blok terakhir, sisanya ikut scrollback
+      if (blocks.length > 1000) blocks.shift()?.a.dispose(); // ponytail: last 1000 blocks, the rest goes with the scrollback
     } else if (k === "C") {
-      // prompt yang tercetak sebelum UI menempel tidak punya penanda A (snapshot): blok dimulai dari baris perintah,
-      // atau baris kosong di atasnya (prompt editor) supaya tetap punya titik dan kepala
+      // a prompt printed before the UI attached has no A marker (snapshot): the block starts at the command line,
+      // or the blank line above it (editor prompt) so it still gets a dot and a head
       let b = last && !last.c ? last : undefined;
       if (!b) {
         const buf = term.buffer.active;
@@ -204,26 +204,26 @@
       try {
         b.cmd = new TextDecoder().decode(unb64(arg));
       } catch {}
-      if (b.cmd && timeline) b.live = decorate(b); // titik biru berdenyut selama jalan
+      if (b.cmd && timeline) b.live = decorate(b); // blue dot pulsing while running
     } else if (k === "D" && last?.c && !last.d) {
       last.d = term.registerMarker(0);
       last.code = Number(arg) || 0;
       if (last.t0) last.ms = Date.now() - last.t0;
       last.live?.dispose();
-      last.live = timeline ? decorate(last) : undefined; // dekorasi selesai ikut dilacak supaya bisa dicabut saat sakelar dimatikan
+      last.live = timeline ? decorate(last) : undefined; // finished decorations are tracked too so they can be removed when the switch is turned off
     }
-    return true; // penanda tidak menggambar apa pun
+    return true; // the marker draws nothing
   }
   const dur = (ms: number) => t("tile.secs", { n: ms < 10_000 ? (ms / 1000).toLocaleString(i18n.lang, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : Math.round(ms / 1000) });
   /// session block heads are written by the daemon as `1 mnt 15 dtk` (core/src/history.rs `dur`): units in the UI language
   const durText = (s: string) => s.replace(/(\d+) (dtk|mnt|jam)/g, (_, n, u) => t(u === "dtk" ? "tile.secs" : u === "mnt" ? "tile.mins" : "tile.hours", { n }));
-  /// pen: "~/…/gembala/app" (dua folder terakhir)
+  /// pen: "~/…/gembala/app" (last two folders)
   const short = (p: string) => {
     const a = p.replace(/^\/Users\/[^/]+/, "~").split("/");
     return a.length > 3 ? `${a[0]}/…/${a.slice(-2).join("/")}` : a.join("/");
   };
-  /// linimasa blok shell (Gembala.pen layar 02): garis + titik di gutter kiri luar grid. Prompt editor diawali baris
-  /// kosong (zsh hook): kepala `~/…/app · 0,4 dtk · keluar 1` di baris itu; prompt pengguna = durasi di kanan perintah
+  /// shell block timeline (Gembala.pen screen 02): line + dot in the left gutter outside the grid. The editor prompt starts with a blank
+  /// line (zsh hook): head `~/…/app · 0.4 s · exit 1` on that line; user's own prompt = duration to the right of the command
   function decorate(b: Block) {
     const height = Math.max(1, (b.d?.line ?? b.a.line) - b.a.line);
     const hd = !term.buffer.active.getLine(b.a.line)?.translateToString(true).trim();
@@ -235,32 +235,32 @@
         el.className += " tl sh" + (b.code ? " fail" : "") + (b.d ? "" : " run") + (hd ? " hd" : "");
         el.innerHTML = `<i class="tl-dot"></i><span class="tl-meta"></span>`;
         const m = el.querySelector(".tl-meta") as HTMLElement;
-        m.textContent = info; // folder dari shell: teks, bukan HTML
+        m.textContent = info; // folder from the shell: text, not HTML
         if (b.code) m.append(Object.assign(document.createElement("b"), { textContent: ` · ${t("tile.exit", { code: b.code })}` }));
       }
-      // tinggi baris bisa 0 saat render pertama: posisi dihitung ulang tiap render
+      // row height can be 0 on first render: position is recomputed every render
       el.style.setProperty("--rh", `${rowHeight()}px`);
     });
     return d;
   }
-  /// FR-56/62: blok ringkas sesi agent dan riwayat "Sesi sebelumnya" ditulis daemon sebagai teks (tanpa penanda,
-  /// juga di snapshot attach): kepala blok = baris redup `<folder> (<durasi>)`, jadi garisnya dipasang dari isi buffer
+  /// FR-56/62: agent session summary blocks and "Sesi sebelumnya" history are written by the daemon as text (no markers,
+  /// also in the attach snapshot): block head = dim line `<folder> (<duration>)`, so its line is attached from the buffer content
   let summary: { dispose(): void }[] = [];
   function decorateSummary() {
     summary.splice(0).forEach((d) => d.dispose());
     const buf = term.buffer.active;
     if (buf.type === "alternate") return;
-    // linimasa (mockup-blok-sesi E): "   [ikon ]<folder> · <durasi>[ · keluar n]"; format lama "<folder> (<durasi>)" = garis saja
+    // timeline (mockup-blok-sesi E): "   [icon ]<folder> · <duration>[ · keluar n]"; old format "<folder> (<duration>)" = line only
     const head = /^ {0,3}(?:([✳π◎◇]) )?(\S.* · \d+ (?:dtk|mnt|jam)(?: \d+ (?:dtk|mnt))?)( · keluar (-?\d+))?$/;
     const old = /^\S.* \(\d+ (dtk|mnt|jam)[^)]*\)( · keluar (-?\d+))?$/;
     const text = (y: number) => {
-      // baris yang terlipat (perintah panjang) disambung
+      // wrapped lines (long commands) are joined
       let t = buf.getLine(y)?.translateToString(true) ?? "";
       for (let k = y + 1; buf.getLine(k)?.isWrapped; k++) t += buf.getLine(k)!.translateToString(true);
       return t;
     };
     const heads: { y: number; fail: boolean; tl: boolean; icon?: string; info?: string; code?: string }[] = [];
-    const stops: number[] = []; // "Sesi sebelumnya": blok berhenti di sini
+    const stops: number[] = []; // "Sesi sebelumnya": the block stops here
     for (let y = 0; y < buf.length; y++) {
       const t = buf.getLine(y)?.translateToString(true) ?? "";
       if (/^\s*(── )?Sesi sebelumnya/.test(t)) stops.push(y);
@@ -273,7 +273,7 @@
       if (m) heads.push({ y, tl: false, fail: !!m[3] && m[3] !== "0" });
     }
     const cursor = buf.baseY + buf.cursorY;
-    // "Sesi sebelumnya · <tgl>" (pen layar 02): teks kecil sans + garis sampai kanan, menutupi baris terminalnya
+    // "Sesi sebelumnya · <date>" (pen screen 02): small sans text + a line to the right edge, covering its terminal row
     for (const y of stops) {
       const marker = term.registerMarker(y - cursor);
       if (!marker) continue;
@@ -298,7 +298,7 @@
         d?.onRender((el) => (el.classList.add("blk"), el.classList.toggle("fail", h.fail)));
         return;
       }
-      // perintah = baris tebal sesudah kepala; perintah lanjut = baris redup sesudahnya (format lama: "↳ …")
+      // command = bold line after the head; resume command = dim line after it (old format: "↳ …")
       let cmd = "";
       let resume = "";
       let ry = -1;
@@ -306,26 +306,26 @@
         if (buf.getLine(y)?.isWrapped) continue;
         const t = text(y).trim();
         if (!t) continue;
-        // perintah panjang terpotong keras (zle, log replay) = baris kedua masih perintah: ambil baris lanjut yang sah
+        // a long command hard-wrapped (zle, log replay) = the second row is still the command: take the valid continuation row
         if (!cmd) cmd = t;
         else if (!resume && safeResume(t.replace(/^↳ /, ""))) (resume = t.replace(/^↳ /, "")), (ry = y);
       }
-      // baris tombol (pen: di bawah perintah lanjut) = baris kosong pertama sesudahnya
+      // button row (pen: below the resume command) = the first blank row after it
       let by = ry + 1;
       while (ry >= 0 && buf.getLine(by)?.isWrapped) by++;
-      // baris tombol butuh 2 baris sebelum blok berikutnya / garis "Sesi sebelumnya"; kurang = tombol di kanan kepala
-      // (log lama dan daemon bisa menyisakan 1 baris saja, jadi jangan bergantung pada jaraknya)
+      // the button row needs 2 rows before the next block / "Sesi sebelumnya" line; fewer = buttons right of the head
+      // (old logs and the daemon may leave only 1 row, so don't rely on the spacing)
       const roomy = end - by >= 2;
       const agent = !!h.icon;
       const [path = "", ...rest] = (h.info ?? "").split(" · ");
       if (agent && resume) {
-        // kartu blok sesi (pen layar 02): latar sedikit terang dari kepala sampai baris tombol
+        // session block card (pen screen 02): slightly lighter background from the head to the button row
         const ch = roomy ? by - h.y + 2 : Math.max(1, Math.min(by, end) - h.y);
         term.registerDecoration({ marker, width: term.cols, height: ch, layer: "bottom" })?.onRender((el) => el.classList.add("tl-card"));
       }
       const d = term.registerDecoration({ marker, width: term.cols, height: Math.max(1, end - h.y), layer: "top" });
       d?.onRender((el) => {
-        // tinggi baris bisa 0 saat render pertama: posisi dihitung ulang tiap render (CSS memakai --rh)
+        // row height can be 0 on first render: position is recomputed every render (CSS uses --rh)
         el.style.setProperty("--rh", `${rowHeight()}px`);
         if (el.dataset.tl) return;
         el.dataset.tl = "1";
@@ -333,7 +333,7 @@
         el.classList.toggle("fail", h.fail);
         el.classList.toggle("agent", agent);
         el.classList.toggle("card", agent && !!resume);
-        // pen layar 02: blok sesi agent = ikon agent di kolom linimasa; blok perintah = titik
+        // pen screen 02: agent session block = agent icon in the timeline column; command block = dot
         el.innerHTML = `<i class="tl-dot"></i><div class="tl-hd"><span class="tl-info"></span><b class="tl-x"></b></div><span class="tl-acts"></span>`;
         const dot = el.querySelector(".tl-dot") as HTMLElement;
         if (agent) (dot.textContent = h.icon!), (dot.dataset.a = h.icon!);
@@ -349,8 +349,8 @@
           acts.append(b);
         };
         if (agent && resume) {
-          // pen: Lanjutkan, Lihat output lengkap, Salin perintah di baris sendiri di bawah blok (kalau muat);
-          // tidak muat: tombol ringkas di kanan, tengah blok (mockup varian E), berlatar supaya tidak menimpa teks
+          // pen: Resume, View full output, Copy command on their own row below the block (if it fits);
+          // doesn't fit: compact buttons on the right, middle of the block (mockup variant E), with a background so they don't cover text
           if (roomy) acts.classList.add("row"), acts.style.setProperty("--k", String(by - h.y));
           else acts.classList.add("side"), acts.style.setProperty("--n", String(Math.max(1, Math.min(by, end) - h.y)));
           btn(t("tile.resume"), "pri", () => onblock("run", resume));
@@ -370,7 +370,7 @@
     for (let y = b.c.line; y < Math.max(b.c.line + 1, b.d.line); y++) rows.push(buf.getLine(y)?.translateToString(true) ?? "");
     return rows.join("\n").replace(/\n+$/, "");
   };
-  /// blok di baris layar `clientY` (klik kanan), atau null; linimasa mati = tidak ada blok yang ditawarkan
+  /// block at screen row `clientY` (right click), or null; timeline off = no block offered
   export function blockAt(clientY: number): { cmd: string; output: string; code?: number } | null {
     if (!timeline) return null;
     const rowsEl = el.querySelector(".xterm-rows");
@@ -380,7 +380,7 @@
     const b = blocks.findLast((b) => b.a.line <= y && b.d && y < Math.max(b.d.line, b.a.line + 1));
     return b ? { cmd: b.cmd, output: outputOf(b), code: b.code } : null;
   }
-  // FR-58: tombol aksi blok saat kursor di atasnya, dan kepala blok menempel saat perintahnya tergulir keluar layar
+  // FR-58: block action buttons on hover, and a sticky block head when its command scrolls off screen
   let hover = $state<{ top: number; b: Block } | null>(null);
   let sticky = $state<Block | null>(null);
   const rowHeight = () => (el.querySelector(".xterm-rows")?.getBoundingClientRect().height ?? 0) / term.rows;
@@ -392,8 +392,8 @@
     const b = blockOn(Math.floor((e.clientY - rows.top) / rowHeight()) + vy);
     hover = b ? { top: (b.a.line - vy) * rowHeight() + lift, b } : null;
   }
-  // FR-58: isi menumpuk dari bawah ke atas (ala Warp): selama buffer belum penuh, layar xterm digeser turun sebanyak
-  // baris kosong di bawah kursor; begitu penuh (ada scrollback) atau TUI layar penuh, tidak digeser
+  // FR-58: content stacks from the bottom up (like Warp): while the buffer isn't full, the xterm screen is shifted down by
+  // the blank rows below the cursor; once full (there's scrollback) or a full-screen TUI, it isn't shifted
   let lift = $state(0);
   function anchor() {
     const b = term.buffer.active;
@@ -404,7 +404,7 @@
     sticky = !timeline || term.buffer.active.type === "alternate" ? null : (blocks.findLast((b) => b.cmd && b.a.line < top && (!b.d || b.d.line > top)) ?? null);
   }
 
-  /// FR-58: ⌘↑/⌘↓ lompat ke awal blok sebelum/sesudah baris teratas layar
+  /// FR-58: ⌘↑/⌘↓ jump to the start of the block before/after the top screen row
   export function jump(dir: -1 | 1) {
     const top = term.buffer.active.viewportY;
     const b = dir < 0 ? blocks.findLast((b) => b.a.line < top) : blocks.find((b) => b.a.line > top);
@@ -414,11 +414,11 @@
 
   /// FR-37: menu klik kanan
   export const selection = () => term.getSelection();
-  export const paste = (text: string) => term.paste(text); // bracketed paste bila TUI memintanya
+  export const paste = (text: string) => term.paste(text); // bracketed paste when the TUI asks for it
 
-  /// FR-36: bersihkan layar dan scrollback. Shell diam juga diminta menggambar ulang prompt (Ctrl+L);
-  /// bila ada proses jalan (agent), hanya scrollback yang dibuang: layar milik TUI digambar ulang per bagian,
-  /// jadi layar yang dikosongkan dari luar membuat tampilan agent rusak.
+  /// FR-36: clear screen and scrollback. An idle shell is also asked to redraw its prompt (Ctrl+L);
+  /// when a process is running (agent), only the scrollback is dropped: a TUI's screen is redrawn piecewise,
+  /// so a screen cleared from outside leaves the agent's view broken.
   export async function clearScreen() {
     const info = await call("pane.info", { pane });
     if (info.busy) return void term.write("\x1b[3J");
@@ -426,11 +426,11 @@
     call("pane.write", { pane, data: b64(new Uint8Array([0x0c])) });
   }
 
-  // Renderer DOM bawaan xterm: terukur lebih hemat RAM dan datar per pane dibanding WebGL (TECH M1)
+  // xterm's default DOM renderer: measured lighter on RAM and flat per pane compared to WebGL (TECH M1)
   onMount(() => {
     term = new Terminal({
-      allowProposedApi: true, // decorations hasil cari dan Unicode 11
-      // SEC-14: tautan OSC 8 tidak dibuka langsung; URL asli ditampilkan dulu
+      allowProposedApi: true, // search result decorations and Unicode 11
+      // SEC-14: OSC 8 links aren't opened directly; the real URL is shown first
       linkHandler: { activate: (_e, uri) => onlink(uri) },
     });
     fit = new FitAddon();
@@ -439,10 +439,10 @@
     term.loadAddon(search);
     term.loadAddon(new WebLinksAddon((_e, uri) => onlink(uri)));
     term.loadAddon(new Unicode11Addon());
-    term.unicode.activeVersion = "11"; // FR-41: lebar emoji dan CJK
+    term.unicode.activeVersion = "11"; // FR-41: emoji and CJK width
     term.open(el);
     term.parser.registerOscHandler(133, onMark);
-    // protokol keyboard kitty (flag 1): jawaban tanya dikirim ke pane seperti jawaban DA milik xterm
+    // kitty keyboard protocol (flag 1): query answers go to the pane like xterm's own DA answer
     for (const prefix of ["?", ">", "<", "="])
       term.parser.registerCsiHandler({ prefix, final: "u" }, (params) => {
         const reply = onCsi(kitty, prefix, params.map((p) => (Array.isArray(p) ? p[0] : p)));
@@ -450,13 +450,13 @@
         return true;
       });
     term.textarea?.addEventListener("focus", () => onfocusin());
-    // pendengar di induk: tombol blok berada di luar elemen xterm, kursor boleh pindah ke tombol
+    // listener on the parent: block buttons sit outside the xterm element, the cursor may move onto them
     const host = el.parentElement!;
     const leave = () => (hover = null);
     host.addEventListener("mousemove", onHover);
     host.addEventListener("mouseleave", leave);
     term.onScroll(updateSticky);
-    term.onRender(anchor); // tiap tulis, resize, dan pindah layar alternatif
+    term.onRender(anchor); // every write, resize, and alternate screen switch
     ready = true;
     fit.fit();
 
@@ -466,8 +466,8 @@
       found = resultCount ? t("tile.findCount", { i: resultIndex + 1, n: resultCount }) : query ? t("tile.findNone") : "";
     });
 
-    // FR-35: Option kiri dan kanan diatur terpisah (bawaan: kiri Meta, kanan karakter, mis. ⌥⇧2 = €).
-    // xterm hanya punya satu saklar, jadi diganti tepat saat tombol Option ditekan.
+    // FR-35: left and right Option are set separately (default: left Meta, right character, e.g. ⌥⇧2 = €).
+    // xterm only has one switch, so it's flipped right when an Option key is pressed.
     const onAlt = (e: KeyboardEvent) => {
       const m = ui.option_as_meta;
       if (e.code === "AltLeft") term.options.macOptionIsMeta = m === "left" || m === "both";
@@ -475,8 +475,8 @@
     };
     el.addEventListener("keydown", onAlt, true);
 
-    // FR-54: ⌘V berisi gambar = simpan ke folder sementara Gembala (SEC-34), tempel path-nya ber-quote.
-    // Teks biasa tidak disentuh: handler paste xterm yang menanganinya (bracketed paste).
+    // FR-54: ⌘V with an image = save to Gembala's temp folder (SEC-34), paste its quoted path.
+    // Plain text isn't touched: xterm's paste handler takes it (bracketed paste).
     const EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
     const onPaste = async (e: ClipboardEvent) => {
       const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === "file" && EXT[i.type]);
@@ -496,16 +496,16 @@
     el.addEventListener("paste", onPaste, true);
 
     let attached = false;
-    let sized = false; // snapshot attach sudah ditulis di ukuran daemon dan dipaskan ke pane
-    // daemon baru mengirim penanda pane.attached sesudah snapshot: event sebelumnya sudah ada di snapshot (dibuang),
-    // sesudahnya belum. Daemon lama tanpa penanda (balasan tanpa `sync`) = semua event dipakai seperti dulu
+    let sized = false; // the attach snapshot is already written at the daemon's size and fitted to the pane
+    // a new daemon sends the pane.attached marker after the snapshot: earlier events are already in the snapshot (dropped),
+    // later ones aren't. An old daemon without the marker (reply without `sync`) = every event is used as before
     let synced = false;
     const early: any[] = [];
-    // resize langsung berlaku, write diantrekan: tiap potongan ditunggu dulu
+    // resize applies right away, writes are queued: each chunk is awaited first
     const put = (d: Uint8Array) => new Promise<void>((r) => term.write(d, r));
-    // FR-2: riwayat mentah ditulis di ukuran saat dulu keluar (lebar menentukan bungkus dan gerak kursor), lalu
-    // xterm sendiri membungkus ulang saat resize; hasilnya sama dengan tab yang tidak pernah dilepas. Dipakai attach
-    // dan pane.replace (FR-56). `sized` mati selama itu: resize ke ukuran lama tidak boleh sampai ke PTY
+    // FR-2: raw history is written at the size it had when it came out (width decides wrapping and cursor moves), then
+    // xterm itself rewraps on resize; the result matches a tab that was never detached. Used by attach
+    // and pane.replace (FR-56). `sized` is off meanwhile: a resize to the old size must not reach the PTY
     const replay = async (a: any) => {
       sized = false;
       const segs: { rows: number; cols: number; data: string }[] = a.segments ?? [];
@@ -515,8 +515,8 @@
         term.resize(segs[i].cols, segs[i].rows);
         await put(raw[i]);
       }
-      // TECH 19 #10: ekor ditulis di ukuran grid daemon (mis. 80 kolom sebelum UI menempel), baru dipaskan ke pane;
-      // xterm membungkus ulang baris panjang, grid daemon (vt100) yang dikecilkan duluan malah memotongnya
+      // TECH 19 #10: the tail is written at the daemon grid size (e.g. 80 columns before the UI attached), then fitted to the pane;
+      // xterm rewraps long rows, while a daemon grid (vt100) shrunk first would cut them
       if (a.cols && a.rows) term.resize(a.cols, a.rows);
       await put(snap);
       sized = true;
@@ -526,16 +526,16 @@
       return [...raw, snap];
     };
     const onEvent = (e: any) => {
-      // riwayat sedang ditulis ulang (pane.replace): event sesudahnya menunggu
+      // history being rewritten (pane.replace): later events wait
       if (!attached) return void early.push(e);
       if (e.event === "pane.output") term.write(unb64(e.params.data));
-      // FR-56: agent keluar = layar diganti riwayat sebelum agent + blok ringkas dari daemon
+      // FR-56: agent exits = screen replaced by the history before the agent + the daemon's summary block
       if (e.event === "pane.replace") {
-        // blok shell lama (termasuk perintah agent yang baru keluar) tidak berlaku lagi: tanpa ini titik dan durasinya
-        // menumpuk di atas blok ringkas
+        // old shell blocks (including the agent command that just exited) no longer apply: without this their dots and durations
+        // pile up above the summary block
         blocks.splice(0).forEach((b) => (b.live?.dispose(), b.a.dispose(), b.c?.dispose(), b.d?.dispose()));
         term.reset();
-        // daemon lama (sebelum ring) mengirim satu potong `data`
+        // an old daemon (before the ring) sends one `data` chunk
         if (!e.params.segments) return void term.write(unb64(e.params.data), decorateSummary);
         attached = false;
         replay(e.params).then(() => ((attached = true), early.splice(0).forEach(onEvent)));
@@ -551,37 +551,37 @@
 
     (async () => {
       try {
-        await unlisten; // listener siap sebelum attach: penanda tidak boleh terlewat
-        // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
+        await unlisten; // listener ready before attach: the marker must not be missed
+        // the attach reply and events take different paths in Tauri: events arriving first are held
         const a = await call("pane.attach", { pane });
         if (!a.sync) synced = true;
         // event live tertahan sampai `attached`
         const written = await replay(a);
-        if (a.prompt) onprompt(true); // FR-59: penanda B sebelum attach tidak ikut snapshot
+        if (a.prompt) onprompt(true); // FR-59: a B marker before attach isn't in the snapshot
         const text = written.map((d) => new TextDecoder().decode(d)).join("");
         if (/\S/.test(text.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
         attached = true;
-        if (synced) early.splice(0).forEach(onEvent); // belum: penanda yang datang nanti membuang yang tertahan
+        if (synced) early.splice(0).forEach(onEvent); // not yet: a marker arriving later drops what's held
       } catch (e) {
         sized = true;
         term.write(`\x1b[31m${t("tile.attachFailed", { pane, why: errText(e) })}\x1b[0m\r\n`);
       }
     })();
 
-    // Shift+Enter = ESC CR (sama dengan /terminal-setup Claude Code di iTerm2): baris baru di TUI agent
+    // Shift+Enter = ESC CR (same as Claude Code's /terminal-setup in iTerm2): newline in agent TUIs
     term.attachCustomKeyEventHandler((e) => {
       // FR-57: daftar @ terbuka = Tab/panah/Esc milik daftar
       if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && !e.shiftKey && onkey(e.key)) {
-        e.preventDefault(); // Tab bawaan WebKit memindah fokus keluar dari terminal; agent menyembunyikan kursor saat fokus hilang
+        e.preventDefault(); // WebKit's default Tab moves focus out of the terminal; agents hide the cursor when focus is lost
         return false;
       }
       const ku = (kitty.at(-1) ?? 0) & 1 ? encodeKey(e, !!term.options.macOptionIsMeta) : null;
       if (ku) {
-        e.preventDefault(); // Ctrl+Enter: WebKit macOS membuka menu konteks walau kodenya sudah dikirim
+        e.preventDefault(); // Ctrl+Enter: macOS WebKit opens the context menu even after the code was sent
         if (e.type === "keydown") (track(ku), call("pane.write", { pane, data: b64(enc.encode(ku)) }));
         return false;
       }
-      // Ctrl+Enter tanpa protokol kitty = Enter biasa; tanpa ini WebKit macOS membuka menu konteks
+      // Ctrl+Enter without the kitty protocol = plain Enter; without this macOS WebKit opens the context menu
       if (e.key === "Enter" && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         if (e.type === "keydown") call("pane.write", { pane, data: b64(enc.encode("\r")) });
@@ -592,13 +592,13 @@
       return false;
     });
     term.onData((d) => {
-      // FR-59: editor tampil = huruf biasa ke editor (fokus bisa tertinggal di terminal, mis. setelah TUI keluar)
+      // FR-59: editor shown = plain letters go to the editor (focus can be left in the terminal, e.g. after a TUI exits)
       if (!/[\x00-\x1f\x7f]/.test(d) && ontype(d)) return;
       track(d);
       call("pane.write", { pane, data: b64(enc.encode(d)) });
     });
     term.onBinary((d) => call("pane.write", { pane, data: btoa(d) }));
-    // grid daemon baru ikut ukuran pane sesudah snapshot tertulis (lihat attach): sebelum itu vt100 memotong baris
+    // the new daemon grid follows the pane size after the snapshot is written (see attach): before that vt100 cuts rows
     term.onResize(({ rows, cols }) => sized && call("pane.resize", { pane, rows, cols }));
     const ro = new ResizeObserver(() => sized && el.offsetParent && fit.fit());
     ro.observe(el);
@@ -628,7 +628,7 @@
 
 <div class="term" class:finding bind:this={el} style:--lift="{lift}px"></div>
 {#if sticky}
-  <!-- FR-58: kepala blok menempel -->
+  <!-- FR-58: sticky block head -->
   <div class="sticky" style:top={finding ? `${FIND_H}px` : null} class:fail={!!sticky.code} class:run={!sticky.d}>
     <i class="sdot"></i>
     <span class="scmd">{sticky.cmd}</span>
@@ -665,23 +665,23 @@
 {/if}
 
 <style>
-  /* jarak tepi ala Warp: teks tidak menempel ke pemisah */
+  /* Warp-style edge spacing: text doesn't touch the divider */
   .term {
     position: absolute;
-    inset: 10px 8px 6px 22px; /* kiri 22px = kolom linimasa (pen layar 02) */
-    /* z-index dekorasi xterm (6-7) tetap di dalam pane: tidak menembus palet, panel Pesan, atau pemisah */
+    inset: 10px 8px 6px 22px; /* left 22px = timeline column (pen screen 02) */
+    /* z-index of xterm decorations (6-7) stays inside the pane: doesn't cut through the palette, Messages panel, or dividers */
     isolation: isolate;
-    /* baris kosong yang tergeser ke bawah (--lift) tidak menutupi input editor; kolom linimasa kiri tetap terlihat */
+    /* blank rows shifted down (--lift) don't cover the input editor; the left timeline column stays visible */
     clip-path: inset(0 0 0 -22px);
   }
-  /* FR-58: isi menempel di bawah selama buffer belum penuh (lihat anchor()) */
+  /* FR-58: content sticks to the bottom while the buffer isn't full (see anchor()) */
   .term :global(.xterm) {
     transform: translateY(var(--lift, 0px));
   }
-  /* FR-58: dekorasi blok (dibuat xterm di luar komponen, jadi :global) */
+  /* FR-58: block decorations (created by xterm outside the component, hence :global) */
   .term :global(.blk) {
     box-sizing: border-box;
-    /* ala Warp: pemisah blok jelas terlihat; lebar xterm (px saat dibuat) ditimpa supaya ikut pane yang dibesarkan */
+    /* like Warp: block separators clearly visible; xterm width (px at creation) overridden so it follows a pane that grows */
     width: 100% !important;
     border-top: 1px solid color-mix(in srgb, var(--fg) 16%, transparent);
     pointer-events: none;
@@ -689,7 +689,7 @@
   .term :global(.blk.fail) {
     border-left: 3px solid #dc2626;
   }
-  /* FR-56 linimasa (mockup-blok-sesi E): garis kiri di kolom kosong 3 sel, titik per sesi, tombol di kanan */
+  /* FR-56 timeline (mockup-blok-sesi E): left line in a blank 3-cell column, a dot per session, buttons on the right */
   .term :global(.tl) {
     width: 100% !important;
     pointer-events: none;
@@ -717,7 +717,7 @@
     border-color: #dc2626;
     background: #dc2626;
   }
-  /* kepala blok sesi menutupi baris teks terminalnya (latar sama dengan pane) */
+  /* the session block head covers its terminal text row (same background as the pane) */
   .term :global(.tl-hd) {
     position: absolute;
     top: 0;
@@ -739,7 +739,7 @@
     color: var(--tx-red, #f87171);
     font-weight: normal;
   }
-  /* tombol blok perintah: kanan baris kepala; blok sesi agent: baris sendiri di bawah (pen layar 02) */
+  /* command block buttons: right of the head row; agent session block: own row below (pen screen 02) */
   .term :global(.tl-acts) {
     position: absolute;
     top: 0;
@@ -749,7 +749,7 @@
     align-items: center;
     gap: 6px;
   }
-  /* dua baris terminal untuk baris tombol: tombol setebal di pen (huruf 12px, tinggi ±1,5 baris) */
+  /* two terminal rows for the button row: buttons as thick as in the pen (12px font, ±1.5 rows tall) */
   .term :global(.tl-acts.row) {
     top: calc(var(--rh, 20px) * var(--k, 3));
     left: 0;
@@ -799,7 +799,7 @@
     width: calc(100% + 18px) !important;
     margin-left: -18px;
     border-radius: 6px;
-    /* tembus pandang: lapisan dekorasi tetap di atas teks terminal, latar solid menutupi perintahnya */
+    /* see-through: the decoration layer stays above the terminal text, a solid background covers its command */
     background: color-mix(in srgb, var(--fg) 4%, transparent);
     pointer-events: none;
   }
@@ -819,7 +819,7 @@
     height: 1px;
     background: color-mix(in srgb, var(--fg) 12%, transparent);
   }
-  /* tombol muat di dalam baris kepala (tidak meluber ke atas), tengah vertikal */
+  /* buttons fit inside the head row (don't spill upward), vertically centered */
   .term :global(.tl-acts button) {
     display: flex;
     align-items: center;
@@ -850,7 +850,7 @@
   .term :global(.tl-acts button:not(.ghost):hover) {
     filter: brightness(1.25);
   }
-  /* FR-58 blok shell: garis + titik di gutter kiri (di luar grid, kolom 0 dipakai prompt), durasi di kanan */
+  /* FR-58 shell blocks: line + dot in the left gutter (outside the grid, column 0 is used by the prompt), duration on the right */
   .term :global(.tl.sh:not(.hd)) {
     border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   }
@@ -864,7 +864,7 @@
       opacity: 0.35;
     }
   }
-  /* gagal: latar tetap netral, merah cukup di titik dan "keluar n" (Gembala.pen 02) */
+  /* failed: background stays neutral, red only on the dot and "keluar n" (Gembala.pen 02) */
   .term :global(.tl.sh.hd .tl-meta) {
     left: 0;
     right: auto;
@@ -881,7 +881,7 @@
     color: var(--tx-red, #f87171);
     font-weight: normal;
   }
-  /* FR-58: tombol aksi blok (kanan baris perintah) dan kepala blok menempel (atas pane) */
+  /* FR-58: block action buttons (right of the command row) and sticky block head (top of the pane) */
   .bacts,
   .sticky {
     position: absolute;
@@ -906,7 +906,7 @@
   .sticky.fail {
     background: color-mix(in srgb, #dc2626 7%, var(--bg));
   }
-  /* titik sama dengan linimasa blok: cincin hijau, merah gagal, biru berdenyut saat jalan */
+  /* dot same as the block timeline: green ring, red on failure, blue pulsing while running */
   .sdot {
     flex: none;
     width: 7px;
@@ -938,7 +938,7 @@
   .scode {
     color: var(--tx-red, #f87171);
   }
-  /* tombol blok ala Gembala.pen: Salin/Output polos, Ubah berbingkai, Ulangi biru */
+  /* Gembala.pen-style block buttons: Copy/Output plain, Edit outlined, Rerun blue */
   .bacts-in {
     display: inline-flex;
     gap: 6px;

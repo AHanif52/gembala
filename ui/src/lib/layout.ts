@@ -1,7 +1,7 @@
-// Tata letak pane per tab (FR-37): pohon split biner. Fungsi murni, tanpa DOM.
-// Tile diposisikan absolut dari `rects`, jadi xterm tidak dibuat ulang saat pohon berubah.
+// Pane layout per tab (FR-37): binary split tree. Pure functions, no DOM.
+// Tiles are positioned absolutely from `rects`, so xterm isn't recreated when the tree changes.
 
-export type Dir = "row" | "col"; // row = kiri|kanan, col = atas/bawah
+export type Dir = "row" | "col"; // row = left|right, col = top/bottom
 export type Node = { pane: number } | { dir: Dir; ratio: number; a: Node; b: Node };
 export type Rect = { x: number; y: number; w: number; h: number }; // pecahan 0..1
 export type Arrow = "left" | "right" | "up" | "down";
@@ -25,7 +25,7 @@ export function rects(n: Node, r: Rect = FULL, out = new Map<number, Rect>()): M
   return rects(n.b, rb, out);
 }
 
-/// Garis pemisah untuk di-drag. `path` = urutan a/b dari akar ke node split; `rect` = kotak node split itu.
+/// Dividers to drag. `path` = a/b steps from the root to the split node; `rect` = that split node's box.
 export function dividers(n: Node, r: Rect = FULL, path = "", out: Divider[] = []): Divider[] {
   if (isLeaf(n)) return out;
   const [ra, rb] = halves(n, r);
@@ -46,13 +46,13 @@ export function replace(n: Node, old: number, pane: number): Node {
   return { ...n, a: replace(n.a, old, pane), b: replace(n.b, old, pane) };
 }
 
-/// FR-37: tukar posisi dua pane; ukuran pemisah tetap.
+/// FR-37: swap two panes; divider sizes stay.
 export function swap(n: Node, a: number, b: number): Node {
   if (isLeaf(n)) return n.pane === a ? { pane: b } : n.pane === b ? { pane: a } : n;
   return { ...n, a: swap(n.a, a, b), b: swap(n.b, a, b) };
 }
 
-/// FR-37: pane diseret ke sisi pane lain = keluar dari tempatnya, lalu pane tujuan di-split di sisi itu.
+/// FR-37: a pane dragged to another pane's side = leaves its place, then the target pane is split on that side.
 export function place(n: Node, pane: number, target: number, side: Arrow): Node {
   const rest = pane === target ? null : remove(n, pane);
   if (!rest) return n;
@@ -63,7 +63,7 @@ export function place(n: Node, pane: number, target: number, side: Arrow): Node 
   return put(rest);
 }
 
-/// Pohon dari file layout dianggap tidak tepercaya: bentuk salah = null.
+/// A tree from the layout file is untrusted: wrong shape = null.
 export function valid(n: unknown, depth = 0): n is Node {
   if (depth > 32 || typeof n !== "object" || n === null) return false;
   const o = n as Record<string, unknown>;
@@ -87,13 +87,13 @@ export function setRatio(n: Node, path: string, ratio: number): Node {
   return h === "a" ? { ...n, a: setRatio(n.a, rest, ratio) } : { ...n, b: setRatio(n.b, rest, ratio) };
 }
 
-/// Geser pemisah terdekat dari `pane` searah panah sebesar `delta` (pecahan layar penuh).
+/// Move the nearest divider of `pane` in the arrow direction by `delta` (fraction of the full screen).
 export function nudge(n: Node, pane: number, arrow: Arrow, delta = 0.05): Node {
   const dir: Dir = arrow === "left" || arrow === "right" ? "row" : "col";
   const sign = arrow === "left" || arrow === "up" ? -1 : 1;
   const own = rects(n).get(pane);
   if (!own) return n;
-  // pemisah yang menyentuh pane, searah sumbu, paling dalam (kotak terkecil)
+  // the divider touching the pane, along the axis, innermost (smallest box)
   const touching = dividers(n).filter((d) => {
     if (d.dir !== dir) return false;
     const [lo, hi] = dir === "row" ? [own.x, own.x + own.w] : [own.y, own.y + own.h];
@@ -109,7 +109,7 @@ export function nudge(n: Node, pane: number, arrow: Arrow, delta = 0.05): Node {
   return setRatio(n, d.path, (d.at + sign * delta - start) / size);
 }
 
-/// Pane tetangga searah panah: kotak yang menempel di sisi itu dan paling banyak bertumpuk di sumbu lain.
+/// Neighbor pane in the arrow direction: the box touching that side with the most overlap on the other axis.
 export function neighbor(n: Node, pane: number, arrow: Arrow): number | null {
   const all = rects(n);
   const r = all.get(pane);

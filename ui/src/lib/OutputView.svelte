@@ -1,5 +1,5 @@
 <script lang="ts">
-  // FR-56: output lengkap sesi agent terakhir, baca saja, dari RAM daemon (SEC-13: tidak pernah ke disk).
+  // FR-56: full output of the last agent session, read only, from daemon RAM (SEC-13: never to disk).
   import { onMount } from "svelte";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
@@ -11,7 +11,7 @@
   let el: HTMLDivElement;
 
   onMount(() => {
-    // warna ikut tema app (FR-34): token --bg/--fg dibaca saat dibuka
+    // colors follow the app theme (FR-34): the --bg/--fg tokens are read on open
     const css = getComputedStyle(document.documentElement);
     const term = new Terminal({
       disableStdin: true,

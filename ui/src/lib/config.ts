@@ -1,4 +1,4 @@
-// Bentuk `config.get` dari daemon (TECH bagian 5). Nilai sudah divalidasi daemon; yang rusak = bawaan.
+// Shape of `config.get` from the daemon (TECH section 5). Values are already validated by the daemon; broken = default.
 
 export type Ui = {
   language: "system" | "id" | "en";
@@ -12,7 +12,7 @@ export type Ui = {
   scrollback_lines: number;
   screen_reader: boolean;
   input_editor: boolean;
-  command_timeline: boolean; // FR-58: linimasa blok perintah di pane shell
+  command_timeline: boolean; // FR-58: command block timeline in shell panes
   on_quit: "keep" | "stop";
 };
 
@@ -27,12 +27,12 @@ export type Profile = {
   secret_env: { name: string; ref: string }[];
   summarize: boolean;
   notify: boolean;
-  policy?: string; // SEC-5: pesan dari agent lain — auto | confirm | deny
+  policy?: string; // SEC-5: messages from other agents — auto | confirm | deny
   permission: string; // FR-64: default | auto
-  account?: string; // FR-61: akun bawaan profil; kosong = Utama
+  account?: string; // FR-61: the profile's default account; empty = Utama
 };
 
-/// FR-61: `[[account]]` dari config.toml
+/// FR-61: `[[account]]` from config.toml
 export type Account = { id: string; agent: string; name: string; dir: string; share: string[]; model?: string; effort?: string; trust?: boolean };
 
 export type Agent = {
@@ -74,7 +74,7 @@ export type Config = {
   path: string;
 };
 
-// sama dengan bawaan di core/src/config.rs; dipakai sampai balasan pertama daemon datang
+// same as the defaults in core/src/config.rs; used until the daemon's first reply arrives
 export const UI_DEFAULT: Ui = {
   language: "system",
   theme: "system",

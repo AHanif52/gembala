@@ -1,9 +1,9 @@
-// @ts-nocheck -- dijalankan `npm test` (node --test), bukan bagian build app
+// @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dividers, neighbor, nudge, panes, place, rects, remove, replace, setRatio, split, swap, valid, type Node } from "./layout.ts";
 
-// [1 | 2/3] : 1 kiri, 2 kanan atas, 3 kanan bawah
+// [1 | 2/3] : 1 left, 2 top right, 3 bottom right
 const t3 = (): Node => split(split({ pane: 1 }, 1, "row", 2), 2, "col", 3);
 
 test("split membagi dua dan menjaga urutan", () => {
@@ -20,22 +20,22 @@ test("remove menaikkan saudara, pane terakhir jadi null", () => {
 });
 
 test("place memindah pane ke sisi pane lain", () => {
-  // 3 (kanan bawah) ke kiri 1: [3 | 1 | 2]
+  // 3 (bottom right) to the left of 1: [3 | 1 | 2]
   const n = place(t3(), 3, 1, "left");
   assert.deepEqual(panes(n), [3, 1, 2]);
   assert.equal(neighbor(n, 3, "right"), 1);
-  // 1 ke bawah 2: 2 di atas 1, 3 di bawahnya
+  // 1 below 2: 2 on top of 1, 3 below it
   const m = place(t3(), 1, 2, "down");
   assert.deepEqual(panes(m), [2, 1, 3]);
   assert.deepEqual(rects(m).get(2), { x: 0, y: 0, w: 1, h: 0.25 });
-  // ke diri sendiri, atau pane satu-satunya = tidak berubah
+  // onto itself, or the only pane = unchanged
   assert.deepEqual(place(t3(), 2, 2, "up"), t3());
   assert.deepEqual(place({ pane: 1 }, 1, 9, "up"), { pane: 1 });
 });
 
 test("neighbor mengikuti geometri", () => {
   const n = t3();
-  assert.equal(neighbor(n, 1, "right"), 2); // bertumpuk sama, yang pertama
+  assert.equal(neighbor(n, 1, "right"), 2); // equal overlap, the first one
   assert.equal(neighbor(n, 3, "left"), 1);
   assert.equal(neighbor(n, 2, "down"), 3);
   assert.equal(neighbor(n, 3, "up"), 2);
@@ -52,7 +52,7 @@ test("dividers dan setRatio dengan batas", () => {
 test("nudge menggeser pemisah terdekat", () => {
   let n = nudge(t3(), 1, "right", 0.1);
   assert.ok(Math.abs((n as any).ratio - 0.6) < 1e-9);
-  n = nudge(t3(), 3, "up", 0.1); // pemisah atas/bawah di sisi kanan
+  n = nudge(t3(), 3, "up", 0.1); // top/bottom divider on the right side
   assert.ok(Math.abs((n as any).b.ratio - 0.4) < 1e-9);
   assert.deepEqual(nudge({ pane: 1 }, 1, "left"), { pane: 1 });
 });

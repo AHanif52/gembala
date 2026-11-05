@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Laci pesan (Fase 2): panel status agent (FR-10), kartu menunggu (FR-12), antrean, riwayat,
-  // kebijakan penerima (SEC-5), mute (SEC-10), izin baca pane shell (SEC-21). Semua aksi lewat kanal UI.
+  // Message drawer (Phase 2): agent status panel (FR-10), pending cards (FR-12), queue, history,
+  // recipient policy (SEC-5), mute (SEC-10), shell pane read permission (SEC-21). Every action goes through the UI channel.
   import { call } from "./daemon";
   import { t, tOr } from "./i18n/state.svelte";
 
@@ -15,7 +15,7 @@
 
   const act = (method: string, params: object) => call(method, params).then(onchange, onchange);
   const muted = $derived(new Set<string>(data?.muted ?? []));
-  /// FR-10: tugas terakhir per agent = pesan terakhir yang terkirim ke agent itu
+  /// FR-10: last task per agent = the last message sent to that agent
   const lastTask = $derived(
     Object.fromEntries((data?.history ?? []).filter((h: any) => h.kind === "sent").map((h: any) => [h.msg.to, h.msg.preview])),
   );

@@ -1,5 +1,5 @@
-/// FR-69: label pane dari judul terminal agent. Penanda putar, ikon agent, dan judul generik (nama agent,
-/// nama folder) dibuang; "" = tidak ada label yang berguna.
+/// FR-69: pane label from the agent's terminal title. Spinner marks, agent icons, and generic titles (agent name,
+/// folder name) are dropped; "" = no useful label.
 const GENERIC = ["claude code", "claude", "codex", "opencode", "omp", "oh my pi"];
 
 export function cleanTitle(raw: string | undefined, folder = ""): string {

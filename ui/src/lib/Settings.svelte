@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Pengaturan (FR-42): layar dan config.toml setara. Tiap ubahan ditulis daemon ke file (satu penulis),
-  // lalu kembali sebagai `config.changed`, jadi layar selalu mencerminkan isi file.
+  // Settings (FR-42): the screen and config.toml are equal. Every change is written to the file by the daemon (one writer),
+  // then comes back as `config.changed`, so the screen always mirrors the file.
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
@@ -22,16 +22,16 @@
     meta: Record<number, { name: string; agent: string; profile: string; status?: string }>;
     onclose: () => void;
     onquitall: () => void;
-    onlogin: (id: string, name: string) => void; // FR-61: buka pane akun itu untuk login
+    onlogin: (id: string, name: string) => void; // FR-61: open a pane on that account to log in
   } = $props();
 
-  // FR-61: akun Claude Code (folder config sendiri lewat CLAUDE_CONFIG_DIR); Utama selalu ada
+  // FR-61: Claude Code accounts (own config folder through CLAUDE_CONFIG_DIR); Utama is always there
   type AccRow = { account: Account & { main?: boolean }; status: { used: boolean; email: string | null } };
   const SHARE_DEFAULT = ["CLAUDE.md", "settings.json", "skills", "commands", "agents", "plugins"];
   let accRows = $state<AccRow[]>([]);
   let shareOpts = $state<string[]>([]);
   let accForm = $state({ name: "", dir: "", share: [...SHARE_DEFAULT], error: "", info: "" });
-  let accOpen = $state(false); // form tertutup; akun Utama sudah jadi bawaan
+  let accOpen = $state(false); // form closed; the Utama account is already the default
   let removeAsk = $state("");
   let accErr = $state("");
   const slug = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32);
@@ -39,11 +39,11 @@
     const r = await call("account.list", {}).catch(() => null);
     if (r) [accRows, shareOpts, models, efforts] = [r.accounts, r.share, r.models ?? [], r.efforts ?? []];
   }
-  // FR-61 (8) varian A: setelan sendiri (model, effort), Ikut Utama/Sendiri per butir, dan yang selalu milik akun
+  // FR-61 (8) variant A: own settings (model, effort), Follow Utama/Own per item, and what always belongs to the account
   let models = $state<string[]>([]);
   let efforts = $state<string[]>([]);
-  let accDetail = $state(""); // id akun yang halamannya terbuka
-  let ownAsk = $state(""); // "<id>:<butir>" menunggu konfirmasi Sendiri untuk settings.json/plugins
+  let accDetail = $state(""); // id of the account whose page is open
+  let ownAsk = $state(""); // "<id>:<item>" waiting for the Own confirmation for settings.json/plugins
   // label: set.acc.follow.<key>, keterangan: set.acc.follow.<key>Sub
   const FOLLOW = [
     { key: "global", items: ["CLAUDE.md"] },
@@ -59,13 +59,13 @@
   }
   async function setFollow(a: Account, items: string[], follow: boolean) {
     const key = `${a.id}:${items[0]}`;
-    // settings.json/plugins jadi Sendiri: hook, izin, plugin, MCP bersama berhenti ikut Utama, jadi tanya dulu
+    // settings.json/plugins become Own: hooks, permissions, plugins, shared MCP stop following Utama, so ask first
     if (!follow && (items.includes("settings.json") || items.includes("plugins")) && ownAsk !== key) return void (ownAsk = key);
     ownAsk = "";
     for (const item of items) await updateAccount({ id: a.id, item, follow });
   }
   $effect(() => {
-    void cfg.values.accounts; // muat ulang saat config berubah
+    void cfg.values.accounts; // reload when config changes
     loadAccounts();
   });
   async function createAccount() {
@@ -83,7 +83,7 @@
     loadAccounts();
   }
   let daemon = $state<{ daemon: string; proto: number; msg?: { rate_per_min: number; hop_max: number } } | null>(null);
-  // FR-29: ubah profil dari layar; satu baris = satu argumen / satu env
+  // FR-29: edit a profile from the screen; one line = one argument / one env
   type Form = {
     id: string;
     name: string;
@@ -114,7 +114,7 @@
       command: p.command,
       args: p.args.join("\n"),
       cwd: p.cwd,
-      env: envRows(p.env), // nilai env tidak dikirim ke UI; isi ulang bila ingin mengubah
+      env: envRows(p.env), // env values aren't sent to the UI; fill them in again to change them
       secret: p.secret_env.map((x) => `${x.name}=${x.ref}`).join("\n"),
       summarize: p.summarize,
       notify: p.notify,
@@ -124,7 +124,7 @@
     };
   }
 
-  /// Gembala.pen 30: "+ Profil" menambah profil kosong; id-nya dibuat unik karena id dipakai di config.toml
+  /// Gembala.pen 30: "+ Profile" adds an empty profile; its id is made unique since ids are used in config.toml
   function blank() {
     let id = "profile";
     for (let n = 2; cfg.values.profiles.some((x) => x.id === id); n++) id = `profile-${n}`;
@@ -152,7 +152,7 @@
   async function saveForm() {
     if (!form) return;
     failed = "";
-    // hanya env yang diisi; yang dibiarkan kosong tetap memakai nilai lama di file
+    // only the env that's filled in; what's left empty keeps the old value in the file
     const profile = {
       id: form.id.trim(),
       name: form.name.trim(),
@@ -180,7 +180,7 @@
   let resetAsk = $state(false);
   let copied = $state("");
 
-  /// FR-49: info laporan bug tanpa env, folder, atau isi layar (SEC-12)
+  /// FR-49: bug report info without env, folders, or screen content (SEC-12)
   async function copyInfo() {
     const rows = Object.values(meta).map((m) => `${m.name || m.profile} (${m.agent || "shell"}) status=${m.status || "-"}`);
     // English on purpose: pasted into a GitHub issue
@@ -188,7 +188,7 @@
     await navigator.clipboard.writeText(text).then(() => (copied = t("common.copied")), () => (copied = t("chg.copyFailed")));
   }
 
-  /// FR-48: hapus config, tata letak, hook, dan rahasia Keychain milik Gembala, lalu keluar
+  /// FR-48: delete Gembala's config, layout, hooks, and Keychain secret, then quit
   async function reset() {
     await call("daemon.reset").catch(() => {});
     await invoke("forget_secret").catch(() => {});
@@ -196,7 +196,7 @@
   }
 
   const SECTIONS = ["umum", "tampilan", "agent", "pintasan", "toolbar", "keamanan", "proses", "diagnostik"] as const;
-  // FR-60: proses milik Gembala, diperbarui tiap 2 detik selama bagian ini terbuka
+  // FR-60: Gembala-owned processes, refreshed every 2 seconds while this section is open
   type Proc = { pid: number; ppid: number; rss_kb: number; cpu: number; role: string; name: string };
   // label: set.proc.role.<role>, keterangan: set.proc.role.<role>Sub
   let procs = $state<Proc[]>([]);
@@ -214,14 +214,14 @@
     const t = setInterval(loadProcs, 2000);
     return () => clearInterval(t);
   });
-  /// nama pane dari shell induk terdekat
+  /// pane name from the nearest parent shell
   function paneOf(p: Proc): string {
     const by = new Map(procs.map((x) => [x.pid, x]));
     for (let q: Proc | undefined = p; q; q = by.get(q.ppid)) if (panePid[q.pid]) return panePid[q.pid];
     return "";
   }
   const mb = (kb: number) => `${Math.round(kb / 1024)} MB`;
-  // satu baris per pane (total RAM/CPU semua prosesnya), rincian dibuka per pane; pane berisi shell saja di bawah
+  // one row per pane (total RAM/CPU of all its processes), details open per pane; panes with only a shell at the bottom
   const SHELLS = ["zsh", "bash", "fish", "sh", "login"];
   const AGENT_BIN = ["claude", "codex", "opencode", "omp"];
   const paneGroups = $derived.by(() => {
@@ -241,7 +241,7 @@
   let keys = $state<[string, string, string][]>([]);
   let keyErrors = $state<string[]>([]);
   let keyEdit = $state<{ id: string; combo: string } | null>(null);
-  // FR-55: editor toolbar agent ala Warp (seret antar sisi, × buang, daftar tersedia); ditulis ke [toolbar]
+  // FR-55: Warp-style agent toolbar editor (drag between sides, × removes, available list); written to [toolbar]
   const CHIPS = ["attach", "diff", "rich_input", "cwd", "branch", "settings"]; // label: toolbar.chip.<id>
   const TB_DEFAULT = { left: ["attach", "diff", "rich_input"], right: ["cwd", "branch", "settings"] };
   type Zone = "left" | "right";
@@ -255,7 +255,7 @@
     }
   }
   let tbDrag = $state<{ z: Zone; i: number } | null>(null);
-  /// seret chip: pointer (drag HTML bentrok dengan drop file Tauri), target = chip atau zona di bawah kursor
+  /// chip drag: pointer (HTML drag clashes with Tauri file drop), target = chip or zone under the cursor
   function tbStart(e: PointerEvent, z: Zone, i: number) {
     if (e.button !== 0 || (e.target as HTMLElement).closest(".tbx")) return;
     tbDrag = { z, i };
@@ -275,10 +275,10 @@
     window.addEventListener("pointerup", up);
   }
 
-  // urutan dan nama sama dengan menu app (lib.rs)
+  // order and names same as the app menu (lib.rs)
   const GROUPS = [["tab.", "menu.tab"], ["pane.", "menu.pane"], ["term.", "menu.view"], ["msg.", "menu.msg"]] as const;
 
-  /// FR-39: kombinasi ditulis sebagai teks (WKWebView tidak meneruskan semua kombinasi ⌘ ke halaman)
+  /// FR-39: combos written as text (WKWebView doesn't pass every ⌘ combo to the page)
   async function saveKey(id: string, combo: string) {
     failed = "";
     keyEdit = null;
@@ -288,7 +288,7 @@
   let version = $state("");
   let agents = $state<Agent[]>([]);
   let detecting = $state(false);
-  // Gembala.pen 31: halaman akun, dibuka dari baris Claude Code; nav Agent kembali ke halaman induk
+  // Gembala.pen 31: account page, opened from the Claude Code row; the Agents nav goes back to the parent page
   let agentPage = $state<"main" | "akun" | "addon">("main");
   // FR-78 (Gembala.pen 32): add-ons per launch; the daemon writes config.toml and the MCP file, the page follows cfg
   const addons = $derived(cfg.values.addons ?? { plugins: [], mcp: [] });
@@ -325,16 +325,16 @@
     if (r?.error) mcpEdit.error = errText(r.error, r.args);
     else mcpEdit = null;
   }
-  /// Jenis hook yang dipasang daemon (core/src/profile.rs `hook_files`); sumber status pane tiap agent.
+  /// Kind of hook the daemon installs (core/src/profile.rs `hook_files`); source of each agent's pane status.
   const HOOK: Record<string, string> = {
     claude: "set.agent.hook.claude",
     codex: "hook notify",
     omp: "hook omp-gembala.ts",
     opencode: "plugin opencode-gembala.js",
   }; // claude's label is translated (tOr), the rest are file names
-  /// Baris Akun ditampilkan untuk profil yang menjalankan Claude: agent claude, atau perintahnya claude.
+  /// The Account row shows for profiles that run Claude: agent claude, or its command is claude.
   const runsClaude = (f: Form) => f.agent === "claude" || /^claude(\s|-|$)/.test(f.command.trim());
-  /// env: satu baris = satu NAMA dan nilai; baris tanpa nilai dibuang saat simpan (nilai lama tetap)
+  /// env: one line = one NAME and value; lines without a value are dropped on save (old value stays)
   function envAdd() {
     if (form) form.env = [...form.env, { name: "", value: "" }];
   }
@@ -342,21 +342,21 @@
     if (form) form.env = form.env.filter((_, j) => j !== i);
   }
 
-  /// FR-28: deteksi lewat login shell; "Periksa ulang" memaksa deteksi baru
+  /// FR-28: detection through the login shell; "Check again" forces a new detection
   async function detect(refresh: boolean) {
     detecting = true;
     agents = await call("agents.detect", { refresh }).catch(() => []);
     detecting = false;
   }
   const ui = $derived(cfg.values.ui);
-  /// Gembala.pen 36: angka rem datang dari daemon (core/src/msg.rs lewat daemon.info), bukan diketik ulang di markup
+  /// Gembala.pen 36: brake numbers come from the daemon (core/src/msg.rs through daemon.info), not retyped in the markup
   const rate = $derived(daemon?.msg?.rate_per_min);
   const hops = $derived(daemon?.msg?.hop_max);
-  /// Folder log audit ada di sebelah config.toml (core/src/daemon.rs Audit::open); daemon yang menentukan path-nya.
+  /// The audit log folder is next to config.toml (core/src/daemon.rs Audit::open); the daemon decides its path.
   const auditDir = $derived(cfg.path.replace(/\/[^/]+$/, "") + "/audit");
-  /// Pintasan tombol darurat ikut [keys]; cadangannya sama dengan MSG_KEYS di ui/src-tauri/src/lib.rs.
+  /// The emergency button shortcut follows [keys]; its fallback matches MSG_KEYS in ui/src-tauri/src/lib.rs.
   const stopKey = $derived(pretty(keys.find(([id]) => id === "msg.stop")?.[2] || "Cmd+Shift+."));
-  /// Folder di sebelah config.toml dibuka dari Finder; daftar yang boleh ada di REVEAL (ui/src-tauri/src/lib.rs).
+  /// Folders next to config.toml opened in Finder; the allowed list is in REVEAL (ui/src-tauri/src/lib.rs).
   async function reveal(sub: string) {
     failed = "";
     const r = await invoke("reveal_dir", { config: cfg.path, sub }).catch((e) => String(e));
@@ -369,7 +369,7 @@
     version = await getVersion();
   });
 
-  // [keys] berubah = menu dibangun ulang di sisi Rust; ambil ulang daftar yang berlaku
+  // [keys] changed = the menu is rebuilt on the Rust side; fetch the list in effect again
   $effect(() => {
     void cfg.values.keys;
     invoke<[[string, string, string][], string[]]>("shortcuts").then(([k, e]) => {
@@ -390,7 +390,7 @@
 {#snippet editor()}
   {#if form}
     {@const claude = runsClaude(form)}
-    <!-- FR-29 + SEC-5: kartu profil terbuka, gaya baris Gembala.pen 30 -->
+    <!-- FR-29 + SEC-5: open profile card, Gembala.pen 30 row style -->
     <div class="pcard">
       <div class="row">
         <span class="grow">{t("set.prof.name")}</span>
@@ -601,7 +601,7 @@
             <input type="checkbox" role="switch" aria-label="Input editor" checked={ui.input_editor} onchange={(e) => set("input_editor", e.currentTarget.checked)} />
           </div>
         </section>
-        <!-- FR-58 (keputusan 4 Nov, mockup-blok-perintah opsi C): satu sakelar global untuk linimasa blok perintah;
+        <!-- FR-58 (decision 4 Nov, mockup-blok-perintah option C): one global switch for the command block timeline;
              "ringkas output agent" tetap per profil (FR-56), bukan di grup ini -->
         <h4>{t("set.look.blocks")}</h4>
         <section>
@@ -612,7 +612,7 @@
         </section>
       {:else if sec === "agent"}
         {#if agentPage === "akun"}
-          <!-- Gembala.pen 31: halaman akun dibuka dari baris agent; nav Agent kembali ke halaman induk -->
+          <!-- Gembala.pen 31: the account page opens from the agent row; the Agents nav goes back to the parent page -->
           <button class="back" onclick={() => (agentPage = "main")}>‹ {t("set.nav.agent")}</button>
           <h4>{t("set.acc.title")}<span class="hint">{t("set.acc.hint")}</span>{#if !accOpen}<button class="mini" onclick={() => (accOpen = true)}>{t("set.acc.add")}</button>{/if}</h4>
         <section>
@@ -636,7 +636,7 @@
             </div>
             {#if accDetail === r.account.id}
               {@const a = r.account}
-              <!-- FR-61 (8), mockup-akun-setelan varian A -->
+              <!-- FR-61 (8), mockup-akun-setelan variant A -->
               <div class="accd">
                 <span class="grp">{t("set.acc.own")} <small>{t("set.acc.ownSub")}</small></span>
                 <div class="row sub">
@@ -694,7 +694,7 @@
           {/if}
         </section>
         {:else if agentPage === "addon"}
-          <!-- Gembala.pen 32 (FR-78): add-on per launch; config agent nggak disentuh (SEC-15) -->
+          <!-- Gembala.pen 32 (FR-78): add-ons per launch; agent config isn't touched (SEC-15) -->
           <button class="back" onclick={() => ((agentPage = "main"), (mcpEdit = null))}>‹ {t("set.nav.agent")}</button>
           <h4>{t("set.addon.plugins")}<span class="hint">{t("set.addon.pluginsHint")}</span><button class="mini" onclick={addPlugin}>{t("set.addon.addPlugin")}</button></h4>
           <section>
@@ -764,7 +764,7 @@
         {:else}
           <h4>{t("set.agent.installedH")}<span class="hint">{t("set.agent.installedHint")}</span>
             <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? t("set.agent.checkingBtn") : t("set.agent.recheck")}</button>
-            <!-- Add-on lintas agent (Claude plugin + MCP, Codex MCP), jadi di kepala grup, bukan di baris Claude -->
+            <!-- Cross-agent add-ons (Claude plugins + MCP, Codex MCP), so in the group head, not on the Claude row -->
             <button class="mini" onclick={() => (agentPage = "addon")}>Add-on ({addons.plugins.length + addons.mcp.length})…</button></h4>
           <section>
             {#each agents as a (a.agent)}
@@ -822,7 +822,7 @@
             {#each keyErrors as e}<span>{e}</span>{/each}
           </div>
         {/if}
-        <!-- FR-39: dikelompokkan seperti menu; Tab 1–9 satu baris; id aksi di tooltip -->
+        <!-- FR-39: grouped like the menu; Tab 1–9 on one row; action id in the tooltip -->
         {#each GROUPS as [prefix, title]}
           <h4 class="khead">{t(title)}</h4>
           <section>
@@ -860,7 +860,7 @@
           <code>[keys]</code> {t("set.keys.note3")} <code>"cmd+t" = "pane.split.right"</code>{t("set.keys.note4")}
         </p>
       {:else if sec === "toolbar"}
-        <!-- FR-55: seret chip untuk ubah urutan atau pindah sisi; × buang; chip tersedia bisa ditambah lagi -->
+        <!-- FR-55: drag chips to reorder or switch sides; × removes; available chips can be added back -->
         <div class="tbzones">
           {#each ["left", "right"] as const as z (z)}
             <div class="tbzone-wrap">
@@ -943,7 +943,7 @@
           {/if}
         </section>
       {:else if sec === "keamanan"}
-        <!-- Gembala.pen 36: nilai diambil dari aturan daemon, bukan diketik ulang; pengecualian lintas workspace
+        <!-- Gembala.pen 36: values come from the daemon's rules, not retyped; cross-workspace exception
              belum ada di daemon (msg.rs same_workspace), jadi tombol "+ Pengecualian" tidak dibuat -->
         <h4>{t("set.sec.a2a")}</h4>
         <section>
@@ -1043,9 +1043,9 @@
     z-index: 10;
     display: grid;
     place-items: center;
-    background: rgba(0, 0, 0, 0.5); /* terminal di belakang benar-benar mundur */
+    background: rgba(0, 0, 0, 0.5); /* the terminal behind really recedes */
   }
-  /* FR-39: daftar pintasan rapi: nama kiri, aksi muncul saat hover, kombinasi rata kanan di kolom tetap */
+  /* FR-39: tidy shortcut list: name on the left, actions show on hover, combos right-aligned in a fixed column */
   /* FR-55: editor toolbar */
   .tbzones {
     display: grid;
@@ -1155,7 +1155,7 @@
     grid-template-columns: 132px 1fr;
     grid-template-rows: 1fr;
     width: min(780px, calc(100vw - 32px));
-    height: calc(100vh - 80px); /* Gembala.pen 28: 40 px dari tepi atas dan bawah */
+    height: calc(100vh - 80px); /* Gembala.pen 28: 40 px from the top and bottom edges */
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--card);
@@ -1214,7 +1214,7 @@
     min-height: 32px;
     padding-left: 30px;
   }
-  /* FR-61 (8): halaman akun, tiga kelompok */
+  /* FR-61 (8): account page, three groups */
   .accd {
     display: flex;
     flex-direction: column;
@@ -1270,7 +1270,7 @@
     color: var(--fg);
     font: inherit;
   }
-  /* Gembala.pen 28: sakelar ala macOS; knob digambar sebagai background supaya tetap satu elemen
+  /* Gembala.pen 28: macOS-style switch; the knob is drawn as a background so it stays one element
      (pseudo-element tidak dirender di input) */
   input[role="switch"] {
     flex: none;
@@ -1367,7 +1367,7 @@
     color: var(--fg);
     font: 12px "SF Mono", Menlo, monospace;
   }
-  /* Gembala.pen 28/30: judul grup tebal di atas kartu, keterangan abu menyambung di kanannya,
+  /* Gembala.pen 28/30: bold group title above the card, gray note continuing to its right,
      aksi grup (+ Profil, Periksa ulang) menempel di ujung kanan */
   h4 {
     display: flex;
@@ -1393,7 +1393,7 @@
     font-size: 12px;
     font-weight: 400;
   }
-  /* Gembala.pen 31: kembali ke halaman induk dari sub-halaman akun */
+  /* Gembala.pen 31: back to the parent page from the account sub-page */
   .back {
     margin: 0 0 10px -4px;
     padding: 2px 4px;
@@ -1406,7 +1406,7 @@
   .back:hover {
     color: var(--fg);
   }
-  /* status agent (✓ terpasang / ! belum dicoba) dan akun (sudah dipakai) */
+  /* agent state (✓ installed / ! not tried yet) and account (used) */
   .state {
     color: var(--muted);
     font-size: 12px;
@@ -1428,7 +1428,7 @@
     font-size: 10px;
     line-height: 15px;
   }
-  /* kartu profil terbuka: baris label–kontrol, bukan formulir bertumpuk */
+  /* open profile card: label–control rows, not a stacked form */
   .pcard {
     border-top: 1px solid var(--line);
     padding-bottom: 2px;
@@ -1436,7 +1436,7 @@
   .pcard .row {
     padding-left: 24px;
   }
-  /* baris penutup kartu profil: aksi utama rata kanan, hapus/kembalikan di kiri */
+  /* closing row of the profile card: main action right-aligned, delete/reset on the left */
   .pcard .row.foot {
     justify-content: flex-end;
   }

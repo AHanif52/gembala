@@ -1,9 +1,9 @@
-/// Protokol keyboard kitty, hanya flag 1 (disambiguate): Ctrl+Enter/Shift+Enter/Esc bisa dibedakan agent
-/// (Claude Code dan lain-lain menanyakan `CSI ? u`). Flag lain diabaikan, dijawab apa adanya yang didukung.
-/// ponytail: satu tumpukan untuk layar utama dan alternatif; pisahkan kalau ada app yang bergantung padanya.
+/// kitty keyboard protocol, flag 1 only (disambiguate): agents can tell Ctrl+Enter/Shift+Enter/Esc apart
+/// (Claude Code and others query `CSI ? u`). Other flags are ignored, the answer is what's supported.
+/// ponytail: one stack for the main and alternate screens; split it if an app depends on that.
 export const SUPPORTED = 1;
 
-/// CSI `?u` (tanya), `>u` (push), `<u` (pop), `=u` (set). Mengembalikan balasan untuk app bila ada.
+/// CSI `?u` (query), `>u` (push), `<u` (pop), `=u` (set). Returns a reply for the app if there is one.
 export function onCsi(stack: number[], prefix: string, params: number[]): string | undefined {
   const cur = stack.at(-1) ?? 0;
   const [a = 0, b = 1] = params;
@@ -22,8 +22,8 @@ export function onCsi(stack: number[], prefix: string, params: number[]): string
 
 type Key = { key: string; code: string; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean };
 
-/// Urutan CSI-u untuk tombol yang ambigu di mode legacy; null = biarkan xterm (teks biasa, panah, F-key, Cmd).
-/// Enter/Tab/Backspace tanpa modifier tetap legacy supaya `reset` di shell tetap bisa diketik (sesuai spesifikasi).
+/// CSI-u sequence for keys that are ambiguous in legacy mode; null = leave it to xterm (plain text, arrows, F-keys, Cmd).
+/// Enter/Tab/Backspace without modifiers stay legacy so `reset` can still be typed in the shell (per the spec).
 export function encodeKey(e: Key, optionIsMeta: boolean): string | null {
   if (e.metaKey) return null;
   const alt = e.altKey && optionIsMeta;
@@ -33,7 +33,7 @@ export function encodeKey(e: Key, optionIsMeta: boolean): string | null {
   const special = ({ Enter: 13, Tab: 9, Backspace: 127 } as Record<string, number>)[e.key];
   if (special) return mods > 1 ? `\x1b[${special}${m}u` : null;
   if (!e.ctrlKey && !alt) return null;
-  // kode tombol tanpa Shift/Option (Option di macOS mengubah e.key jadi huruf lain)
+  // key code without Shift/Option (Option on macOS turns e.key into another letter)
   const base = /^Key([A-Z])$/.exec(e.code)?.[1].toLowerCase() ?? /^Digit(\d)$/.exec(e.code)?.[1] ?? (e.key.length === 1 ? e.key.toLowerCase() : null);
   return base ? `\x1b[${base.codePointAt(0)}${m}u` : null;
 }

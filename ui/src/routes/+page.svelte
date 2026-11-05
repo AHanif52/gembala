@@ -29,52 +29,52 @@
   import type { Key } from "$lib/i18n";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
-  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: akun bawaan per agent; FR-44: warna blok; FR-13: brief
-  /// Data per pane untuk dipulihkan (FR-45): profil dan folder, tanpa isi layar (SEC-13).
+  type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: default account per agent; FR-44: block color; FR-13: brief
+  /// Per-pane data to restore (FR-45): profile and folder, no screen content (SEC-13).
   type Meta = {
     profile: string;
     cwd: string | null;
     agent: string;
     name: string;
     busy?: string | null;
-    shell?: string | null; // nama proses shell pane (`zsh`), untuk subjudul tab shell diam
+    shell?: string | null; // process name of the pane shell (`zsh`), for the subtitle of an idle shell tab
     status?: string;
-    session?: string; // FR-53, FR-68: id sesi agent di pane (Claude dari Gembala; Codex/OpenCode/diketik dari daemon)
-    git?: any; // FR-55: ringkasan git di toolbar
-    pastes?: string[]; // SEC-34: gambar tempelan, dihapus saat pane ditutup
-    output?: boolean; // FR-56: ada output sesi agent sebelumnya
-    since?: number; // FR-40: kapan proses di pane shell mulai jalan
-    sig?: string; // FR-51: sidik profil saat pane dibuat
-    roleWarn?: boolean; // FR-13: peran baca saja yang tidak bisa dikunci di agent ini
-    prev?: { profile: string; agent: string; session?: string; acct?: string }; // FR-45: agent pane lama yang bisa dilanjutkan
-    zoom?: number; // FR-34: zoom pane ini di atas zoom global
+    session?: string; // FR-53, FR-68: agent session id in the pane (Claude from Gembala; Codex/OpenCode/typed from the daemon)
+    git?: any; // FR-55: git summary in the toolbar
+    pastes?: string[]; // SEC-34: pasted images, deleted when the pane closes
+    output?: boolean; // FR-56: there's output from an earlier agent session
+    since?: number; // FR-40: when the process in a shell pane started running
+    sig?: string; // FR-51: profile fingerprint when the pane was created
+    roleWarn?: boolean; // FR-13: read-only role that can't be locked in this agent
+    prev?: { profile: string; agent: string; session?: string; acct?: string }; // FR-45: old pane agent that can be resumed
+    zoom?: number; // FR-34: this pane's zoom on top of the global zoom
     policy?: string; // SEC-5
     readable?: boolean; // SEC-21
-    from?: { boot: string; pane: number }; // FR-62: pane lama (daemon sebelumnya) untuk riwayat blok
-    ended?: { resume: string | null }; // FR-56: blok agent selesai dengan tombol, hilang saat proses baru jalan
-    acct?: string; // FR-61: id akun yang dipilih saat pane dibuat (dipakai lagi saat dijalankan ulang)
-    aliases?: string[]; // FR-79: nama lama pane, dibawa ke pane pengganti supaya tetap jadi alamat
-    accountName?: string; // FR-61: nama akun dari daemon untuk chip; kosong = Utama
-    accountId?: string; // FR-68: id akun Claude yang jalan (`claude-<id>`); kosong = Utama
-    owner?: { name: string; id: string }; // FR-61: sesi Claude yang jalan milik akun lain (Lanjutkan memakai akun ini)
-    login?: string; // FR-61: kartu "masuk ke akun …" setelah tombol Login
+    from?: { boot: string; pane: number }; // FR-62: old pane (previous daemon) for block history
+    ended?: { resume: string | null }; // FR-56: finished agent block with buttons, gone once a new process runs
+    acct?: string; // FR-61: account id picked when the pane was created (used again on rerun)
+    aliases?: string[]; // FR-79: old pane names, carried to the replacement pane so they stay addresses
+    accountName?: string; // FR-61: account name from the daemon for the chip; empty = Utama
+    accountId?: string; // FR-68: id of the running Claude account (`claude-<id>`); empty = Utama
+    owner?: { name: string; id: string }; // FR-61: the running Claude session belongs to another account (Resume uses that account)
+    login?: string; // FR-61: "log in to account …" card after the Login button
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
-  // FR-4/52: titik status + keterangan teks, tidak hanya warna (bagian 11 BRD)
+  // FR-4/52: status dot + text label, not color alone (BRD section 11)
   const stText = (s?: string) => (s === "blocked" || s === "done" || s === "working" ? tt(`status.${s}`) : "");
-  // FR-52: warna tab pilihan pengguna (garis tipis kiri)
+  // FR-52: tab color picked by the user (thin line on the left)
   const COLORS = ["red", "orange", "yellow", "green", "blue", "purple", "pink", "cyan", "brown"] as const; // label: color.<c>
-  /// FR-44: workspace baru otomatis berwarna: warna yang paling jarang dipakai workspace lain, mulai biru (Gembala.pen 02)
+  /// FR-44: a new workspace gets a color automatically: the one least used by other workspaces, starting with blue (Gembala.pen 02)
   const FIRST = "blue";
   const nextColor = (list: Ws[]) => {
     const used = (c: string) => list.filter((w) => w.color === c).length;
     return COLORS.reduce<string>((best, c) => (used(c) < used(best) ? c : best), FIRST);
   };
-  // FR-52: tanda per agent (bukan logo merek), warna mendekati warna khas agent
+  // FR-52: mark per agent (not a brand logo), color close to the agent's signature color
   const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇" };
-  /// agent yang sedang jalan di pane (dari profil atau diketik sendiri); "" = tidak ada
+  /// agent running in the pane (from a profile or typed by hand); "" = none
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
-  /// FR-61: nama akun Claude pane yang sedang menjalankan Claude; begitu ada akun lain, Utama ikut berlabel
+  /// FR-61: Claude account name of a pane running Claude; once another account exists, Utama gets a label too
   /// FR-78: by current config; a pane launched before a change keeps its old flags until it is restarted
   const addonsOf = (p: number) => activeAddons(cfg?.values.addons, agentOf(p), wsIdOf(p) ?? "", { none: tt("pane.addonNone"), only: tt("pane.addonOnly") });
   const acctOf = (p: number) =>
@@ -85,7 +85,7 @@
     [tt("color.none"), () => set(undefined), true, "none", { on: !cur }],
   ];
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
-  /// status yang ditampilkan: "selesai" yang sudah dilihat pudar (FR-40)
+  /// status shown: a "done" that's already been seen fades (FR-40)
   const stat = (p: number) => (ack[p] && meta[p]?.status === "done" ? "" : (meta[p]?.status ?? ""));
   const worst = (ps: number[]): string => ps.reduce((a, p) => (rank(stat(p)) > rank(a) ? stat(p) : a), "");
   const tabStatus = (t: Tab) => worst(panes(t.tree));
@@ -94,32 +94,32 @@
   let at = $state({ ws: 0, tab: 0 });
   let meta = $state<Record<number, Meta>>({});
   let blockedAt = $state<Record<number, number>>({}); // FR-65: sejak kapan pane butuh izin
-  let now = $state(Date.now()); // FR-65: lama menunggu di antrean, diperbarui tiap poll
+  let now = $state(Date.now()); // FR-65: time waiting in the queue, refreshed every poll
   let ack = $state<Record<number, true>>({});
-  let labels = $state<Record<number, string>>({}); // FR-69: dari judul terminal agent; tidak ikut layout.json (SEC-13) // pane yang status "selesai"-nya sudah dilihat; hapus saat status berubah
-  let dead = $state<Record<number, true>>({}); // pane dari run daemon lain atau sudah keluar (id negatif)
-  let boot = $state(""); // state: layout disimpan ulang saat daemon baru dijalankan
+  let labels = $state<Record<number, string>>({}); // FR-69: from the agent's terminal title; not in layout.json (SEC-13) // panes whose "done" status was already seen; cleared when the status changes
+  let dead = $state<Record<number, true>>({}); // panes from another daemon run or already exited (negative id)
+  let boot = $state(""); // state: the layout is saved again when a new daemon starts
   let zoomed = $state(false);
   let confirm = $state<{ pane: number; name: string; close: number[]; what: string } | null>(null);
-  let quitAsk = $state(0); // jumlah pane yang masih menjalankan proses (FR-46)
-  let linkAsk = $state(""); // SEC-14: URL asli ditampilkan sebelum dibuka
-  let zoom = $state(0); // FR-34 ⌘=/⌘- sementara di atas ukuran config; ponytail: zoom per pane menyusul
+  let quitAsk = $state(0); // number of panes still running a process (FR-46)
+  let linkAsk = $state(""); // SEC-14: the real URL is shown before opening
+  let zoom = $state(0); // FR-34 ⌘=/⌘- temporary on top of the config size; ponytail: per-pane zoom comes later
   let cfg = $state<Config | null>(null);
   let settingsOpen = $state(false);
   let cfgSeen = $state(""); // config errors already dismissed (FR-42 card)
   let picker = $state<{ items: (Profile & { missing: boolean; key: string; label: string; account?: string })[]; sel: number } | null>(null);
   let sidebar = $state(true);
-  let sideW = $state(220); // FR-52: lebar sidebar, disimpan di layout
+  let sideW = $state(220); // FR-52: sidebar width, saved in the layout
   let pal = $state<{ q: string; sel: number; keys: [string, string, string][] } | null>(null); // FR-39 palet
-  /// `line` = garis sisip (koordinat layar) di tempat jatuh
+  /// `line` = insertion line (screen coordinates) where it drops
   let dragging = $state<{ kind: "tab" | "ws"; wi: number; ti: number; over: { wi: number; ti: number }; line: { top: number; left: number; width: number } } | null>(null);
-  /// FR-37: seret kepala pane; `zone` = kotak sorot (koordinat layar) + tulisan tujuan
+  /// FR-37: drag a pane head; `zone` = highlight box (screen coordinates) + target label
   let paneDrag = $state<{ zone: { left: number; top: number; width: number; height: number; label: string } | null } | null>(null);
   let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
   let renameError = $state("");
-  let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
+  let welcome = $state<Agent[] | null>(null); // FR-43: short card on first open
   let upgrade = $state<{ daemon: string; app: string; panes: number } | null>(null); // FR-21
-  let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
+  let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: delete a workspace that's still running
   let rich = $state<{ pane: number; text: string; files?: string[]; error?: string; args?: any } | null>(null); // FR-14; files = attachment chips (pen 04)
   let changes = $state<{ pane: number; diff: any; turns?: any[]; turn?: number | null; ask?: any; act?: any } | null>(null); // FR-22, FR-70, FR-23
   let outputOf = $state<number | null>(null); // FR-56
@@ -127,15 +127,15 @@
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
   const ws = $derived(wss[at.ws]);
   const tab = $derived(ws?.tabs[at.tab]);
-  // hemat RAM/CPU: xterm cuma untuk tab aktif + 3 terakhir dibuka; tab lain dilepas (daemon tetap memegang pane),
-  // dibuka lagi = attach ulang dari snapshot daemon
+  // saves RAM/CPU: xterm only for the active tab + the last 3 opened; other tabs are detached (the daemon keeps the panes),
+  // reopening = re-attach from the daemon snapshot
   const LIVE_TABS = 4;
   let liveTabs = $state<string[]>([]);
   $effect(() => {
     const id = tab?.id;
     if (id) liveTabs = [id, ...untrack(() => liveTabs).filter((x) => x !== id)].slice(0, LIVE_TABS);
   });
-  // Fase 2: laci pesan, kirim manual, data mesin pesan dari daemon
+  // Phase 2: message drawer, manual send, message engine data from the daemon
   let drawer = $state(false);
   // FR-16, FR-26, FR-73: harness. `runs` = latest run per workspace id (the daemon pushes harness.state)
   let newTask = $state(false);
@@ -149,17 +149,17 @@
   }
   const pendingFor = (pane: number) => (msgData?.pending ?? []).filter((m: any) => m.to === meta[pane]?.name);
   const wsIdOf = (pane: number) => wss.find((w) => w.tabs.some((t) => panes(t.tree).includes(pane)))?.id ?? ws?.id;
-  /// panel status (FR-10): semua pane di workspace aktif
+  /// status panel (FR-10): every pane in the active workspace
   const rows = $derived(
     (ws?.tabs ?? [])
       .flatMap((t) => panes(t.tree))
       .filter((p) => !dead[p] && meta[p])
       .map((p) => ({ pane: p, name: meta[p].name, agent: meta[p].agent || "shell", status: meta[p].status, policy: meta[p].policy, readable: meta[p].readable })),
   );
-  // tujuan kirim: pane agent selain yang fokus, termasuk agent yang diketik sendiri di pane shell (status dilacak daemon)
+  // send targets: agent panes other than the focused one, including agents typed by hand in a shell pane (status tracked by the daemon)
   const targets = $derived(rows.filter((r) => r.pane !== tab?.focus && (r.agent !== "shell" || r.status)));
 
-  /// Kirim manual dari pengguna (⌘⇧K, FR-57); "" = terkirim, selain itu kode galat (teksnya lewat errText saat tampil)
+  /// Manual send from the user (⌘⇧K, FR-57); "" = sent, otherwise an error code (its text goes through errText when shown)
   async function sendMsg(to: number, body: string, force: boolean): Promise<string> {
     try {
       await call("msg.send", { to, body, force });
@@ -178,14 +178,14 @@
     else if (compose) compose.error = error;
   }
 
-  // FR-59: input editor ala Warp di pane shell yang sedang menunggu di prompt (penanda OSC 133 dari FR-58)
-  const editorOn = $derived(ui.input_editor); // [ui] input_editor: daemon juga menyembunyikan prompt zsh pane baru
+  // FR-59: Warp-style input editor in a shell pane waiting at the prompt (OSC 133 markers from FR-58)
+  const editorOn = $derived(ui.input_editor); // [ui] input_editor: the daemon also hides the zsh prompt of new panes
   let atPrompt = $state<Record<number, boolean>>({});
   let draft = $state<Record<number, string>>({});
-  const history: string[] = []; // ponytail: riwayat sesi app saja; riwayat zsh tetap di ↑ terminal
+  const history: string[] = []; // ponytail: app session history only; zsh history stays on the terminal's ↑
   let hi = -1;
   const editorShown = (pane: number) => editorOn && atPrompt[pane] && !dead[pane] && lempar?.pane !== pane;
-  /// teks dikirim sebagai bracketed paste (baris banyak tidak jalan satu per satu); ESC/C0/C1 dibuang seperti FR-14
+  /// text is sent as bracketed paste (multiple lines don't run one by one); ESC/C0/C1 dropped like FR-14
   function toShell(pane: number, text: string, enter: boolean) {
     const clean = text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
     const body = clean ? `\x1b[200~${clean}\x1b[201~` : "";
@@ -194,7 +194,7 @@
   let editorErr = $state<Record<number, string>>({});
   async function runDraft(pane: number) {
     const text = draft[pane] ?? "";
-    // `@nama pesan` = lempar ke agent itu (FR-57); teks berawalan `@` tidak pernah dijalankan shell
+    // `@name message` = hand off to that agent (FR-57); text starting with `@` is never run by the shell
     const m = /^@([\w.-]*)\s*([\s\S]*)$/.exec(text);
     if (m) {
       const to = targets.find((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].includes(m[1]));
@@ -209,15 +209,15 @@
     if (history.length > 200) history.shift();
     hi = -1;
     draft[pane] = "";
-    atPrompt[pane] = false; // muncul lagi di prompt berikutnya
+    atPrompt[pane] = false; // shows again at the next prompt
     toShell(pane, text, true);
   }
-  // FR-59: panel "Mulai" di pane shell yang belum menjalankan apa pun
+  // FR-59: "Start" panel in a shell pane that hasn't run anything yet
   let ran = $state<Record<number, boolean>>({});
-  let installed = $state<string[]>([]); // agent terpasang (agents.detect), diisi saat app dibuka
+  let installed = $state<string[]>([]); // installed agents (agents.detect), filled when the app opens
   /// focused pane that shows the FR-59 Start panel (the welcome card joins it); null = none
   const startHere = $derived(tab && editorShown(tab.focus) && !ran[tab.focus] && !draft[tab.focus] ? tab.focus : null);
-  // FR-61: satu tombol per akun bila agent itu punya akun selain Utama (seperti palet)
+  // FR-61: one button per account when that agent has accounts besides Utama (like the palette)
   const startProfiles = $derived(
     (cfg?.values.profiles ?? [])
       .filter((p) => p.agent !== "shell" && installed.includes(p.agent))
@@ -227,9 +227,9 @@
         return own.length ? [{ id: "utama", name: tt("acc.main") }, ...own].map((a) => ({ ...base, key: `${p.id}:${a.id}`, label: `${p.name} · ${a.name}`, account: a.id })) : [base];
       }),
   );
-  // FR-72: agent dengan pemilih sesi bawaan (OpenCode tidak punya dari baris perintah)
+  // FR-72: agents with their own session picker (OpenCode has none from the command line)
   const pickable = $derived(startProfiles.filter((p) => ["claude", "codex", "omp"].includes(p.agent)));
-  // FR-71: agent di worktree baru (pen layar 07): nama, folder (bawaan `<repo>.<nama>`), profil
+  // FR-71: agent in a new worktree (pen screen 07): name, folder (default `<repo>.<name>`), profile
   let wt = $state<{ pane: number; wi: number; root: string; name: string; dir: string; dirSet: boolean; prof: number; err: string } | null>(null);
   // worktree errors have their own wording (wt.err.<code>), anything else goes through errText
   function openWorktree(wi = at.ws) {
@@ -251,7 +251,7 @@
     await newTab(p?.id, wi, p?.account, { cwd: r.dir, from_pane: undefined });
     say(`Worktree ${home(r.dir)} · branch ${r.branch}`);
   }
-  /// FR-71: tutup tab lalu hapus worktree-nya; perubahan belum di-commit = konfirmasi berisi daftar file
+  /// FR-71: close the tab, then remove its worktree; uncommitted changes = a confirmation listing the files
   async function removeWorktree(wi: number, t: Tab) {
     const dir = meta[t.focus]?.git?.root;
     if (!dir) return;
@@ -269,7 +269,7 @@
   }
   let wtDel = $state<{ wi: number; dir: string; files: string[] } | null>(null);
   let wtForce: () => void = () => {};
-  // FR-13: template peran (pen layar 17): satu pane per peran di tab baru, brief workspace ikut petunjuk launch
+  // FR-13: role templates (pen screen 17): one pane per role in a new tab, the workspace brief goes into the launch hint
   // name/desc: tpl.<key>, tpl.<key>Desc; role label: tpl.role.<label key> + number; role id goes to the daemon as is;
   // pane names are addresses agents type (`gembala send worker-1`), so they stay English in both languages
   const TEMPLATES: { key: string; roles: [string, string, string, string][] }[] = [
@@ -313,7 +313,7 @@
       if (r.name.trim()) call("pane.rename", { pane: id, name: r.name.trim().toLowerCase() }).then((x) => renamed(id, x)).catch(() => {});
     }
     if (!ids.length) return;
-    // 2 = kiri|kanan, 3 = kiri | kanan atas/bawah, 4 = kotak 2x2
+    // 2 = left|right, 3 = left | right top/bottom, 4 = 2x2 grid
     let tree: Node = { pane: ids[0] };
     if (ids[1] !== undefined) tree = split(tree, ids[0], "row", ids[1]);
     if (ids[2] !== undefined) tree = split(tree, ids.length > 3 ? ids[0] : ids[1], "col", ids[2]);
@@ -322,7 +322,7 @@
     at = { ws: wi, tab: w.tabs.length - 1 };
     zoomed = false;
   }
-  /// pane shell diganti pane profil di posisi yang sama (agent jalan dengan hook resmi, FR-4)
+  /// the shell pane is replaced by a profile pane in the same spot (agent runs with official hooks, FR-4)
   async function swapToProfile(old: number, profile: string, account?: string, pick = false) {
     const m = meta[old];
     if (!m) return;
@@ -334,14 +334,14 @@
           if (t.focus === old) t.focus = id;
         }
     delete meta[old];
-    call("pane.close", { pane: old }).catch(() => {}); // pane.exit-nya tidak menemukan tab lagi: diabaikan
+    call("pane.close", { pane: old }).catch(() => {}); // its pane.exit doesn't find the tab anymore: ignored
   }
   async function startInFolder(pane: number) {
     const path = await invoke<string | null>("pick_folder").catch(() => null);
     if (path) toShell(pane, `cd ${quote(path)}`, true);
   }
 
-  /// FR-59: lampiran di editor = path ber-quote disisipkan ke teks (tombol +, seret file, ⌘V gambar)
+  /// FR-59: attachments in the editor = quoted paths inserted into the text (+ button, file drag, ⌘V image)
   function insertPaths(pane: number, paths: string[]) {
     if (!paths.length) return;
     const d = draft[pane] ?? "";
@@ -349,11 +349,11 @@
     document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus();
   }
   const IMG: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
-  /// ⌘V gambar di editor: disimpan ke folder sementara Gembala (SEC-34) lalu path-nya disisipkan, seperti di terminal (FR-54)
+  /// ⌘V image in the editor: saved to Gembala's temp folder (SEC-34), then its path inserted, like in the terminal (FR-54)
   async function pasteToEditor(pane: number, e: ClipboardEvent, add = (path: string) => insertPaths(pane, [path])) {
     const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === "file" && IMG[i.type]);
     const file = item?.getAsFile();
-    if (!item || !file) return; // teks biasa: textarea yang menangani
+    if (!item || !file) return; // plain text: the textarea handles it
     e.preventDefault();
     const path = await invoke<string>("save_paste", { data: b64(new Uint8Array(await file.arrayBuffer())), ext: IMG[item.type] }).catch(() => "");
     if (!path) return say(tt("main.imageFailed"));
@@ -361,7 +361,7 @@
     add(path);
   }
 
-  /// Tab/Esc: teks pindah ke baris zsh, kendali ke terminal (autocomplete zsh tetap jalan)
+  /// Tab/Esc: text moves to the zsh line, control goes to the terminal (zsh autocomplete still works)
   function handOff(pane: number, tab: boolean) {
     toShell(pane, draft[pane] ?? "", false);
     if (tab) call("pane.write", { pane, data: b64(new Uint8Array([9])) });
@@ -369,14 +369,14 @@
     atPrompt[pane] = false;
     tiles[pane]?.focus();
   }
-  // FR-59 autocomplete ala Warp: saran abu-abu dari riwayat (→ terima), Tab = daftar folder/file/perintah
-  let zhist: string[] = []; // riwayat zsh, dimuat sekali saat app dibuka
+  // FR-59 Warp-style autocomplete: gray suggestion from history (→ accepts), Tab = folder/file/command list
+  let zhist: string[] = []; // zsh history, loaded once when the app opens
   let homePath = "";
   type Comp = { label: string; kind: string; insert: string };
-  // `auto` = saran akun yang muncul sendiri saat mengetik `cl…` (FR-61): Tab/Enter mengisi perintah, lalu bisa
-  // ditambah argumen sebelum Enter berikutnya menjalankan
+  // `auto` = account suggestions that show up on their own while typing `cl…` (FR-61): Tab/Enter fills the command, then
+  // arguments can be added before the next Enter runs it
   let comp = $state<{ pane: number; items: Comp[]; sel: number; auto?: boolean } | null>(null);
-  /// FR-59: pemilih folder dari chip folder (ala Warp): cari, "..", subfolder; Enter = `cd` di pane
+  /// FR-59: folder picker from the folder chip (Warp-style): search, "..", subfolders; Enter = `cd` in the pane
   let dirs = $state<{ pane: number; dir: string; all: string[]; q: string; sel: number } | null>(null);
   const dirItems = $derived.by(() => {
     if (!dirs) return [];
@@ -392,7 +392,7 @@
   async function dirsInput() {
     if (!dirs) return;
     dirs.sel = 0;
-    // folder tersembunyi hanya dicari bila pencarian diawali titik (seperti Tab di editor)
+    // hidden folders are only searched when the search starts with a dot (like Tab in the editor)
     if (dirs.q.startsWith(".") || dirs.all.some((n) => n.startsWith("."))) dirs.all = await subdirs(dirs.dir, dirs.q.startsWith(".") ? "." : "");
   }
   function cdTo(name: string | undefined) {
@@ -412,18 +412,18 @@
     } else if (e.key === "Enter") (e.preventDefault(), cdTo(dirItems[dirs.sel]));
     else if (e.key === "Escape") (e.preventDefault(), (dirs = null));
   }
-  /// FR-61 varian C: `cl…` di kotak ketik = satu saran per akun Claude; terpilih pertama = akun bawaan workspace
+  /// FR-61 variant C: `cl…` in the input = one suggestion per Claude account; first selected = the workspace default account
   async function accountSuggest(pane: number) {
     const r = await call("account.list", {}).catch(() => null);
     const rows: { account: { id: string; name: string; agent: string }; status: { email?: string } }[] = r?.accounts ?? [];
     const items = rows
       .filter((x) => x.account.agent === "claude")
-      // FR-61: Utama = `claude-utama`, bukan `claude` polos: shell pane ikut akun bawaan workspace (CLAUDE_CONFIG_DIR),
-      // jadi `claude` di situ jalan sebagai akun itu walau pengguna memilih Utama
+      // FR-61: Utama = `claude-utama`, not plain `claude`: the pane shell follows the workspace default account (CLAUDE_CONFIG_DIR),
+      // so `claude` there runs as that account even if the user picked Utama
       .map((x) => ({ label: `claude · ${x.account.name}`, kind: x.status.email ?? "", insert: `claude-${x.account.id} ` }));
     const d = draft[pane] ?? "";
     if (items.length < 2 || d.length < 2 || !"claude".startsWith(d)) return;
-    // sesi pane ini yang baru selesai (FR-56) = baris pertama dan terpilih, supaya Enter tidak menimpa niat lanjut
+    // this pane's session that just finished (FR-56) = first row and selected, so Enter doesn't override the intent to resume
     const resume = meta[pane]?.ended?.resume;
     if (resume?.startsWith("claude")) return void (comp = { pane, items: [{ label: resume.replace(/([0-9a-f]{8})-[0-9a-f-]{27}$/, "$1…"), kind: tt("comp.lastSession"), insert: `${resume} ` }, ...items], sel: 0, auto: true });
     const def = wss.find((w) => w.id === wsIdOf(pane))?.accounts?.claude;
@@ -432,7 +432,7 @@
   const ghost = (pane: number) => {
     const d = draft[pane] ?? "";
     if (!d || d.includes("\n") || d.startsWith("@")) return "";
-    // perintah lanjut dari kartu sesi selesai (FR-56) didahulukan: `claude` → `claude --resume <id>` pane ini
+    // the resume command from the finished session card (FR-56) goes first: `claude` → this pane's `claude --resume <id>`
     const resume = meta[pane]?.ended?.resume;
     const hit = [...(resume ? [resume] : []), ...[...history].reverse(), ...zhist].find((h) => h.startsWith(d) && h.length > d.length && !h.includes("\n"));
     return hit ? hit.slice(d.length) : "";
@@ -472,7 +472,7 @@
   function editorKey(pane: number, e: KeyboardEvent) {
     const ta = e.currentTarget as HTMLTextAreaElement;
     editorErr[pane] = "";
-    // daftar autocomplete terbuka: ↑↓ geser, Tab/Enter pilih, Esc tutup, tombol lain = daftar ditutup
+    // autocomplete list open: ↑↓ moves, Tab/Enter picks, Esc closes, any other key = list closed
     if (comp?.pane === pane) {
       const n = comp.items.length;
       if (["ArrowDown", "ArrowUp", "Tab", "Enter", "Escape"].includes(e.key)) e.preventDefault();
@@ -480,17 +480,17 @@
       if (e.key === "ArrowUp") return void (comp.sel = (comp.sel + n - 1) % n);
       if (e.key === "Tab" || e.key === "Enter") return void ((draft[pane] = comp.items[comp.sel].insert), (comp = null));
       if (e.key === "Escape") return void (comp = null);
-      // saran akun tetap terbuka selama teks masih awal `claude` (diatur onEditorInput)
+      // account suggestions stay open while the text still starts with `claude` (handled by onEditorInput)
       if (!comp.auto) comp = null;
     }
-    // saran abu-abu: → di ujung teks = terima
+    // gray suggestion: → at the end of the text = accept
     if (e.key === "ArrowRight" && ta.selectionStart === ta.value.length && ghost(pane)) {
       e.preventDefault();
       draft[pane] = (draft[pane] ?? "") + ghost(pane);
-      comp = null; // teks sudah bukan awal `claude` lagi: saran akun ditutup supaya Enter menjalankan teks ini
+      comp = null; // the text no longer starts with `claude`: account suggestions close so Enter runs this text
       return;
     }
-    // daftar @ terbuka: Tab/Enter pilih, panah geser, Esc tutup
+    // @ list open: Tab/Enter picks, arrows move, Esc closes
     if (mention?.editor && mention.pane === pane && mentionItems.length && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key)) {
       e.preventDefault();
       if (e.key === "Tab" || e.key === "Enter") chooseMention(mention.sel);
@@ -498,13 +498,13 @@
       return;
     }
     if (e.key === "Enter" && !e.shiftKey && !e.altKey) return void (e.preventDefault(), runDraft(pane));
-    // Tab = autocomplete di editor (teks `@…` milik lempar ke agent, tidak dilengkapi)
+    // Tab = autocomplete in the editor (`@…` text belongs to the agent hand-off, not completed)
     if (e.key === "Tab" && !e.shiftKey) return void (e.preventDefault(), !ta.value.startsWith("@") && complete(pane));
     if (e.key === "Escape") return void (e.preventDefault(), handOff(pane, false));
     if (e.key === "c" && e.ctrlKey) return void (e.preventDefault(), (draft[pane] = ""));
     const first = !ta.value.slice(0, ta.selectionStart).includes("\n");
     const last = !ta.value.slice(ta.selectionEnd).includes("\n");
-    // ↑↓ = riwayat sesi app (terbaru) lalu riwayat zsh pengguna; hi 0 = paling baru
+    // ↑↓ = app session history (newest), then the user's zsh history; hi 0 = newest
     const h = [...history].reverse().concat(zhist);
     if (e.key === "ArrowUp" && first && h.length) {
       e.preventDefault();
@@ -517,15 +517,15 @@
     }
   }
 
-  // FR-59: pane yang difokus dengan editor tampil = kursor ke editor
+  // FR-59: a focused pane with the editor shown = cursor to the editor
   $effect(() => {
     const f = tab?.focus;
     if (f !== undefined && editorShown(f)) setTimeout(() => document.querySelector<HTMLTextAreaElement>(`[data-editor="${f}"]`)?.focus(), 0);
   });
 
-  // FR-57: `@` di awal prompt pane = daftar agent lain; pilih = bar kirim di pane itu
-  // editor = daftar dipicu dari input editor (FR-59), bukan dari ketikan di terminal
-  // picked = nama yang sudah dilengkapi dari daftar `@@` ini (pilih beberapa agent sekaligus)
+  // FR-57: `@` at the start of a pane prompt = list of other agents; picking one = send bar in that pane
+  // editor = the list is triggered from the input editor (FR-59), not from typing in the terminal
+  // picked = names already completed from this `@@` list (pick several agents at once)
   let mention = $state<{ pane: number; q: string; sel: number; editor?: boolean; inline?: boolean; picked?: string[] } | null>(null);
   let lempar = $state<{ pane: number; to: number; name: string; body: string; error: string } | null>(null);
   const mentionItems = $derived(
@@ -535,11 +535,11 @@
         )
       : [],
   );
-  /// Di terminal pemicunya `@@` (`@` tunggal milik agent: pilih file di Claude/OMP). `@@` di awal baris = bar kirim;
-  /// di tengah kalimat (mis. "cek buat @@om") = diganti `@<nama pane>` untuk agent itu
+  /// In the terminal the trigger is `@@` (a single `@` belongs to the agent: file picker in Claude/OMP). `@@` at line start = send bar;
+  /// mid-sentence (e.g. "check for @@om") = replaced by `@<pane name>` for that agent
   function onLine(pane: number, line: string) {
     const m = /(?:^|\s)@@([\w.-]*)$/.exec(line);
-    // selalu lengkapi nama: Gembala tidak tahu pasti isi baris prompt TUI, jadi "awal baris" tidak bisa diandalkan
+    // always complete the name: Gembala can't be sure of the TUI prompt line content, so "line start" can't be relied on
     mention = m ? { pane, q: m[1], sel: 0, inline: true } : null;
   }
   function onMentionKey(pane: number, key: string): boolean {
@@ -548,7 +548,7 @@
     if (key === "ArrowDown") mention.sel = (mention.sel + 1) % n;
     else if (key === "ArrowUp") mention.sel = (mention.sel + n - 1) % n;
     else if (key === "Tab" || key === "Enter") chooseMention(mention.sel);
-    else mention = null; // Escape: tutup daftar, ketikan `@…` tetap di prompt
+    else mention = null; // Escape: close the list, the typed `@…` stays in the prompt
     return true;
   }
   function onEditorInput(pane: number) {
@@ -565,25 +565,25 @@
     if (!mention || !r) return;
     const { pane, q } = mention;
     if (mention.editor) {
-      // di editor: nama dilengkapi, pesan ditulis di kotak yang sama, Enter kirim
+      // in the editor: name completed, message written in the same box, Enter sends
       draft[pane] = `@${r.name} `;
       mention = null;
       return;
     }
     if (mention.inline) {
-      // di tengah kalimat prompt agent: `@…` diganti nama pane lengkap; agent memakai `gembala send` (petunjuk FR-9)
-      // `@@q` → `@nama ` (satu `@` tersisa); pilihan berikutnya dari daftar yang sama = `@nama2 ` di belakangnya
+      // mid-sentence in an agent prompt: `@…` replaced by the full pane name; the agent uses `gembala send` (FR-9 hint)
+      // `@@q` → `@name ` (one `@` left); the next pick from the same list = `@name2 ` after it
       const picked = mention.picked ?? [];
       const text = picked.length ? `@${r.name} ` : "\x7f".repeat(q.length + 1) + r.name + " ";
       call("pane.write", { pane, data: b64(new TextEncoder().encode(text)) });
-      // baris yang dilacak ikut berubah, supaya daftar @@ berikutnya membaca teks yang benar
+      // the tracked line changes too, so the next @@ list reads the right text
       tiles[pane]?.setLine((l) => (picked.length ? l : l.slice(0, -(q.length + 1))) + (picked.length ? text : `${r.name} `));
-      // daftar tetap terbuka tanpa yang sudah dipilih: Tab/Enter tambah agent, Esc atau terus mengetik = tutup
+      // the list stays open without the ones already picked: Tab/Enter adds an agent, Esc or keep typing = close
       const next = [...picked, r.name];
       mention = targets.some((t) => !next.includes(t.name)) ? { pane, q: "", sel: 0, inline: true, picked: next } : null;
       return;
     }
-    // `@@…` yang sudah terkirim ke TUI dihapus lagi dengan backspace
+    // `@@…` already sent to the TUI is deleted again with backspace
     call("pane.write", { pane, data: b64(new TextEncoder().encode("\x7f".repeat(q.length + 2))) });
     tiles[pane]?.resetLine();
     mention = null;
@@ -618,18 +618,18 @@
   const uid = () => Math.random().toString(36).slice(2, 10);
   const base = (p: string | null | undefined) => (p ? p.split("/").filter(Boolean).at(-1) ?? "/" : "");
   const home = (p: string | null | undefined) => (p ?? "").replace(/^\/Users\/[^/]+/, "~");
-  /// kepala pane dan bar bawah: dua folder terakhir saja (`~/…/gembala/app`, Gembala.pen 02); path penuh di tooltip
+  /// pane head and bottom bar: last two folders only (`~/…/gembala/app`, Gembala.pen 02); full path in the tooltip
   const short = (p: string | null | undefined) => {
     const a = home(p).split("/");
     return a.length > 4 ? [a[0], "…", ...a.slice(-2)].join("/") : a.join("/");
   };
-  /// FR-52 subjudul tab: hanya yang beda dari workspace. Folder = akar workspace → kosong; selain itu nama folder saja
-  /// (Gembala.pen 02: `main · requirements`); path lengkap ada di tooltip
+  /// FR-52 tab subtitle: only what differs from the workspace. Folder = workspace root → empty; otherwise just the folder name
+  /// (Gembala.pen 02: `main · requirements`); full path in the tooltip
   const where = (cwd: string | null | undefined, root: string) => {
     const c = home(cwd);
     return !c || c === root ? "" : base(c);
   };
-  /// FR-52: judul bawaan = agent yang sedang jalan di pane fokus, lalu folder (`~` untuk home)
+  /// FR-52: default title = agent running in the focused pane, then the folder (`~` for home)
   const title = (t: Tab) => {
     const m = meta[t.focus];
     if (t.title) return t.title;
@@ -637,45 +637,45 @@
     if (m?.busy && AGENTS.includes(m.busy)) return m.busy;
     return home(m?.cwd) === "~" ? "~" : base(m?.cwd) || "~";
   };
-  /// Urutan global tab untuk ⌘1–⌘9
+  /// Global tab order for ⌘1–⌘9
   const order = $derived(wss.flatMap((w, wi) => w.tabs.map((t, ti) => ({ wi, ti, t }))));
 
   async function createPane(opts: Record<string, unknown> = {}): Promise<number> {
     const profile = (opts.profile as string) ?? "shell";
     const agent = cfg?.values.profiles.find((p) => p.id === profile)?.agent ?? "shell";
-    // FR-53: Claude Code menerima id sesi dari luar; dipakai lagi saat pane dijalankan ulang
-    // FR-72: pemilih sesi bawaan = id sesi belum diketahui
+    // FR-53: Claude Code accepts a session id from outside; used again when the pane is rerun
+    // FR-72: the agent's own session picker = session id not known yet
     const session = opts.pick ? undefined : ((opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined));
-    // FR-61, C-9: akun = pilihan saat membuka (atau akun pane yang dijalankan ulang) > akun bawaan workspace > profil/Utama (daemon)
+    // FR-61, C-9: account = choice when opening (or the rerun pane's account) > workspace default account > profile/Utama (daemon)
     const w = wss.find((x) => x.id === ((opts.workspace as string) ?? ws?.id));
-    // pane shell ikut akun Claude bawaan workspace: `claude` yang diketik memakai akun itu
+    // shell panes follow the workspace default Claude account: a typed `claude` uses that account
     const acct = (opts.account as string | undefined) || w?.accounts?.[agent === "shell" ? "claude" : agent] || undefined;
-    // FR-13: brief workspace ikut petunjuk launch tiap agent di workspace itu
+    // FR-13: the workspace brief goes into the launch hint of every agent in that workspace
     const brief = agent !== "shell" ? w?.brief : undefined;
     const r = await call("pane.create", { workspace: ws?.id, ...opts, session, account: acct, brief });
-    // FR-13: peran baca saja di agent tanpa pembatas tool = cuma petunjuk, ditandai di kepala pane
+    // FR-13: a read-only role on an agent without tool limits = only a hint, flagged in the pane head
     const roleWarn = ["koordinator", "planner", "reviewer"].includes(opts.role as string) && agent !== "claude";
     meta[r.pane] = { profile, cwd: null, agent, name: r.name, aliases: r.aliases, session, sig: sig(profile), acct, roleWarn };
     return r.pane;
   }
 
-  /// FR-79: sama dengan daemon: nama lama jadi alias pane ini, nama baru bukan lagi alias pane lain
+  /// FR-79: same as the daemon: the old name becomes this pane's alias, the new name is no longer another pane's alias
   function renamed(pane: number, r: { name: string; aliases: string[] }) {
     for (const [k, m] of Object.entries(meta)) if (+k !== pane && m.aliases?.includes(r.name)) m.aliases = m.aliases.filter((a) => a !== r.name);
     if (meta[pane]) Object.assign(meta[pane], { name: r.name, aliases: r.aliases });
   }
-  /// FR-79: pane pengganti memakai nama pane lama (bila belum dipakai pane lain) dan membawa aliasnya; layout.json tidak tepercaya
+  /// FR-79: a replacement pane takes the old pane's name (if no other pane uses it) and carries its aliases; layout.json is untrusted
   const oldNames = (m?: Meta) => ({ name: m?.name || undefined, aliases: Array.isArray(m?.aliases) ? m.aliases : [] });
 
   const sig = (id: string) => JSON.stringify(cfg?.values.profiles.find((p) => p.id === id) ?? null);
 
-  /// FR-51: pane yang profilnya berubah diganti pane baru dari profil terbaru di posisi yang sama
-  const relaunching = new Set<number>(); // pane lama yang sedang diganti: pane.exit-nya tidak menutup tab
+  /// FR-51: a pane whose profile changed is replaced by a new pane from the latest profile in the same spot
+  const relaunching = new Set<number>(); // the old pane being replaced: its pane.exit doesn't close the tab
   async function relaunch(old: number) {
     const m = meta[old];
     if (!m || relaunching.has(old)) return;
     relaunching.add(old);
-    // tutup dulu: agent lama dan baru tidak boleh memakai sesi yang sama bersamaan
+    // close first: the old and new agent must not use the same session at once
     await call("pane.close", { pane: old }).catch(() => {});
     await new Promise((r) => setTimeout(r, 400));
     const id = await createPane({
@@ -684,7 +684,7 @@
       cwd: m.cwd ?? undefined,
       session: m.session,
       resume: AGENTS.includes(m.agent),
-      account: m.owner?.id ?? m.acct, // FR-61: sesi milik akun lain dilanjutkan di akun pemiliknya
+      account: m.owner?.id ?? m.acct, // FR-61: a session owned by another account resumes in its owning account
       ...oldNames(m),
     });
     for (const w of wss)
@@ -698,7 +698,7 @@
   }
 
   async function refreshGit(pane: number) {
-    if (!meta[pane] || dead[pane]) return; // semua pane: branch juga jadi subjudul tab (FR-52)
+    if (!meta[pane] || dead[pane]) return; // every pane: the branch also becomes the tab subtitle (FR-52)
     const g = await call("git.status", { pane }).catch(() => null);
     if (g && meta[pane]) meta[pane].git = g;
   }
@@ -708,7 +708,7 @@
     loadChanges(pane);
   }
 
-  /// FR-22: panel menempel ikut pane yang fokus; diff lama tetap tampil sampai yang baru datang
+  /// FR-22: the docked panel follows the focused pane; the old diff stays until the new one arrives
   async function loadChanges(pane: number) {
     const same = changes?.pane === pane;
     // FR-23: an open card (commit message being typed) survives the refresh after an agent's turn
@@ -721,7 +721,7 @@
     const diff = await (changes.turn == null ? call("git.diff", { pane }) : call("git.turn_diff", { pane, i: changes.turn })).catch(() => ({ repo: false }));
     if (changes?.pane === pane) changes.diff = diff;
   }
-  /// FR-70: pilih giliran (null = semua sejak commit)
+  /// FR-70: pick a turn (null = everything since the commit)
   function pickTurn(i: number | null) {
     if (!changes) return;
     changes.turn = i;
@@ -766,14 +766,14 @@
     say(a.op === "restore" ? tt("chg.restored", { file: paths[0] }) : tt("chg.committed", { commit: r.commit }));
     loadChanges(c.pane);
   }
-  let panelW = $state(460); // FR-22: lebar panel perubahan, disimpan di layout
+  let panelW = $state(460); // FR-22: changes panel width, saved in the layout
   $effect(() => {
     const f = tab?.focus;
     if (changes && f !== undefined && f !== changes.pane && !dead[f]) loadChanges(f);
   });
 
-  /// FR-14: teks dikirim sebagai bracketed paste + satu Enter. ESC, kontrol C0 selain baris baru/tab,
-  /// dan kontrol C1 dibuang supaya isi tidak bisa menutup paste lebih awal.
+  /// FR-14: text is sent as bracketed paste + one Enter. ESC, C0 controls other than newline/tab,
+  /// and C1 controls are dropped so the content can't close the paste early.
   async function sendRich() {
     const r0 = rich;
     if (!r0) return;
@@ -800,7 +800,7 @@
   }
   const addRichFiles = (paths: string[]) => rich && (rich.files = [...new Set([...(rich.files ?? []), ...paths])]);
 
-  /// FR-15: path asli (symlink diselesaikan) ber-quote ditempel ke prompt sebagai bracketed paste, tanpa Enter
+  /// FR-15: the real path (symlinks resolved), quoted, pasted into the prompt as bracketed paste, no Enter
   async function attach(pane: number, paths: string[], resolved = false) {
     const real: string[] = resolved ? paths : await invoke<string[]>("resolve_paths", { paths }).catch(() => []);
     if (!real.length || dead[pane]) return;
@@ -878,7 +878,7 @@
   }
   const absPath = (p: string) => (p.startsWith("~") ? homePath + p.slice(1) : p);
 
-  /// FR-38: konfirmasi bila ada proses selain shell diam
+  /// FR-38: confirm when there's a process other than an idle shell
   async function askClose(pane: number) {
     if (dead[pane]) return onexit(pane);
     const info = await call("pane.info", { pane });
@@ -886,7 +886,7 @@
     else await call("pane.close", { pane });
   }
 
-  /// FR-38: tutup tab = tutup semua pane-nya, satu konfirmasi berisi nama proses yang masih jalan
+  /// FR-38: closing a tab = closing all its panes, one confirmation listing the processes still running
   async function closeTabs(wi: number, ts: Tab[]) {
     const ps = ts.flatMap((t) => panes(t.tree));
     const live = ps.filter((p) => !dead[p]);
@@ -900,7 +900,7 @@
     confirm = { pane: t.focus, name: busy.map((x) => x.i.name ?? "proses").join(", "), close: live, what: ts.length > 1 ? `${ts.length} tab` : "tab" };
   }
 
-  /// Pane keluar: hilang dari tabnya; tab kosong ditutup; workspace boleh kosong (FR-44).
+  /// Pane exits: gone from its tab; an empty tab closes; a workspace may be empty (FR-44).
   async function onexit(pane: number) {
     if (relaunching.has(pane)) return;
     if (confirm?.pane === pane) confirm = null;
@@ -925,25 +925,25 @@
     }
   }
 
-  /// FR-45: pane mati diganti pane baru dari profil dan folder yang sama; `shell` = shell saja,
-  /// agent lamanya dicatat di `prev` untuk chip "Lanjutkan sesi"
+  /// FR-45: a dead pane is replaced by a new pane from the same profile and folder; `shell` = shell only,
+  /// its old agent recorded in `prev` for the "Resume session" chip
   async function restart(old: number, shell = false) {
     const m = meta[old];
     const id = await createPane({
       profile: shell || m?.profile === "shell" ? undefined : m?.profile,
       cwd: m?.cwd ?? undefined,
       session: shell ? undefined : m?.session,
-      resume: !shell && AGENTS.includes(m?.agent ?? ""), // FR-53: lanjutkan percakapan pane ini
+      resume: !shell && AGENTS.includes(m?.agent ?? ""), // FR-53: resume this pane's conversation
       workspace: wsIdOf(old),
       history: m?.from, // FR-62
       account: shell ? undefined : m?.acct,
       ...oldNames(m),
     });
     if (shell && m && AGENTS.includes(m.agent)) meta[id].prev = { profile: m.profile, agent: m.agent, session: m.session, acct: m.acct };
-    if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: kartu sesi selesai ikut ke shell pengganti
-    // FR-68: agent yang diketik ikut berhenti bersama daemon = kartu lanjut dari id sesinya (perintah lolos pola aman)
+    if (shell && m?.ended) meta[id].ended = m.ended; // FR-56: the finished session card carries over to the replacement shell
+    // FR-68: a typed agent that stopped with the daemon = resume card from its session id (command passes the safe pattern)
     else if (shell && m && !AGENTS.includes(m.agent) && m.busy && m.session) {
-      // sama dengan daemon (FR-61): sesi milik akun lain = `claude-<pemilik>`, selain itu akun proses; `claude` polos = akun shell
+      // same as the daemon (FR-61): session owned by another account = `claude-<owner>`, otherwise the process account; plain `claude` = shell account
       const who = m.owner?.id ?? m.accountId;
       const cmd = { claude: `${who ? `claude-${who}` : "claude"} --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}` }[m.busy];
       if (safeResume(cmd)) meta[id].ended = { resume: cmd ?? null };
@@ -958,7 +958,7 @@
     delete dead[old];
   }
 
-  /// FR-45: chip "Lanjutkan sesi": shell diganti agent lamanya dengan id sesi yang sama (FR-53)
+  /// FR-45: "Resume session" chip: the shell is replaced by its old agent with the same session id (FR-53)
   function resumePrev(pane: number) {
     const { prev, ...m } = meta[pane];
     if (!prev) return;
@@ -966,8 +966,8 @@
     relaunch(pane);
   }
 
-  /// Kriteria 17: daemon mati paksa = semua pane tampil sebagai pane mati (tombol jalankan ulang),
-  /// lalu daemon baru dijalankan lewat panggilan berikutnya.
+  /// Criterion 17: daemon force-killed = every pane shows as a dead pane (rerun button),
+  /// then a new daemon is launched by the next call.
   let lost = false;
   async function onLost() {
     if (lost) return;
@@ -997,7 +997,7 @@
     lost = false;
   }
 
-  /// FR-46: konfirmasi hanya bila masih ada proses jalan
+  /// FR-46: confirm only when a process is still running
   async function askQuitAll() {
     const ids: number[] = await call("pane.list");
     const infos = await Promise.all(ids.map((pane) => call("pane.info", { pane })));
@@ -1013,12 +1013,12 @@
 
   const onlink = (url: string) => (linkAsk = url);
 
-  /// FR-30: pilih profil; agent yang tidak terdeteksi tetap bisa dipilih (pane menampilkan cara pasang)
+  /// FR-30: pick a profile; agents not detected can still be picked (the pane shows how to install)
   async function openPicker() {
     const agents: Agent[] = await call("agents.detect", {}).catch(() => []);
     const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
     const accs = cfg?.values.accounts ?? [];
-    // FR-61: satu baris per akun bila agent itu punya akun selain Utama
+    // FR-61: one row per account when that agent has accounts besides Utama
     const items = (cfg?.values.profiles ?? []).flatMap((p) => {
       const own = accs.filter((a) => a.agent === p.agent);
       const base = { ...p, missing: missing.has(p.agent), key: p.id, label: p.name, account: undefined as string | undefined };
@@ -1033,7 +1033,7 @@
     if (p) newTab(p.id === "shell" ? undefined : p.id, at.ws, p.account);
   }
 
-  /// FR-61: tombol Login = pane baru dengan akun itu + kartu petunjuk; Gembala tidak mengetik apa pun ke terminal
+  /// FR-61: Login button = a new pane with that account + a hint card; Gembala types nothing into the terminal
   async function loginAccount(id: string, name: string) {
     settingsOpen = false;
     const pane = await newTab("claude", at.ws, id);
@@ -1053,14 +1053,14 @@
     zoomed = false;
   }
 
-  /// Aksi dari menu (key equivalent native, lihat lib.rs). `⌘` milik app, sisanya ke terminal (FR-39).
+  /// Actions from the menu (native key equivalents, see lib.rs). `⌘` belongs to the app, the rest to the terminal (FR-39).
   let last = { id: "", at: 0 };
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
     if (settingsOpen || picker || editing || rich || pal || lempar || newTask) return;
     if (confirm || quitAsk || linkAsk || wsAsk) return;
-    // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
+    // one key can arrive through the menu and keydown at once; don't run twice
     if (id === last.id && performance.now() - last.at < 150) return;
     last = { id, at: performance.now() };
     const [, group, arg] = id.split(".");
@@ -1071,7 +1071,7 @@
       compose = { to: targets[0]?.pane ?? null, body: "", force: false, error: "" };
       return;
     }
-    // aksi tanpa tab: workspace boleh kosong (FR-44)
+    // actions without a tab: a workspace may be empty (FR-44)
     if (id === "tab.new") return void openPicker();
     if (id === "tab.sidebar") return void (sidebar = !sidebar);
     if (id === "tab.search") return void openPalette();
@@ -1088,7 +1088,7 @@
     else if (group === "focus" && !zoomed) tab.focus = neighbor(tab.tree, tab.focus, arg as Arrow) ?? tab.focus;
     else if (group === "resize" && !zoomed) tab.tree = nudge(tab.tree, tab.focus, arg as Arrow);
     else if (group === "swap" && !zoomed) {
-      // FR-37: pane fokus bertukar tempat dengan tetangganya; fokus ikut pane yang dipindah
+      // FR-37: the focused pane swaps places with its neighbor; focus follows the moved pane
       const other = neighbor(tab.tree, tab.focus, arg as Arrow);
       if (other !== null) tab.tree = swap(tab.tree, tab.focus, other);
     }
@@ -1108,7 +1108,7 @@
       const m = meta[tab.focus];
       m.zoom = arg === "pane_reset" ? 0 : Math.max(-6, Math.min(16, (m.zoom ?? 0) + (arg === "pane_in" ? 1 : -1)));
     }
-    // zoom tanpa tanda = tidak tahu ukuran sekarang; angka sama dengan Pengaturan > Tampilan > Ukuran huruf
+    // zoom without a sign = current size unknown; numbers match Settings > Appearance > Font size
     if (id.startsWith("term.zoom")) {
       const base = cfg?.values.ui.font_size ?? 13;
       const pz = id.startsWith("term.zoom.pane") ? (meta[tab.focus]?.zoom ?? 0) : 0;
@@ -1116,27 +1116,27 @@
     }
   }
 
-  /// FR-39: palet = tab, profil, dan semua aksi beserta pintasannya (sekaligus daftar pintasan).
-  /// Gembala.pen 03: grup berjudul, ikon agent, pintasan rata kanan, kaki petunjuk.
+  /// FR-39: palette = tabs, profiles, and every action with its shortcut (doubles as the shortcut list).
+  /// Gembala.pen 03: titled groups, agent icons, right-aligned shortcuts, hint footer.
   type PalItem = { label: string; hint: string; kind: "tab" | "profile" | "action"; agent?: string; go: () => void };
   type PalGroup = { title: string; items: PalItem[] };
   async function openPalette() {
-    // ⌘P lagi = tutup
+    // ⌘P again = close
     if (pal) return void (pal = null);
     const [keys] = await invoke<[[string, string, string][], string[]]>("shortcuts").catch(() => [[]] as any);
     pal = { q: "", sel: 0, keys };
-    // autofocus bisa kalah oleh editor pane yang merebut fokus; tanpa fokus palet tidak bisa dipakai/ditutup
+    // autofocus can lose to a pane editor grabbing focus; without focus the palette can't be used/closed
     await tick();
     document.querySelector<HTMLInputElement>(".palette input")?.focus();
     setTimeout(() => pal && document.querySelector<HTMLInputElement>(".palette input")?.focus(), 50);
   }
   const palGroups = $derived.by((): PalGroup[] => {
     if (!pal) return [];
-    // ikon dan status baris tab memakai aturan yang sama dengan sidebar (FR-4/52), bukan salinan baru
+    // tab row icon and status use the same rules as the sidebar (FR-4/52), not a new copy
     const tabs: PalItem[] = order.map((o, i) => {
       const st = tabStatus(o.t);
       const agent = panes(o.t.tree).map(agentOf).find(Boolean) ?? "";
-      // satu workspace = pintasan saja (Gembala.pen 03); lebih dari satu = nama workspace ikut, tab kembar bisa dibedakan
+      // one workspace = shortcuts only (Gembala.pen 03); more than one = workspace name too, so twin tabs can be told apart
       const key = i < 9 ? `⌘${i + 1}` : "";
       return {
         label: [meta[o.t.focus]?.name ?? "", title(o.t), stText(st)].filter(Boolean).join(" · "),
@@ -1168,13 +1168,13 @@
     ];
     const words = pal.q.toLowerCase().split(/\s+/).filter(Boolean);
     const hay = (it: PalItem) => `${it.label} ${it.hint}`.toLowerCase();
-    // urutan: cocok persis dulu, lalu yang terakhir dipakai; sort stabil = urutan asal untuk sisanya
+    // order: exact matches first, then recently used; stable sort = original order for the rest
     const rank = (it: PalItem) => {
       const r = recent.indexOf(it.label);
       return (words.every((w) => hay(it).includes(w)) ? 0 : 1000) + (r < 0 ? 100 : r);
     };
     const matched = [...tabs, ...profiles, ...actions].filter((it) => words.every((w) => fuzzy(hay(it), w))).sort((a, b) => rank(a) - rank(b));
-    // baris muncul sekali: hasil teratas dulu, lalu yang terakhir dipakai, sisanya per jenis
+    // a row shows once: top results first, then recently used, the rest per kind
     const top = words.length ? matched.slice(0, 3) : [];
     const rest = matched.slice(top.length);
     const recycled = rest.filter((it) => recent.includes(it.label)).sort((a, b) => recent.indexOf(a.label) - recent.indexOf(b.label));
@@ -1189,7 +1189,7 @@
     ].filter((g) => g.items.length > 0);
   });
   const palItems = $derived(palGroups.flatMap((g) => g.items));
-  /// yang digambar: judul grup lalu barisnya; nomor pilihan mengikuti urutan ini supaya ↑↓ tidak berhenti di judul
+  /// what's drawn: group title, then its rows; the selection index follows this order so ↑↓ doesn't stop at titles
   const palRows = $derived.by(() => {
     const rows: ({ kind: "head"; h: string } | { kind: "item"; it: PalItem; i: number })[] = [];
     let i = 0;
@@ -1199,13 +1199,13 @@
     }
     return rows;
   });
-  /// huruf kata dicari berurutan (boleh berjarak): "spl kn" cocok "split ke kanan"
+  /// word letters searched in order (gaps allowed): "spl ri" matches "split right"
   const fuzzy = (hay: string, w: string) => {
     let i = 0;
     for (const c of hay) if (c === w[i]) i++;
     return i === w.length;
   };
-  // aksi palet yang terakhir dipakai (kenyamanan per pengguna; storage bisa gagal = diabaikan)
+  // recently used palette actions (per-user convenience; storage may fail = ignored)
   let recent: string[] = (() => {
     try {
       return JSON.parse(localStorage.getItem("gembala.palet.terakhir") ?? "[]");
@@ -1225,7 +1225,7 @@
       localStorage.setItem("gembala.palet.terakhir", JSON.stringify(recent));
     } catch {}
     it.go();
-    if (editing) sidebar = true; // ganti nama terjadi di sidebar
+    if (editing) sidebar = true; // rename happens in the sidebar
   }
 
   /// Right-click menu (FR-37, FR-44, FR-52), HTML so the color submenu can be a swatch panel (Gembala.pen 08).
@@ -1240,7 +1240,7 @@
   const copy = (text: string | null | undefined) =>
     text && invoke("copy_text", { text }).then(() => say(tt("common.copied")), () => say(tt("chg.copyFailed")));
 
-  // umpan balik singkat untuk aksi tanpa hasil yang terlihat (bagian 11 BRD); role=status = dibacakan VoiceOver
+  // short feedback for actions with no visible result (BRD section 11); role=status = read out by VoiceOver
   let toast = $state("");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   function say(msg: string) {
@@ -1272,7 +1272,7 @@
     ]);
   }
 
-  /// FR-52: tab baru dari profil di workspace tertentu (tombol + di kepala workspace)
+  /// FR-52: new tab from a profile in a given workspace (the + button in the workspace head)
   async function profileMenu(e: MouseEvent, wi: number) {
     e.preventDefault();
     e.stopPropagation();
@@ -1292,7 +1292,7 @@
   /// Gembala.pen 13 order
   function wsMenu(e: MouseEvent, wi: number) {
     const w = wss[wi];
-    // FR-61: akun Claude bawaan pane baru di workspace ini (pilihan manusia, C-9)
+    // FR-61: default Claude account for new panes in this workspace (the human's choice, C-9)
     const accts = [{ id: "utama", name: tt("acc.main") }, ...(cfg?.values.accounts ?? []).filter((a) => a.agent === "claude")];
     const cur = accts.find((a) => a.id === (w.accounts?.claude ?? "utama"));
     popup(e, [
@@ -1310,14 +1310,14 @@
   /// FR-37: klik kanan terminal
   function paneMenu(e: MouseEvent, pane: number) {
     const tile = tiles[pane];
-    const blk = tile?.blockAt(e.clientY); // FR-58: blok perintah di bawah kursor
+    const blk = tile?.blockAt(e.clientY); // FR-58: command block under the cursor
     popup(e, [
       [tt("tile.copy"), () => copy(tile?.selection()), !!tile?.selection()],
       [tt("menu.paste"), async () => tile?.paste(await invoke<string>("paste_text").catch(() => ""))],
       "-",
       [tt("menu.copyBlockCmd"), () => copy(blk?.cmd), !!blk?.cmd],
       [tt("menu.copyBlockOut"), () => copy(blk?.output), !!blk?.output],
-      // FR-58: perintah blok masuk editor untuk diubah lalu dijalankan lagi (ala Warp)
+      // FR-58: the block's command goes into the editor to edit and run again (like Warp)
       [tt("menu.reuse"), () => blk && ((draft[pane] = blk.cmd), document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus()), !!blk?.cmd && editorShown(pane)],
       "-",
       [tt("menu.splitRight"), () => splitFocused("row")],
@@ -1329,13 +1329,13 @@
     ]);
   }
 
-  /// FR-44: folder akar baru berlaku untuk tab baru; tab yang sudah ada tetap di foldernya
+  /// FR-44: a new root folder applies to new tabs; existing tabs stay in their folders
   async function changeRoot(w: Ws) {
     const path = await invoke<string | null>("pick_folder");
     if (path) w.root = home(path);
   }
 
-  /// `at` tetap menunjuk tab yang sama setelah urutan berubah
+  /// `at` keeps pointing at the same tab after the order changes
   function keepAt(change: () => void) {
     const tid = tab?.id;
     const wid = ws?.id;
@@ -1344,7 +1344,7 @@
     at = wi >= 0 ? { ws: wi, tab: wss[wi].tabs.findIndex((t) => t.id === tid) } : { ws: Math.max(0, wss.findIndex((w) => w.id === wid)), tab: 0 };
   }
 
-  /// FR-52: tab pindah posisi atau workspace; daemon diberi tahu workspace baru pane-nya (aturan akses SEC-4/21)
+  /// FR-52: tab moves position or workspace; the daemon is told its panes' new workspace (access rules SEC-4/21)
   function moveTab(wi: number, ti: number, to: number, index: number) {
     keepAt(() => {
       const [t] = wss[wi].tabs.splice(ti, 1);
@@ -1353,9 +1353,9 @@
     });
   }
 
-  /// FR-44/52: seret tab dan workspace di sidebar (pointer, bukan drag HTML: WKWebView + drop file Tauri).
-  /// Pen layar 09: baris asal tetap di tempat (pudar), salinannya ikut kursor, garis sisip biru di tempat jatuh;
-  /// baris lain tidak bergeser. Target = baris terdekat menurut Y (celah antar baris ikut terhitung). Esc = batal.
+  /// FR-44/52: drag tabs and workspaces in the sidebar (pointer, not HTML drag: WKWebView + Tauri file drop).
+  /// Pen screen 09: the source row stays in place (faded), its copy follows the cursor, a blue insertion line where it drops;
+  /// other rows don't shift. Target = nearest row by Y (gaps between rows count). Esc = cancel.
   function startDrag(e: PointerEvent, kind: "tab" | "ws", wi: number, ti = -1) {
     if (e.button !== 0 || editing) return;
     const row = e.currentTarget as HTMLElement;
@@ -1366,10 +1366,10 @@
     const move = (m: PointerEvent) => {
       if (esc || (!dragging && Math.hypot(m.clientX - x0, m.clientY - y0) < 5)) return;
       if (!ghost) {
-        // salinan baris dibungkus salinan kosong .wsg-nya, jadi warna blok dan garis aksen tetap kena
+        // the row copy is wrapped in an empty copy of its .wsg, so the block color and accent line still apply
         const g = row.parentElement!.getBoundingClientRect();
         ghost = document.createElement("div");
-        ghost.className = "dragghost"; // bukan "ghost": kelas global itu menimpa saran editor dan tombol blok
+        ghost.className = "dragghost"; // not "ghost": that global class overrides editor suggestions and block buttons
         ghost.append(row.parentElement!.cloneNode(false));
         ghost.firstChild!.appendChild(row.cloneNode(true));
         Object.assign(ghost.style, { left: `${g.left}px`, top: `${row.getBoundingClientRect().top}px`, width: `${g.width}px` });
@@ -1381,7 +1381,7 @@
       let top: number;
       let box: DOMRect; // kartu workspace tujuan: lebar garis sisip
       if (kind === "ws") {
-        // blok workspace = kartu .wsg; sisip sebelum/sesudah kartu terdekat
+        // workspace block = .wsg card; insert before/after the nearest card
         const gs = [...side.querySelectorAll<HTMLElement>(".wsg")].map((el) => el.getBoundingClientRect());
         const j = nearest(gs, y);
         const after = y > (gs[j].top + gs[j].bottom) / 2;
@@ -1389,13 +1389,13 @@
         top = after ? gs[j].bottom + 1 : gs[j].top - 4;
         box = gs[j];
       } else {
-        // semua baris sidebar urut DOM: kepala workspace, tab, "+ Tab" workspace kosong
+        // every sidebar row in DOM order: workspace head, tabs, "+ Tab" of an empty workspace
         const els = [...side.querySelectorAll<HTMLElement>("[data-k]")];
         const rs = els.map((el) => el.getBoundingClientRect());
         const k = nearest(rs, y);
         const el = els[k];
         const head = el.dataset.ti === undefined;
-        // kepala workspace (juga yang terlipat, atau "+ Tab" workspace kosong) = jatuh di posisi pertama workspace itu
+        // workspace head (also collapsed, or "+ Tab" of an empty workspace) = drops at that workspace's first position
         const after = head || y > (rs[k].top + rs[k].bottom) / 2;
         over = { wi: +el.dataset.wi!, ti: head ? 0 : +el.dataset.ti! + +after };
         top = after ? rs[k].bottom : rs[k].top - 2;
@@ -1409,7 +1409,7 @@
       k.stopPropagation();
       esc = true;
       stop();
-      window.addEventListener("pointerup", up); // klik penutup seretan yang dibatalkan tetap dimakan
+      window.addEventListener("pointerup", up); // the click ending a cancelled drag is still swallowed
     };
     const stop = () => {
       window.removeEventListener("pointermove", move);
@@ -1424,7 +1424,7 @@
     const up = () => {
       const d = stop();
       if (!d && !esc) return;
-      // klik yang menutup seretan tidak ikut memindah tab (click datang tepat setelah pointerup, bila ada)
+      // the click ending a drag doesn't also move the tab (click comes right after pointerup, if at all)
       const eat = (c: MouseEvent) => c.stopPropagation();
       window.addEventListener("click", eat, true);
       setTimeout(() => window.removeEventListener("click", eat, true), 0);
@@ -1459,8 +1459,8 @@
     e.preventDefault();
   }
 
-  /// FR-56: tombol Lanjutkan. Pane profil agent: jalankan ulang profilnya dengan id sesi (flag hook tetap);
-  /// agent yang diketik sendiri: perintah lanjut diketik ke shell yang sedang diam.
+  /// FR-56: Resume button. Agent profile pane: rerun its profile with the session id (hook flags stay);
+  /// agent typed by hand: the resume command is typed into the idle shell.
   async function resumeEnded(pane: number) {
     const m = meta[pane];
     const cmd = m?.ended?.resume;
@@ -1477,7 +1477,7 @@
     e.stopPropagation();
   };
 
-  /// Kartu konfirmasi, pemilih profil, dan ⌘⇧↩ yang menangkap tombol; lainnya milik terminal.
+  /// Confirm cards, the profile picker, and ⌘⇧↩ capture keys; the rest belongs to the terminal.
   function onKey(e: KeyboardEvent) {
     if (picker) {
       const n = picker.items.length;
@@ -1489,15 +1489,15 @@
       return stop(e);
     }
     if (settingsOpen && !quitAsk) {
-      // Esc di kotak isian Pengaturan = batal isian, bukan tutup Pengaturan
+      // Esc in a Settings field = cancel the field, not close Settings
       const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
       if (e.key === "Escape" && !typing) {
         settingsOpen = false;
         e.preventDefault();
       }
-      return; // kontrol di Pengaturan menerima tombol seperti biasa
+      return; // controls in Settings take keys as usual
     }
-    if (rich || pal || lempar) return; // textarea Rich Input, palet, dan bar lempar menangani tombolnya sendiri
+    if (rich || pal || lempar) return; // the Rich Input textarea, palette, and hand-off bar handle their own keys
     if (compose) {
       if (e.key === "Escape") (compose = null), stop(e);
       return;
@@ -1520,7 +1520,7 @@
         editing = null;
         stop(e);
       }
-      return; // kotak isian di sidebar menerima tombol seperti biasa
+      return; // input boxes in the sidebar take keys as usual
     }
     if (renameError && (e.key === "Enter" || e.key === "Escape")) {
       renameError = "";
@@ -1545,7 +1545,7 @@
       if (e.key === "Escape") quitAsk = 0;
       return stop(e);
     }
-    // WKWebView memakan ⌘⇧↩ sebelum menu sempat menerimanya
+    // WKWebView eats ⌘⇧↩ before the menu gets it
     if (!confirm && e.metaKey && e.shiftKey && e.key === "Enter") {
       run("pane.zoom.toggle");
       return stop(e);
@@ -1560,7 +1560,7 @@
     if (!editing) return;
     const v = editing.value.trim().slice(0, 60);
     if (editing.kind === "pane") {
-      // FR-3: nama unik dicek daemon; gagal = nama lama tetap
+      // FR-3: unique names checked by the daemon; failure = old name stays
       const pane = +editing.id;
       editing = null;
       call("pane.rename", { pane, name: v.toLowerCase() })
@@ -1570,7 +1570,7 @@
     }
     if (editing.kind === "tab") {
       const t = wss.flatMap((w) => w.tabs).find((t) => t.id === editing!.id);
-      if (t) t.title = v; // kosong = kembali ke nama folder
+      if (t) t.title = v; // empty = back to the folder name
     } else {
       const w = wss.find((w) => w.id === editing!.id);
       if (w && v) w.name = v;
@@ -1578,7 +1578,7 @@
     editing = null;
   }
 
-  /// FR-37: pane fokus pindah ke tab baru di workspace yang sama
+  /// FR-37: the focused pane moves to a new tab in the same workspace
   function moveToNewTab() {
     if (!tab || panes(tab.tree).length < 2) return;
     const pane = tab.focus;
@@ -1591,11 +1591,11 @@
     zoomed = false;
   }
 
-  /// FR-37: seret kepala pane (ala Warp). Di atas pane lain: zona kiri/kanan/atas/bawah = split di sisi itu, tengah =
-  /// tukar tempat; di atas tab lain di sidebar = pindah ke tab itu. Esc = batal. Pola pointer sama dengan `startDrag`.
+  /// FR-37: drag a pane head (like Warp). Over another pane: left/right/top/bottom zone = split on that side, middle =
+  /// swap places; over another tab in the sidebar = move to that tab. Esc = cancel. Same pointer pattern as `startDrag`.
   function startPaneDrag(e: PointerEvent, from: Tab, pane: number) {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
-    e.preventDefault(); // tanpa ini seretan ikut memblok teks kepala dan toolbar
+    e.preventDefault(); // without this the drag also selects head and toolbar text
     const [x0, y0] = [e.clientX, e.clientY];
     let ghost: HTMLElement | null = null;
     let esc = false;
@@ -1622,14 +1622,14 @@
           drop = () => movePaneToTab(from, pane, to);
         }
       } else if (g) {
-        // pane tujuan = kotak di tab ini yang memuat kursor (pecahan grid)
+        // target pane = the box in this tab holding the cursor (grid fractions)
         const [fx, fy] = [(m.clientX - g.left) / g.width, (m.clientY - g.top) / g.height];
         const hit = [...rects(from.tree)].find(([, r]) => fx >= r.x && fx < r.x + r.w && fy >= r.y && fy < r.y + r.h);
         if (hit && hit[0] !== pane) {
           const [target, r] = hit;
           const [L, T, W, H] = [g.left + r.x * g.width, g.top + r.y * g.height, r.w * g.width, r.h * g.height];
           const [u, v] = [(m.clientX - L) / W, (m.clientY - T) / H];
-          // sisi terdekat bila dalam 25% dari tepi; selain itu tengah
+          // nearest side when within 25% of the edge; otherwise the middle
           const side = (
             [["left", u], ["right", 1 - u], ["up", v], ["down", 1 - v]] as [Arrow, number][]
           ).reduce((a, b) => (b[1] < a[1] ? b : a));
@@ -1683,8 +1683,8 @@
     window.addEventListener("keydown", key, true);
   }
 
-  /// FR-37: pane pindah ke tab lain (split kanan dari pane fokus tab itu); tab asal yang kosong ditutup.
-  /// Beda workspace = daemon diberi tahu (aturan akses SEC-4/21, sama dengan `moveTab`).
+  /// FR-37: pane moves to another tab (split right of that tab's focused pane); the empty source tab closes.
+  /// Different workspace = the daemon is told (access rules SEC-4/21, same as `moveTab`).
   function movePaneToTab(from: Tab, pane: number, to: Tab) {
     const rest = remove(from.tree, pane);
     const src = wss.findIndex((w) => w.tabs.includes(from));
@@ -1700,8 +1700,8 @@
     zoomed = false;
   }
 
-  /// FR-44: workspace = satu folder project dipilih lewat dialog; nama = nama folder (ganti dengan klik dua kali);
-  /// tab barunya mulai di folder itu
+  /// FR-44: workspace = one project folder picked through a dialog; name = folder name (rename with a double click);
+  /// its new tabs start in that folder
   async function addWorkspace() {
     const path = await invoke<string | null>("pick_folder");
     if (!path) return;
@@ -1750,7 +1750,7 @@
 
   const pct = (v: number) => `${v * 100}%`;
 
-  /// Isi layout.json dianggap tidak tepercaya: bentuk salah dibuang, sisanya dipakai.
+  /// layout.json content is untrusted: wrong shapes are dropped, the rest is used.
   function sanitize(saved: any): Ws[] {
     if (!Array.isArray(saved?.workspaces)) return [];
     const out: Ws[] = saved.workspaces
@@ -1760,9 +1760,9 @@
         name: String(w.name ?? "workspace").slice(0, 60),
         root: String(w.root ?? "~").slice(0, 500),
         collapsed: w.collapsed === true,
-        // FR-44: warna blok; workspace lama tanpa warna diberi warna di bawah (null = sengaja tanpa warna)
+        // FR-44: block color; old workspaces without a color get one below (null = deliberately no color)
         color: COLORS.some((c) => c === w.color) ? w.color : w.color === null ? null : undefined,
-        // FR-61: hanya id akun yang sah (dicocokkan lagi oleh daemon saat membuka pane)
+        // FR-61: only valid account ids (checked again by the daemon when opening a pane)
         brief: typeof w.brief === "string" && w.brief.trim() ? w.brief.slice(0, 4000) : undefined,
         accounts: Object.fromEntries(Object.entries(w.accounts ?? {}).filter(([k, v]) => /^[a-z]+$/.test(k) && typeof v === "string" && /^[a-z0-9-]{1,32}$/.test(v))),
         tabs: w.tabs
@@ -1779,7 +1779,7 @@
     return out;
   }
 
-  /// FR-45 pulihkan; FR-43 pertama kali dibuka
+  /// FR-45 restore; FR-43 first open
   async function restore() {
     boot = (await call("daemon.info")).boot;
     const saved = await call("layout.load");
@@ -1797,7 +1797,7 @@
               alive.delete(p);
               continue;
             }
-            // id dari run lain bisa bentrok dengan id baru: pane mati selalu negatif
+            // ids from another run can clash with new ids: dead panes are always negative
             const id = next--;
             t.tree = replace(t.tree, p, id);
             if (t.focus === p) t.focus = id;
@@ -1805,11 +1805,11 @@
             dead[id] = true;
           }
       wss = restored;
-      // layout.json tidak tepercaya: kartu FR-56 tetap, perintah lanjutnya hanya bila cocok bentuk buatan daemon
+      // layout.json is untrusted: the FR-56 card stays, its resume command only when it matches a daemon-made shape
       for (const m of Object.values(meta)) if (m.ended) m.ended = { resume: safeResume(m.ended.resume) };
-      // FR-45: pane mati langsung diganti shell baru (id negatif dulu supaya tidak bentrok dengan id run baru)
+      // FR-45: dead panes are replaced by new shells right away (negative id first so it doesn't clash with new run ids)
       for (const d of Object.keys(dead).map(Number)) await restart(d, true);
-      // pane hidup yang tidak ada di layout (mis. layout gagal tersimpan) tetap tampil
+      // live panes not in the layout (e.g. the layout failed to save) still show
       for (const p of alive) wss[0].tabs.push({ id: uid(), title: "", tree: { pane: p }, focus: p });
       const a = saved.at ?? {};
       at = wss[a.ws]?.tabs[a.tab] ? { ws: a.ws, tab: a.tab } : { ws: 0, tab: 0 };
@@ -1824,7 +1824,7 @@
     welcome = await call("agents.detect", {}).catch(() => []);
   }
 
-  // FR-65: antrean perhatian = semua pane yang butuh izin, paling lama menunggu dulu
+  // FR-65: attention queue = every pane needing permission, longest waiting first
   $effect(() => {
     for (const p of Object.keys(meta).map(Number)) {
       if (meta[p]?.status === "blocked") blockedAt[p] ??= Date.now();
@@ -1840,7 +1840,7 @@
     const s = Math.max(0, Math.round(ms / 1000));
     return s < 60 ? tt("tile.secs", { n: s }) : s < 3600 ? tt("tile.mins", { n: Math.floor(s / 60) }) : tt("tile.hours", { n: Math.floor(s / 3600) });
   };
-  /// FR-65: pindah ke tab dan pane itu (klik baris antrean, Cmd+Shift+U)
+  /// FR-65: go to that tab and pane (click a queue row, Cmd+Shift+U)
   function jumpTo(p: number) {
     for (const [wi, w] of wss.entries())
       for (const [ti, t] of w.tabs.entries())
@@ -1852,34 +1852,34 @@
   }
   const tabOf = (p: number) => wss.flatMap((w) => w.tabs).find((t) => panes(t.tree).includes(p));
 
-  // FR-40: tanda selesai hilang begitu pane itu dilihat (agent maupun shell)
+  // FR-40: the done mark goes away once that pane is seen (agent or shell)
   $effect(() => {
     const f = tab?.focus;
     if (seen && f && meta[f]?.status === "done" && !ack[f]) ack[f] = true;
   });
 
-  // FR-55: toolbar pane yang baru difokus diperbarui (tanpa polling git)
+  // FR-55: the toolbar of the newly focused pane is refreshed (no git polling)
   $effect(() => {
     if (tab?.focus) refreshGit(tab.focus);
   });
 
-  // FR-40: badge Dock dan Dock melompat hanya saat jendela tidak sedang dilihat
+  // FR-40: Dock badge and Dock bounce only while the window isn't being looked at
   let seen = $state(document.hasFocus());
-  // FR-55: isi dan urutan chip toolbar dari [toolbar]
+  // FR-55: content and order of toolbar chips from [toolbar]
   const toolbar = $derived(cfg?.values.toolbar ?? { left: ["attach", "diff", "rich_input"], right: ["cwd", "branch", "settings"] });
   const notify = $derived(cfg?.values.notify ?? { on_blocked: true, on_done: true, long_command_secs: 30, sound: true });
 
-  /// FR-40: banner + Dock melompat saat jendela tidak dilihat; isi nama pane + status saja (SEC-33).
-  /// Klik banner = pindah ke pane itu (event `notify-click` dari `on_action` plugin, id notifikasi = id pane);
-  /// fokus jendela biasa (Cmd+Tab) tidak memindah pane.
+  /// FR-40: banner + Dock bounce while the window isn't being looked at; content is pane name + status only (SEC-33).
+  /// Clicking a banner = go to that pane (`notify-click` event from the plugin's `on_action`, notification id = pane id);
+  /// normal window focus (Cmd+Tab) doesn't move panes.
   /// label = alert.* key: the bell renders it in the language of the moment, the banner in the current one
   function alert(pane: number, kind: "blocked" | "done", label: Key) {
     const m = meta[pane];
     if (m) note(pane, kind, label);
     if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
     if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
-    if (kind === "blocked") invoke("attention").catch(() => {}); // Dock melompat hanya bila perlu tindakan; selesai cukup badge
-    // SEC-33: nama pane, nama tab (FR-65), status; tanpa isi layar
+    if (kind === "blocked") invoke("attention").catch(() => {}); // the Dock bounces only when action is needed; done just gets the badge
+    // SEC-33: pane name, tab name (FR-65), status; no screen content
     const tb = tabOf(pane);
     const name = m.name || m.profile;
     invoke("notify_pane", { body: tb ? tt("alert.bodyTab", { name, tab: title(tb), what: tt(label) }) : tt("alert.body", { name, what: tt(label) }), sound: notify.sound, pane }).catch(() => {});
@@ -1934,14 +1934,14 @@
     delete ack[pane];
     meta[pane].status = status;
     if (status === "done" || status === "idle") {
-      refreshGit(pane); // toolbar diperbarui per giliran (TECH 7a)
-      if (changes?.pane === pane) loadChanges(pane); // FR-22: panel ikut diperbarui
+      refreshGit(pane); // toolbar refreshed per turn (TECH 7a)
+      if (changes?.pane === pane) loadChanges(pane); // FR-22: the panel is refreshed too
     }
     if (status === "blocked") alert(pane, "blocked", "alert.blocked");
     if (status === "done") alert(pane, "done", "alert.done");
   }
 
-  // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
+  // save the layout half a second after the last change (SEC-13: no screen content)
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     const body = JSON.stringify({ version: 1, boot, at, side: sideW, panel: panelW, workspaces: wss, panes: meta });
@@ -1950,11 +1950,11 @@
     saveTimer = setTimeout(() => call("layout.save", { layout: JSON.parse(body) }).catch(() => {}), 500);
   });
 
-  // folder dan proses tiap pane untuk judul tab, subjudul, dan ikon agent (FR-52)
+  // folder and process of each pane for the tab title, subtitle, and agent icon (FR-52)
   async function poll() {
     now = Date.now();
     const ids = Object.keys(meta).map(Number).filter((p) => !dead[p]);
-    // dikirim sekaligus (klien daemon memultipleks per id), tidak menunggu satu per satu (TECH 19 Responsif)
+    // sent all at once (the daemon client multiplexes by id), not waiting one by one (TECH 19 Responsive)
     const infos = await Promise.all(ids.map((p) => call("pane.info", { pane: p }).catch(() => null)));
     for (const [k, p] of ids.entries()) {
       const i = infos[k];
@@ -1965,16 +1965,16 @@
       }
       const busy = i.busy ? (i.name ?? "proses") : null;
       const m = meta[p];
-      // agent yang diketik di pane shell (`m.busy` = agent di poll sebelumnya): status kosong dari daemon saat agent
-      // keluar juga dipakai, supaya "selesai" tidak tertahan setelah agentnya mati
+      // agent typed in a shell pane (`m.busy` = agent in the previous poll): an empty status from the daemon when the agent
+      // exits is used too, so "done" doesn't get stuck after its agent died
       if (AGENTS.includes(m.agent) || m.agent === "custom" || i.status || AGENTS.includes(m.busy ?? "")) {
-        // status dari daemon: hook resmi, atau pola layar untuk profil custom dan agent yang diketik manual (FR-4)
+        // status from the daemon: official hooks, or screen patterns for custom profiles and agents typed by hand (FR-4)
         if (m.status !== i.status) {
           delete ack[p];
           m.status = i.status;
         }
       } else {
-        // FR-40 untuk pane shell: perintah lebih dari 30 detik lalu selesai = done; menunggu password = blocked
+        // FR-40 for shell panes: a command longer than 30 seconds that finishes = done; waiting for a password = blocked
         if (busy && !m.busy) m.since = Date.now();
         if (i.password && m.status !== "blocked") {
           m.status = "blocked";
@@ -1986,10 +1986,10 @@
           alert(p, "done", "alert.longCmd");
         }
       }
-      if (busy && busy !== m.busy && m.ended) delete m.ended; // FR-56: blok selesai hilang begitu proses baru jalan
+      if (busy && busy !== m.busy && m.ended) delete m.ended; // FR-56: the finished block goes away once a new process runs
       if (m.busy !== busy) m.busy = busy;
       if (m.shell !== i.shell) m.shell = i.shell;
-      // FR-69: label hanya selama agent berjalan di pane ini
+      // FR-69: label only while an agent runs in this pane
       const label = AGENTS.includes(m.agent) || AGENTS.includes(busy ?? "") ? cleanTitle(i.title, base(i.cwd)) : "";
       if (label) labels[p] !== label && (labels[p] = label);
       else if (labels[p]) delete labels[p];
@@ -2003,9 +2003,9 @@
     }
   }
 
-  // Esc yang tidak dipakai halaman diteruskan WebKit ke jendela = keluar layar penuh macOS; layar penuh cukup fn+F
+  // Esc the page doesn't use is passed by WebKit to the window = macOS leaves full screen; full screen is just fn+F
   const keepFullscreen = (e: KeyboardEvent) => e.key === "Escape" && e.preventDefault();
-  let fullscreen = $state(false); // layar penuh: tombol jendela macOS hilang, ruangnya di sidebar ikut hilang
+  let fullscreen = $state(false); // full screen: macOS window buttons disappear, their space in the sidebar goes too
 
   onMount(() => {
     window.addEventListener("keydown", onKey, true);
@@ -2015,7 +2015,7 @@
     onFull();
     const unlistenFull = win.onResized(onFull);
     const unlisten = listen<string>("shortcut", ({ payload }) => run(payload));
-    // FR-40: banner diklik = pindah ke pane-nya; kabar pane itu di lonceng ikut dilihat
+    // FR-40: banner clicked = go to its pane; that pane's bell entries get marked seen too
     const unlistenClick = listen<number>("notify-click", ({ payload: p }) => {
       notes.forEach((n) => n.pane === p && (n.seen = true));
       if (meta[p] && !dead[p]) jumpTo(p);
@@ -2023,10 +2023,10 @@
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
-      // tab yang xterm-nya dilepas tidak punya Tile yang mendengar pane.exit
+      // a tab whose xterm is detached has no Tile listening for pane.exit
       if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane);
       if (payload.event === "pane.replace" && meta[payload.params.pane])
-        // agent keluar = status kosong (daemon mengosongkan tanpa event pane.status; tanpa ini tetap "bekerja")
+        // agent exits = empty status (the daemon clears it without a pane.status event; without this it stays "working")
         Object.assign(meta[payload.params.pane], { output: true, status: "", ended: { resume: payload.params.resume ?? null } });
       if (payload.event === "daemon.lost") onLost();
       if (payload.event === "msg.event") refreshMsgs();
@@ -2034,12 +2034,12 @@
       if (payload.event === "harness.notice") runNotice(payload.params);
     });
     const timer = setInterval(poll, 2000);
-    // FR-15: seret file ke jendela = path ber-quote ditempel ke pane yang fokus (bracketed paste, tanpa Enter)
+    // FR-15: dragging a file onto the window = quoted path pasted into the focused pane (bracketed paste, no Enter)
     const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type !== "drop" || !tab || dead[tab.focus] || !payload.paths.length) return;
       const pane = tab.focus;
       if (rich?.pane === pane) return void invoke<string[]>("resolve_paths", { paths: payload.paths }).then(addRichFiles).catch(() => {});
-      // FR-59: editor tampil = path masuk ke editor, bukan langsung ke shell
+      // FR-59: editor shown = the path goes into the editor, not straight to the shell
       if (editorShown(pane)) invoke<string[]>("resolve_paths", { paths: payload.paths }).then((p) => insertPaths(pane, p)).catch(() => {});
       else attach(pane, payload.paths);
     });
@@ -2055,12 +2055,12 @@
         call("agents.detect", {}).then((a: Agent[]) => (installed = a.filter((x) => x.installed).map((x) => x.agent))).catch(() => {});
         invoke<string[]>("shell_history").then((h) => (zhist = h)).catch(() => {});
         await restore();
-        // pane yang hidup dari run sebelumnya: daemon diberi tahu workspace-nya (aturan akses SEC-4/21)
+        // panes alive from the previous run: the daemon is told their workspace (access rules SEC-4/21)
         for (const p of Object.keys(meta).map(Number).filter((p) => !dead[p])) call("pane.workspace", { pane: p, workspace: wsIdOf(p) }).catch(() => {});
         refreshMsgs();
         for (const w of wss) call("harness.state", { workspace: w.id }).then((r) => r?.run && onRun(r)).catch(() => {});
         poll();
-        // FR-21: app baru + daemon lama = tanya dulu; menjalankan ulang daemon menghentikan semua pane
+        // FR-21: new app + old daemon = ask first; restarting the daemon stops every pane
         const [d, app] = await Promise.all([call("daemon.info"), getVersion()]);
         if (d.daemon !== app) upgrade = { daemon: d.daemon, app, panes: (await call("pane.list")).length };
       } catch (e) {
@@ -2108,7 +2108,7 @@
   {:else if c === "cwd"}
     <span class="chip box quiet" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{short(meta[pane]?.cwd) || "~"}</span>
   {:else if c === "branch" && g?.repo && g.branch}
-    <!-- branch tidak dipotong; yang mengalah folder (TECH 19 #9) -->
+    <!-- the branch isn't cut; the folder gives way (TECH 19 #9) -->
     <span class="chip box">{@render icon("branch")}{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
   {:else if c === "settings"}
     <button class="chip box" title={tt("set.title")} aria-label={tt("chip.settingsAria")} onclick={() => (settingsOpen = true)}>{@render icon("sliders")}</button>
@@ -2117,7 +2117,7 @@
 
 {#if sidebar}
   <aside class="side" aria-label={tt("menu.tab")} style:width="{sideW}px" class:dragging={!!dragging} class:full={fullscreen}>
-    <!-- title bar transparan: area tombol jendela + geser jendela -->
+    <!-- transparent title bar: window button area + window drag -->
     <div class="drag" data-tauri-drag-region></div>
     <button class="add find" onclick={openPalette}>{tt("side.find")} <span class="n">⌘P</span></button>
     <button class="add" onclick={() => (newTask = true)}>{tt("hn.newTask")}</button>
@@ -2126,9 +2126,9 @@
         {runLive(runs[ws.id]) ? "● " : ""}{runs[ws.id].name} · {tOr(`hn.state.${runs[ws.id].state}`, runs[ws.id].state)}
       </button>
     {/if}
-    <!-- FR-44: di bawah kotak cari, selalu terlihat walau daftar tab panjang -->
+    <!-- FR-44: below the search box, always visible even with a long tab list -->
     {#if queue.length}
-      <!-- FR-65: antrean perhatian; hilang bila tidak ada yang menunggu -->
+      <!-- FR-65: attention queue; hidden when nothing is waiting -->
       <div class="queue" role="region" aria-label={tt("status.blocked")}>
         <div class="qhead">{tt("side.needsYou")} <span>{queue.length}</span></div>
         {#each queue as q (q.p)}
@@ -2144,9 +2144,9 @@
     {/if}
     <button class="add wsnew" onclick={addWorkspace}>+ Workspace</button>
     {#each wss as w, wi (w.id)}
-      <!-- FR-44: klik judul = buka/ciutkan; ganti nama lewat klik kanan atau palet -->
+      <!-- FR-44: click the title = expand/collapse; rename through right click or the palette -->
       {@const liftWs = dragging?.kind === "ws" && dragging.wi === wi}
-      <!-- FR-44: blok workspace berwarna (mockup-warna-tab varian D) -->
+      <!-- FR-44: colored workspace block (mockup-warna-tab variant D) -->
       <div class="wsg {w.color ?? ''}">
       <div class="ws" data-wi={wi} data-k="{w.id}:h" class:lift={liftWs} class:target={dragging?.kind === "tab" && dragging.over.wi === wi && dragging.wi !== wi}
         role="button" tabindex="0" aria-expanded={!w.collapsed} title={w.root}
@@ -2160,11 +2160,11 @@
           <span class="chev" aria-hidden="true">{w.collapsed ? "▸" : "▾"}</span>
           <span class="wsname" title={w.name}>{w.name}</span>
           {#if w.collapsed}
-            <!-- FR-44: diciutkan tetap menampilkan jumlah tab dan status terberat -->
+            <!-- FR-44: collapsed still shows the tab count and the most severe status -->
             {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
             <span class="wsum">{#if stText(st)}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{stText(st)}</span>{" · "}{/if}{ttn("side.tabs", w.tabs.length)}</span>
           {/if}
-          <!-- FR-52: tab baru di workspace INI; klik kanan/Option = pilih profil -->
+          <!-- FR-52: new tab in THIS workspace; right click/Option = pick a profile -->
           <button class="wsadd" title={tt("side.newTabTip", { name: w.name })} aria-label={tt("side.newTabAria", { name: w.name })}
             onpointerdown={(e) => e.stopPropagation()}
             onclick={(e) => (e.stopPropagation(), e.altKey ? profileMenu(e, wi) : newTab(undefined, wi))}
@@ -2194,8 +2194,8 @@
             <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
-            <!-- FR-61: akun selain Utama tampil di keterangan tab -->
-            <!-- agent sudah tampil sebagai ikon; proses lain (npm, vim) tetap disebut -->
+            <!-- FR-61: accounts other than Utama show in the tab caption -->
+            <!-- agents already show as an icon; other processes (npm, vim) are still named -->
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
             {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
             {#if stText(st) || rest}
@@ -2269,7 +2269,7 @@
       {#each [...rects(t.tree)] as [pane, r] (pane)}
         {@const hidden = !active || (zoomed && pane !== t.focus)}
         {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
-        <!-- FR-55: toolbar untuk pane agent dari profil, dan agent yang diketik sendiri selama jalan -->
+        <!-- FR-55: toolbar for agent panes from a profile, and agents typed by hand while running -->
         {@const bar = !dead[pane] && ([...AGENTS, "custom"].includes(meta[pane]?.agent ?? "") || AGENTS.includes(meta[pane]?.busy ?? ""))}
         {@const split = panes(t.tree).length > 1}
         {@const head = !zoomed}
@@ -2293,14 +2293,14 @@
             </div>
           {:else}
             {#if head}
-              <!-- FR-37: kepala tipis, juga saat tab cuma satu pane (Gembala.pen 02) -->
+              <!-- FR-37: thin head, also when the tab has only one pane (Gembala.pen 02) -->
               {@const hs = stat(pane)}
               <div class="head" class:on={split && pane === t.focus} onpointerdown={(e) => startPaneDrag(e, t, pane)} role="presentation">
                 <span class="hname">{#if stText(hs)}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
                 {#if stText(hs)}<span class="st {hs}">{stText(hs)}</span>{/if}
                 <!-- FR-78: add-ons of the running agent in this workspace, names in the tooltip -->
                 {#if addonsOf(pane).length}<span class="hadd" title="Add-on: {addonsOf(pane).join(', ')}">{ttn("pane.addons", addonsOf(pane).length)}</span>{/if}
-                <!-- folder cukup sekali: toolbar agent sudah menampilkannya -->
+                <!-- the folder once is enough: the agent toolbar already shows it -->
                 {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd" title={home(meta[pane]?.cwd)}>{short(meta[pane]?.cwd)}</span>{/if}
                 <span class="grow"></span>
                 <button class="hb" title="{tt('drag.right')} ⌘D" aria-label={tt("drag.right")} onclick={() => splitFocused("row")}>◫</button>
@@ -2318,12 +2318,12 @@
                 onused={() => (ran[pane] = true)}
                 onblock={(kind: string, text: string) => {
                   if (kind === "output") return void (outputOf = pane);
-                  // sesi terakhir pane agent dari profil: jalankan ulang pane-nya (hook resmi), bukan diketik ke shell
+                  // last session of an agent pane from a profile: rerun its pane (official hooks), not typed into the shell
                   if (kind === "run" && meta[pane]?.ended?.resume === text && AGENTS.includes(meta[pane].agent)) return void resumeEnded(pane);
-                  // FR-56 linimasa: Lanjutkan/Ulangi = jalankan perintah di pane ini (lewat editor supaya tercatat di riwayat)
+                  // FR-56 timeline: Resume/Rerun = run the command in this pane (through the editor so it lands in history)
                   if (kind === "run" && editorShown(pane)) return void ((draft[pane] = text), runDraft(pane));
                   if (kind !== "reuse") return void copy(text);
-                  if (!editorShown(pane)) return void copy(text); // editor tidak tampil (mis. TUI jalan): salin saja
+                  if (!editorShown(pane)) return void copy(text); // editor not shown (e.g. a TUI running): just copy
                   draft[pane] = text;
                   document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus();
                 }}
@@ -2338,7 +2338,7 @@
               {/if}
             </div>
             {#if ed && !ran[pane] && !draft[pane]}
-              <!-- FR-59: panel Mulai: hilang begitu ada perintah jalan atau mulai mengetik -->
+              <!-- FR-59: Start panel: gone once a command runs or typing starts -->
               <div class="start" class:withhead={head}>
                 {#if welcome && pane === startHere}{@render welcomeCard("wcard")}{/if}
                 <div class="scol">
@@ -2362,9 +2362,9 @@
               </div>
             {/if}
             {#if ed}
-              <!-- FR-59: input editor; kursor dan seleksi pakai mouse, Enter jalan, Tab/Esc ke terminal -->
+              <!-- FR-59: input editor; cursor and selection with the mouse, Enter runs, Tab/Esc to the terminal -->
               <div class="editor" class:withbar={bar}>
-                <!-- konteks ala Warp: folder dan branch, menggantikan prompt shell -->
+                <!-- Warp-style context: folder and branch, replacing the shell prompt -->
                 <div class="ctx">
                   <button class="cchip" title={tt("ed.attachTip")} aria-label={tt("chip.attach")}
                     onclick={async () => insertPaths(pane, await invoke<string[]>("pick_files").catch(() => [] as string[]))}>{@render icon("plus")}</button>
@@ -2400,7 +2400,7 @@
                       <button class="opt" class:on={i === comp.sel} role="option" aria-selected={i === comp.sel}
                         onpointerdown={(e) => e.preventDefault()} onclick={() => ((draft[pane] = it.insert), (comp = null))}>
                         {#if comp.auto}
-                          <!-- FR-61 varian C (mockup-pilih-akun): nama di atas, email/perintah kecil di bawah -->
+                          <!-- FR-61 variant C (mockup-pilih-akun): name on top, small email/command below -->
                           <span class="ico claude" aria-hidden="true">{GLYPH.claude}</span>
                           <span class="two"><span>{it.label}</span><small>{it.kind}</small></span>
                           <span class="keys">{i === comp.sel ? "Tab" : ""}</span>
@@ -2413,11 +2413,11 @@
                     {/each}
                   </div>
                 {/if}
-                <!-- kotak input yang jelas: bingkai + ❯, bingkai biru saat fokus -->
+                <!-- a clear input box: border + ❯, blue border on focus -->
                 <div class="ebox">
                 <span class="ps" aria-hidden="true">❯</span>
                 <div class="ghostwrap">
-                  <!-- saran abu-abu dari riwayat; → terima -->
+                  <!-- gray suggestion from history; → accepts -->
                   <div class="ghost" aria-hidden="true"><span class="typed">{draft[pane] ?? ""}</span>{ghost(pane)}</div>
                 <textarea bind:value={draft[pane]} rows={Math.min(6, (draft[pane] ?? "").split("\n").length)} data-editor={pane}
                   aria-label={tt("ed.aria", { name: meta[pane]?.name ?? "" })} spellcheck="false" autocapitalize="off" autocomplete="off"
@@ -2425,7 +2425,7 @@
                   onkeydown={(e) => editorKey(pane, e)} oninput={() => onEditorInput(pane)} onfocus={() => (t.focus = pane)}
                   onpaste={(e) => pasteToEditor(pane, e)}
                   oncopy={(e) => {
-                    // ⌘C tanpa seleksi di editor = salin seleksi terminal (fokus selalu di editor saat editor tampil)
+                    // ⌘C without a selection in the editor = copy the terminal selection (focus is always in the editor while it's shown)
                     const ta = e.currentTarget;
                     const sel = tiles[pane]?.selection();
                     if (ta.selectionStart === ta.selectionEnd && sel) (e.preventDefault(), e.clipboardData?.setData("text/plain", sel));
@@ -2436,10 +2436,10 @@
               </div>
             {/if}
             {#if mention?.pane === pane}
-              <!-- FR-57: daftar @; Tab pilih, ↑↓ geser, Esc tutup, terus mengetik = @ milik agent -->
+              <!-- FR-57: @ list; Tab picks, ↑↓ moves, Esc closes, keep typing = the @ belongs to the agent -->
               <div class="mention" class:withbar={bar} class:withedit={mention.editor} role="listbox" aria-label={tt("men.aria")}>
                 {#if !mentionItems.length}
-                  <!-- kosong tetap tampil: tanpa ini @@ terlihat rusak -->
+                  <!-- shown even when empty: without this @@ looks broken -->
                   <span class="keys">{targets.length ? tt("men.noMatch", { q: mention.q }) : tt("men.none")}</span>
                 {/if}
                 {#each mentionItems as r, i (r.pane)}
@@ -2472,17 +2472,17 @@
               </div>
             {/if}
             {#if meta[pane]?.login}
-              <!-- FR-61: Gembala tidak mengetik apa pun; login dilakukan pengguna di Claude Code pane ini -->
+              <!-- FR-61: Gembala types nothing; the user logs in to Claude Code in this pane -->
               <div class="ended" class:withhead={head} role="status">
                 <span class="etitle">{tt("pane.login", { name: meta[pane].login })} <code>/login</code></span>
                 <span class="grow"></span>
                 <button class="hb" aria-label={tt("common.close")} onclick={() => delete meta[pane].login}>×</button>
               </div>
             {/if}
-            <!-- FR-56: tombol sesi agent selesai ada di blok linimasa (pen layar 02), tanpa banner di atas pane -->
+            <!-- FR-56: finished agent session buttons live in the timeline block (pen screen 02), no banner above the pane -->
             {#if bar}
-              <!-- FR-55: toolbar agent; chip tanpa data (bukan repo) disembunyikan -->
-              <!-- pane tak fokus di tab ber-split: isi toolbar disembunyikan (tinggi tetap, terminal tidak reflow), tampil saat hover -->
+              <!-- FR-55: agent toolbar; chips without data (not a repo) are hidden -->
+              <!-- unfocused pane in a split tab: toolbar content hidden (height stays, the terminal doesn't reflow), shown on hover -->
               <div class="bar" class:rest={split && !zoomed && pane !== t.focus}>
                 {#if editing?.kind === "pane" && editing.id === String(pane)}
                   <!-- svelte-ignore a11y_autofocus -->
@@ -2544,7 +2544,7 @@
             {/if}
           {/if}
           {#each pendingFor(pane) as m (m.id)}
-            <!-- FR-12: kartu di dekat pane target; hanya klik (Enter tidak menyetujui tanpa sengaja) -->
+            <!-- FR-12: card near the target pane; click only (Enter doesn't approve by accident) -->
             <div class="card" role="alertdialog" aria-label={tt("msg.pending")}>
               <span><b>{m.from}</b> {tt("card.wants")} <span class="keys">{m.id}</span></span>
               <pre>{m.body}</pre>
@@ -2713,7 +2713,7 @@
     </div>
   {/if}
   {#if tpl}
-    <!-- FR-13: dialog template peran (pen layar 17) -->
+    <!-- FR-13: role template dialog (pen screen 17) -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="confirm tpldlg" role="dialog" aria-label={tt("tpl.title")} tabindex="-1" onkeydown={(e) => e.key === "Escape" && (tpl = null)}>
       <span class="thd"><b>{tt("tpl.title")}</b><button class="mini" onclick={() => (tpl = null)} aria-label={tt("common.close")}>×</button></span>
@@ -2749,7 +2749,7 @@
     </div>
   {/if}
   {#if wt}
-    <!-- FR-71: dialog worktree (pen layar 07) -->
+    <!-- FR-71: worktree dialog (pen screen 07) -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="confirm wtdlg" role="dialog" aria-label={tt("wt.title")} tabindex="-1"
       onkeydown={(e) => (e.key === "Escape" ? (wt = null) : e.key === "Enter" && !e.isComposing && (e.preventDefault(), createWorktree()))}>
@@ -2784,7 +2784,7 @@
     </div>
   {/if}
   {#if pal}
-    <!-- FR-39: palet perintah (Gembala.pen 03) -->
+    <!-- FR-39: command palette (Gembala.pen 03) -->
     <div class="confirm picker palette" role="dialog" aria-label={tt("pal.aria")}>
       <div class="psearch">
         <svg class="pfind" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
@@ -2839,13 +2839,13 @@
 </div>
 
 <style>
-  /* FR-34: huruf ikon cadangan (Nerd Fonts v3.4.0, MIT); dimuat hanya saat ada glyph PUA yang tidak ada di huruf utama */
+  /* FR-34: fallback icon font (Nerd Fonts v3.4.0, MIT); loaded only when there are PUA glyphs missing from the main font */
   @font-face {
     font-family: "Symbols Nerd Font Mono";
     src: url("/fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
     font-display: block;
   }
-  /* Hack = font bawaan Warp (MIT + Bitstream Vera, static/fonts/Hack-LICENSE.md) */
+  /* Hack = Warp's default font (MIT + Bitstream Vera, static/fonts/Hack-LICENSE.md) */
   @font-face {
     font-family: "Hack";
     src: url("/fonts/hack-regular.woff2") format("woff2");
@@ -2870,12 +2870,12 @@
     font-style: italic;
     font-display: block;
   }
-  /* fokus keyboard selalu terlihat; input yang punya penanda sendiri (outline: none berkelas) tidak terpengaruh */
+  /* keyboard focus always visible; inputs with their own marker (classed outline: none) aren't affected */
   :global(:focus-visible) {
     outline: 1px solid #3b82f6;
     outline-offset: 1px;
   }
-  /* umpan balik tekan: tombol mana pun meredup sesaat saat diklik (TECH 19 Responsif) */
+  /* press feedback: any button dims briefly when clicked (TECH 19 Responsive) */
   :global(button:active:not(:disabled)) {
     opacity: 0.7;
   }
@@ -2886,9 +2886,9 @@
     --line: #262626;
     --card: #111111;
     --side: #111111;
-    --dim: rgba(0, 0, 0, 0.25); /* teks redup pane tak fokus tetap terbaca; garis biru kepala pane sudah menandai fokus */
+    --dim: rgba(0, 0, 0, 0.25); /* dim text of an unfocused pane stays readable; the blue line on the pane head already marks focus */
   }
-  /* FR-34 tema terang = palet Latte (TECH, Gembala.pen T01–T38): bukan putih polos, sidebar lebih gelap dari pane,
+  /* FR-34 light theme = Latte palette (TECH, Gembala.pen T01–T38): not plain white, sidebar darker than the panes,
      teks >= 4,5:1. --tx-* / --pri-* hanya diisi di tema terang; tema gelap memakai warna cadangan di var() */
   @media (prefers-color-scheme: light) {
     :global(:root:not([data-theme="dark"])) {
@@ -2964,7 +2964,7 @@
     z-index: 4;
     cursor: col-resize;
   }
-  /* FR-52: tab vertikal per workspace; tenang, hanya yang membantu kerja (memory: UI bersih ala Warp) */
+  /* FR-52: vertical tabs per workspace; calm, only what helps the work (memory: clean Warp-style UI) */
   .side {
     position: fixed;
     inset: 0 auto 0 0;
@@ -2973,9 +2973,9 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 40px 8px 10px; /* atas: tombol jendela macOS (title bar transparan) */
+    padding: 40px 8px 10px; /* top: macOS window buttons (transparent title bar) */
     border-right: 1px solid var(--line);
-    background: var(--side); /* gelap: sedikit lebih terang dari terminal (ala Warp); terang: lebih gelap dari pane */
+    background: var(--side); /* dark: slightly lighter than the terminal (like Warp); light: darker than the panes */
     overflow-y: auto;
     font: 13px system-ui, -apple-system, sans-serif;
     color: var(--fg);
@@ -2997,7 +2997,7 @@
   :global(body) {
     -webkit-font-smoothing: antialiased;
   }
-  /* terminal: ketebalan huruf seperti Warp; antialiased membuat teks redup/tipis di layar gelap */
+  /* terminal: font weight like Warp; antialiased makes text dim/thin on dark screens */
   :global(.xterm) {
     -webkit-font-smoothing: auto;
   }
@@ -3102,7 +3102,7 @@
   }
   /* pen 02: summary sits right after the name; the + button keeps the right edge */
   .wsum {
-    flex-shrink: 0; /* nama panjang yang dipotong, ringkasan tetap satu baris */
+    flex-shrink: 0; /* long names get cut, the summary stays on one line */
     white-space: nowrap;
   }
   .x {
@@ -3112,7 +3112,7 @@
     visibility: hidden;
     cursor: pointer;
   }
-  /* seret tab/workspace (pen layar 09): asal pudar di tempat, salinan ikut kursor, garis sisip biru; tanpa animasi */
+  /* tab/workspace drag (pen screen 09): source faded in place, copy follows the cursor, blue insertion line; no animation */
   .lift {
     opacity: 0.4;
   }
@@ -3127,7 +3127,7 @@
     background: #3b82f6;
     pointer-events: none;
   }
-  /* FR-37 seret pane: zona jatuh biru dengan tulisan tujuan, salinan nama pane ikut kursor */
+  /* FR-37 pane drag: blue drop zone with the target label, a copy of the pane name follows the cursor */
   .dropzone {
     position: fixed;
     z-index: 40;
@@ -3171,12 +3171,12 @@
   :global(.dragghost > * > *) {
     margin-top: 0 !important;
   }
-  /* kursor tangan tetap kelihatan di atas baris mana pun selama seret */
+  /* the hand cursor stays visible over any row while dragging */
   .side.dragging,
   .side.dragging * {
     cursor: grabbing !important;
   }
-  /* sidebar = chrome app: seret tab/workspace tidak ikut memblok teks; input tetap bisa diblok */
+  /* sidebar = app chrome: dragging tabs/workspaces doesn't select text; inputs can still be selected */
   .side {
     -webkit-user-select: none;
     user-select: none;
@@ -3399,7 +3399,7 @@
     padding: 8px 12px;
     border-top: 1px solid var(--line);
   }
-  /* FR-52: butuh izin paling mencolok */
+  /* FR-52: needs permission stands out most */
   .tab.blocked {
     background: rgba(217, 119, 6, 0.14);
   }
@@ -3413,7 +3413,7 @@
   .tab.pink { box-shadow: inset 3px 0 0 #ec4899; }
   .tab.cyan { box-shadow: inset 3px 0 0 #06b6d4; }
   .tab.brown { box-shadow: inset 3px 0 0 #a16207; }
-  /* FR-44 (mockup-warna-tab varian D, Gembala.pen 02): kartu tipis bertint warna workspace, tanpa garis kiri;
+  /* FR-44 (mockup-warna-tab variant D, Gembala.pen 02): thin card tinted with the workspace color, no left line;
      tanpa warna = polos seperti dulu */
   .wsg {
     display: flex;
@@ -3433,7 +3433,7 @@
     margin-top: 6px;
     padding: 0 0 4px;
     border-radius: 6px;
-    /* gelap: dasar warna pane, bukan sidebar, jadi blok lebih gelap dari sidebar (masukan pengguna 4 Nov);
+    /* dark: based on the pane color, not the sidebar, so the block is darker than the sidebar (user feedback 4 Nov);
        terang: tint di atas sidebar (--ws-base transparent), karena sidebar terang sudah lebih gelap dari pane */
     background: color-mix(in srgb, var(--c) 5%, var(--ws-base, var(--bg)));
   }
@@ -3441,11 +3441,11 @@
     margin-top: 4px;
     color: color-mix(in srgb, var(--c) 70%, var(--ws-mix, #fff));
   }
-  /* Gembala.pen 02: nama workspace tebal berwarna workspace */
+  /* Gembala.pen 02: workspace name bold in the workspace color */
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .ws .wsname {
     color: inherit;
   }
-  /* tab aktif/hover di blok berwarna: tint warna blok, bukan kotak abu */
+  /* active/hover tab in a colored block: tint of the block color, not a gray box */
   .wsg:is(.red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .brown) > .tab:hover:not(.on) {
     background: color-mix(in srgb, var(--c) 12%, transparent);
   }
@@ -3490,10 +3490,10 @@
   }
   .dot.working {
     background: #3b82f6;
-    animation: pulse 1.4s ease-in-out infinite; /* FR-52: bekerja = berdenyut */
+    animation: pulse 1.4s ease-in-out infinite; /* FR-52: working = pulsing */
   }
-  /* FR-52: tab beberapa pane = satu titik kecil per pane; pane diam = cincin */
-  /* bukan .mini: nama itu sudah dipakai tombol kecil (padding + border) */
+  /* FR-52: tab with several panes = one small dot per pane; idle pane = ring */
+  /* not .mini: that name is already used by small buttons (padding + border) */
   .dot.pdot {
     width: 6px;
     height: 6px;
@@ -3516,7 +3516,7 @@
       animation: none;
     }
   }
-  /* FR-52: tanda agent di tab dan toolbar */
+  /* FR-52: agent mark in tabs and toolbar */
   .aico {
     display: inline-block;
     width: 1.1em;
@@ -3572,7 +3572,7 @@
   .add:hover {
     color: var(--fg);
   }
-  /* pintu ke palet ⌘P, bentuk kotak cari supaya mudah ditemukan; Gembala.pen 02: "+ Workspace" kotak yang sama */
+  /* door to the ⌘P palette, shaped like a search box so it's easy to find; Gembala.pen 02: "+ Workspace" the same box */
   .add.find,
   .add.wsnew {
     border: 1px solid var(--line);
@@ -3587,14 +3587,14 @@
   .body.withhead {
     top: 22px;
   }
-  /* FR-59: input editor menempel di bawah pane; baris tambahan tumbuh ke atas menutupi terminal */
+  /* FR-59: input editor docked at the bottom of the pane; extra lines grow upward over the terminal */
   .body.withedit {
     bottom: 86px;
   }
   .body.withedit.withbar {
     bottom: 112px;
   }
-  /* FR-59: kotak input jelas (bukan teks polos yang mirip output) */
+  /* FR-59: a clear input box (not plain text that looks like output) */
   .ebox {
     display: flex;
     align-items: flex-start;
@@ -3616,7 +3616,7 @@
     flex: 1;
     min-width: 0;
   }
-  /* pane sempit: petunjuk mengalah duluan (hilang), lalu folder dipotong; branch utuh (TECH 19 #9) */
+  /* narrow pane: the hint gives way first (hidden), then the folder gets cut; the branch stays whole (TECH 19 #9) */
   .ehint {
     flex: 0 1000 auto;
     min-width: 0;
@@ -3627,7 +3627,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* petunjuk tombol cukup di pane yang fokus; tetap memakan tempat supaya baris chip tidak bergeser */
+  /* the key hint only in the focused pane; still takes space so the chip row doesn't shift */
   .ehint.off {
     visibility: hidden;
   }
@@ -3710,7 +3710,7 @@
     resize: none;
     outline: none;
   }
-  /* saran abu-abu di belakang teks: bagian yang sudah diketik transparan, sisanya samar */
+  /* gray suggestion behind the text: the typed part transparent, the rest faint */
   .ghost {
     position: absolute;
     inset: 0;
@@ -3721,8 +3721,8 @@
   .ghost .typed {
     color: transparent;
   }
-  /* daftar Tab: di atas kotak editor */
-  /* FR-59: panel Mulai di tengah pane shell baru; klik di luar tombol tembus ke terminal */
+  /* Tab list: above the editor box */
+  /* FR-59: Start panel in the middle of a new shell pane; clicks outside the buttons go through to the terminal */
   .start {
     position: absolute;
     inset: 0 0 86px 0;
@@ -3791,7 +3791,7 @@
       transition: none;
     }
   }
-  /* di atas kotak editor (baris folder/branch), tidak menutupi teks yang diketik; `.mention` (bottom: 8px) kalah */
+  /* above the editor box (folder/branch row), not covering the typed text; `.mention` (bottom: 8px) loses */
   .mention.complist {
     left: 10px;
     bottom: calc(100% + 6px);
@@ -3806,7 +3806,7 @@
   .complist .ico {
     color: var(--muted);
   }
-  /* FR-61 varian C: saran akun ala mockup-pilih-akun (huruf sistem, dua baris, ikon oranye) */
+  /* FR-61 variant C: account suggestions like mockup-pilih-akun (system font, two lines, orange icon) */
   .complist.acct {
     min-width: 300px;
     padding: 4px;
@@ -3837,7 +3837,7 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
-  /* FR-37: kepala pane; tombol muncul saat kursor di atas pane */
+  /* FR-37: pane head; buttons show when the cursor is over the pane */
   .head {
     position: absolute;
     inset: 0 0 auto 0;
@@ -3851,7 +3851,7 @@
     font: 11px system-ui, -apple-system, sans-serif;
     white-space: nowrap;
   }
-  /* pane yang fokus di tab ber-split: garis bawah biru tipis */
+  /* focused pane in a split tab: thin blue bottom line */
   .head.on {
     border-bottom-color: rgba(59, 130, 246, 0.6);
   }
@@ -3891,12 +3891,12 @@
   }
   .tile:hover .bar.rest > *,
   .bar.rest:focus-within > *,
-  /* nama pane dan akun (FR-61) selalu tampil: pane sebelah tetap jelas siapa dan pakai akun apa */
+  /* pane name and account (FR-61) always shown: the neighboring pane stays clear on who it is and which account it uses */
   .bar.rest > .pname,
   .bar.rest > .acc {
     visibility: visible;
   }
-  /* FR-56: blok agent selesai */
+  /* FR-56: finished agent block */
   .ended {
     position: absolute;
     inset: 6px 10px auto 10px;
@@ -3949,12 +3949,12 @@
     font: inherit;
     white-space: nowrap;
   }
-  /* FR-61: nama akun pane */
+  /* FR-61: pane account name */
   .chip.acc {
     border: 1px solid rgba(59, 130, 246, 0.5);
     color: var(--tx-blue, #93c5fd);
   }
-  /* chip berbingkai + ikon ala toolbar CLI agent Warp */
+  /* outlined chips + icons like Warp's agent CLI toolbar */
   .chip.box {
     display: inline-flex;
     align-items: center;
@@ -4165,7 +4165,7 @@
   .compose {
     min-width: 420px;
   }
-  /* FR-57: daftar @ dan bar lempar, menempel di bawah pane (di atas toolbar agent) */
+  /* FR-57: @ list and hand-off bar, docked at the bottom of the pane (above the agent toolbar) */
   .mention,
   .lempar {
     position: absolute;
@@ -4197,7 +4197,7 @@
   .lempar.withbar {
     bottom: 34px;
   }
-  /* daftar @ dari input editor: di atas kotak editor */
+  /* @ list from the input editor: above the editor box */
   .mention.withedit {
     bottom: 94px;
   }
@@ -4342,7 +4342,7 @@
     overflow: auto;
     font: 11px "SF Mono", Menlo, monospace;
   }
-  /* Gembala.pen 03: kotak 560 px di tengah atas, baris cari bergaris, grup berjudul, baris pilihan biru penuh */
+  /* Gembala.pen 03: 560 px box at the top center, outlined search row, titled groups, full blue selected row */
   .palette {
     top: 96px;
     width: min(560px, 86%);
@@ -4508,7 +4508,7 @@
     position: absolute;
     box-sizing: border-box;
   }
-  /* redup pakai lapisan tipis, bukan opacity: opacity memaksa layer GPU seukuran pane */
+  /* dim with a thin overlay, not opacity: opacity forces a GPU layer the size of the pane */
   .tile.dim::after {
     content: "";
     position: absolute;
@@ -4516,7 +4516,7 @@
     background: var(--dim);
     pointer-events: none;
   }
-  /* di atas editor, kartu, dan bar (z-index 3): garis pemisah utuh sampai bawah, input antar pane tidak menyambung */
+  /* above the editor, cards, and bar (z-index 3): the divider runs all the way down, input doesn't join across panes */
   .divider {
     position: absolute;
     z-index: 4;
@@ -4534,7 +4534,7 @@
     cursor: row-resize;
     background: linear-gradient(to bottom, transparent 3px, var(--line) 3px, var(--line) 4px, transparent 4px);
   }
-  /* pemisah menyala saat disentuh: jelas bisa diseret */
+  /* the divider lights up on touch: clearly draggable */
   .divider.row:hover {
     background: linear-gradient(to right, transparent 3px, var(--muted) 3px, var(--muted) 4px, transparent 4px);
   }
@@ -4558,7 +4558,7 @@
     background: var(--card);
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
-    z-index: 8; /* dialog dan palet di atas pemisah pane (4) dan panel samping (5) */
+    z-index: 8; /* dialogs and palette above the pane dividers (4) and side panels (5) */
   }
   /* pen 13: confirmation card = bold title, body, Batal · Esc / main action */
   .confirm.ask {

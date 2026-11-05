@@ -1,4 +1,4 @@
-// @ts-nocheck -- dijalankan `npm test` (node --test), bukan bagian build app
+// @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { encodeKey, onCsi } from "./kitty.ts";
@@ -8,7 +8,7 @@ const k = (key, code, mods = {}) => ({ key, code, ctrlKey: false, altKey: false,
 test("tumpukan flag: tanya, push, set, pop", () => {
   const s = [];
   assert.equal(onCsi(s, "?", []), "\x1b[?0u");
-  onCsi(s, ">", [31]); // app minta semua flag, yang didukung cuma 1
+  onCsi(s, ">", [31]); // the app asks for every flag, only 1 is supported
   assert.equal(onCsi(s, "?", []), "\x1b[?1u");
   onCsi(s, "=", [1, 3]); // and-not
   assert.equal(onCsi(s, "?", []), "\x1b[?0u");
@@ -28,7 +28,7 @@ test("tombol ambigu jadi CSI-u, sisanya legacy", () => {
   assert.equal(encodeKey(k("a", "KeyA"), false), null);
   assert.equal(encodeKey(k("A", "KeyA", { shiftKey: true }), false), null);
   assert.equal(encodeKey(k("c", "KeyC", { metaKey: true }), false), null);
-  // Option bukan Meta = teks komposisi milik macOS; Option sebagai Meta = Alt
+  // Option not as Meta = macOS composition text; Option as Meta = Alt
   assert.equal(encodeKey(k("å", "KeyA", { altKey: true }), false), null);
   assert.equal(encodeKey(k("å", "KeyA", { altKey: true }), true), "\x1b[97;3u");
   assert.equal(encodeKey(k("ArrowUp", "ArrowUp", { ctrlKey: true }), false), null);
