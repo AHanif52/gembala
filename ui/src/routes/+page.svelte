@@ -1,6 +1,6 @@
 <script lang="ts">
   // Fase 1: workspace → tab → pohon split pane (FR-1, 37, 38, 43–46, 50, 52). Tata letak disimpan daemon (FR-45).
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
   import Changes from "$lib/Changes.svelte";
@@ -124,6 +124,14 @@
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
   const ws = $derived(wss[at.ws]);
   const tab = $derived(ws?.tabs[at.tab]);
+  // hemat RAM/CPU: xterm cuma untuk tab aktif + 3 terakhir dibuka; tab lain dilepas (daemon tetap memegang pane),
+  // dibuka lagi = attach ulang dari snapshot daemon
+  const LIVE_TABS = 4;
+  let liveTabs = $state<string[]>([]);
+  $effect(() => {
+    const id = tab?.id;
+    if (id) liveTabs = [id, ...untrack(() => liveTabs).filter((x) => x !== id)].slice(0, LIVE_TABS);
+  });
   // Fase 2: laci pesan, kirim manual, data mesin pesan dari daemon
   let drawer = $state(false);
   let msgData = $state<any>(null);
@@ -1913,6 +1921,8 @@
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
+      // tab yang xterm-nya dilepas tidak punya Tile yang mendengar pane.exit
+      if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane);
       if (payload.event === "pane.replace" && meta[payload.params.pane])
         // agent keluar = status kosong (daemon mengosongkan tanpa event pane.status; tanpa ini tetap "bekerja")
         Object.assign(meta[payload.params.pane], { output: true, status: "", ended: { resume: payload.params.resume ?? null } });
@@ -2189,6 +2199,7 @@
             {/if}
             {@const ed = editorShown(pane)}
             <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
+              {#if liveTabs.includes(t.id)}
               <Tile bind:this={tiles[pane]} {pane} focused={active && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
@@ -2213,6 +2224,7 @@
                   document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus();
                   return true;
                 }} />
+              {/if}
             </div>
             {#if ed && !ran[pane] && !draft[pane]}
               <!-- FR-59: panel Mulai: hilang begitu ada perintah jalan atau mulai mengetik -->
