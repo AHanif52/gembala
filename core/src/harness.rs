@@ -2,7 +2,6 @@
 //! returns the actions to perform and does no I/O, so every rule of BRD 8 can be tested without a PTY, a clock, or a
 //! daemon. The H3 runner feeds it events from the daemon (pane status, exit, timer, verdicts of the pass checks) and
 //! carries out the actions (open a pane, send through the message engine, run the test command, read an artifact).
-#![allow(dead_code)] // wired into the daemon in H3
 
 use std::collections::HashMap;
 
@@ -32,9 +31,11 @@ pub enum Event {
     Verdict(bool),
     /// timer; the runner sends it about once a second
     Tick,
-    /// a hook reported a usage limit for the stage's agent
+    /// a hook reported a usage limit for the stage's agent (fed once the per-agent patterns are proven, TECH 12)
+    #[allow(dead_code)]
     Limit,
     /// the agent stopped on its own cost cap (omp `--max-cost`): never moves the cost to another agent
+    #[allow(dead_code)]
     CostLimit,
     /// the user approved the gate (UI channel only, SEC-20)
     GateOk,

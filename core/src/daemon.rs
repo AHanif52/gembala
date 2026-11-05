@@ -159,6 +159,8 @@ struct State {
     /// FR-8: langganan event status dari kanal pane (pelanggan, antreannya), disaring SEC-21 saat kirim
     pane_subs: Mutex<Vec<(u64, SyncSender<String>)>>,
     audit: Option<bus::Audit>,
+    /// FR-16/17: active harness runs, panes they hold, sender ids (runner.rs)
+    harness: Mutex<runner::Registry>,
 }
 
 struct UiClient(Arc<State>, u64);
@@ -169,6 +171,8 @@ impl Drop for UiClient {
         self.0.ui_txs.lock().unwrap().retain(|(id, _)| *id != self.1);
     }
 }
+
+mod runner;
 
 type Res = Result<Value, &'static str>;
 /// FR-62: (blok yang sedang jalan + waktu mulainya, blok agent manual yang menunggu perintah lanjut)
@@ -200,6 +204,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         engine: Mutex::default(),
         pane_subs: Mutex::default(),
         audit: bus::Audit::open(config::path().with_file_name("audit")).ok(),
+        harness: Mutex::default(),
     });
     let st7 = st.clone();
     thread::spawn(move || deliver_loop(st7));
@@ -628,6 +633,9 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let to = st.pane(&json!({"pane": p["to"]}))?;
             let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
             let status = *to.status.lock().unwrap();
+            if p["to"].as_u64().is_some_and(|id| st.harness.lock().unwrap().is_locked(id)) {
+                return Err("driver_locked");
+            }
             let force = p["force"].as_bool() == Some(true);
             if status == "blocked" {
                 return Err("target_blocked");
@@ -805,6 +813,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         "addon.status" => Ok(json!({"rtk": profile::rtk_version()})),
+        // FR-16, FR-73: harness runs. UI channel only (SEC-20): the pane channel has no harness method.
+        "harness.preflight" | "harness.start" | "harness.state" | "harness.stop" | "harness.gate" | "harness.takeover" | "harness.release" => runner::method(st, m, p),
         // FR-74, SEC-27: harness recipes. Approve and delete exist on the UI channel only; the pane channel has no recipe method.
         "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" => {
             let store = recipe::Store::new(config::path().parent().unwrap_or(std::path::Path::new("/")));
@@ -833,174 +843,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             };
             Ok(r.unwrap_or_else(|d| d.reply()))
         }
-        "pane.create" => {
-            // batas bagian 11 BRD, bisa diubah lewat [limits] max_panes
-            let max = st.config.lock().unwrap()["values"]["limits"]["max_panes"].as_u64().unwrap_or(32) as usize;
-            if st.panes.lock().unwrap().len() >= max {
-                return Err("max_panes");
-            }
-            let (rows, cols) = (dim(&p["rows"], 24), dim(&p["cols"], 80));
-            // FR-30: profil (bawaan "shell"); folder = folder profil, atau folder pane yang fokus
-            let mut prof = match p["profile"].as_str() {
-                Some(id) => Some(st.profiles.lock().unwrap().iter().find(|x| x.id == id).cloned().ok_or("no_such_profile")?),
-                None => None,
-            };
-            // FR-13: peran (template) dan brief workspace ikut petunjuk launch; teks dari UI dibersihkan dan dibatasi
-            if let Some(x) = prof.as_mut() {
-                let role = profile::ROLES.iter().find(|r| p["role"].as_str() == Some(r.0));
-                let brief = p["brief"].as_str().map(|b| b.chars().take(4000).collect::<String>()).and_then(|b| msg::sanitize(&b).ok()).filter(|b| !b.trim().is_empty());
-                x.readonly = role.is_some_and(|r| r.1);
-                // FR-78: add-ons of the workspace the pane opens in
-                x.addons = addon::args(&st.addons.lock().unwrap(), &x.agent, p["workspace"].as_str().unwrap_or_default());
-                x.brief = [role.map(|r| r.2.to_string()), brief.map(|b| format!("Workspace brief from the user (read only):\n{b}"))].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
-            }
-            // FR-61, C-9: akun = pilihan manusia saat membuka pane (UI, termasuk bawaan workspace) > akun profil > Utama
-            // pane shell: akun bawaan workspace dipasang ke env shell, jadi `claude` yang diketik ikut akun itu
-            let mut shell_acct = None;
-            let acct_name = match prof.as_mut() {
-                Some(pr) => account::apply(pr, p["account"].as_str(), &st.accounts.lock().unwrap())?,
-                None => match p["account"].as_str().filter(|a| !a.is_empty() && *a != "utama") {
-                    Some(id) => {
-                        let a = st.accounts.lock().unwrap().iter().find(|a| a.id == id && a.agent == "claude").cloned().ok_or("no_such_account")?;
-                        shell_acct = Some(account::env(&a));
-                        a.name
-                    }
-                    None => String::new(),
-                },
-            };
-            // FR-61: folder yang dipercaya di Utama ikut dipercaya di akun ini sebelum Claude-nya jalan
-            if let Some(a) = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name && a.trust) {
-                account::sync_trust(&a.dir);
-            }
-            // FR-72: pemilih sesi bawaan agent (tanpa id); Gembala tidak membaca daftar sesi (SEC-15)
-            let pick = p["pick"].as_bool() == Some(true);
-            let picked = prof.as_ref().filter(|_| pick).map(|x| {
-                let mut x = x.clone();
-                x.args.extend(profile::picker_flags(&x.agent).iter().map(|s| s.to_string()));
-                x
-            });
-            let session = if pick { profile::Session { id: None, resume: false } } else { profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) } };
-            if pick && prof.as_ref().is_none_or(|x| profile::picker_flags(&x.agent).is_empty()) {
-                return Err("no_picker");
-            }
-            let launch = picked.as_ref().or(prof.as_ref()).and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
-            let cmd = launch.as_deref().or(p["cmd"].as_str());
-            let home = std::env::var("HOME").unwrap_or_default();
-            // urutan folder: `cwd` eksplisit (jalankan ulang pane mati, FR-45) > folder profil > pane yang fokus
-            let explicit = p["cwd"].as_str().filter(|c| c.starts_with('/') || c.starts_with('~')).map(std::path::PathBuf::from);
-            let cwd = match explicit.or_else(|| prof.as_ref().map(|x| x.cwd.clone()).filter(|c| !c.is_empty()).map(Into::into)) {
-                Some(c) => {
-                    let c = c.to_string_lossy();
-                    Some(std::path::PathBuf::from(c.replacen('~', &home, usize::from(c.starts_with('~')))))
-                }
-                None => st.pane(&json!({"pane": p["from_pane"]})).ok().and_then(|f| {
-                    let pid = pty::busy(&f.master, f.sid).map(|(pid, _)| pid).unwrap_or(f.sid);
-                    pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid))
-                }),
-            };
-            let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
-            let token = if prof.as_ref().is_some_and(|x| x.token) { Some(new_secret().map_err(|_| "io")?[..32].to_string()) } else { None };
-            // FR-9: perintah `gembala` bisa dipanggil langsung dari pane (folder binary daemon di PATH;
-            // login shell mempertahankannya lewat path_helper)
-            let bin = std::path::Path::new(&st.hooks.exe).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-            let path = format!("{bin}:{}", std::env::var("PATH").unwrap_or_default());
-            let mut env = vec![("GEMBALA_SOCKET", st.pane_sock.as_str()), ("PATH", path.as_str())];
-            // FR-58: pane zsh membaca file startup lewat folder hook (penanda blok OSC 133), lalu ZDOTDIR pengguna kembali
-            let zdot = st.hooks.dir.to_string_lossy().into_owned();
-            let user_zdot = std::env::var("ZDOTDIR").or_else(|_| std::env::var("HOME")).unwrap_or_default();
-            if pty::login_shell().ends_with("/zsh") {
-                env.extend([("ZDOTDIR", zdot.as_str()), ("GEMBALA_USER_ZDOTDIR", user_zdot.as_str())]);
-                // FR-59: editor UI menggantikan prompt shell
-                if st.config.lock().unwrap()["values"]["ui"]["input_editor"].as_bool() != Some(false) {
-                    env.push(("GEMBALA_EDITOR", "1"));
-                }
-            }
-            if let Some(t) = &token {
-                env.push(("GEMBALA_TOKEN", t.as_str()));
-            }
-            let acct_dir = shell_acct.as_ref().map(|(_, v)| v.strip_prefix("~/").map_or_else(|| v.clone(), |rest| format!("{home}/{rest}")));
-            if let (Some((k, _)), Some(d)) = (&shell_acct, &acct_dir) {
-                env.push((k.as_str(), d.as_str()));
-            }
-            let pty = Pty::spawn(cmd, rows, cols, &env, cwd.as_deref()).map_err(|_| "spawn_failed")?;
-            let id = st.next.fetch_add(1, Ordering::Relaxed);
-            let pane = Arc::new(Pane {
-                master: pty.master.try_clone().map_err(|_| "spawn_failed")?,
-                sid: pty.child.id() as i32,
-                name: {
-                    let label = prof.as_ref().map_or("shell", |x| if x.agent == "custom" { x.id.as_str() } else { x.agent.as_str() });
-                    let names: Vec<String> = st.panes.lock().unwrap().values().map(|q| q.name.lock().unwrap().clone()).collect();
-                    // FR-79: pane pengganti memakai nama lamanya selama tidak dipakai pane lain (nama sekarang menang)
-                    match p["name"].as_str().filter(|n| valid_name(n) && !names.iter().any(|x| x == n)) {
-                        Some(n) => Mutex::new(n.to_string()),
-                        None => {
-                            // nama lama pane lain juga dilewati supaya alamatnya tidak diam-diam pindah
-                            let aliases: Vec<String> = st.panes.lock().unwrap().values().flat_map(|q| q.aliases.lock().unwrap().clone()).collect();
-                            let n = (1..).map(|n| format!("{label}-{n}")).find(|n| !names.contains(n) && !aliases.contains(n)).unwrap_or_default();
-                            Mutex::new(n)
-                        }
-                    }
-                },
-                aliases: Mutex::default(),
-                session: Mutex::new(session.id.clone().filter(|s| profile::valid_session(&agent, s))),
-                agent_log: Mutex::new(None),
-                last_output: Mutex::new(Vec::new()),
-                cmd_at: Mutex::new((0, 0)),
-                pre_cmd: Mutex::new(Vec::new()),
-                pre_agent: Mutex::new(Vec::new()),
-                hist: history::path(&st.boot, id),
-                title: Mutex::new(String::new()),
-                turns: Arc::default(),
-                account: Mutex::new(st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name).map(|a| a.id.clone()).unwrap_or_default()),
-                owner: Mutex::new(None),
-                block: Mutex::new((None, None)),
-                manual: Mutex::new(None),
-                last_out: Mutex::new(std::time::Instant::now()),
-                at_prompt: std::sync::atomic::AtomicBool::new(false),
-                hooked: std::sync::atomic::AtomicBool::new(false),
-                // FR-68: Codex hanya punya hook `notify` (selesai); bekerja dan butuh izin dari layar
-                screen: agent == "custom" || agent == "codex",
-                started: std::time::Instant::now(),
-                workspace: Mutex::new(p["workspace"].as_str().unwrap_or_default().chars().take(64).collect()),
-                policy: Mutex::new(prof.as_ref().map_or(msg::Policy::Auto, |x| {
-                    msg::effective_policy(msg::Policy::parse(&x.policy).unwrap_or(msg::Policy::Auto), &[x.args.clone(), profile::permission_flags(&x.agent, &x.permission)].concat())
-                })),
-                status_at: Mutex::new(std::time::Instant::now()),
-                readable: std::sync::atomic::AtomicBool::new(false),
-                typed_at: Mutex::new(None),
-                token: Mutex::new(token),
-                status: Mutex::new(if ["claude", "codex", "opencode", "omp", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
-                agent,
-                view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
-            });
-            // FR-62: blok pane lama (setelah daemon berhenti) tampil di atas shell baru dan bersambung di file baru
-            let prev = history::load(&p["history"]);
-            for b in &prev {
-                history::append(&pane.hist, b);
-            }
-            // log layar lama sudah memuat blok-blok itu; tanpa log cukup blok ringkasnya
-            match history::load_log(&p["history"]) {
-                Some((log, t)) => {
-                    let mut v = pane.view.lock().unwrap();
-                    v.0.feed(&log);
-                    v.0.feed(&history::separator(t));
-                }
-                None => pane.view.lock().unwrap().0.feed(&history::render(&prev)),
-            }
-            st.panes.lock().unwrap().insert(id, pane.clone());
-            // FR-79: pane pengganti (jalankan ulang, daemon restart) membawa nama dan alias dari tata letak (tidak tepercaya);
-            // nama yang sedang dipakai pane lain jadi alias, yang terbaru
-            let name = pane.name.lock().unwrap().clone();
-            st.release(&name);
-            let old = p["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).take(ALIAS_MAX);
-            for a in old.chain(p["name"].as_str()).filter(|a| valid_name(a)) {
-                st.add_alias(&pane, a);
-            }
-            let aliases = pane.aliases.lock().unwrap().clone();
-            let st = st.clone();
-            thread::spawn(move || pump(st, id, pane, pty));
-            Ok(json!({"pane": id, "name": name, "aliases": aliases}))
-        }
+        "pane.create" => create_pane(st, p, &[]),
         "pane.write" => {
             let pane = st.pane(p)?;
             let data = p["data"].as_str().and_then(|d| B64.decode(d).ok()).ok_or("bad_params")?;
@@ -1126,6 +969,178 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
 
 // ---------- Fase 2: mesin pesan (BRD bagian 8) ----------
 
+/// FR-30 and friends: open a pane from `pane.create` style params. `extra_args` are appended to the profile's
+/// arguments and never come from the wire (the harness runner passes model and effort flags this way).
+fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
+    // batas bagian 11 BRD, bisa diubah lewat [limits] max_panes
+    let max = st.config.lock().unwrap()["values"]["limits"]["max_panes"].as_u64().unwrap_or(32) as usize;
+    if st.panes.lock().unwrap().len() >= max {
+        return Err("max_panes");
+    }
+    let (rows, cols) = (dim(&p["rows"], 24), dim(&p["cols"], 80));
+    // FR-30: profil (bawaan "shell"); folder = folder profil, atau folder pane yang fokus
+    let mut prof = match p["profile"].as_str() {
+        Some(id) => Some(st.profiles.lock().unwrap().iter().find(|x| x.id == id).cloned().ok_or("no_such_profile")?),
+        None => None,
+    };
+    // FR-13: peran (template) dan brief workspace ikut petunjuk launch; teks dari UI dibersihkan dan dibatasi
+    if let Some(x) = prof.as_mut() {
+        x.args.extend(extra_args.iter().cloned());
+        let role = profile::ROLES.iter().find(|r| p["role"].as_str() == Some(r.0));
+        let brief = p["brief"].as_str().map(|b| b.chars().take(4000).collect::<String>()).and_then(|b| msg::sanitize(&b).ok()).filter(|b| !b.trim().is_empty());
+        x.readonly = role.is_some_and(|r| r.1);
+        // FR-78: add-ons of the workspace the pane opens in
+        x.addons = addon::args(&st.addons.lock().unwrap(), &x.agent, p["workspace"].as_str().unwrap_or_default());
+        x.brief = [role.map(|r| r.2.to_string()), brief.map(|b| format!("Workspace brief from the user (read only):\n{b}"))].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
+    }
+    // FR-61, C-9: akun = pilihan manusia saat membuka pane (UI, termasuk bawaan workspace) > akun profil > Utama
+    // pane shell: akun bawaan workspace dipasang ke env shell, jadi `claude` yang diketik ikut akun itu
+    let mut shell_acct = None;
+    let acct_name = match prof.as_mut() {
+        Some(pr) => account::apply(pr, p["account"].as_str(), &st.accounts.lock().unwrap())?,
+        None => match p["account"].as_str().filter(|a| !a.is_empty() && *a != "utama") {
+            Some(id) => {
+                let a = st.accounts.lock().unwrap().iter().find(|a| a.id == id && a.agent == "claude").cloned().ok_or("no_such_account")?;
+                shell_acct = Some(account::env(&a));
+                a.name
+            }
+            None => String::new(),
+        },
+    };
+    // FR-61: folder yang dipercaya di Utama ikut dipercaya di akun ini sebelum Claude-nya jalan
+    if let Some(a) = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name && a.trust) {
+        account::sync_trust(&a.dir);
+    }
+    // FR-72: pemilih sesi bawaan agent (tanpa id); Gembala tidak membaca daftar sesi (SEC-15)
+    let pick = p["pick"].as_bool() == Some(true);
+    let picked = prof.as_ref().filter(|_| pick).map(|x| {
+        let mut x = x.clone();
+        x.args.extend(profile::picker_flags(&x.agent).iter().map(|s| s.to_string()));
+        x
+    });
+    let session = if pick { profile::Session { id: None, resume: false } } else { profile::Session { id: p["session"].as_str().map(String::from), resume: p["resume"].as_bool() == Some(true) } };
+    if pick && prof.as_ref().is_none_or(|x| profile::picker_flags(&x.agent).is_empty()) {
+        return Err("no_picker");
+    }
+    let launch = picked.as_ref().or(prof.as_ref()).and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
+    let cmd = launch.as_deref().or(p["cmd"].as_str());
+    let home = std::env::var("HOME").unwrap_or_default();
+    // urutan folder: `cwd` eksplisit (jalankan ulang pane mati, FR-45) > folder profil > pane yang fokus
+    let explicit = p["cwd"].as_str().filter(|c| c.starts_with('/') || c.starts_with('~')).map(std::path::PathBuf::from);
+    let cwd = match explicit.or_else(|| prof.as_ref().map(|x| x.cwd.clone()).filter(|c| !c.is_empty()).map(Into::into)) {
+        Some(c) => {
+            let c = c.to_string_lossy();
+            Some(std::path::PathBuf::from(c.replacen('~', &home, usize::from(c.starts_with('~')))))
+        }
+        None => st.pane(&json!({"pane": p["from_pane"]})).ok().and_then(|f| {
+            let pid = pty::busy(&f.master, f.sid).map(|(pid, _)| pid).unwrap_or(f.sid);
+            pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid))
+        }),
+    };
+    let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
+    let token = if prof.as_ref().is_some_and(|x| x.token) { Some(new_secret().map_err(|_| "io")?[..32].to_string()) } else { None };
+    // FR-9: perintah `gembala` bisa dipanggil langsung dari pane (folder binary daemon di PATH;
+    // login shell mempertahankannya lewat path_helper)
+    let bin = std::path::Path::new(&st.hooks.exe).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let path = format!("{bin}:{}", std::env::var("PATH").unwrap_or_default());
+    let mut env = vec![("GEMBALA_SOCKET", st.pane_sock.as_str()), ("PATH", path.as_str())];
+    // FR-58: pane zsh membaca file startup lewat folder hook (penanda blok OSC 133), lalu ZDOTDIR pengguna kembali
+    let zdot = st.hooks.dir.to_string_lossy().into_owned();
+    let user_zdot = std::env::var("ZDOTDIR").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    if pty::login_shell().ends_with("/zsh") {
+        env.extend([("ZDOTDIR", zdot.as_str()), ("GEMBALA_USER_ZDOTDIR", user_zdot.as_str())]);
+        // FR-59: editor UI menggantikan prompt shell
+        if st.config.lock().unwrap()["values"]["ui"]["input_editor"].as_bool() != Some(false) {
+            env.push(("GEMBALA_EDITOR", "1"));
+        }
+    }
+    if let Some(t) = &token {
+        env.push(("GEMBALA_TOKEN", t.as_str()));
+    }
+    let acct_dir = shell_acct.as_ref().map(|(_, v)| v.strip_prefix("~/").map_or_else(|| v.clone(), |rest| format!("{home}/{rest}")));
+    if let (Some((k, _)), Some(d)) = (&shell_acct, &acct_dir) {
+        env.push((k.as_str(), d.as_str()));
+    }
+    let pty = Pty::spawn(cmd, rows, cols, &env, cwd.as_deref()).map_err(|_| "spawn_failed")?;
+    let id = st.next.fetch_add(1, Ordering::Relaxed);
+    let pane = Arc::new(Pane {
+        master: pty.master.try_clone().map_err(|_| "spawn_failed")?,
+        sid: pty.child.id() as i32,
+        name: {
+            let label = prof.as_ref().map_or("shell", |x| if x.agent == "custom" { x.id.as_str() } else { x.agent.as_str() });
+            let names: Vec<String> = st.panes.lock().unwrap().values().map(|q| q.name.lock().unwrap().clone()).collect();
+            // FR-79: pane pengganti memakai nama lamanya selama tidak dipakai pane lain (nama sekarang menang)
+            match p["name"].as_str().filter(|n| valid_name(n) && !names.iter().any(|x| x == n)) {
+                Some(n) => Mutex::new(n.to_string()),
+                None => {
+                    // nama lama pane lain juga dilewati supaya alamatnya tidak diam-diam pindah
+                    let aliases: Vec<String> = st.panes.lock().unwrap().values().flat_map(|q| q.aliases.lock().unwrap().clone()).collect();
+                    let n = (1..).map(|n| format!("{label}-{n}")).find(|n| !names.contains(n) && !aliases.contains(n)).unwrap_or_default();
+                    Mutex::new(n)
+                }
+            }
+        },
+        aliases: Mutex::default(),
+        session: Mutex::new(session.id.clone().filter(|s| profile::valid_session(&agent, s))),
+        agent_log: Mutex::new(None),
+        last_output: Mutex::new(Vec::new()),
+        cmd_at: Mutex::new((0, 0)),
+        pre_cmd: Mutex::new(Vec::new()),
+        pre_agent: Mutex::new(Vec::new()),
+        hist: history::path(&st.boot, id),
+        title: Mutex::new(String::new()),
+        turns: Arc::default(),
+        account: Mutex::new(st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name).map(|a| a.id.clone()).unwrap_or_default()),
+        owner: Mutex::new(None),
+        block: Mutex::new((None, None)),
+        manual: Mutex::new(None),
+        last_out: Mutex::new(std::time::Instant::now()),
+        at_prompt: std::sync::atomic::AtomicBool::new(false),
+        hooked: std::sync::atomic::AtomicBool::new(false),
+        // FR-68: Codex hanya punya hook `notify` (selesai); bekerja dan butuh izin dari layar
+        screen: agent == "custom" || agent == "codex",
+        started: std::time::Instant::now(),
+        workspace: Mutex::new(p["workspace"].as_str().unwrap_or_default().chars().take(64).collect()),
+        policy: Mutex::new(prof.as_ref().map_or(msg::Policy::Auto, |x| {
+            msg::effective_policy(msg::Policy::parse(&x.policy).unwrap_or(msg::Policy::Auto), &[x.args.clone(), profile::permission_flags(&x.agent, &x.permission)].concat())
+        })),
+        status_at: Mutex::new(std::time::Instant::now()),
+        readable: std::sync::atomic::AtomicBool::new(false),
+        typed_at: Mutex::new(None),
+        token: Mutex::new(token),
+        status: Mutex::new(if ["claude", "codex", "opencode", "omp", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
+        agent,
+        view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
+    });
+    // FR-62: blok pane lama (setelah daemon berhenti) tampil di atas shell baru dan bersambung di file baru
+    let prev = history::load(&p["history"]);
+    for b in &prev {
+        history::append(&pane.hist, b);
+    }
+    // log layar lama sudah memuat blok-blok itu; tanpa log cukup blok ringkasnya
+    match history::load_log(&p["history"]) {
+        Some((log, t)) => {
+            let mut v = pane.view.lock().unwrap();
+            v.0.feed(&log);
+            v.0.feed(&history::separator(t));
+        }
+        None => pane.view.lock().unwrap().0.feed(&history::render(&prev)),
+    }
+    st.panes.lock().unwrap().insert(id, pane.clone());
+    // FR-79: pane pengganti (jalankan ulang, daemon restart) membawa nama dan alias dari tata letak (tidak tepercaya);
+    // nama yang sedang dipakai pane lain jadi alias, yang terbaru
+    let name = pane.name.lock().unwrap().clone();
+    st.release(&name);
+    let old = p["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).take(ALIAS_MAX);
+    for a in old.chain(p["name"].as_str()).filter(|a| valid_name(a)) {
+        st.add_alias(&pane, a);
+    }
+    let aliases = pane.aliases.lock().unwrap().clone();
+    let st = st.clone();
+    thread::spawn(move || pump(st, id, pane, pty));
+    Ok(json!({"pane": id, "name": name, "aliases": aliases}))
+}
+
 fn bus_event(st: &State, ev: Value) {
     let ev = line(json!({"event": "msg.event", "params": ev}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
@@ -1228,6 +1243,14 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
     // dua pernyataan terpisah: lock `panes` tidak boleh masih dipegang saat workspace_of menguncinya lagi
     let to = st.panes.lock().unwrap().get(&m.to).cloned();
     let from_ws = st.workspace_of(m.from);
+    // FR-17: a pane the harness drives takes messages from the harness only, until the user takes over
+    let held = {
+        let reg = st.harness.lock().unwrap();
+        reg.is_locked(m.to) && !reg.is_sender(m.from)
+    };
+    if held {
+        return reject(st, &m, "driver_locked");
+    }
     let Some(to) = to else {
         return reject(st, &m, "target_gone");
     };
@@ -1688,7 +1711,7 @@ fn idle_exit(st: Arc<State>) {
     let mut strikes = 0;
     loop {
         thread::sleep(Duration::from_secs(every));
-        let busy = st.panes.lock().unwrap().values().any(|p| pty::busy(&p.master, p.sid).is_some());
+        let busy = st.panes.lock().unwrap().values().any(|p| pty::busy(&p.master, p.sid).is_some()) || !st.harness.lock().unwrap().is_empty();
         strikes = if st.ui_clients.load(Ordering::Relaxed) == 0 && !busy { strikes + 1 } else { 0 };
         if strikes >= 2 {
             eprintln!("daemon keluar: tanpa UI dan semua pane diam");
@@ -2007,6 +2030,10 @@ impl State {
     }
 
     fn workspace_of(&self, id: u64) -> String {
+        // a harness run speaks for the workspace it runs in
+        if let Some(w) = self.harness.lock().unwrap().workspace_of_sender(id) {
+            return w;
+        }
         self.panes.lock().unwrap().get(&id).map(|p| p.workspace.lock().unwrap().clone()).unwrap_or_default()
     }
 

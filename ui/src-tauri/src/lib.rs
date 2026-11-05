@@ -13,7 +13,8 @@ const ALLOWED: &[&str] =
     &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset", "git.status", "git.diff", "pane.rename", "pane.agent_output", "profile.save", "profile.reset", "keys.set",
       "account.list", "account.create", "account.remove", "account.update", "git.worktree_add", "git.worktree_remove", "git.turns", "git.turn_diff", "git.turn_preview", "git.turn_restore", "git.file_preview", "git.file_restore", "git.file_commit", "ctx.compose", "msg.list", "msg.approve", "msg.reject", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace",
       "addon.plugin", "addon.mcp.get", "addon.mcp.set", "addon.status",
-      "recipe.list", "recipe.get", "recipe.approve", "recipe.delete", "recipe.validate"];
+      "recipe.list", "recipe.get", "recipe.approve", "recipe.delete", "recipe.validate",
+      "harness.preflight", "harness.start", "harness.state", "harness.stop", "harness.gate", "harness.takeover", "harness.release"];
 
 /// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview; label di i18n.rs.
 const PANE_KEYS: &[(&str, &str)] = &[

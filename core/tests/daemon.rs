@@ -1321,3 +1321,126 @@ fn resep_disetujui_per_isi() {
     assert_eq!(ui.call("recipe.delete", json!({"id": "fitur-baru"}))["result"], json!({}));
     assert!(!file.exists());
 }
+
+fn script(path: &std::path::Path, body: &str) {
+    std::fs::write(path, body).unwrap();
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+}
+
+fn wait_state(ui: &mut Cli, run: &str, want: &[&str]) -> Value {
+    let t0 = Instant::now();
+    loop {
+        let s = ui.call("harness.state", json!({"run": run}))["result"].clone();
+        if want.contains(&s["state"].as_str().unwrap_or_default()) {
+            return s;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60), "state {want:?} not reached: {s}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// FR-16/17, SEC-30: a recipe runs Plan -> Test -> Ship on fake agents. The first agent dies and the stage moves to
+/// the next one, the driven pane refuses other senders, the shell stage judges by exit code, and Ship waits for the user.
+#[test]
+fn harness_runs_a_recipe_with_fallback_and_a_gate() {
+    let d = start("harness1");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(cfg.join("recipes")).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    // claude: starts, then dies before doing anything. omp: reads the stage message, writes the result, replies
+    script(&cfg.join("die-claude.sh"), &format!("#!/bin/sh\n'{g}' hook claude start </dev/null\nsleep 1\nexit 1\n"));
+    script(
+        &cfg.join("worker-omp.sh"),
+        &format!(
+            "#!/bin/sh\n'{g}' hook omp end </dev/null\nIFS= read -r l; id=$(printf '%s' \"$l\" | sed -n 's/.*· \\(msg_[a-z0-9]*\\)\\].*/\\1/p')\nout=''\n\
+             while IFS= read -r b; do case \"$b\" in *'Write your result to '*) out=$(printf '%s' \"$b\" | sed -n 's/.*to \"\\(.*\\)\"\\..*/\\1/p');; *'When you are done'*) break;; esac; done\n\
+             '{g}' hook omp start </dev/null\nsleep 1\necho plan > \"$out\"\n'{g}' reply \"$id\" done\n'{g}' hook omp end </dev/null\nsleep 60\n"
+        ),
+    );
+    let toml = format!(
+        "[[profile]]\nid = \"claude\"\ncommand = {}\n[[profile]]\nid = \"omp\"\ncommand = {}\n",
+        json!(cfg.join("die-claude.sh")),
+        json!(cfg.join("worker-omp.sh"))
+    );
+    profiles(&d, &mut ui, &toml, "worker-omp");
+    std::fs::write(
+        cfg.join("recipes/t.toml"),
+        "[[step]]\nid = \"plan\"\nagents = [\"claude\", \"omp\"]\noutput = \"plan.md\"\ntimeout = \"60s\"\n[[step]]\nid = \"test\"\nkind = \"check\"\nshell = true\n[[step]]\nid = \"ship\"\nhuman = true\n",
+    )
+    .unwrap();
+    let repo = d.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    let params = json!({"recipe": "t", "request": "make a plan", "cwd": repo, "workspace": "w", "test": "true"});
+
+    // unapproved: the dialog is told why, and start refuses
+    let pf = ui.call("harness.preflight", params.clone())["result"].clone();
+    assert_eq!(pf["ok"], false, "{pf}");
+    assert_eq!(ui.call("harness.start", params.clone())["result"]["error"], "preflight");
+    let h = ui.call("recipe.get", json!({"id": "t"}))["result"]["hash"].as_str().unwrap().to_string();
+    ui.call("recipe.approve", json!({"id": "t", "hash": h}));
+    let pf = ui.call("harness.preflight", params.clone())["result"].clone();
+    assert_eq!(pf["ok"], true, "{pf}");
+
+    let s = ui.call("harness.start", params.clone())["result"].clone();
+    let run = s["run"].as_str().unwrap_or_else(|| panic!("{s}")).to_string();
+    // one run per workspace
+    assert_eq!(ui.call("harness.start", params.clone())["result"]["args"]["check"], "no_other_run");
+
+    // the shell stage and the gate are reached after claude died and omp did the stage
+    let s = wait_state(&mut ui, &run, &["gate", "halted"]);
+    assert_eq!(s["state"], "gate", "{s}");
+    assert_eq!(s["gate"], 2, "{s}");
+    let trace: Vec<&str> = s["trace"].as_array().unwrap().iter().filter_map(|e| e["code"].as_str()).collect();
+    assert!(trace.contains(&"exit") && trace.contains(&"shell_pass"), "{trace:?}");
+    assert!(s["steps"][0]["pane_name"].as_str().unwrap().starts_with("omp"), "{s}");
+    assert!(cfg.join("harness").join(&run).join("artefak/plan.md").exists());
+    assert!(cfg.join("harness").join(&run).join("artefak/permintaan.md").exists());
+
+    // FR-17: the pane that did the work is still held; the user's own message is refused
+    let pane = s["steps"][0]["pane"].as_u64().unwrap();
+    assert_eq!(ui.call("msg.send", json!({"to": pane, "body": "hi"}))["error"]["code"], "driver_locked");
+    // not at a gate = no gate; Ship only moves when the user says so
+    assert_eq!(ui.call("harness.gate", json!({"run": run}))["result"]["state"], "done");
+    let s = wait_state(&mut ui, &run, &["done"]);
+    assert_eq!(s["state"], "done");
+    assert_ne!(ui.call("msg.send", json!({"to": pane, "body": "hi", "force": true}))["error"]["code"], "driver_locked");
+    // a finished run can be read again from its saved row
+    assert_eq!(ui.call("harness.state", json!({"run": run}))["result"]["state"], "done");
+}
+
+/// SEC-30: Stop ends the run from a gate or while a stage works, and a run left over from an earlier daemon is never resumed.
+#[test]
+fn harness_stop_and_stale_run() {
+    let d = start("harness2");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(cfg.join("recipes")).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    script(&cfg.join("idle-claude.sh"), &format!("#!/bin/sh\n'{g}' hook claude start </dev/null\nsleep 60\n"));
+    profiles(&d, &mut ui, &format!("[[profile]]\nid = \"claude\"\ncommand = {}\n", json!(cfg.join("idle-claude.sh"))), "idle-claude");
+    std::fs::write(cfg.join("recipes/t.toml"), "[[step]]\nid = \"a\"\nagents = [\"claude\"]\noutput = \"a.md\"\n").unwrap();
+    let repo = d.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    let h = ui.call("recipe.get", json!({"id": "t"}))["result"]["hash"].as_str().unwrap().to_string();
+    ui.call("recipe.approve", json!({"id": "t", "hash": h}));
+    let s = ui.call("harness.start", json!({"recipe": "t", "request": "x", "cwd": repo, "workspace": "w"}))["result"].clone();
+    let run = s["run"].as_str().unwrap_or_else(|| panic!("{s}")).to_string();
+    let s = ui.call("harness.stop", json!({"run": run}))["result"].clone();
+    assert_eq!((s["state"].as_str(), s["halt"].as_str()), (Some("halted"), Some("stopped")), "{s}");
+    // after Stop the workspace is free for the next run, and the stopped row stays readable
+    assert_eq!(ui.call("harness.state", json!({"run": run}))["result"]["halt"], "stopped");
+    assert_eq!(ui.call("harness.gate", json!({"run": run}))["error"]["code"], "no_such_run");
+
+    // a row left "running" by a daemon that died is reported as halted, not resumed
+    let stale = cfg.join("harness/run-1-1");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("run.json"), r#"{"run":"run-1-1","state":"running"}"#).unwrap();
+    let s = ui.call("harness.state", json!({"run": "run-1-1"}))["result"].clone();
+    assert_eq!((s["state"].as_str(), s["halt"].as_str()), (Some("halted"), Some("daemon_restart")), "{s}");
+    assert_eq!(ui.call("harness.state", json!({"run": "../x"}))["error"]["code"], "no_such_run");
+}
