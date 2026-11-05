@@ -102,6 +102,8 @@
     o.screenReaderMode = ui.screen_reader;
     o.macOptionIsMeta = ui.option_as_meta === "left" || ui.option_as_meta === "both";
     o.theme = isLight ? LIGHT : DARK;
+    // agents paint truecolor picked for dark terminals (pale blue/orange): on white, xterm darkens them to WCAG AA
+    o.minimumContrastRatio = isLight ? 4.5 : 1;
     if (el.offsetParent) fit.fit();
   });
 
