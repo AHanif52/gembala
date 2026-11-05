@@ -3092,11 +3092,12 @@
   /* pen 02: foot icons stay put while the tab list scrolls */
   .sidefoot {
     position: sticky;
-    bottom: 0;
+    bottom: -10px; /* sticky stops at .side's 10px padding edge; without this the tab list shows below the foot */
     display: flex;
     gap: 2px;
     margin: auto -8px -10px;
     padding: 6px 8px 8px;
+    border-top: 1px solid var(--line);
     background: var(--side);
   }
   .footbtn {
