@@ -1,5 +1,6 @@
 // UI hanya klien daemon (BRD R-5): jangan buka PTY di sini.
 mod daemon;
+mod i18n;
 
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -414,6 +415,12 @@ fn paste_text() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+/// TECH 20: macOS language list for `[ui] language = "system"`
+#[tauri::command]
+fn system_lang() -> Vec<String> {
+    i18n::system_langs()
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     app.exit(0);
@@ -590,7 +597,7 @@ pub fn run() {
                 w.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, reveal_dir, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, reveal_dir, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list, system_lang])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, ev| {

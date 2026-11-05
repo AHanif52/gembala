@@ -7,6 +7,7 @@
   import { call } from "./daemon";
   import { envRows, envPatch, type EnvRow } from "./env";
   import { pretty, type Account, type Agent, type Config, type Profile, type Ui } from "./config";
+  import { t } from "./i18n/state.svelte";
 
   let {
     cfg,
@@ -192,16 +193,7 @@
     await invoke("quit");
   }
 
-  const SECTIONS = [
-    ["umum", "Umum"],
-    ["tampilan", "Tampilan"],
-    ["agent", "Agent"],
-    ["pintasan", "Pintasan"],
-    ["toolbar", "Toolbar"],
-    ["keamanan", "Keamanan"],
-    ["proses", "Proses"],
-    ["diagnostik", "Diagnostik"],
-  ] as const;
+  const SECTIONS = ["umum", "tampilan", "agent", "pintasan", "toolbar", "keamanan", "proses", "diagnostik"] as const;
   // FR-60: proses milik Gembala, diperbarui tiap 2 detik selama bagian ini terbuka
   type Proc = { pid: number; ppid: number; rss_kb: number; cpu: number; role: string; name: string };
   const ROLE: Record<string, [string, string]> = {
@@ -248,7 +240,7 @@
     }).sort((a, b) => +a.idle - +b.idle || b.rss - a.rss);
   });
   let openGroups = $state<string[]>([]);
-  let sec = $state<(typeof SECTIONS)[number][0]>("umum");
+  let sec = $state<(typeof SECTIONS)[number]>("umum");
   let failed = $state("");
   let keys = $state<[string, string, string][]>([]);
   let keyErrors = $state<string[]>([]);
@@ -494,16 +486,16 @@
 {/snippet}
 
 <div class="veil" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="modal" role="dialog" aria-label="Pengaturan">
+  <div class="modal" role="dialog" aria-label={t("set.title")}>
     <nav>
-      {#each SECTIONS as [k, t]}
-        <button class:on={k === sec} onclick={() => ((sec = k), (agentPage = "main"))}>{t}</button>
+      {#each SECTIONS as k}
+        <button class:on={k === sec} onclick={() => ((sec = k), (agentPage = "main"))}>{t(`set.nav.${k}`)}</button>
       {/each}
     </nav>
     <div class="body">
       {#if cfg.errors.length}
         <div class="errs" role="alert">
-          <b>Sebagian config.toml tidak dipakai</b>
+          <b>{t("set.cfgErrors")}</b>
           {#each cfg.errors as e}<span>{e}</span>{/each}
         </div>
       {/if}
@@ -511,42 +503,49 @@
 
       {#if sec === "umum"}
         <section>
-          <div class="row"><span>Bahasa</span><span class="m">Indonesia</span></div>
-          <div class="row"><span>Daemon<small>Memegang semua pane; tetap jalan selama ada proses di pane</small></span><span class="m">berjalan · protokol 1</span></div>
+          <div class="row">
+            <span>{t("set.general.language")}<small>{t("set.general.languageSub")}</small></span>
+            <select aria-label={t("set.general.language")} value={ui.language ?? "system"} onchange={(e) => set("language", e.currentTarget.value as Ui["language"])}>
+              <option value="system">{t("set.general.languageSystem")}</option>
+              <option value="id">Indonesia</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+          <div class="row"><span>{t("set.general.daemon")}<small>{t("set.general.daemonSub")}</small></span><span class="m">{t("set.general.daemonState")}</span></div>
         </section>
-        <h4>Notifikasi</h4>
+        <h4>{t("set.general.notify")}</h4>
         <section>
           <div class="row">
-            <span>Agent butuh izin<small>Notifikasi, badge Dock, dan Dock melompat saat jendela tidak dilihat; juga pane yang menunggu password. Isinya nama pane dan status saja</small></span>
-            <input type="checkbox" role="switch" aria-label="Agent butuh izin" checked={cfg.values.notify.on_blocked} onchange={(e) => setNotify("on_blocked", e.currentTarget.checked)} />
+            <span>{t("set.general.blocked")}<small>{t("set.general.blockedSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.blocked")} checked={cfg.values.notify.on_blocked} onchange={(e) => setNotify("on_blocked", e.currentTarget.checked)} />
           </div>
           <div class="row">
-            <span>Agent atau perintah lama selesai</span>
-            <input type="checkbox" role="switch" aria-label="Selesai" checked={cfg.values.notify.on_done} onchange={(e) => setNotify("on_done", e.currentTarget.checked)} />
+            <span>{t("set.general.done")}</span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.doneAria")} checked={cfg.values.notify.on_done} onchange={(e) => setNotify("on_done", e.currentTarget.checked)} />
           </div>
           <div class="row">
-            <span>Suara</span>
-            <input type="checkbox" role="switch" aria-label="Suara notifikasi" checked={cfg.values.notify.sound} onchange={(e) => setNotify("sound", e.currentTarget.checked)} />
+            <span>{t("set.general.sound")}</span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.soundAria")} checked={cfg.values.notify.sound} onchange={(e) => setNotify("sound", e.currentTarget.checked)} />
           </div>
           <div class="row">
-            <span>Batas perintah lama<small>Perintah shell lebih lama dari ini lalu selesai dianggap perlu dilihat</small></span>
-            <select aria-label="Batas perintah lama" value={cfg.values.notify.long_command_secs} onchange={(e) => setNotify("long_command_secs", +e.currentTarget.value)}>
-              {#each [10, 30, 60, 120, 300] as n}<option value={n}>{n} detik</option>{/each}
+            <span>{t("set.general.long")}<small>{t("set.general.longSub")}</small></span>
+            <select aria-label={t("set.general.long")} value={cfg.values.notify.long_command_secs} onchange={(e) => setNotify("long_command_secs", +e.currentTarget.value)}>
+              {#each [10, 30, 60, 120, 300] as n}<option value={n}>{t("set.general.secs", { n })}</option>{/each}
             </select>
           </div>
         </section>
-        <h4>Keluar</h4>
+        <h4>{t("set.general.quit")}</h4>
         <section>
           <div class="row">
-            <span>Saat ⌘Q<small>Biarkan jalan = app ditutup, agent lanjut di latar dan muncul lagi saat app dibuka</small></span>
-            <select aria-label="Saat ⌘Q" value={ui.on_quit} onchange={(e) => set("on_quit", e.currentTarget.value as Ui["on_quit"])}>
-              <option value="keep">Biarkan agent jalan</option>
-              <option value="stop">Hentikan semua</option>
+            <span>{t("set.general.onQuit")}<small>{t("set.general.onQuitSub")}</small></span>
+            <select aria-label={t("set.general.onQuit")} value={ui.on_quit} onchange={(e) => set("on_quit", e.currentTarget.value as Ui["on_quit"])}>
+              <option value="keep">{t("set.general.keep")}</option>
+              <option value="stop">{t("set.general.stop")}</option>
             </select>
           </div>
           <div class="row">
-            <span>Keluar dan hentikan semua agent<small>Menghentikan daemon dan semua proses di pane</small></span>
-            <button class="mini" onclick={onquitall}>Hentikan…</button>
+            <span>{t("set.general.quitAll")}<small>{t("set.general.quitAllSub")}</small></span>
+            <button class="mini" onclick={onquitall}>{t("set.general.quitAllBtn")}</button>
           </div>
         </section>
       {:else if sec === "tampilan"}

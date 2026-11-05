@@ -1,6 +1,7 @@
 <script lang="ts">
   // Panel perubahan ala Warp (FR-22): baca saja, menempel di kanan (terminal menyempit). Diff disamarkan daemon (SEC-12).
   import { invoke } from "@tauri-apps/api/core";
+  import { loc } from "./i18n/state.svelte";
   let {
     status,
     diff,
@@ -33,7 +34,7 @@
     onconfirm?: () => void;
     oncancel?: () => void;
   } = $props();
-  const hm = (t: number) => new Date(t * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+  const hm = (t: number) => new Date(t * 1000).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" });
   const askTurn = $derived(ask ? turns.find((t) => t.i === ask.i) : undefined);
 
   function grip(e: PointerEvent) {

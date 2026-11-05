@@ -11,7 +11,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "test": "node --test src/lib/*.test.ts",
+    "test": "node --test src/lib/*.test.ts src/lib/i18n/*.test.ts",
     "sidecar": "cargo build --release -p gembala && mkdir -p src-tauri/binaries && cp ../target/release/gembala src-tauri/binaries/gembala-$(rustc -vV | sed -n 's/^host: //p') && sh src-tauri/helper/build.sh"
   },
   "license": "MIT",

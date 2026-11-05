@@ -22,6 +22,8 @@ use Kind::*;
 
 // ponytail: hanya bagian yang sudah dipakai app; notify/app/toolbar/workspace/profile ditambah di M4–M7
 const UI: &[(&str, Kind)] = &[
+    // BRD 11: system = first of id/en in the macOS language list, else English (TECH 20)
+    ("language", Enum(&["system", "id", "en"], "system")),
     ("theme", Enum(&["system", "light", "dark"], "system")),
     ("font_family", Str("Hack")),
     ("font_size", Int(8, 32, 13)),
@@ -492,6 +494,15 @@ mod tests {
         for want in ["ui.font_size", "ui.theme", "ui.warna", "cmd+y"] {
             assert!(all.contains(want), "{want} tidak ditandai: {all}");
         }
+    }
+
+    #[test]
+    fn language_enum() {
+        assert_eq!(load(None).values["ui"]["language"], "system");
+        assert_eq!(load(Some("[ui]\nlanguage = \"en\"\n")).values["ui"]["language"], "en");
+        let c = load(Some("[ui]\nlanguage = \"fr\"\n"));
+        assert_eq!(c.values["ui"]["language"], "system");
+        assert!(c.errors.join("").contains("ui.language"), "{:?}", c.errors);
     }
 
     #[test]

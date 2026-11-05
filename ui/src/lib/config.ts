@@ -1,6 +1,7 @@
 // Bentuk `config.get` dari daemon (TECH bagian 5). Nilai sudah divalidasi daemon; yang rusak = bawaan.
 
 export type Ui = {
+  language: "system" | "id" | "en";
   theme: "system" | "light" | "dark";
   font_family: string;
   font_size: number;
@@ -75,6 +76,7 @@ export type Config = {
 
 // sama dengan bawaan di core/src/config.rs; dipakai sampai balasan pertama daemon datang
 export const UI_DEFAULT: Ui = {
+  language: "system",
   theme: "system",
   font_family: "Hack",
   font_size: 13,

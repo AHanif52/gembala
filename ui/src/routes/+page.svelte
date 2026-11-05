@@ -21,6 +21,8 @@
   } from "$lib/layout";
   import { safeResume } from "$lib/resume";
   import { cleanTitle } from "$lib/label";
+  import { resolveLang } from "$lib/i18n";
+  import { i18n, loc } from "$lib/i18n/state.svelte";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: akun bawaan per agent; FR-44: warna blok; FR-13: brief
@@ -593,6 +595,13 @@
     const r = document.documentElement;
     if (ui.theme === "system") delete r.dataset.theme;
     else r.dataset.theme = ui.theme;
+  });
+  // TECH 20: [ui] language; "system" uses the macOS list from Rust (WKWebView reports a single language)
+  let sysLangs = $state<string[]>([...navigator.languages]);
+  invoke<string[]>("system_lang").then((l) => void (l?.length && (sysLangs = l)), () => {});
+  $effect(() => {
+    i18n.lang = resolveLang(ui.language ?? "system", sysLangs);
+    document.documentElement.lang = i18n.lang;
   });
   const tiles: Record<number, Tile> = $state({});
   let error = $state("");
@@ -1814,7 +1823,7 @@
     }
     return open;
   });
-  const noteTime = (at: number) => (now - at < 3600_000 ? ago(now - at) : new Date(at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }));
+  const noteTime = (at: number) => (now - at < 3600_000 ? ago(now - at) : new Date(at).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" }));
   $effect(() => {
     if (!bell) return;
     const off = (e: PointerEvent) => !(e.target as Element).closest?.(".notes, .bellbtn") && (bell = false);
