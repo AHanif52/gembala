@@ -67,14 +67,14 @@ pub fn load_log(from: &Value) -> Option<(Vec<u8>, u64)> {
     Some((trim_separator(&std::fs::read(file).ok()?), t))
 }
 
-/// The "Previous session" line (and blank lines) at the end of the log is dropped: a pane unused since the last restart
+/// The "Sesi sebelumnya" (previous session) line and blank lines at the end of the log are dropped: a pane unused since the last restart
 /// doesn't pile up lines, the latest one is enough
 fn trim_separator(log: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(log);
     let ansi = regex_lite::Regex::new("\x1b\\[[0-9;?]*[A-Za-z]").unwrap();
     let plain = |l: &str| ansi.replace_all(l, "").trim().to_string();
     let mut lines: Vec<&str> = text.split("\r\n").collect();
-    // a "Previous session" line followed only by blank lines is dropped (they can stack)
+    // a "Sesi sebelumnya" line followed only by blank lines is dropped (they can stack)
     let last_sep = |lines: &[&str]| {
         lines.iter().rposition(|l| plain(l).trim_start_matches(['─', ' ']).starts_with("Sesi sebelumnya")).filter(|&i| lines[i + 1..].iter().all(|l| plain(l).is_empty()))
     };
@@ -205,7 +205,7 @@ fn date(t: u64) -> String {
     String::from_utf8_lossy(&buf[..n]).trim().to_string()
 }
 
-/// Old pane blocks, then the "Previous session" line, written to the grid before the new shell output.
+/// Old pane blocks, then the "Sesi sebelumnya" line (the UI translates it), written to the grid before the new shell output.
 pub fn render(blocks: &[Block]) -> Vec<u8> {
     let Some(first) = blocks.first() else { return Vec::new() };
     let mut out = String::new();
@@ -333,7 +333,7 @@ mod tests {
         let t = String::from_utf8(b).unwrap();
         assert!(t.contains("\x1b[32mok") && !t.contains("abcd1234abcd1234"), "{t}");
         assert!(load_log(&json!({"boot": "../../etc/passwd", "pane": 7})).is_none());
-        // an old "Previous session" line at the end of the log doesn't pile up
+        // an old "Sesi sebelumnya" line at the end of the log doesn't pile up
         let t = String::from_utf8(trim_separator(&[b"ls\r\nok\r\n".as_slice(), &separator(0), &separator(1), b"\r\n"].concat())).unwrap();
         assert_eq!(t, "ls\r\nok\r\n\r\n\r\n\r\n");
         // the blank rows reserved for buttons before the line stay
