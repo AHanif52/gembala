@@ -1787,6 +1787,16 @@
     const n = { id: ++noteId, pane, agent: agentOf(pane), name: meta[pane].name || meta[pane].profile, tab: t ? title(t) : "", ws: w?.name ?? "", kind, label, at: Date.now() };
     notes = [n, ...notes].slice(0, 100);
   }
+  // a blocked note is still waiting only while it is its pane's newest note and the pane is still blocked
+  const waiting = $derived.by(() => {
+    const open = new Set<number>(), saw = new Set<number>();
+    for (const n of notes) {
+      if (saw.has(n.pane)) continue;
+      saw.add(n.pane);
+      if (n.kind === "blocked" && meta[n.pane]?.status === "blocked") open.add(n.id);
+    }
+    return open;
+  });
   const noteTime = (at: number) => (now - at < 3600_000 ? ago(now - at) : new Date(at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }));
   $effect(() => {
     if (!bell) return;
@@ -2080,11 +2090,12 @@
       <div class="nhead"><b>Notifikasi</b>{#if unseen}<button class="nlink" onclick={() => notes.forEach((n) => (n.seen = true))}>Tandai semua dilihat</button>{/if}</div>
       <div class="nlist">
         {#each notes as n (n.id)}
-          <button class="nrow" class:seen={n.seen} onclick={() => ((n.seen = true), (bell = false), meta[n.pane] && !dead[n.pane] && jumpTo(n.pane))}>
+          {@const past = n.kind === "blocked" && !waiting.has(n.id)}
+          <button class="nrow" class:seen={n.seen} class:past onclick={() => ((n.seen = true), (bell = false), meta[n.pane] && !dead[n.pane] && jumpTo(n.pane))}>
             <span class="dot {n.kind}" aria-hidden="true"></span>
             <span class="nmain">
               <span class="ntitle">{#if GLYPH[n.agent]}<span class="aico {n.agent}">{GLYPH[n.agent]}</span>{/if}{n.name}{n.tab && n.tab !== n.name ? ` · ${n.tab}` : ""}</span>
-              <span class="nwhat">{n.label}</span>
+              <span class="nwhat">{n.label}{#if past}{` · ${meta[n.pane] && !dead[n.pane] ? "udah dijawab" : "pane ditutup"}`}{/if}</span>
               {#if n.ws}<span class="nwhere">tab di {n.ws}</span>{/if}
             </span>
             <span class="k">{noteTime(n.at)}</span>
@@ -3168,6 +3179,10 @@
   }
   .nrow.seen .dot.blocked {
     box-shadow: inset 0 0 0 1px #d97706;
+  }
+  /* FR-76: a permission that is no longer waiting fades into history */
+  .nrow.past {
+    opacity: 0.55;
   }
   .nmain {
     display: flex;
