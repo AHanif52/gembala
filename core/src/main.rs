@@ -34,9 +34,9 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str).unwrap_or_default() {
         "daemon" => daemon(&args[1..]),
         "hook" => hook(&args[1..]),
-        // FR-61: dipanggil fungsi zsh `claude` sebelum Claude akun lain jalan (tidak tercantum di USAGE: internal)
+        // FR-61: called by the zsh `claude` function before Claude for another account runs (not in USAGE: internal)
         "trust-sync" => {
-            // hanya akun di config yang trust-nya nyala (FR-61 (8): "Folder dipercaya" bisa Sendiri)
+            // only accounts in config with trust on (FR-61 (8): "Trusted folders" can be Own)
             let text = std::fs::read_to_string(config::path()).ok();
             let on = |d: &str| config::load(text.as_deref()).accounts.iter().any(|a| a.trust && account::expand(&a.dir) == account::expand(d));
             if let Some(dir) = args.get(1).filter(|d| on(d)) {
@@ -58,9 +58,9 @@ enum Handoff {
     Sock(std::path::PathBuf),
 }
 
-/// Rahasia kanal UI diserahkan ke peluncur, lalu salurannya ditutup. Tanpa flag, kanal UI menolak semua koneksi.
-/// `--secret-fd N`: descriptor warisan (skrip uji, cadangan UI). `--secret-sock <path>`: socket milik UI saat daemon
-/// dijalankan sebagai helper app lewat `open` (FR-20); rahasia hanya ditulis bila pemilik socket `gembala-ui` bundle ini.
+/// The UI channel secret is handed to the launcher, then the channel is closed. Without a flag the UI channel rejects every connection.
+/// `--secret-fd N`: inherited descriptor (test scripts, UI fallback). `--secret-sock <path>`: socket owned by the UI when the daemon
+/// runs as a helper app through `open` (FR-20); the secret is only written when the socket owner is this bundle's `gembala-ui`.
 fn daemon(args: &[String]) -> ExitCode {
     let handoff = match args {
         [] => None,
@@ -78,7 +78,7 @@ fn daemon(args: &[String]) -> ExitCode {
         daemon::run(&dir, secret, move || {
             let (Some(h), Some(s)) = (handoff, s) else { return };
             if let Err(e) = hand_over(h, &s) {
-                // tanpa serah-terima, kanal UI tidak bisa dipakai siapa pun: daemon tidak berguna
+                // without a handover nobody can use the UI channel: the daemon is useless
                 eprintln!("gembala daemon: secret handover: {e}");
                 std::process::exit(1);
             }
@@ -93,9 +93,9 @@ fn daemon(args: &[String]) -> ExitCode {
     }
 }
 
-/// `gembala hook <agent> <event> [payload]`, dipanggil hook agent di dalam pane (SEC-26, FR-4).
-/// Selalu keluar 0 dan tidak menulis ke stdout: hook yang gagal tidak boleh mengganggu agent
-/// (stdout hook UserPromptSubmit Claude Code ikut masuk ke prompt).
+/// `gembala hook <agent> <event> [payload]`, called by agent hooks inside a pane (SEC-26, FR-4).
+/// Always exits 0 and never writes to stdout: a failing hook must not disturb the agent
+/// (Claude Code's UserPromptSubmit hook stdout ends up in the prompt).
 fn hook(args: &[String]) -> ExitCode {
     let (Some(agent), Some(event)) = (args.first(), args.get(1)) else { return ExitCode::SUCCESS };
     let mut payload = args.get(2).cloned().unwrap_or_default();
@@ -104,19 +104,19 @@ fn hook(args: &[String]) -> ExitCode {
         let _ = std::io::stdin().take(64 * 1024).read_to_string(&mut payload);
     }
     let Some(status) = profile::hook_status(agent, event, &payload) else { return ExitCode::SUCCESS };
-    // FR-66: pesan terakhir giliran Codex; daemon hanya memakainya bila ada pesan yang menunggu balasan
+    // FR-66: last message of a Codex turn; the daemon only uses it when a message is waiting for a reply
     let reply = (agent == "codex")
         .then(|| serde_json::from_str::<serde_json::Value>(&payload).ok())
         .flatten()
         .filter(|v| v["type"] == "agent-turn-complete")
         .and_then(|v| v["last-assistant-message"].as_str().map(|m| m.chars().take(4000).collect::<String>()))
         .filter(|m| !m.trim().is_empty());
-    // FR-68: id sesi untuk lanjut persis (Codex `thread-id` payload notify, OpenCode `sessionID` dari plugin)
+    // FR-68: session id for exact resume (Codex `thread-id` in the notify payload, OpenCode `sessionID` from the plugin)
     let json = || serde_json::from_str::<serde_json::Value>(&payload).unwrap_or_default();
     let session = match agent.as_str() {
         "codex" => json()["thread-id"].as_str().map(String::from),
         "opencode" => Some(payload.trim().to_string()).filter(|p| !p.is_empty()),
-        // FR-61: Claude `session_id` di tiap event, `source` di SessionStart; folder akun dari env proses hook
+        // FR-61: Claude `session_id` in every event, `source` in SessionStart; account folder from the hook process env
         "claude" => json()["session_id"].as_str().map(String::from),
         _ => None,
     };
@@ -139,8 +139,8 @@ fn hook(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Fase 2 (O2): CLI untuk agent di dalam pane. Satu baris JSON ke stdout; kode keluar 0 = diterima/berhasil,
-/// 1 = ditolak/timeout, 2 = salah pakai atau tidak bisa tersambung. Identitas dari kernel (SEC-3), bukan argumen.
+/// Phase 2 (O2): CLI for agents inside a pane. One JSON line to stdout; exit code 0 = accepted/succeeded,
+/// 1 = rejected/timeout, 2 = misuse or can't connect. Identity comes from the kernel (SEC-3), not arguments.
 fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     use serde_json::{Value, json};
     let mut rest: Vec<String> = Vec::new();
@@ -177,7 +177,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
         use std::io::{BufRead, BufReader};
         let mut s = match std::os::unix::net::UnixStream::connect(&sock) {
             Ok(s) => s,
-            // FR-66: sandbox (Codex) menolak socket: lewat file spool dengan token pane
+            // FR-66: the sandbox (Codex) blocks sockets: go through a spool file with the pane token
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && cmd != "watch" => {
                 let token = std::env::var("GEMBALA_SPOOL").or_else(|_| std::env::var("GEMBALA_TOKEN")).map_err(|_| e)?;
                 return spool_call(std::path::Path::new(&sock), &token, cmd, &params);
@@ -194,7 +194,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
             return Ok(hello);
         }
         if cmd == "watch" {
-            // FR-8: satu baris JSON per perubahan status pane yang boleh dibaca, sampai dihentikan
+            // FR-8: one JSON line per status change of a readable pane, until stopped
             writeln!(s, "{}", json!({"id": 2, "method": "subscribe", "params": {}}))?;
             for line in r.lines() {
                 let v: Value = serde_json::from_str(&line?).unwrap_or_default();
@@ -229,7 +229,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     }
 }
 
-/// FR-66: permintaan lewat `<run>/spool/<id>.req` (tulis lalu rename), jawaban ditunggu sebagai `<id>.res`.
+/// FR-66: request through `<run>/spool/<id>.req` (write then rename), the answer is awaited as `<id>.res`.
 fn spool_call(sock: &std::path::Path, token: &str, method: &str, params: &serde_json::Value) -> std::io::Result<serde_json::Value> {
     use std::time::{Duration, Instant};
     let dir = sock.parent().unwrap_or(std::path::Path::new(".")).join("spool");
@@ -237,7 +237,7 @@ fn spool_call(sock: &std::path::Path, token: &str, method: &str, params: &serde_
     let (tmp, req, res) = (dir.join(format!("{id}.tmp")), dir.join(format!("{id}.req")), dir.join(format!("{id}.res")));
     std::fs::write(&tmp, serde_json::json!({"token": token, "method": method, "params": params}).to_string())?;
     std::fs::rename(&tmp, &req)?;
-    // `wait` menunggu sendiri di daemon; batasnya sedikit di atas timeout-nya (bawaan 10 menit)
+    // `wait` waits on its own in the daemon; the limit is a bit above its timeout (default 10 minutes)
     let limit = match params["timeout_ms"].as_u64() {
         Some(ms) => Duration::from_millis(ms) + Duration::from_secs(10),
         None if method == "wait" => Duration::from_secs(600),
@@ -259,7 +259,7 @@ fn spool_call(sock: &std::path::Path, token: &str, method: &str, params: &serde_
 
 fn hand_over(h: Handoff, secret: &str) -> std::io::Result<()> {
     match h {
-        Handoff::Fd(fd) => writeln!(unsafe { File::from_raw_fd(fd) }, "{secret}"), // ditutup saat drop
+        Handoff::Fd(fd) => writeln!(unsafe { File::from_raw_fd(fd) }, "{secret}"), // closed on drop
         Handoff::Sock(p) => {
             let mut s = std::os::unix::net::UnixStream::connect(p)?;
             // helper `Gembala.app/Contents/Helpers/Gembala Daemon.app/Contents/MacOS/gembala` → `Gembala.app/Contents/MacOS/gembala-ui`
@@ -270,7 +270,7 @@ fn hand_over(h: Handoff, secret: &str) -> std::io::Result<()> {
                 return Err(std::io::Error::other(format!("socket owner isn't this bundle's gembala-ui: {peer:?}")));
             }
             writeln!(s, "{secret}")?;
-            // tetap tersambung sampai UI selesai memeriksa siapa pengirimnya (LOCAL_PEERPID gagal setelah ditutup)
+            // stay connected until the UI is done checking who the sender is (LOCAL_PEERPID fails after close)
             s.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
             let _ = std::io::Read::read(&mut s, &mut [0u8; 1]);
             Ok(())

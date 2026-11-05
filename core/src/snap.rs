@@ -1,6 +1,6 @@
-//! FR-70: titik kembali per giliran agent. Isi folder kerja dipotret ke repo git terpisah milik Gembala
-//! (`<folder config>/snap/<kunci>.git`, work-tree = repo pengguna). Index, HEAD, branch, dan stash pengguna tidak
-//! tersentuh; daftar file diambil dari repo pengguna (baca saja), jadi aturan ignore pengguna ikut.
+//! FR-70: restore point per agent turn. The working folder is snapshotted into a separate git repo owned by Gembala
+//! (`<config folder>/snap/<key>.git`, work-tree = the user's repo). The user's index, HEAD, branches, and stash stay
+//! untouched; the file list comes from the user's repo (read only), so the user's ignore rules apply.
 
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -14,7 +14,7 @@ const KEEP_DAYS: u64 = 7;
 const MAX_DIFF: usize = 200 * 1024;
 pub const MAX_TURNS: usize = 50;
 
-/// Giliran yang sedang jalan
+/// Turn in progress
 pub struct Open {
     pub start: u64,
     pub root: String,
@@ -55,7 +55,7 @@ fn gitdir(root: &str) -> PathBuf {
 
 fn sgit(root: &str, args: &[&str], limit: Duration) -> Option<String> {
     let mut c = Command::new("git");
-    // repo potretan milik Gembala: hook, fsmonitor, dan gc otomatis mati; path apa adanya (bukan pola)
+    // Gembala's snapshot repo: hooks, fsmonitor, and auto gc off; paths literal (not patterns)
     c.args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0", "-c", "core.autocrlf=false", "--literal-pathspecs"])
         .arg(format!("--git-dir={}", gitdir(root).display()))
         .arg(format!("--work-tree={root}"))
@@ -77,7 +77,7 @@ fn init(root: &str) -> Option<()> {
     ok.then_some(())
 }
 
-/// Root repo git `cwd`, atau None bila bukan repo / repo dengan filter lokal (SEC-29)
+/// Root of the git repo at `cwd`, or None when it isn't a repo / is a repo with local filters (SEC-29)
 pub fn root_of(cwd: &Path) -> Option<String> {
     let root = crate::git::git(cwd, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())?;
     (!crate::git::repo_runs_filters(cwd)).then_some(root)
@@ -93,7 +93,7 @@ fn write_list(name: &str, root: &str, paths: &[String]) -> Option<PathBuf> {
     Some(f)
 }
 
-/// Potret folder kerja: (tree, file besar yang dilewati)
+/// Snapshot the working folder: (tree, big files skipped)
 pub fn take(root: &str) -> Option<(String, Vec<String>)> {
     let _g = LOCK.lock().unwrap();
     init(root)?;
@@ -103,7 +103,7 @@ pub fn take(root: &str) -> Option<(String, Vec<String>)> {
         match std::fs::symlink_metadata(Path::new(root).join(p)) {
             Ok(m) if m.len() >= BIG && m.is_file() => skipped.push(p.to_string()),
             Ok(_) => keep.push(p.to_string()),
-            Err(_) => {} // file ter-track yang sudah dihapus
+            Err(_) => {} // tracked files that were deleted
         }
     }
     keep.sort();
@@ -122,7 +122,7 @@ pub fn take(root: &str) -> Option<(String, Vec<String>)> {
     (tree.len() >= 40).then_some((tree, skipped))
 }
 
-/// (file, baris tambah, baris hapus) antara dua potretan
+/// (file, lines added, lines removed) between two snapshots
 pub fn stat(t: &Turn) -> (u64, u64, u64) {
     let (mut f, mut a, mut d) = (0, 0, 0);
     for l in sgit(&t.root, &["diff", "--numstat", "--no-renames", &t.before, &t.after], Duration::from_secs(10)).unwrap_or_default().lines() {
@@ -134,7 +134,7 @@ pub fn stat(t: &Turn) -> (u64, u64, u64) {
     (f, a, d)
 }
 
-/// Diff satu giliran, bentuk sama dengan `git::diff` (panel perubahan FR-22)
+/// Diff of one turn, same shape as `git::diff` (changes panel FR-22)
 pub fn diff(t: &Turn) -> Value {
     let mut text = sgit(&t.root, &["diff", "--no-ext-diff", "--no-textconv", "--no-renames", &t.before, &t.after], Duration::from_secs(10)).unwrap_or_default();
     let truncated = text.len() > MAX_DIFF;
@@ -148,20 +148,20 @@ pub fn diff(t: &Turn) -> Value {
     json!({"repo": true, "diff": crate::git::redact(&text), "truncated": truncated, "untracked": []})
 }
 
-/// File yang berubah bila folder kerja dikembalikan ke `before`: (`ubah` | `hapus`, path)
+/// Files that change when the working folder goes back to `before`: (`ubah` | `hapus`, path)
 pub fn preview(root: &str, before: &str) -> Option<Vec<(&'static str, String)>> {
     let (now, _) = take(root)?;
     let out = sgit(root, &["diff", "--name-status", "--no-renames", "-z", before, &now], Duration::from_secs(10))?;
     let mut it = out.split('\0').filter(|s| !s.is_empty());
     let mut files = Vec::new();
     while let (Some(st), Some(p)) = (it.next(), it.next()) {
-        // A = file baru sesudah titik itu: dihapus; M/D/T = isi lama ditulis lagi
+        // A = file new after that point: deleted; M/D/T = old content written back
         files.push((if st == "A" { "hapus" } else { "ubah" }, p.to_string()));
     }
     Some(files)
 }
 
-/// Kembalikan folder kerja ke `before` untuk `files` dari `preview`. File yang di-ignore dan yang dilewati tidak disentuh.
+/// Restore the working folder to `before` for `files` from `preview`. Ignored and skipped files aren't touched.
 pub fn restore(root: &str, before: &str, files: &[(&str, String)]) -> Option<usize> {
     let _g = LOCK.lock().unwrap();
     let back: Vec<String> = files.iter().filter(|f| f.0 == "ubah").map(|f| f.1.clone()).collect();
@@ -178,13 +178,13 @@ pub fn restore(root: &str, before: &str, files: &[(&str, String)]) -> Option<usi
     Some(files.len())
 }
 
-/// Giliran selesai = potret sesudah
+/// Turn done = snapshot after
 pub fn finish(o: Open, end: u64, title: String) -> Option<Turn> {
     let (after, skipped) = take(&o.root)?;
     Some(Turn { start: o.start, end, root: o.root, before: o.before, after, head: o.head, title, skipped })
 }
 
-/// Satu antrean untuk semua potretan: urutan mulai/selesai giliran terjaga, hook agent tidak menunggu git
+/// One queue for every snapshot: turn start/end order holds, agent hooks don't wait for git
 pub fn queue(job: impl FnOnce() + Send + 'static) {
     type Job = Box<dyn FnOnce() + Send>;
     static Q: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
@@ -196,7 +196,7 @@ pub fn queue(job: impl FnOnce() + Send + 'static) {
     let _ = q.lock().unwrap().send(Box::new(job));
 }
 
-/// Repo potretan yang tidak dipakai 7 hari dihapus
+/// Snapshot repos unused for 7 days are deleted
 pub fn sweep() {
     let Ok(entries) = std::fs::read_dir(dir()) else { return };
     let limit = Duration::from_secs(KEEP_DAYS * 86400);
@@ -217,7 +217,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("gembala-snap-{}", std::process::id()));
         let repo = base.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        // SAFETY: test lain yang memakai GEMBALA_CONFIG menulis nilai yang sama (folder uji per proses)
+        // SAFETY: other tests using GEMBALA_CONFIG write the same value (test folder per process)
         unsafe { std::env::set_var("GEMBALA_CONFIG", std::env::temp_dir().join(format!("gembala-uji-{}/config.toml", std::process::id()))) };
         let sh = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success(), "{args:?}");
         sh(&["init", "-q"]);
@@ -228,7 +228,7 @@ mod tests {
         let root = root_of(&repo).unwrap();
         let head0 = head(&root);
         let open = Open { start: 1, root: root.clone(), before: take(&root).unwrap().0, head: head0.clone() };
-        // giliran agent: ubah a.txt, buat b.txt, file ignore
+        // agent turn: change a.txt, create b.txt, ignored file
         std::fs::write(repo.join("a.txt"), "dua\n").unwrap();
         std::fs::write(repo.join("b.txt"), "baru\n").unwrap();
         std::fs::write(repo.join("rahasia.txt"), "x").unwrap();
@@ -240,7 +240,7 @@ mod tests {
         restore(&root, &turn.before, &files).unwrap();
         assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "satu\n");
         assert!(!repo.join("b.txt").exists() && repo.join("rahasia.txt").exists());
-        // index dan HEAD pengguna tidak tersentuh
+        // the user's index and HEAD stay untouched
         assert_eq!(head(&root), head0);
         let st = Command::new("git").arg("-C").arg(&repo).args(["status", "--porcelain"]).output().unwrap().stdout;
         assert!(String::from_utf8_lossy(&st).trim().is_empty(), "{}", String::from_utf8_lossy(&st));

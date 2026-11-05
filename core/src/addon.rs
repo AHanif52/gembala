@@ -21,7 +21,7 @@ pub struct Mcp {
     /// relative to the Gembala config folder, as written; `path` is the resolved file
     pub file: String,
     pub path: PathBuf,
-    /// "Cuma ini": Claude skips the global MCP servers
+    /// "Only these": Claude skips the global MCP servers
     pub strict: bool,
     /// server names in the file, for the Settings page
     pub servers: Vec<String>,
@@ -104,7 +104,7 @@ impl Plugin {
     }
 }
 
-/// Launch flags for `agent` in workspace `ws`. Agents without an equivalent flag get none ("belum didukung").
+/// Launch flags for `agent` in workspace `ws`. Agents without an equivalent flag get none ("not supported yet").
 pub fn args(a: &Addons, agent: &str, ws: &str) -> Vec<String> {
     let mcp = a.mcp.iter().find(|m| !ws.is_empty() && m.workspace == ws);
     let mut out = Vec::new();

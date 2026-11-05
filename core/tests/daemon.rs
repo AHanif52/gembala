@@ -1,4 +1,4 @@
-//! Uji daemon nyata lewat socket (TECH bagian 16): kanal UI, attach, Kriteria 9 BRD.
+//! Real daemon tests over the socket (TECH section 16): UI channel, attach, BRD criterion 9.
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
@@ -45,7 +45,7 @@ fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> D
         .env("GEMBALA_RUNDIR", &dir)
         .env("GEMBALA_IDLE_SECS", idle_secs.to_string())
         .env("GEMBALA_CONFIG", dir.join("cfg/config.toml"))
-        // seolah Gembala dijalankan dari dalam sesi agent (SEC-35)
+        // as if Gembala were launched from inside an agent session (SEC-35)
         .env("CLAUDECODE", "1")
         .env("CLAUDE_CODE_MESSAGING_TOKEN", "token-bocor-uji")
         .env("CODEX_THREAD_ID", "thread-bocor-uji")
@@ -64,12 +64,12 @@ fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> D
     Daemon { child, dir, secret: secret.trim().into() }
 }
 
-/// Isi attach seperti yang ditulis UI: riwayat mentah per ukuran (`segments`) lalu ekornya (`snapshot`), base64.
+/// Attach content as the UI writes it: raw history per size (`segments`), then its tail (`snapshot`), base64.
 fn snapshot(r: &Value) -> String {
     B64.encode(written(&r["result"]))
 }
 
-/// `segments` lalu `snapshot` dari balasan attach atau event `pane.replace`, sebagai byte yang ditulis UI.
+/// `segments` then `snapshot` from the attach reply or a `pane.replace` event, as the bytes the UI writes.
 fn written(o: &Value) -> Vec<u8> {
     let mut out = Vec::new();
     for s in o["segments"].as_array().into_iter().flatten() {
@@ -95,7 +95,7 @@ impl Cli {
 
     fn recv(&mut self) -> Value {
         let mut l = String::new();
-        let _ = self.r.read_line(&mut l); // batas waktu baca = Null, pemanggil yang memutuskan
+        let _ = self.r.read_line(&mut l); // read time limit = Null, the caller decides
         serde_json::from_str(&l).unwrap_or(Value::Null)
     }
 
@@ -119,7 +119,7 @@ impl Cli {
         c
     }
 
-    /// Kumpulkan output pane (snapshot + event) sampai `want` muncul atau pane keluar.
+    /// Collect pane output (snapshot + events) until `want` shows up or the pane exits.
     fn attach_until(&mut self, pane: u64, want: &[&str]) -> String {
         let r = self.call("pane.attach", json!({"pane": pane}));
         let mut out = B64.decode(snapshot(&r)).unwrap();
@@ -153,7 +153,7 @@ fn hello_kanal_ui() {
     assert_eq!(c.call("hello", json!({"proto": 1}))["error"]["code"], "unauthorized");
     let mut c = Cli::connect(&d, "ui.sock");
     assert_eq!(c.call("hello", json!({"proto": 99, "secret": d.secret}))["error"]["code"], "version_mismatch");
-    // proses di luar pane tidak dikenali kanal pane
+    // a process outside a pane isn't recognized by the pane channel
     let mut c = Cli::connect(&d, "pane.sock");
     assert_eq!(c.call("hello", json!({"proto": 1}))["error"]["code"], "not_a_pane");
 }
@@ -170,7 +170,7 @@ fn pane_tulis_resize_attach_ulang() {
 
     assert_eq!(ui.call("pane.resize", json!({"pane": pane, "rows": 30, "cols": 100}))["result"], json!({}));
     w(&mut ui, "stty size\r");
-    // UI kedua attach ulang: snapshot sudah memuat output lama
+    // a second UI re-attaches: the snapshot already holds the old output
     let mut ui2 = Cli::ui(&d);
     let out = ui2.attach_until(pane, &["OK-123", "30 100"]);
     assert!(out.contains("OK-123") && out.contains("30 100"), "{out}");
@@ -187,8 +187,8 @@ fn pane_tulis_resize_attach_ulang() {
     assert_eq!(ui.call("pane.write", json!({"pane": pane, "data": ""}))["error"]["code"], "no_such_pane");
 }
 
-/// Attach ulang dari koneksi yang sama (tab dipindah ke workspace lain) tidak menggandakan output, dan tiap attach
-/// diikuti penanda pane.attached (UI membuang event sebelum penanda karena sudah ada di snapshot)
+/// Re-attach from the same connection (tab moved to another workspace) doesn't duplicate output, and every attach
+/// is followed by a pane.attached marker (the UI drops events before the marker since they're in the snapshot)
 #[test]
 fn attach_ulang_tidak_menggandakan_output() {
     let d = start("reattach");
@@ -215,8 +215,8 @@ fn attach_ulang_tidak_menggandakan_output() {
     assert_eq!(out.matches("SATU-2").count(), 1, "{out}");
 }
 
-/// Kriteria 9: skrip di dalam pane, bahkan yang memegang rahasia UI, tidak bisa memakai kanal UI;
-/// lewat kanal pane, aksi manusia ditolak.
+/// Criterion 9: a script inside a pane, even one holding the UI secret, can't use the UI channel;
+/// through the pane channel, human actions are rejected.
 #[test]
 fn kriteria_9_skrip_di_pane() {
     let d = start("k9");
@@ -275,7 +275,7 @@ fn ctx_compose_file_and_pane() {
     assert_eq!(compose(&mut ui, "biasa aja".into())["body"], "biasa aja");
 }
 
-/// Klien yang attach tapi tidak membaca diputus saat antreannya penuh; pane tetap jalan sampai selesai.
+/// A client that attaches but doesn't read is dropped when its queue fills; the pane keeps running to the end.
 #[test]
 fn klien_lambat_diputus() {
     let d = start("lambat");
@@ -287,7 +287,7 @@ fn klien_lambat_diputus() {
     loop {
         let e = ui.call("pane.list", json!({}));
         if !e["result"].as_array().unwrap().contains(&json!(pane)) {
-            break; // pane selesai; daemon tidak tertahan oleh klien lambat
+            break; // pane finished; the daemon isn't held up by a slow client
         }
         assert!(t0.elapsed() < Duration::from_secs(30), "pane tertahan klien lambat");
         std::thread::sleep(Duration::from_millis(200));
@@ -303,7 +303,7 @@ fn klien_lambat_diputus() {
     assert!(!exit_seen, "klien lambat seharusnya sudah diputus sebelum pane keluar");
 }
 
-/// SEC-35: env pane tidak membawa penanda sesi agent dari proses yang menjalankan daemon.
+/// SEC-35: pane env doesn't carry agent session markers from the process that launched the daemon.
 #[test]
 fn env_pane_bersih() {
     let d = start("env");
@@ -311,7 +311,7 @@ fn env_pane_bersih() {
     let pane = ui.call("pane.create", json!({"cmd": "env; echo CWD=$(pwd); echo SELESAI-ENV", "rows": 50, "cols": 200}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(pane, &["SELESAI-ENV"]);
     assert!(out.contains("GEMBALA_SOCKET="), "{out}");
-    // daemon dijalankan dari cwd `/` (seperti app dari Finder), pane tetap mulai di home
+    // daemon launched from cwd `/` (like an app from Finder), the pane still starts in home
     assert!(out.contains(&format!("CWD={}", std::env::var("HOME").unwrap())), "{out}");
     for bocor in ["CLAUDECODE=", "token-bocor-uji", "thread-bocor-uji", "akun-bocor-uji", "GEMBALA_RUNDIR="] {
         assert!(!out.contains(bocor), "{bocor} bocor ke pane");
@@ -329,7 +329,7 @@ fn wait_info(ui: &mut Cli, pane: u64, busy: bool, within: Duration) -> Value {
     }
 }
 
-/// FR-38 nama proses untuk konfirmasi tutup; FR-50 hentikan: TERM dulu, KILL setelah 3 detik, shell tetap.
+/// FR-38 process name for the close confirmation; FR-50 stop: TERM first, KILL after 3 seconds, shell stays.
 #[test]
 fn info_dan_hentikan_proses() {
     let d = start("kill");
@@ -345,7 +345,7 @@ fn info_dan_hentikan_proses() {
     assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], true);
     assert_eq!(wait_info(&mut ui, pane, false, Duration::from_secs(2))["busy"], false, "sleep harus mati oleh TERM");
 
-    // TERM diabaikan sebelum exec, jadi sudah berlaku begitu namanya terlihat "perl"
+    // TERM is ignored before exec, so it applies as soon as the name shows "perl"
     w(&mut ui, "sh -c \"trap '' TERM; exec perl -e 'sleep 60'\"\r");
     let t0 = Instant::now();
     while ui.call("pane.info", json!({"pane": pane}))["result"]["name"] != "perl" {
@@ -372,7 +372,7 @@ fn exited_within(d: &mut Daemon, within: Duration) -> bool {
     false
 }
 
-/// FR-20: tanpa UI dan semua pane diam = daemon keluar sendiri; ada proses jalan = tetap hidup.
+/// FR-20: no UI and every pane idle = the daemon exits on its own; a running process = stays alive.
 #[test]
 fn daemon_berhenti_bila_tanpa_ui_dan_pane_diam() {
     let mut d = start_idle("idle", 1);
@@ -391,7 +391,7 @@ fn daemon_berhenti_bila_tanpa_ui_dan_pane_diam() {
     assert!(exited_within(&mut d, Duration::from_secs(5)), "tanpa UI dan pane diam, daemon harus keluar");
 }
 
-/// FR-46: "Keluar dan hentikan semua agent".
+/// FR-46: "Quit and stop all agents".
 #[test]
 fn daemon_stop() {
     let mut d = start("stop");
@@ -415,7 +415,7 @@ fn next_event(c: &mut Cli, name: &str, within: Duration) -> Value {
     Value::Null
 }
 
-/// FR-42: config dari file, perubahan file berlaku tanpa restart, file rusak tidak menghapus nilai valid terakhir.
+/// FR-42: config from the file, file changes apply without a restart, a broken file doesn't wipe the last valid values.
 #[test]
 fn config_dibaca_dipantau_dan_ditulis() {
     let d = start("cfg");
@@ -432,13 +432,13 @@ fn config_dibaca_dipantau_dan_ditulis() {
     let r = ui.call("config.set", json!({"section": "ui", "key": "font_size", "value": 99}))["result"].clone();
     assert!(r["error"] == "int_range" && r["args"]["hi"] == "32", "{r}");
 
-    // diedit pengguna di editor: berlaku tanpa restart
+    // edited by the user in an editor: applies without a restart
     std::fs::write(&path, "[ui]\nfont_size = 17\ncursor = \"kotak\"\n").unwrap();
     let e = next_event(&mut ui, "config.changed", Duration::from_secs(4));
     assert_eq!(e["params"]["values"]["ui"]["font_size"], 17, "{e}");
     assert_eq!(e["params"]["errors"][0]["args"]["at"], "ui.cursor", "{e}");
 
-    // rusak: nilai valid terakhir tetap, galat ditandai, file tidak ditimpa
+    // broken: last valid values stay, error flagged, the file isn't overwritten
     std::fs::write(&path, "[ui\n").unwrap();
     let e = next_event(&mut ui, "config.changed", Duration::from_secs(4));
     assert_eq!(e["params"]["values"]["ui"]["font_size"], 17, "{e}");
@@ -447,7 +447,7 @@ fn config_dibaca_dipantau_dan_ditulis() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "[ui\n");
 }
 
-/// Bagian 11 BRD: batas pane per daemon, bisa diatur lewat [limits].
+/// BRD section 11: pane limit per daemon, adjustable through [limits].
 #[test]
 fn batas_jumlah_pane() {
     let d = start("max");
@@ -458,8 +458,8 @@ fn batas_jumlah_pane() {
     assert_eq!(ui.call("pane.create", json!({}))["error"]["code"], "max_panes");
 }
 
-/// FR-29/30: pane dari profil (nama `<agent>-<n>`, folder ikut pane fokus); profil tambahan dari config;
-/// FR-32: perintah tidak ada = pesan jelas, pane tetap hidup sebagai shell.
+/// FR-29/30: panes from profiles (name `<agent>-<n>`, folder follows the focused pane); extra profiles from config;
+/// FR-32: missing command = clear message, the pane stays alive as a shell.
 #[test]
 fn pane_dari_profil() {
     let d = start("prof");
@@ -480,7 +480,7 @@ fn pane_dari_profil() {
             std::thread::sleep(Duration::from_millis(100));
         }
     };
-    // watcher config memeriksa tiap 1 detik
+    // the config watcher checks every 1 second
     until(&mut ui, "profil cek", &|c| c["values"]["profiles"].as_array().is_some_and(|a| a.iter().any(|p| p["id"] == "cek")), "config.get", json!({}));
     let base = ui.call("pane.create", json!({}))["result"].clone();
     assert_eq!(base["name"], "shell-1");
@@ -564,7 +564,7 @@ fn addon_dari_pengaturan() {
     assert!(!d.dir.join("cfg/mcp/w1.json").exists());
 }
 
-/// FR-28: deteksi lewat login shell; tiap agent didukung punya baris.
+/// FR-28: detection through the login shell; every supported agent has a row.
 #[test]
 fn deteksi_agent() {
     let d = start("detect");
@@ -577,7 +577,7 @@ fn deteksi_agent() {
     }
 }
 
-/// FR-45: tata letak tersimpan (tanpa isi layar) dan id run daemon untuk membedakan pane lama.
+/// FR-45: saved layout (no screen content) and the daemon run id to tell old panes apart.
 #[test]
 fn layout_dan_boot() {
     let d = start("layout");
@@ -593,30 +593,30 @@ fn layout_dan_boot() {
     assert_eq!(ui.call("layout.save", json!({"layout": "bukan objek"}))["error"]["code"], "bad_params");
 }
 
-/// Baris lebih dari 64 KB: ditolak dan koneksi ditutup, klien tidak menggantung.
+/// Lines over 64 KB: rejected and the connection closed, the client doesn't hang.
 #[test]
 fn baris_terlalu_panjang_ditutup() {
     let d = start("long");
     let mut ui = Cli::ui(&d);
     let big = format!("{{\"id\":1,\"method\":\"layout.save\",\"params\":{{\"layout\":{{\"x\":\"{}\"}}}}}}\n", "x".repeat(70_000));
-    let _ = ui.w.write_all(big.as_bytes()); // boleh gagal bila daemon sudah menutup
+    let _ = ui.w.write_all(big.as_bytes()); // may fail if the daemon already closed
     let v = ui.recv();
     assert_eq!(v["error"]["code"], "line_too_long", "{v}");
     let mut rest = String::new();
     assert_eq!(ui.r.read_line(&mut rest).unwrap_or(0), 0, "koneksi harus ditutup");
 }
 
-/// FR-4: hook agent di dalam pane mengubah status pane itu saja; UI diberi tahu lewat `pane.status`.
+/// FR-4: an agent hook inside a pane changes only that pane's status; the UI is told through `pane.status`.
 #[test]
 fn status_dari_hook() {
     let d = start("hook");
     let mut ui = Cli::ui(&d);
     let exe = env!("CARGO_BIN_EXE_gembala");
-    // profil dengan agent "claude" supaya status dilacak; perintahnya skrip yang memanggil hook seperti Claude Code
+    // profile with agent "claude" so the status is tracked; its command is a script that calls the hook like Claude Code
     let cfg = d.dir.join("cfg");
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    // pengganti `claude`: mengabaikan flag hook yang disisipkan Gembala, memanggil hook seperti Claude Code
+    // `claude` stand-in: ignores the hook flags Gembala inserts, calls the hook like Claude Code
     let fake = cfg.join("fake-claude.sh");
     std::fs::write(
         &fake,
@@ -636,12 +636,12 @@ fn status_dari_hook() {
     let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
     assert_eq!(e["params"]["status"], "blocked", "{e}");
     assert_eq!(ui.call("pane.info", json!({"pane": pane}))["result"]["status"], "blocked");
-    // proses di luar pane tidak bisa mengubah status siapa pun
+    // a process outside a pane can't change anyone's status
     let mut outsider = Cli::connect(&d, "pane.sock");
     assert_eq!(outsider.call("hello", json!({"proto": 1}))["error"]["code"], "not_a_pane");
 }
 
-/// FR-48: reset menghapus file milik Gembala saja lalu daemon keluar; file lain di folder itu tidak disentuh.
+/// FR-48: reset deletes only Gembala-owned files, then the daemon exits; other files in that folder aren't touched.
 #[test]
 fn reset_hanya_data_gembala() {
     let mut d = start("reset");
@@ -657,7 +657,7 @@ fn reset_hanya_data_gembala() {
     assert!(cfg.join("punya-orang-lain.txt").exists());
 }
 
-/// FR-3: nama pane unik dan bisa diganti.
+/// FR-3: pane names are unique and renamable.
 #[test]
 fn ganti_nama_pane() {
     let d = start("rename");
@@ -668,12 +668,12 @@ fn ganti_nama_pane() {
     assert_eq!(ui.call("pane.rename", json!({"pane": b, "name": "review-1"}))["error"]["code"], "name_taken");
     assert_eq!(ui.call("pane.rename", json!({"pane": b, "name": "Ada Spasi"}))["error"]["code"], "bad_name");
     assert_eq!(ui.call("pane.info", json!({"pane": a}))["result"]["pane_name"], "review-1");
-    // nama otomatis berikutnya tidak bentrok dengan yang sudah dipakai, termasuk nama lama (FR-79: shell-1, shell-2)
+    // the next automatic name doesn't clash with names in use, old names included (FR-79: shell-1, shell-2)
     ui.call("pane.rename", json!({"pane": b, "name": "shell-3"}));
     assert_eq!(ui.call("pane.create", json!({}))["result"]["name"], "shell-4");
 }
 
-/// FR-79: nama lama tetap jadi alamat; nama sekarang menang; pane pengganti membawa alias dari tata letak.
+/// FR-79: old names stay addresses; current names win; a replacement pane brings its aliases from the layout.
 #[test]
 fn fr79_nama_lama_tetap_alamat() {
     let d = start("alias");
@@ -689,14 +689,14 @@ fn fr79_nama_lama_tetap_alamat() {
     assert!(out.contains("\"to\":\"kantor-1\""), "{out}");
     assert!(out.contains("\"target\":\"kantor-1\""), "{out}");
     assert!(out.contains("\"aliases\":[\"terima-1\"]"), "{out}");
-    // pane lain mengambil nama itu = alias dilepas
+    // another pane takes that name = the alias is released
     let s = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     assert_eq!(ui.call("pane.rename", json!({"pane": s, "name": "terima-1"}))["result"]["aliases"], json!(["shell-1"]));
     assert_eq!(ui.call("pane.rename", json!({"pane": t, "name": "kantor-2"}))["result"]["aliases"], json!(["kantor-1"]));
-    // pane pengganti: nama lama dipakai lagi bila bebas; nama dan alias dari layout (tidak tepercaya) disaring, maks 8
+    // replacement pane: the old name is reused if free; name and aliases from the layout (untrusted) are filtered, max 8
     let r = ui.call("pane.create", json!({"name": "lanjut-1", "aliases": ["Bukan Nama", "kantor-2"]}))["result"].clone();
     assert_eq!((&r["name"], &r["aliases"]), (&json!("lanjut-1"), &json!(["kantor-2"])), "{r}");
-    // nama masih dipakai pane lain = nama otomatis, nama itu jadi alias terbaru
+    // name still used by another pane = automatic name, that name becomes the newest alias
     let r = ui.call("pane.create", json!({"name": "kantor-2", "aliases": ["kantor-1"]}))["result"].clone();
     assert_eq!((&r["name"], &r["aliases"]), (&json!("shell-2"), &json!(["kantor-1", "kantor-2"])), "{r}");
     assert_eq!(ui.call("pane.create", json!({"name": "Bukan Nama"}))["result"]["name"], "shell-3");
@@ -704,7 +704,7 @@ fn fr79_nama_lama_tetap_alamat() {
     assert_eq!(ui.call("pane.create", json!({"aliases": many}))["result"]["aliases"].as_array().unwrap().len(), 8);
 }
 
-/// FR-56: agent keluar = layar diganti blok ringkas; output lengkap tetap bisa dibuka selama pane hidup.
+/// FR-56: agent exits = screen replaced by a summary block; the full output can still be opened while the pane lives.
 #[test]
 fn ringkas_output_saat_agent_keluar() {
     let d = start("ringkas");
@@ -735,22 +735,22 @@ fn ringkas_output_saat_agent_keluar() {
     assert!(String::from_utf8_lossy(&B64.decode(full).unwrap()).contains("OUTPUT-AGENT-PANJANG"));
 }
 
-/// FR-56: agent yang diketik sendiri di pane shell juga diringkas (perintah + cara lanjut), prompt shell tetap ada.
+/// FR-56: an agent typed by hand in a shell pane is summarized too (command + how to resume), the shell prompt stays.
 #[test]
 fn ringkas_agent_manual() {
     let d = start("manual");
     let omp = d.dir.join("omp");
-    // salinan binary gembala bernama "omp" (agent dikenali dari nama proses); /bin/sleep salinan ditolak macOS
+    // copy of the gembala binary named "omp" (agents are recognized by process name); macOS rejects a copied /bin/sleep
     std::fs::copy(env!("CARGO_BIN_EXE_gembala"), &omp).unwrap();
     let mut ui = Cli::ui(&d);
-    // prompt shell harus terlihat di bawah blok; dengan input editor (FR-59) prompt zsh sengaja kosong
+    // the shell prompt must show below the block; with the input editor (FR-59) the zsh prompt is empty on purpose
     ui.call("config.set", json!({"section": "ui", "key": "input_editor", "value": false}));
     let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     ui.call("pane.attach", json!({"pane": pane}));
     std::thread::sleep(Duration::from_secs(1));
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode("echo RIWAYAT-$((40+2))\r")}));
     std::thread::sleep(Duration::from_millis(500));
-    // agent yang membersihkan layar dan scrollback saat mulai (seperti Claude Code): riwayat sebelumnya tetap ada
+    // an agent that clears the screen and scrollback at start (like Claude Code): earlier history stays
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode(format!("printf '\\033[2J\\033[3J\\033[H'; '{}' watch\r", omp.display()))}));
     std::thread::sleep(Duration::from_secs(3));
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode("\x03")}));
@@ -761,20 +761,20 @@ fn ringkas_agent_manual() {
     }
     let text = String::from_utf8(written(&e["params"])).unwrap();
     assert!(text.contains("omp watch") && text.contains("omp --continue"), "{text}");
-    assert_eq!(e["params"]["resume"], "omp --continue"); // tombol Lanjutkan di UI
-    // ala Warp: perintah sebelum agent tetap ada di atas blok; baris perintah agent tidak dobel
+    assert_eq!(e["params"]["resume"], "omp --continue"); // the Resume button in the UI
+    // like Warp: commands before the agent stay above the block; the agent's command line isn't doubled
     assert!(text.contains("RIWAYAT-42") && text.find("RIWAYAT-42") < text.find("omp watch"), "{text}");
     assert_eq!(text.matches("watch").count(), 1, "{text}");
     std::thread::sleep(Duration::from_millis(500));
     let snap = snapshot(&Cli::ui(&d).call("pane.attach", json!({"pane": pane})));
     let snap = String::from_utf8_lossy(&B64.decode(snap).unwrap()).into_owned();
-    // prompt shell tampil di bawah blok, dengan bracketed paste tetap menyala
+    // the shell prompt shows below the block, with bracketed paste still on
     let after = snap.split("--continue").nth(1).unwrap_or_default();
     assert!(after.contains('%') || after.contains('$'), "prompt shell harus tampil di bawah blok: {snap}");
     assert!(snap.contains("\x1b[?2004h"), "bracketed paste prompt hilang: {snap}");
 }
 
-/// FR-62: blok perintah tersimpan tanpa output, lalu tampil di pane baru yang membawa `history` pane lama.
+/// FR-62: command blocks saved without output, then shown in a new pane that carries the old pane's `history`.
 #[test]
 fn riwayat_blok_tersimpan_tanpa_output() {
     use std::os::unix::fs::PermissionsExt;
@@ -805,13 +805,13 @@ fn riwayat_blok_tersimpan_tanpa_output() {
     assert!(!snap(&mut Cli::ui(&d), r).contains("Sesi sebelumnya"));
 }
 
-/// FR-58: pane zsh memancarkan penanda blok OSC 133 (C + perintah base64, D + exit code); ZDOTDIR pengguna kembali.
+/// FR-58: zsh panes emit OSC 133 block markers (C + base64 command, D + exit code); the user's ZDOTDIR comes back.
 #[test]
 fn penanda_blok_zsh() {
     let d = start("blok");
     let mut ui = Cli::ui(&d);
     let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
-    ui.call("pane.attach", json!({"pane": p})); // penanda hanya ada di stream, snapshot grid tidak memuatnya
+    ui.call("pane.attach", json!({"pane": p})); // markers only exist in the stream, the grid snapshot doesn't hold them
     std::thread::sleep(Duration::from_secs(1));
     ui.call("pane.write", json!({"pane": p, "data": B64.encode("(exit 3)\r")}));
     std::thread::sleep(Duration::from_millis(300));
@@ -820,27 +820,27 @@ fn penanda_blok_zsh() {
     let out = ui.attach_until(p, &[&format!("ZD-{zd}-2")]);
     assert!(out.contains(&format!("\x1b]133;C;{}\x07", B64.encode("(exit 3)"))), "{out:?}");
     assert!(out.contains("\x1b]133;D;3\x07"), "{out:?}");
-    // FR-59: prompt disembunyikan, baris perintah ditulis tebal oleh zle (kepala blok)
+    // FR-59: prompt hidden, the command line written in bold by zle (block head)
     assert!(out.contains("\x1b[1m"), "perintah tidak tebal: {out:?}");
-    // FR-59: attach berikutnya tahu shell sedang di prompt (snapshot tidak memuat penanda)
+    // FR-59: the next attach knows the shell is at the prompt (the snapshot holds no markers)
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(Cli::ui(&d).call("pane.attach", json!({"pane": p}))["result"]["prompt"], true);
 }
 
-/// FR-9: perintah `gembala` bisa dipanggil tanpa path lengkap dari pane (login shell).
+/// FR-9: the `gembala` command can be called without a full path from a pane (login shell).
 #[test]
 fn gembala_ada_di_path_pane() {
     let d = start("path");
     let mut ui = Cli::ui(&d);
     let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     std::thread::sleep(Duration::from_secs(1));
-    // penanda dihitung shell: gema ketikan (`SELESAI-$((1+1))`) tidak ikut cocok, hanya output perintah
+    // the marker is computed by the shell: the typed echo (`SELESAI-$((1+1))`) doesn't match, only the command output
     ui.call("pane.write", json!({"pane": p, "data": B64.encode("command -v gembala; echo SELESAI-$((1+1))\r")}));
     let out = ui.attach_until(p, &["SELESAI-2"]);
     assert!(out.contains(env!("CARGO_BIN_EXE_gembala")), "{out}");
 }
 
-/// Agent yang diketik manual di pane shell terlihat oleh agent lain lewat `status` (jalur antar agent).
+/// An agent typed by hand in a shell pane is visible to other agents through `status` (the agent-to-agent path).
 #[test]
 fn agent_manual_terlihat_di_status() {
     let d = start("manualst");
@@ -851,17 +851,17 @@ fn agent_manual_terlihat_di_status() {
     let b = ui.call("pane.create", json!({"workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     std::thread::sleep(Duration::from_secs(1));
     ui.call("pane.write", json!({"pane": b, "data": B64.encode(format!("'{}' watch\r", omp.display()))}));
-    std::thread::sleep(Duration::from_secs(3)); // screen_watch mengenali agent manual tiap 1 detik
+    std::thread::sleep(Duration::from_secs(3)); // screen_watch recognizes manual agents every 1 second
     let a = ui.call("pane.create", json!({"workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     std::thread::sleep(Duration::from_secs(1));
-    // penanda dihitung shell: gema ketikan tidak ikut cocok, hanya setelah `status` selesai
+    // the marker is computed by the shell: the typed echo doesn't match, only after `status` finishes
     ui.call("pane.write", json!({"pane": a, "data": B64.encode(format!("'{g}' status; echo SELESAI-$((40+2))\r"))}));
     let out = ui.attach_until(a, &["SELESAI-42"]);
     assert!(out.contains("\"agent\":\"omp\""), "{out}");
 }
 
-/// FR-4: Claude diketik di pane shell yang mengirim hook = status dari hook saja; output layar (redraw status line)
-/// tidak membuatnya bekerja lalu selesai berulang (notifikasi "selesai" menumpuk).
+/// FR-4: Claude typed in a shell pane that sends hooks = status from hooks only; screen output (status line redraws)
+/// doesn't make it go working then done over and over ("done" notifications piling up).
 #[test]
 fn agent_manual_berhook_tidak_dibaca_dari_layar() {
     let d = start("manualhook");
@@ -871,7 +871,7 @@ fn agent_manual_berhook_tidak_dibaca_dari_layar() {
     let mut ui = Cli::ui(&d);
     let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     std::thread::sleep(Duration::from_secs(1));
-    // output berkala di layar selagi `claude` di depan, seperti status line yang digambar ulang
+    // periodic output on screen while `claude` is in front, like a status line being redrawn
     let cmd = format!("'{g}' hook claude start </dev/null; (while :; do echo tik; sleep 2; done) & '{}' watch\r", claude.display());
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode(cmd)}));
     let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
@@ -883,7 +883,7 @@ fn agent_manual_berhook_tidak_dibaca_dari_layar() {
     }
 }
 
-/// FR-40: pane yang menunggu password (kanonik + echo mati) terdeteksi; proses biasa tidak.
+/// FR-40: a pane waiting for a password (canonical + echo off) is detected; a normal process isn't.
 #[test]
 fn deteksi_menunggu_password() {
     let d = start("pass");
@@ -903,7 +903,7 @@ fn deteksi_menunggu_password() {
     }
 }
 
-/// FR-4 cadangan: agent tanpa hook (profil custom) dibaca dari layar.
+/// FR-4 fallback: agents without hooks (custom profile) are read from the screen.
 #[test]
 fn status_dari_pola_layar() {
     let d = start("screen");
@@ -927,7 +927,7 @@ fn status_dari_pola_layar() {
 
 // ---------- Fase 2 ----------
 
-/// Tulis config profil uji dan tunggu daemon membacanya.
+/// Write a test profile config and wait for the daemon to read it.
 fn profiles(d: &Daemon, ui: &mut Cli, toml: &str, wait_for: &str) {
     let cfg = d.dir.join("cfg");
     std::fs::create_dir_all(&cfg).unwrap();
@@ -944,18 +944,18 @@ fn sh_profile(id: &str, script: &str) -> String {
     format!("[[profile]]\nid = \"{id}\"\ncommand = \"sh\"\nargs = [\"-c\", {}]\n", json!(script))
 }
 
-/// Kriteria 1 + FR-19: dari satu pane, satu perintah mengirim tugas; balasan `reply` terbaca kembali tanpa keyboard.
+/// Criterion 1 + FR-19: from one pane, one command sends a task; the `reply` answer is read back without a keyboard.
 #[test]
 fn kriteria_1_kirim_dan_balas() {
     let d = start("bus1");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
-    // penerima: baca label (ambil msg_id) dan isi, lalu balas
+    // recipient: read the label (take msg_id) and body, then reply
     let terima = format!(
         "IFS= read -r l; id=$(printf '%s' \"$l\" | sed -n 's/.*· \\(msg_[a-z0-9]*\\)\\].*/\\1/p'); IFS= read -r b; \
          '{g}' reply \"$id\" \"hasil untuk: $(printf '%s' \"$b\" | tr -cd 'a-z ')\"; sleep 30"
     );
-    // pengirim: kirim lalu tunggu balasan
+    // sender: send, then wait for the reply
     let kirim = format!(
         "sleep 2; id=$('{g}' send terima-1 'tulis unit test' --queue | sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p'); \
          echo ID=$id; '{g}' wait --reply \"$id\" --timeout 20; echo SELESAI-K1; sleep 30"
@@ -972,7 +972,7 @@ fn kriteria_1_kirim_dan_balas() {
     assert!(h.contains("\"sent\"") && h.contains("\"reply\""), "{h}");
 }
 
-/// FR-66: agent bersandbox membalas lewat akhir gilirannya (hook notify Codex), dan memakai `gembala` lewat spool.
+/// FR-66: a sandboxed agent replies through the end of its turn (Codex notify hook), and uses `gembala` through the spool.
 #[test]
 fn fr66_balasan_akhir_giliran_dan_spool() {
     use std::os::unix::fs::PermissionsExt;
@@ -980,7 +980,7 @@ fn fr66_balasan_akhir_giliran_dan_spool() {
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let tok = d.dir.join("tok");
-    // penerima tidak memanggil `reply`: hanya hook notify Codex dengan pesan terakhir giliran
+    // the recipient doesn't call `reply`: only the Codex notify hook with the turn's last message
     let terima = format!(
         "'{g}' token > '{}'; IFS= read -r l; IFS= read -r b; \
          '{g}' hook codex notify '{{\"type\":\"agent-turn-complete\",\"last-assistant-message\":\"JAWABAN-OTOMATIS\"}}'; sleep 30",
@@ -995,7 +995,7 @@ fn fr66_balasan_akhir_giliran_dan_spool() {
     let a = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(a, &["SELESAI-66"]);
     assert!(out.contains("JAWABAN-OTOMATIS"), "{out}");
-    // spool: token pane penerima, permintaan sebagai file seperti dari dalam sandbox
+    // spool: the recipient pane's token, the request as a file like from inside the sandbox
     let token = std::fs::read_to_string(&tok).unwrap().trim().to_string();
     assert_eq!(token.len(), 32, "{token}");
     let spool = d.dir.join("spool");
@@ -1018,7 +1018,7 @@ fn fr66_balasan_akhir_giliran_dan_spool() {
     assert_eq!(std::fs::metadata(spool.join("a1.res")).unwrap().permissions().mode() & 0o777, 0o600);
 }
 
-/// FR-68: id sesi dari hook agent (Codex `thread-id`, OpenCode `sessionID`) tersimpan untuk lanjut persis; id berbahaya ditolak.
+/// FR-68: session id from the agent hook (Codex `thread-id`, OpenCode `sessionID`) is stored for exact resume; dangerous ids are rejected.
 #[test]
 fn fr68_id_sesi_dari_hook() {
     let d = start("sesi68");
@@ -1034,8 +1034,8 @@ fn fr68_id_sesi_dari_hook() {
     assert_eq!(ui.call("pane.info", json!({"pane": p}))["result"]["session"], "01a19b1c-2cfb-7290-b33f-af39083bb39b");
 }
 
-/// FR-61: akun dibuat di HOME sementara: folder 0700, tautan dari Utama, file yang ada tidak ditimpa,
-/// folder di luar home ditolak, email terbaca, hapus akun tidak menyentuh folder.
+/// FR-61: account created in a temp HOME: folder 0700, links from Utama, existing files aren't overwritten,
+/// folders outside home rejected, email read, removing the account doesn't touch the folder.
 #[test]
 fn fr61_akun_agent() {
     use std::os::unix::fs::PermissionsExt;
@@ -1064,13 +1064,13 @@ fn fr61_akun_agent() {
     assert!(list.contains("kerja@kantor.id") && list.contains("\"Utama\"") && list.contains("\"Klien\""), "{list}");
     ui.call("account.remove", json!({"id": "kantor"}));
     let list = ui.call("account.list", json!({}))["result"]["accounts"].to_string();
-    // FR-61 (7): folder akun ikut hilang, tautan dilepas tanpa menyentuh isi Utama
+    // FR-61 (7): the account folder goes too, links dropped without touching Utama's content
     assert!(!list.contains("\"Kantor\"") && !k.exists() && home.join(".claude/CLAUDE.md").exists(), "{list}");
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// FR-61 (8): butir jadi Sendiri = salinan isi Utama (projects kosong); kembali Ikut Utama = isi akun disimpan
-/// `.gembala-bak` lalu ditautkan; model/effort tersimpan dan nilai asing ditolak.
+/// FR-61 (8): item becomes Own = copy of Utama's content (projects empty); back to Follow Utama = account content kept as
+/// `.gembala-bak`, then linked; model/effort saved and foreign values rejected.
 #[test]
 fn fr61_setelan_per_akun() {
     let home = std::env::temp_dir().join(format!("gbl-{}-home61b", std::process::id()));
@@ -1099,7 +1099,7 @@ fn fr61_setelan_per_akun() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Kriteria 10 + SEC-21: baca hanya dalam workspace sama; pane shell hanya bila diizinkan pengguna.
+/// Criterion 10 + SEC-21: read only within the same workspace; shell panes only when the user allows it.
 #[test]
 fn kriteria_10_baca_dibatasi() {
     let d = start("bus10");
@@ -1107,20 +1107,20 @@ fn kriteria_10_baca_dibatasi() {
     let g = env!("CARGO_BIN_EXE_gembala");
     let script = format!("sleep 1; '{g}' read lain-1; '{g}' read shell-1; echo SELESAI-K10; sleep 30");
     profiles(&d, &mut ui, &(sh_profile("lain", "sleep 60") + &sh_profile("baca", &script)), "SELESAI-K10");
-    ui.call("pane.create", json!({"workspace": "w1"})); // shell-1, tidak diizinkan dibaca
+    ui.call("pane.create", json!({"workspace": "w1"})); // shell-1, not allowed to be read
     ui.call("pane.create", json!({"profile": "lain", "workspace": "w2"})); // workspace lain
     let p = ui.call("pane.create", json!({"profile": "baca", "workspace": "w1"}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(p, &["SELESAI-K10"]);
     assert_eq!(out.matches("acl_denied").count(), 2, "{out}");
 }
 
-/// Kriteria 4 + FR-12: tidak ada pesan ke `blocked`; kebijakan `confirm` = kartu yang hanya bisa diputus kanal UI.
+/// Criterion 4 + FR-12: no messages to `blocked`; policy `confirm` = a card only the UI channel can decide.
 #[test]
 fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
     let d = start("bus4");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
-    // isi berpola kunci privat: dulu disamarkan di kartu tapi tetap terkirim utuh (audit run-1)
+    // body with a private key pattern: used to be redacted on the card but still sent whole (audit run-1)
     let script = format!("sleep 2; '{g}' send tanya-1 halo; '{g}' send sopan-1 halo -----BEGIN PRIVATE KEY----- TERSEMBUNYI; echo SELESAI-K4; sleep 30");
     let toml = sh_profile("tanya", "printf 'Hapus semua? (y/n) '; sleep 60")
         + &sh_profile("sopan", "sleep 60")
@@ -1134,17 +1134,17 @@ fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
     assert!(out.contains("target_blocked") && out.contains("needs_confirmation"), "{out}");
     let pending = ui.call("msg.list", json!({}))["result"]["pending"].clone();
     assert_eq!(pending.as_array().unwrap().len(), 1, "{pending}");
-    // kartu = isi persis yang akan dikirim (SEC-12 pengecualian FR-12)
+    // card = exactly what will be sent (SEC-12 exception for FR-12)
     assert!(pending[0]["body"].as_str().unwrap().contains("TERSEMBUNYI"), "{pending}");
     let id = pending[0]["id"].as_str().unwrap().to_string();
-    // kanal pane tidak bisa menyetujui (kriteria 9)
+    // the pane channel can't approve (criterion 9)
     let mut outsider = Cli::connect(&d, "pane.sock");
     assert_eq!(outsider.call("hello", json!({"proto": 1}))["error"]["code"], "not_a_pane");
     let r = ui.call("msg.approve", json!({"id": id}))["result"].clone();
     assert!(r["result"] == "accepted" || r["result"] == "queued", "{r}");
 }
 
-/// Kriteria 5: pesan berisi ESC, CR, `\e[201~`, C1, dan baris baru = tepat satu kiriman (satu Enter) di target.
+/// Criterion 5: a message with ESC, CR, `\e[201~`, C1, and newlines = exactly one send (one Enter) at the target.
 #[test]
 fn kriteria_5_satu_kiriman() {
     let d = start("bus5");
@@ -1152,7 +1152,7 @@ fn kriteria_5_satu_kiriman() {
     let g = env!("CARGO_BIN_EXE_gembala");
     let body = "a\\rb\\x1b[201~c\\xc2\\x9bd\\ne";
     let kirim = format!("sleep 4; '{g}' send cat-1 \"$(printf '{body}')\" --queue; echo SELESAI-K5; sleep 30");
-    // target: terminal mode raw, setiap byte kontrol tampil (cat -v): Enter = ^M
+    // target: raw-mode terminal, every control byte shows (cat -v): Enter = ^M
     profiles(&d, &mut ui, &(sh_profile("cat", "stty raw -echo; cat -v") + &sh_profile("kirim", &kirim)), "SELESAI-K5");
     let t = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let k = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
@@ -1165,13 +1165,13 @@ fn kriteria_5_satu_kiriman() {
     assert!(!got.contains("M-^["), "C1 dibuang: {got}");
 }
 
-/// Kriteria 8: dua agent yang diprogram saling membalas berhenti di hop 3.
+/// Criterion 8: two agents programmed to answer each other stop at hop 3.
 #[test]
 fn kriteria_8_berhenti_di_hop_3() {
     let d = start("bus8");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
-    // tiap agent: baca label pesan masuk, balas ke lawan dengan --reply-to, ulangi
+    // each agent: read the incoming label, reply to the other with --reply-to, repeat
     let pingpong = |lawan: &str| {
         format!(
             "while IFS= read -r l; do id=$(printf '%s' \"$l\" | sed -n 's/.*· \\(msg_[a-z0-9]*\\)\\].*/\\1/p'); \
@@ -1196,13 +1196,13 @@ fn kriteria_8_berhenti_di_hop_3() {
     }
 }
 
-/// Kriteria 7: API key palsu tercetak di layar dan ikut dalam pesan tidak tersimpan di log atau disk mana pun.
+/// Criterion 7: a fake API key printed on screen and included in a message isn't stored in any log or on disk.
 #[test]
 fn kriteria_7_key_tidak_ke_disk() {
     let d = start("bus7");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
-    // key dibentuk saat skrip jalan, supaya teksnya tidak ada di config.toml buatan uji ini sendiri
+    // the key is built when the script runs, so its text isn't in this test's own config.toml
     let key = "sk-ant-api03-PALSU$((1234567000+890))";
     let kirim = format!("echo {key}; sleep 4; '{g}' send diam-1 'pakai {key} ya' --queue; '{g}' read diam-1; echo SELESAI-K7; sleep 30");
     profiles(&d, &mut ui, &(sh_profile("diam", &format!("echo {key}; sleep 60")) + &sh_profile("kirim", &kirim)), "SELESAI-K7");
@@ -1226,7 +1226,7 @@ fn kriteria_7_key_tidak_ke_disk() {
     }
 }
 
-/// FR-8 + SEC-21: langganan status hanya untuk pane di workspace yang sama.
+/// FR-8 + SEC-21: status subscriptions only for panes in the same workspace.
 #[test]
 fn langganan_status_per_workspace() {
     let d = start("sub");
@@ -1247,14 +1247,14 @@ fn langganan_status_per_workspace() {
     assert!(!all.contains("sana-1"), "workspace lain tidak boleh terlihat: {all}");
 }
 
-/// SEC-3 cadangan: proses yang lepas dari sesi pane hanya dikenali lewat token profil `token = true`;
-/// token tersamar di `read` (SEC-12).
+/// SEC-3 fallback: a process detached from the pane session is only recognized through a profile token `token = true`;
+/// the token is redacted in `read` (SEC-12).
 #[test]
 fn token_cadangan() {
     let d = start("token");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
-    // setsid + subshell yang langsung keluar = proses keluar dari sesi dan pohon pane (induk jadi launchd), seperti server tmux
+    // setsid + a subshell that exits right away = the process leaves the pane session and tree (parent becomes launchd), like a tmux server
     let lepas = format!("sleep 1; (perl -e 'use POSIX; POSIX::setsid(); sleep 1; exec @ARGV' '{g}' status &); sleep 3; echo; echo TOKEN=$GEMBALA_TOKEN; echo SELESAI-T; sleep 30");
     let toml = sh_profile("bertoken", &lepas) + "token = true\n" + &sh_profile("tanpa", &lepas);
     profiles(&d, &mut ui, &toml, "SELESAI-T");
@@ -1265,7 +1265,7 @@ fn token_cadangan() {
     let out_b = ui2.attach_until(b, &["SELESAI-T"]);
     assert!(out_a.contains("\"me\":\"bertoken-1\""), "{out_a}");
     assert!(out_b.contains("not_a_pane"), "{out_b}");
-    // token tidak ikut terbaca agent lain
+    // the token isn't read by other agents
     let token: String = out_a.split("TOKEN=").nth(1).unwrap_or_default().chars().take(32).collect();
     assert_eq!(token.len(), 32, "{out_a}");
     let read_script = format!("sleep 1; '{g}' read bertoken-1 -n 50; echo SELESAI-R; sleep 30");
@@ -1276,7 +1276,7 @@ fn token_cadangan() {
     assert!(read.contains("TOKEN=[disamarkan]") && !read.contains(&token), "{read}");
 }
 
-/// SEC-3: proses yang membuat sesi baru tapi masih keturunan shell pane (mis. tool Bash Claude Code) tetap dikenali tanpa token.
+/// SEC-3: a process that creates a new session but still descends from the pane shell (e.g. Claude Code's Bash tool) is recognized without a token.
 #[test]
 fn sesi_baru_masih_anak_pane() {
     let d = start("anak");
@@ -1289,7 +1289,7 @@ fn sesi_baru_masih_anak_pane() {
     assert!(out.contains("\"me\":\"anak-1\""), "{out}");
 }
 
-/// SEC-5: flag lewati-izin yang tidak terlihat di profil (dibungkus skrip) tetap terbaca dari argumen proses.
+/// SEC-5: skip-permission flags not visible in the profile (wrapped in a script) are still read from the process arguments.
 #[test]
 fn lewati_izin_dari_argumen_proses() {
     let d = start("yolo");

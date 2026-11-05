@@ -1,4 +1,4 @@
-//! Grid VT per pane di RAM: snapshot attach (FR-2), teks polos untuk `read` (FR-7).
+//! Per-pane VT grid in RAM: attach snapshot (FR-2), plain text for `read` (FR-7).
 
 use std::num::NonZeroU16;
 
@@ -145,8 +145,8 @@ fn pending(b: &[u8]) -> usize {
     if tail.len() - k < need { b.len() - (tail.len() - k) } else { b.len() }
 }
 
-/// vt100 menganggap bold dan dim saling ganti (`ESC[2m` saja dari bold ke dim), xterm menganggap keduanya terpisah:
-/// tanpa `22` dulu, baris dim sesudah baris bold tampil bold+dim. Tiap parameter 1/2 didahului 22 (lewati warna 38/48).
+/// vt100 treats bold and dim as swapping (`ESC[2m` alone goes from bold to dim), xterm treats them as separate:
+/// without a `22` first, a dim line after a bold line shows bold+dim. Every 1/2 parameter is preceded by 22 (skipping colors 38/48).
 fn fix_intensity(s: &str) -> String {
     let re = regex_lite::Regex::new("\x1b\\[([0-9;]*)m").unwrap();
     re.replace_all(s, |c: &regex_lite::Captures| {
@@ -237,9 +237,9 @@ impl Grid {
         self.2.resize(rows.max(1), cols.max(1));
     }
 
-    /// Byte yang ditulis ke terminal kosong berukuran sama supaya tampil identik:
-    /// layar alternatif, isi + warna, posisi/visibilitas kursor, mode input
-    /// (bracketed paste, mouse, application cursor/keypad, bentuk kursor). Tanpa scrollback; lihat `replay`.
+    /// Bytes written to an empty terminal of the same size so it looks identical:
+    /// alternate screen, content + colors, cursor position/visibility, input modes
+    /// (bracketed paste, mouse, application cursor/keypad, cursor shape). No scrollback; see `replay`.
     pub fn snapshot(&self) -> Vec<u8> {
         let s = self.0.screen();
         let mut out = String::new();
@@ -272,15 +272,15 @@ impl Grid {
         (&self.2.segs, tail)
     }
 
-    /// `(panjang scrollback, baris kursor)`: posisi baris sekarang di riwayat layar utama.
+    /// `(scrollback length, cursor row)`: the current row's position in the main screen history.
     pub fn position(&self) -> (usize, u16) {
         let s = self.0.screen();
         (s.scrollback_len(), s.cursor_position().0)
     }
 
-    /// FR-56: baris layar utama (berwarna, tertua dulu) sebelum `position` yang dicatat tadi, siap ditulis ulang ke
-    /// grid baru. Layar alternatif tidak punya riwayat: kosong.
-    // ponytail: bila scrollback sudah penuh sejak `position` dicatat, baris yang terbuang menggeser potongan
+    /// FR-56: main screen rows (colored, oldest first) before the `position` recorded earlier, ready to write again to a
+    /// new grid. The alternate screen has no history: empty.
+    // ponytail: if the scrollback filled up since `position` was recorded, the dropped rows shift the slice
     pub fn before(&mut self, (sb, row): (usize, u16)) -> Vec<u8> {
         let s = self.0.screen_mut();
         if s.alternate_screen() {
@@ -316,8 +316,8 @@ impl Grid {
         self.0.screen().contents()
     }
 
-    /// Baris kursor berwarna lalu kolom kursor: prompt shell tetap tampil setelah layar diganti (FR-56 agent manual).
-    /// Mode bracketed paste prompt ikut dipulihkan, supaya tempelan banyak baris tidak langsung dijalankan.
+    /// Cursor row in color, then cursor column: the shell prompt still shows after the screen is replaced (FR-56 manual agent).
+    /// The prompt's bracketed paste mode is restored too, so a multi-line paste doesn't run right away.
     pub fn cursor_line(&self) -> Vec<u8> {
         let s = self.0.screen();
         let (row, col) = s.cursor_position();
@@ -329,7 +329,7 @@ impl Grid {
         out.into_bytes()
     }
 
-    /// Baris terbawah layar yang berisi teks (FR-4 pola layar).
+    /// Bottom screen row that has text (FR-4 screen pattern).
     pub fn tail(&self, n: usize) -> String {
         let all = self.text();
         let lines: Vec<&str> = all.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -364,7 +364,7 @@ mod tests {
         b
     }
 
-    /// Attach ulang = snapshot A ditulis ke grid baru B; B harus sama persis dengan A.
+    /// Re-attach = snapshot A written to a new grid B; B must match A exactly.
     fn assert_roundtrip(a: &Grid) {
         let (rows, cols) = a.0.screen().size();
         let mut b = Grid::new(rows.get(), cols.get(), 0);
@@ -524,7 +524,7 @@ mod tests {
         assert_roundtrip(&g);
     }
 
-    /// Jalankan TUI nyata di PTY sebentar, lalu kirim SIGKILL.
+    /// Run a real TUI in a PTY briefly, then send SIGKILL.
     fn capture(cmd: &str, rows: u16, cols: u16, dur: Duration) -> Vec<u8> {
         let mut p = Pty::spawn(Some(cmd), rows, cols, &[], None).unwrap();
         let r = p.master.try_clone().unwrap();
@@ -550,7 +550,7 @@ mod tests {
     #[ignore]
     fn bench_feed() {
         let line = format!("{}\r\n", "a".repeat(100));
-        let chunk = line.repeat(160); // ~16 KB, seukuran baca PTY
+        let chunk = line.repeat(160); // ~16 KB, about one PTY read
         for sb in [0, 1_000, 10_000] {
             let mut g = Grid::new(40, 120, sb);
             let t = std::time::Instant::now();

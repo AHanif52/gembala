@@ -1,5 +1,5 @@
-//! FR-61, C-9: akun agent = satu folder config agent yang dipakai lewat env resmi (`CLAUDE_CONFIG_DIR`).
-//! Gembala tidak menyentuh login atau token (Keychain milik agent); tidak ada jalur yang memilih akun selain manusia.
+//! FR-61, C-9: agent account = one agent config folder used through the official env (`CLAUDE_CONFIG_DIR`).
+//! Gembala never touches login or tokens (the agent's Keychain); no path picks an account other than the human.
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use crate::config::io_err;
 use crate::diag::Diag;
 
-/// Butir folder Utama yang boleh ditautkan ke akun baru (bukan input bebas). `projects` = memori + riwayat, opsional.
+/// Items of the Utama folder a new account may link (not free input). `projects` = memory + history, optional.
 pub const SHARE: &[&str] = &["CLAUDE.md", "settings.json", "skills", "commands", "agents", "plugins", "projects"];
 pub const SHARE_DEFAULT: &[&str] = &["CLAUDE.md", "settings.json", "skills", "commands", "agents", "plugins"];
-/// FR-61 (8): pilihan model dan effort per akun (alias resmi `claude --help`); kosong = ikut settings.json
+/// FR-61 (8): model and effort per account (official aliases, `claude --help`); empty = follow settings.json
 pub const MODELS: &[&str] = &["fable", "opus", "sonnet", "haiku"];
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const ENV: &str = "CLAUDE_CONFIG_DIR";
@@ -20,13 +20,13 @@ pub struct Account {
     pub id: String,
     pub agent: String,
     pub name: String,
-    /// seperti ditulis di config (mis. `~/.claude-kantor`)
+    /// as written in config (e.g. `~/.claude-kantor`)
     pub dir: String,
     pub share: Vec<String>,
-    /// FR-61 (8): `--model`/`--effort` tiap Claude akun ini dijalankan dari Gembala; kosong = bawaan
+    /// FR-61 (8): `--model`/`--effort` each time Claude for this account is launched from Gembala; empty = default
     pub model: String,
     pub effort: String,
-    /// folder dipercaya Utama disalin ke akun ini (FR-61); bawaan nyala
+    /// folders trusted in Utama are copied to this account (FR-61); on by default
     pub trust: bool,
 }
 
@@ -39,7 +39,7 @@ pub fn main_dir() -> PathBuf {
     home().join(".claude")
 }
 
-/// `~/x` → `$HOME/x`; selain itu apa adanya.
+/// `~/x` → `$HOME/x`; anything else as is.
 pub fn expand(dir: &str) -> PathBuf {
     match dir.strip_prefix("~/") {
         Some(rest) => home().join(rest),
@@ -47,14 +47,14 @@ pub fn expand(dir: &str) -> PathBuf {
     }
 }
 
-/// Folder akun sah: di bawah `$HOME` (tanpa `..`, tidak menembus lewat symlink), bukan folder Utama atau home sendiri.
+/// Valid account folder: under `$HOME` (no `..`, no escape through a symlink), not the Utama folder or home itself.
 pub fn valid_dir(dir: &str) -> Result<PathBuf, Diag> {
     let p = expand(dir);
     if !p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err("dir_bad_path".into());
     }
     let h = home();
-    // bagian yang sudah ada diresolusi: symlink yang menunjuk keluar home ditolak
+    // the part that exists is resolved: a symlink pointing outside home is rejected
     let real = p.ancestors().find(|a| a.exists()).and_then(|a| a.canonicalize().ok().map(|r| r.join(p.strip_prefix(a).unwrap_or(Path::new("")))));
     let real = real.unwrap_or(p.clone());
     let home_real = h.canonicalize().unwrap_or(h.clone());
@@ -72,7 +72,7 @@ fn valid_id(id: &str) -> bool {
     (1..=32).contains(&id.len()) && id.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') && id != "utama"
 }
 
-/// `[[account]]` dari config.toml; yang tidak lolos dilewati dengan galat (FR-42).
+/// `[[account]]` from config.toml; entries that fail are skipped with an error (FR-42).
 pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Account>, Vec<Diag>) {
     let (mut out, mut errors): (Vec<Account>, Vec<Diag>) = (Vec::new(), Vec::new());
     for (i, t) in tables.iter().enumerate() {
@@ -120,12 +120,12 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Account>, Vec<D
     (out, errors)
 }
 
-/// Env yang diekspor peluncur agent (nilai `~/…` dibuka shell, bagian 6).
+/// Env the agent launcher exports (`~/…` values expanded by the shell, section 6).
 pub fn env(a: &Account) -> (String, String) {
     (ENV.into(), a.dir.clone())
 }
 
-/// FR-61 (8): flag model/effort akun untuk baris perintah Claude
+/// FR-61 (8): the account's model/effort flags for the Claude command line
 pub fn flags(a: &Account) -> Vec<String> {
     let mut out = vec![];
     for (flag, v) in [("--model", &a.model), ("--effort", &a.effort)] {
@@ -140,8 +140,8 @@ pub fn conflicts(env: &[(String, String)]) -> bool {
     env.iter().any(|(k, _)| k == ENV)
 }
 
-/// FR-61, C-9: akun pane = pilihan saat membuka pane (`chosen`, dari UI termasuk bawaan workspace) > akun profil
-/// > Utama. Env akun ditambahkan ke profil; hasilnya nama akun untuk label (kosong = Utama).
+/// FR-61, C-9: pane account = choice when opening the pane (`chosen`, from the UI incl. the workspace default) > profile
+/// account > Utama. The account env is added to the profile; result is the account name for the label (empty = Utama).
 pub fn apply(p: &mut crate::profile::Profile, chosen: Option<&str>, accounts: &[Account]) -> Result<String, &'static str> {
     let want = chosen.filter(|s| !s.is_empty()).map(String::from).unwrap_or_else(|| p.account.clone());
     if want.is_empty() || want == "utama" {
@@ -156,8 +156,8 @@ pub fn apply(p: &mut crate::profile::Profile, chosen: Option<&str>, accounts: &[
     Ok(a.name.clone())
 }
 
-/// Buat folder akun (0700) dan tautan butir `share` dari Utama. Butir yang sudah ada tidak ditimpa;
-/// dikembalikan sebagai daftar yang dilewati.
+/// Create the account folder (0700) and link the `share` items from Utama. Items that already exist aren't overwritten;
+/// they're returned as the skipped list.
 pub fn create(a: &Account) -> Result<Vec<String>, Diag> {
     use std::os::unix::fs::PermissionsExt;
     let dir = valid_dir(&a.dir)?;
@@ -179,8 +179,8 @@ pub fn create(a: &Account) -> Result<Vec<String>, Diag> {
     Ok(skipped)
 }
 
-/// FR-61 (8): satu butir jadi Ikut Utama (`follow`) atau Sendiri. Sendiri = tautan diganti salinan isi Utama
-/// (`projects` mulai kosong: besar); Ikut Utama = isi milik akun disimpan sebagai `<butir>.gembala-bak`, lalu ditautkan.
+/// FR-61 (8): one item becomes Follow Utama (`follow`) or Own. Own = the link is replaced by a copy of Utama's content
+/// (`projects` starts empty: big); Follow Utama = the account's content is kept as `<item>.gembala-bak`, then linked.
 pub fn set_share(a: &Account, item: &str, follow: bool) -> Result<(), Diag> {
     if !SHARE.contains(&item) {
         return Err(Diag::new("unknown_item").arg("item", item));
@@ -208,16 +208,16 @@ pub fn set_share(a: &Account, item: &str, follow: bool) -> Result<(), Diag> {
     if !src.exists() {
         return Ok(());
     }
-    // `cp -Rp`: isi Utama saat ini jadi titik awal milik akun; symlink di dalamnya disalin apa adanya
+    // `cp -Rp`: Utama's current content becomes the account's starting point; symlinks inside are copied as is
     let ok = std::process::Command::new("/bin/cp").arg("-Rp").arg(&src).arg(&dst).status().is_ok_and(|s| s.success());
     if ok { Ok(()) } else { Err(Diag::new("copy_failed").arg("item", item)) }
 }
 
-/// FR-61 (7): folder akun ikut dihapus. `remove_dir_all` tidak mengikuti symlink, jadi tautan ke Utama hanya dilepas.
-/// Hanya folder `.claude…` yang bukan symlink, supaya folder lain yang kebetulan ditunjuk akun tidak terhapus.
+/// FR-61 (7): the account folder is removed too. `remove_dir_all` doesn't follow symlinks, so links to Utama are only dropped.
+/// Only `.claude…` folders that aren't symlinks, so another folder the account happens to point at isn't deleted.
 pub fn delete_dir(dir: &str) -> Result<(), Diag> {
     let p = valid_dir(dir)?;
-    let Ok(meta) = p.symlink_metadata() else { return Ok(()) }; // folder sudah tidak ada
+    let Ok(meta) = p.symlink_metadata() else { return Ok(()) }; // folder is already gone
     let named = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(".claude"));
     if !named || !meta.is_dir() {
         return Err(Diag::new("not_account_dir").arg("dir", dir));
@@ -225,8 +225,8 @@ pub fn delete_dir(dir: &str) -> Result<(), Diag> {
     std::fs::remove_dir_all(&p).map_err(|e| io_err("io_rmdir", e))
 }
 
-/// Status akun untuk daftar: sudah dipakai (`.claude.json` ada) dan email dari `oauthAccount.emailAddress` saja.
-/// Field lain dibuang; file > 5 MB atau rusak = tanpa email. Token tidak ada di file ini (Keychain).
+/// Account state for the list: used (`.claude.json` exists) and the email from `oauthAccount.emailAddress` only.
+/// Other fields are dropped; file > 5 MB or broken = no email. Tokens aren't in this file (Keychain).
 pub fn status(config_json: &Path) -> Value {
     let used = config_json.exists();
     let email = std::fs::metadata(config_json)
@@ -238,7 +238,7 @@ pub fn status(config_json: &Path) -> Value {
     json!({"used": used, "email": email})
 }
 
-/// `.claude.json` akun: Utama di home, akun lain di dalam foldernya (terbukti 2 Nov 2026, Claude Code 2.1.309).
+/// Account `.claude.json`: Utama in home, other accounts inside their folder (verified 2 Nov 2026, Claude Code 2.1.309).
 pub fn config_json(a: Option<&Account>) -> PathBuf {
     match a {
         None => home().join(".claude.json"),
@@ -246,9 +246,9 @@ pub fn config_json(a: Option<&Account>) -> PathBuf {
     }
 }
 
-/// FR-61: folder yang dipercaya di Utama ikut dipercaya di akun `dir`. Satu arah dan hanya menambah:
-/// `.claude.json` Utama hanya dibaca; yang ditulis ke akun hanya `projects.<folder>.hasTrustDialogAccepted`.
-/// Akun yang belum pernah dipakai (file belum ada) dilewati. Hasil = jumlah folder yang ditambahkan.
+/// FR-61: folders trusted in Utama are trusted in account `dir` too. One way and add-only:
+/// Utama's `.claude.json` is only read; the only thing written to the account is `projects.<folder>.hasTrustDialogAccepted`.
+/// Accounts never used yet (no file) are skipped. Result = number of folders added.
 pub fn sync_trust(dir: &str) -> usize {
     let Ok(dir) = valid_dir(dir) else { return 0 };
     let read = |p: &Path| -> Option<Value> {
@@ -261,7 +261,7 @@ pub fn sync_trust(dir: &str) -> usize {
     if n == 0 {
         return 0;
     }
-    // salinan sebelum ditulis (satu, ditimpa tiap sinkron) supaya file akun bisa dipulihkan
+    // copy before writing (one, overwritten each sync) so the account file can be restored
     let _ = std::fs::copy(&target_path, dir.join(".claude.json.gembala-bak"));
     if crate::config::write_atomic(&target_path, target.to_string().as_bytes()).is_err() {
         return 0;
@@ -289,7 +289,7 @@ pub fn to_json(a: &Account) -> Value {
     json!({"id": a.id, "agent": a.agent, "name": a.name, "dir": a.dir, "share": a.share, "model": a.model, "effort": a.effort, "trust": a.trust})
 }
 
-/// Nama → id: huruf kecil, selain a-z0-9 jadi `-`.
+/// Name → id: lowercase, anything other than a-z0-9 becomes `-`.
 pub fn slug(name: &str) -> String {
     let s: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     s.split('-').filter(|x| !x.is_empty()).collect::<Vec<_>>().join("-").chars().take(32).collect()
@@ -297,10 +297,10 @@ pub fn slug(name: &str) -> String {
 
 const MAX_SESSIONS: usize = 2000;
 
-/// FR-61: akun pemilik sesi Claude (id akun, "" = Utama), dicatat di `file` (`sessions.json`, id → akun + waktu).
-/// `new` = sesi baru (SessionStart startup/clear): `cur` jadi pemilik. Selain itu yang tercatat, lalu tebakan dari
-/// riwayat blok, lalu `cur`; hasilnya ikut dicatat. Riwayat sesi yang ditautkan antar akun (FR-61 (2)) membuat
-/// `claude -r` di satu akun bisa memilih sesi akun lain.
+/// FR-61: account owning a Claude session (account id, "" = Utama), recorded in `file` (`sessions.json`, id → account + time).
+/// `new` = new session (SessionStart startup/clear): `cur` becomes the owner. Otherwise what's recorded, then a guess from
+/// block history, then `cur`; the result gets recorded. Session history linked between accounts (FR-61 (2)) lets
+/// `claude -r` in one account pick another account's session.
 pub fn session_owner(file: &Path, id: &str, cur: &str, new: bool) -> String {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = LOCK.lock().unwrap();
@@ -310,7 +310,7 @@ pub fn session_owner(file: &Path, id: &str, cur: &str, new: bool) -> String {
     }
     let owner = if new { cur.to_string() } else { crate::history::resume_account(id).unwrap_or_else(|| cur.to_string()) };
     map.insert(id.into(), json!({"a": owner, "t": crate::history::now()}));
-    // ponytail: sort penuh tiap lewat batas; cukup untuk 2.000 entri
+    // ponytail: full sort each time the cap is passed; enough for 2,000 entries
     if map.len() > MAX_SESSIONS {
         let mut by_t: Vec<(u64, String)> = map.iter().map(|(k, v)| (v["t"].as_u64().unwrap_or_default(), k.clone())).collect();
         by_t.sort();
@@ -356,21 +356,21 @@ mod tests {
         let claude = || crate::profile::builtin().into_iter().find(|p| p.id == "claude").unwrap();
         let acc = |id: &str, name: &str| Account { id: id.into(), agent: "claude".into(), name: name.into(), dir: format!("~/.claude-{id}"), share: vec![], model: String::new(), effort: String::new(), trust: true };
         let all = [acc("kantor", "Kantor"), acc("klien", "Klien")];
-        // tanpa pilihan, tanpa akun profil = Utama
+        // no choice, no profile account = Utama
         let mut p = claude();
         assert_eq!(apply(&mut p, None, &all), Ok(String::new()));
         assert!(!conflicts(&p.env));
-        // akun profil dipakai bila tidak dipilih saat membuka pane
+        // the profile account is used when none is picked while opening the pane
         let mut p = crate::profile::Profile { account: "klien".into(), ..claude() };
         assert_eq!(apply(&mut p, Some(""), &all), Ok("Klien".into()));
         assert!(crate::profile::launch(&p, None, None).unwrap().contains("export CLAUDE_CONFIG_DIR=\"$HOME\"/'.claude-klien'"));
-        // pilihan saat membuka pane menang atas akun profil; "utama" = tanpa env
+        // the choice when opening the pane wins over the profile account; "utama" = no env
         let mut p = crate::profile::Profile { account: "klien".into(), ..claude() };
         assert_eq!(apply(&mut p, Some("kantor"), &all), Ok("Kantor".into()));
         let mut p = crate::profile::Profile { account: "klien".into(), ..claude() };
         assert_eq!(apply(&mut p, Some("utama"), &all), Ok(String::new()));
         assert!(!conflicts(&p.env));
-        // akun tak dikenal, atau agent lain, ditolak; env ganda ditolak
+        // unknown account, or another agent, is rejected; duplicate env is rejected
         assert_eq!(apply(&mut claude(), Some("hilang"), &all), Err("no_such_account"));
         let mut codex = crate::profile::builtin().into_iter().find(|p| p.id == "codex").unwrap();
         assert_eq!(apply(&mut codex, Some("kantor"), &all), Err("no_such_account"));
@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(delete_dir(&dir), Ok(()));
         assert!(!p.exists() && target.join("CLAUDE.md").exists(), "tautan dilepas, isi Utama tetap");
         assert_eq!(delete_dir(&dir), Ok(()), "sudah tidak ada = beres");
-        // folder bukan .claude… atau symlink ditolak
+        // a folder that isn't .claude… or is a symlink is rejected
         let other = format!("~/gembala-uji-{pid}");
         std::fs::create_dir_all(expand(&other)).unwrap();
         assert!(delete_dir(&other).is_err() && expand(&other).exists());
@@ -428,14 +428,14 @@ mod tests {
             "/r/c": {"hasTrustDialogAccepted": false, "history": [1]},
             "/r/k": {"hasTrustDialogAccepted": true}}});
         assert_eq!(merge_trust(&main, &mut t), 2);
-        // hanya tanda trust yang disalin; isi lain akun dan login tidak tersentuh
+        // only the trust flag is copied; the account's other content and login stay untouched
         assert_eq!(t["projects"]["/r/a"], json!({"hasTrustDialogAccepted": true}));
         assert_eq!(t["projects"]["/r/c"], json!({"hasTrustDialogAccepted": true, "history": [1]}));
         assert_eq!(t["projects"]["/r/b"], Value::Null);
         assert_eq!(t["projects"]["/r/k"]["hasTrustDialogAccepted"], true);
         assert_eq!(t["oauthAccount"]["emailAddress"], "k@b");
         assert_eq!(merge_trust(&main, &mut t), 0, "sinkron kedua tidak menulis apa-apa");
-        // akun baru tanpa `projects` tetap diisi; format asing dilewati
+        // a new account without `projects` still gets filled; a foreign format is skipped
         let mut fresh = json!({"numStartups": 1});
         assert_eq!(merge_trust(&main, &mut fresh), 2);
         assert_eq!(merge_trust(&main, &mut json!([])), 0);
@@ -448,13 +448,13 @@ mod tests {
         std::fs::DirBuilder::new().mode(0o700).create(&d).unwrap();
         let f = d.join("sessions.json");
         let id = "9b7c267f-d248-4521-aa3c-fe3293169e49";
-        // dimulai di Utama, dilanjutkan di Kantor: pemilik tetap Utama
+        // started in Utama, continued in Kantor: owner stays Utama
         assert_eq!(session_owner(&f, id, "", true), "");
         assert_eq!(session_owner(&f, id, "kantor", false), "");
-        // /clear di Kantor = sesi baru milik Kantor
+        // /clear in Kantor = new session owned by Kantor
         assert_eq!(session_owner(&f, id, "kantor", true), "kantor");
         assert_eq!(session_owner(&f, id, "", false), "kantor");
-        // file rusak = mulai kosong, tidak panik
+        // broken file = start empty, no panic
         std::fs::write(&f, b"{rusak").unwrap();
         assert_eq!(session_owner(&f, id, "kantor", true), "kantor");
         std::fs::remove_dir_all(&d).unwrap();

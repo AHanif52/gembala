@@ -1,8 +1,8 @@
 //! Daemon: kanal UI + kanal pane, registri pane, attach (TECH bagian 8, pekerjaan 0.3).
 //!
-//! Kanal UI (SEC-20): `hello` wajib membawa rahasia yang dibuat daemon saat start dan hanya
-//! diserahkan ke peluncurnya lewat descriptor; koneksi dari dalam sesi pane ditolak walau
-//! rahasianya benar. Kanal pane (SEC-3): identitas dari `getsid(peer_pid)`, bukan isi pesan.
+//! UI channel (SEC-20): `hello` must carry the secret the daemon creates at start and only
+//! hands to its launcher through a descriptor; connections from inside a pane session are rejected even
+//! with the right secret. Pane channel (SEC-3): identity from `getsid(peer_pid)`, not the message content.
 
 use crate::account;
 use crate::addon;
@@ -33,15 +33,15 @@ use std::time::Duration;
 
 pub const PROTO: u64 = 1;
 const MAX_LINE: u64 = 64 * 1024;
-/// Scrollback vt100 grid daemon: riwayat attach, FR-56 dan log FR-62 datang dari ring byte mentah (`Grid::mark`,
-/// `rewind`, `history`), `read`/`wait` hanya layar terlihat. Satu baris vt100 ~5 KB, jadi tanpa scrollback.
+/// vt100 scrollback of the daemon grid: attach history, FR-56 and the FR-62 log come from the raw byte ring (`Grid::mark`,
+/// `rewind`, `history`), `read`/`wait` only see the visible screen. One vt100 row is ~5 KB, hence no scrollback.
 const SCROLLBACK: usize = 0;
-/// FR-62 / SEC-13: log layar utama di disk = 1.000 baris terakhir (keputusan pengguna 3 Nov 2026)
+/// FR-62 / SEC-13: main screen log on disk = last 1,000 rows (user decision 3 Nov 2026)
 const LOG_LINES: usize = 1_000;
-/// Antrean per koneksi. Penuh = klien terlalu lambat: koneksinya diputus (attach ulang dapat snapshot)
-/// supaya RAM daemon tidak membengkak dan agent tidak tertahan.
+/// Queue per connection. Full = client too slow: its connection is dropped (re-attach gets a snapshot)
+/// so daemon RAM doesn't balloon and agents aren't held up.
 const QUEUE: usize = 256;
-/// FR-79: nama lama per pane yang tetap jadi alamat
+/// FR-79: old names per pane that still work as addresses
 const ALIAS_MAX: usize = 8;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -52,70 +52,70 @@ enum Chan {
 
 struct Pane {
     master: File,
-    /// PID shell pane = id sesi semua prosesnya (shell dijalankan dengan `setsid`).
+    /// Pane shell PID = session id of all its processes (the shell runs under `setsid`).
     sid: i32,
-    /// Nama otomatis `<agent>-<n>` (FR-30), bisa diganti, unik per daemon (FR-3); agent profilnya ("shell" bila tanpa profil).
+    /// Automatic name `<agent>-<n>` (FR-30), renamable, unique per daemon (FR-3); the profile's agent ("shell" without a profile).
     name: Mutex<String>,
-    /// FR-79: nama lama pane ini (yang tertua di depan, maks `ALIAS_MAX`), tetap jadi alamat `send`/`wait`/`read`
+    /// FR-79: old names of this pane (oldest first, max `ALIAS_MAX`), still addresses for `send`/`wait`/`read`
     aliases: Mutex<Vec<String>>,
     agent: String,
-    /// FR-4: idle | working | blocked | done; kosong = tidak dilacak (shell, profil tanpa hook)
+    /// FR-4: idle | working | blocked | done; empty = not tracked (shell, profile without hooks)
     status: Mutex<&'static str>,
-    /// FR-53, FR-68: id sesi agent di pane ini (tervalidasi per agent): dari Gembala (Claude profil), argumen
-    /// `--session-id` agent manual, atau hook (Codex `thread-id`, OpenCode `sessionID`). Untuk lanjut sesi persis.
+    /// FR-53, FR-68: agent session id in this pane (validated per agent): from Gembala (Claude profile), the `--session-id`
+    /// argument of a manual agent, or a hook (Codex `thread-id`, OpenCode `sessionID`). For exact session resume.
     session: Mutex<Option<String>>,
-    /// FR-56: output sesi agent yang sedang jalan (sejak penanda mulai) dan sesi terakhir yang sudah selesai; RAM saja (SEC-13)
+    /// FR-56: output of the running agent session (since the start marker) and of the last finished session; RAM only (SEC-13)
     agent_log: Mutex<Option<(std::time::Instant, Vec<u8>)>>,
     last_output: Mutex<Vec<u8>>,
-    /// FR-56: posisi ring (`Grid::mark`) di awal prompt terakhir (penanda OSC 133 A) dan riwayat sebelum agent jalan;
-    /// blok ringkas ditulis di bawahnya saat agent keluar, riwayat perintah sebelumnya tetap (ala Warp).
-    /// Urutan kunci: `view` dulu.
+    /// FR-56: ring position (`Grid::mark`) at the start of the last prompt (OSC 133 A marker) and the history before the agent ran;
+    /// the summary block is written below it when the agent exits, earlier command history stays (like Warp).
+    /// Key order: `view` first.
     prompt_at: Mutex<Option<u64>>,
-    /// FR-56: riwayat sebelum perintah terakhir, dicatat saat perintah mulai (OSC 133 C). Agent manual baru
-    /// terdeteksi ±1 detik kemudian, saat itu Claude sudah membersihkan layar dan scrollback
+    /// FR-56: history before the last command, recorded when the command starts (OSC 133 C). A manual agent is only
+    /// detected ±1 second later, by which time Claude has cleared the screen and scrollback
     pre_cmd: Mutex<Option<u64>>,
     pre_agent: Mutex<Option<u64>>,
-    /// FR-62: file riwayat blok pane ini; blok yang sedang jalan (sejak OSC 133 C) dan blok agent manual yang
-    /// sudah selesai tapi menunggu perintah lanjutnya dari `agent_done`.
+    /// FR-62: this pane's block history file; the running block (since OSC 133 C) and the manual agent block that
+    /// has finished but is waiting for its resume command from `agent_done`.
     hist: std::path::PathBuf,
-    /// FR-69: judul terminal terakhir (OSC 0/2) yang dipasang program di pane; RAM saja (SEC-13)
+    /// FR-69: last terminal title (OSC 0/2) set by a program in the pane; RAM only (SEC-13)
     title: Mutex<String>,
     /// FR-70: potretan per giliran agent (antrean `snap::queue`)
     turns: Arc<Mutex<snap::Turns>>,
-    /// FR-61: id akun agent pane ini; kosong = Utama. Agent yang diketik: dari `CLAUDE_CONFIG_DIR` prosesnya
+    /// FR-61: agent account id of this pane; empty = Utama. Typed agent: from its process's `CLAUDE_CONFIG_DIR`
     account: Mutex<String>,
-    /// FR-61: akun pemilik sesi Claude yang sedang jalan bila beda dari akun pane ("" = Utama); dari hook SessionStart
+    /// FR-61: account owning the running Claude session when it differs from the pane account ("" = Utama); from the SessionStart hook
     owner: Mutex<Option<String>>,
     block: Mutex<OpenBlocks>,
-    /// FR-56: agent yang diketik manual di pane shell (nama proses, perintah lengkap, folder kerja agent).
-    /// Urutan kunci: `view` lalu `manual`.
+    /// FR-56: agent typed by hand in a shell pane (process name, full command, agent working folder).
+    /// Key order: `view`, then `manual`.
     manual: Mutex<Option<(String, String, Option<std::path::PathBuf>)>>,
-    /// FR-4 cadangan: kapan output terakhir datang; profil `custom` dilacak dari layar
+    /// FR-4 fallback: when the last output arrived; `custom` profiles are tracked from the screen
     last_out: Mutex<std::time::Instant>,
-    /// FR-59: shell sedang di prompt (penanda OSC 133 B terakhir, belum C); ikut di attach karena snapshot tanpa OSC
+    /// FR-59: shell is at the prompt (last OSC 133 marker is B, no C yet); sent with attach since the snapshot has no OSC
     at_prompt: std::sync::atomic::AtomicBool,
-    /// FR-4: agent manual ini mengirim hook lengkap (Claude, omp, OpenCode; bukan Codex yang hanya `notify`):
-    /// status dari hook saja. Tanpa ini redraw status line Claude terbaca bekerja lalu selesai berulang (notif menumpuk)
+    /// FR-4: this manual agent sends full hooks (Claude, omp, OpenCode; not Codex, which only has `notify`):
+    /// status from hooks only. Without this, Claude's status line redraws read as working then done over and over (notifications pile up)
     hooked: std::sync::atomic::AtomicBool,
     screen: bool,
     started: std::time::Instant,
-    /// Fase 2: workspace (aturan akses SEC-4/21), kebijakan penerima (SEC-5), kapan status terakhir berubah
-    /// (stabil 500 ms, SEC-28), boleh dibaca agent (pane shell, SEC-21), ketikan pengguna terakhir (FR-11)
+    /// Phase 2: workspace (access rules SEC-4/21), recipient policy (SEC-5), when the status last changed
+    /// (stable 500 ms, SEC-28), readable by agents (shell pane, SEC-21), last user keystroke (FR-11)
     workspace: Mutex<String>,
     policy: Mutex<msg::Policy>,
     status_at: Mutex<std::time::Instant>,
     readable: std::sync::atomic::AtomicBool,
     typed_at: Mutex<Option<std::time::Instant>>,
-    /// SEC-3 cadangan: token 128-bit untuk proses yang lepas dari sesi pane (mis. server tmux, profil `token = true`)
-    /// atau yang tidak bisa memakai socket (FR-66: Codex bersandbox, dibuat lewat `gembala token`)
+    /// SEC-3 fallback: 128-bit token for processes detached from the pane session (e.g. a tmux server, profile `token = true`)
+    /// or that can't use sockets (FR-66: sandboxed Codex, created through `gembala token`)
     token: Mutex<Option<String>>,
-    /// Grid dan pelanggan dikunci bersama: attach tidak kehilangan atau menggandakan output.
+    /// Grid and subscribers are locked together: attach never loses or duplicates output.
     view: Mutex<(Grid, Vec<Sub>)>,
 }
 
 impl Pane {
-    /// Agent dari profil, atau agent yang diketik manual di pane shell (FR-56): terlihat di `status`, boleh dikirimi
-    /// dan dibaca seperti agent lain. Pane shell biasa tetap tunduk SEC-21.
+    /// Agent from a profile, or an agent typed by hand in a shell pane (FR-56): shows in `status`, can be messaged
+    /// and read like any other agent. A plain shell pane still falls under SEC-21.
     fn agent_name(&self) -> Option<String> {
         if self.agent != "shell" {
             return Some(self.agent.clone());
@@ -127,7 +127,7 @@ impl Pane {
 struct Sub {
     tx: SyncSender<String>,
     sock: UnixStream,
-    /// id koneksi: satu langganan per koneksi per pane (attach ulang tidak menggandakan event)
+    /// connection id: one subscription per connection per pane (re-attach doesn't duplicate events)
     conn: u64,
 }
 
@@ -137,29 +137,29 @@ struct State {
     panes: Mutex<HashMap<u64, Arc<Pane>>>,
     next: AtomicU64,
     secret: Option<String>,
-    /// SEC-20: requirement tanda tangan UI (dari sertifikat daemon sendiri); `None` = hanya rahasia
+    /// SEC-20: UI signature requirement (from the daemon's own certificate); `None` = secret only
     ui_req: Option<String>,
     pane_sock: String,
-    /// Klien kanal UI yang sedang tersambung (FR-20: daemon berhenti bila 0 dan semua pane diam).
+    /// UI channel clients currently connected (FR-20: the daemon stops at 0 when every pane is idle).
     ui_clients: AtomicUsize,
-    /// Antrean event semua klien UI, untuk event yang bukan milik satu pane (`config.changed`).
-    /// Dilepas saat klien putus (UiClient), supaya thread penulisnya ikut selesai.
+    /// Event queues of all UI clients, for events that don't belong to one pane (`config.changed`).
+    /// Removed when a client disconnects (UiClient), so its writer thread ends too.
     ui_txs: Mutex<Vec<(u64, SyncSender<String>)>>,
     ui_next: AtomicU64,
-    /// Config yang berlaku + galatnya (FR-42). File rusak = nilai valid terakhir tetap dipakai.
+    /// Config in effect + its errors (FR-42). Broken file = the last valid values stay in use.
     config: Mutex<Value>,
     profiles: Mutex<Vec<profile::Profile>>,
-    /// FR-61: `[[account]]` dari config
+    /// FR-61: `[[account]]` from config
     accounts: Mutex<Vec<account::Account>>,
     /// FR-78: add-ons from config
     addons: Mutex<addon::Addons>,
-    /// Hasil deteksi agent terakhir (FR-28); Null = belum pernah.
+    /// Last agent detection result (FR-28); Null = never ran.
     agents: Mutex<Value>,
-    /// Id acak per run daemon: id pane dari run lain tidak boleh dianggap pane yang sama (FR-45).
+    /// Random id per daemon run: a pane id from another run must not be taken for the same pane (FR-45).
     boot: String,
     hooks: profile::Hooks,
     engine: Mutex<bus::Engine>,
-    /// FR-8: langganan event status dari kanal pane (pelanggan, antreannya), disaring SEC-21 saat kirim
+    /// FR-8: status event subscriptions from the pane channel (subscriber, its queue), filtered by SEC-21 on send
     pane_subs: Mutex<Vec<(u64, SyncSender<String>)>>,
     audit: Option<bus::Audit>,
     /// FR-16/17: active harness runs, panes they hold, sender ids (runner.rs)
@@ -178,7 +178,7 @@ impl Drop for UiClient {
 mod runner;
 
 type Res = Result<Value, &'static str>;
-/// FR-62: (blok yang sedang jalan + waktu mulainya, blok agent manual yang menunggu perintah lanjut)
+/// FR-62: (running block + its start time, manual agent block waiting for its resume command)
 type OpenBlocks = (Option<(history::Block, std::time::Instant)>, Option<history::Block>);
 
 pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::Result<()> {
@@ -217,7 +217,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     let st3 = st.clone();
     thread::spawn(move || idle_exit(st3));
     let st9 = st.clone();
-    thread::spawn(move || save_logs_loop(st9)); // FR-62: log layar ke disk, riwayat lebih dari 14 hari dibuang
+    thread::spawn(move || save_logs_loop(st9)); // FR-62: screen log to disk, history older than 14 days dropped
     let (st8, run_dir) = (st.clone(), dir.to_path_buf());
     thread::spawn(move || spool(st8, run_dir));
     let st4 = st.clone();
@@ -225,7 +225,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     let st6 = st.clone();
     thread::spawn(move || screen_watch(st6));
     let st5 = st.clone();
-    thread::spawn(move || *st5.agents.lock().unwrap() = profile::detect()); // FR-28: saat pertama dibuka
+    thread::spawn(move || *st5.agents.lock().unwrap() = profile::detect()); // FR-28: on first open
     let st2 = st.clone();
     thread::spawn(move || accept(pn, st2, Chan::Pane));
     accept(ui, st, Chan::Ui);
@@ -236,7 +236,7 @@ fn bind(p: &Path) -> io::Result<UnixListener> {
     if UnixStream::connect(p).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("daemon already running: {}", p.display())));
     }
-    let _ = fs::remove_file(p); // socket basi dari daemon yang mati
+    let _ = fs::remove_file(p); // stale socket from a dead daemon
     let l = UnixListener::bind(p)?;
     fs::set_permissions(p, fs::Permissions::from_mode(0o600))?;
     Ok(l)
@@ -263,8 +263,8 @@ fn reply(tx: &SyncSender<String>, id: &Value, r: Res) {
     let _ = tx.send(line(v));
 }
 
-/// Sesi selesai (normal atau ditolak): penulis diberi tanda kosong, menghabiskan antrean, lalu menutup
-/// socket dua arah. Klien tidak menunggu selamanya dan balasan terakhir tetap sampai.
+/// Session over (normal or rejected): the writer gets an empty marker, drains the queue, then shuts down
+/// the socket both ways. The client doesn't wait forever and the last reply still arrives.
 struct CloseAfterFlush(SyncSender<String>, UnixStream);
 
 impl Drop for CloseAfterFlush {
@@ -276,19 +276,19 @@ impl Drop for CloseAfterFlush {
 }
 
 fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
-    // SEC-2: akun OS lain ditolak sebelum apa pun (lapis kedua di atas socket 0600 + folder 0700)
+    // SEC-2: other OS accounts are rejected before anything else (second layer on top of socket 0600 + folder 0700)
     let (mut uid, mut gid) = (0, 0);
     if unsafe { libc::getpeereid(s.as_raw_fd(), &mut uid, &mut gid) } != 0 || uid != unsafe { libc::getuid() } {
         return Ok(());
     }
     let peer = peer_pid(&s)?;
-    // SEC-20: UI bertanda tangan sama dengan daemon dikenali dari audit token saat connect, tanpa rahasia
+    // SEC-20: a UI signed like the daemon is recognized from the audit token at connect, no secret
     let signed = chan == Chan::Ui && st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r));
     let (tx, rx) = sync_channel::<String>(QUEUE);
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let mut w = s.try_clone()?;
     let sock = s.try_clone()?;
-    // satu penulis per koneksi: balasan dan event tidak saling potong
+    // one writer per connection: replies and events don't cut into each other
     thread::spawn(move || {
         for l in rx {
             if l.is_empty() || w.write_all(l.as_bytes()).is_err() {
@@ -300,7 +300,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     let _close = CloseAfterFlush(tx.clone(), s.try_clone()?);
     let mut r = BufReader::new(s);
     let mut ready = false;
-    // kanal pane: identitas ditetapkan sekali saat hello (getsid atau token), bukan dari isi pesan
+    // pane channel: identity is fixed once at hello (getsid or token), not from message content
     let mut ident: Option<u64> = None;
     let mut _ui: Option<UiClient> = None;
     loop {
@@ -335,7 +335,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             continue;
         }
         if chan == Chan::Pane {
-            // identitas dari hello (getsid atau token), bukan dari isi pesan (SEC-3); pane yang sudah ditutup = tidak berlaku
+            // identity from hello (getsid or token), not from message content (SEC-3); a closed pane = invalid
             let me = ident.filter(|id| st.panes.lock().unwrap().contains_key(id));
             let r = match (method, me) {
                 ("subscribe", Some(me)) => {
@@ -343,20 +343,20 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     Ok(json!({}))
                 }
                 ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons", Some(me)) => pane_method(&st, me, method, p),
-                // "start" = SessionStart Claude: id sesi, pemiliknya, dan status diam (kecuali compact di tengah giliran)
+                // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
-                        // FR-66: pesan terakhir giliran agent bersandbox = balasan untuk pesan yang menunggu
+                        // FR-66: last message of a sandboxed agent's turn = reply to the waiting message
                         if let Some(text) = p["reply"].as_str() {
                             auto_reply(&st, me, text);
                         }
                         let pane = st.panes.lock().unwrap().get(&me).cloned();
                         if let Some(pane) = pane {
-                            // FR-68: id sesi dari hook agent (Codex thread-id, OpenCode sessionID, Claude session_id)
+                            // FR-68: session id from the agent hook (Codex thread-id, OpenCode sessionID, Claude session_id)
                             if let (Some(agent), Some(id)) = (p["agent"].as_str(), p["session"].as_str())
                                 && profile::valid_session(agent, id)
                             {
-                                // FR-61: sesi baru atau ganti sesi (pemilih `claude -r`) = cek akun pemiliknya
+                                // FR-61: new session or session switch (`claude -r` picker) = check its owning account
                                 if agent == "claude" && (status == "start" || pane.session.lock().unwrap().as_deref() != Some(id)) {
                                     let cur = acct_of_dir(&st, p["dir"].as_str().map(String::from));
                                     let new = status == "start" && matches!(p["source"].as_str(), Some("startup" | "clear"));
@@ -372,8 +372,8 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                             if status != "start" {
                                 set_status(&st, me, &pane, status, None);
                             } else if p["source"].as_str() != Some("compact") {
-                                // SessionStart = agent menunggu prompt; tebakan layar sebelum hook pertama (spinner
-                                // startup `claude` diketik = "bekerja") tidak lagi diperbaiki layar setelah pane ber-hook
+                                // SessionStart = agent waiting for a prompt; the screen guess before the first hook (startup spinner
+                                // of a typed `claude` = "working") is no longer corrected by the screen once the pane has hooks
                                 set_status(&st, me, &pane, "idle", None);
                             }
                         }
@@ -381,7 +381,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     }
                     None => Err("bad_params"),
                 },
-                // ponytail: method pane (send/wait/read/reply/status) baru di Fase 2
+                // ponytail: pane methods (send/wait/read/reply/status) arrive in Phase 2
                 _ => Err("not_allowed"),
             };
             reply(&tx, id, r);
@@ -397,11 +397,11 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     let (segs, tail) = v.0.replay();
                     let segs: Vec<_> = segs.iter().map(|s| json!({"rows": s.rows, "cols": s.cols, "data": B64.encode(&s.data)})).collect();
                     reply(&tx, id, Ok(json!({"segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "prompt": prompt, "sync": true})));
-                    // penanda urutan di antrean yang sama: event pane sebelum ini sudah ada di snapshot, sesudahnya belum.
-                    // UI (balasan dan event lewat jalur berbeda di Tauri) membuang event sebelum penanda; tanpa ini event
-                    // yang ditahan selama attach ditulis dua kali dan gambar ulang TUI (kursor relatif) jadi berantakan
+                    // order marker in the same queue: pane events before it are already in the snapshot, the ones after aren't.
+                    // The UI (replies and events take different paths in Tauri) drops events before the marker; without this, events
+                    // held during attach get written twice and TUI redraws (relative cursor) get garbled
                     let _ = tx.try_send(line(json!({"event": "pane.attached", "params": {"pane": p["pane"]}})));
-                    // attach ulang dari koneksi yang sama (tab pindah workspace) mengganti langganan lama, bukan menambah
+                    // re-attach from the same connection (tab moved to another workspace) replaces the old subscription, doesn't add one
                     v.1.retain(|s| s.conn != conn);
                     if let Ok(sock) = sock.try_clone() {
                         v.1.push(Sub { tx: tx.clone(), sock, conn });
@@ -421,7 +421,7 @@ fn hello(st: &State, chan: Chan, peer: i32, signed: bool, p: &Value) -> Res {
     }
     let mut pane = st.pane_of_pid(peer);
     if chan == Chan::Pane && pane.is_none() {
-        // SEC-3 cadangan: proses di luar sesi pane membuktikan diri dengan token pane (dicabut saat pane ditutup)
+        // SEC-3 fallback: a process outside the pane session proves itself with the pane token (revoked when the pane closes)
         pane = p["token"].as_str().and_then(|t| {
             st.pane_of_token(t)
         });
@@ -443,7 +443,7 @@ fn hello(st: &State, chan: Chan, peer: i32, signed: bool, p: &Value) -> Res {
     Ok(json!({"proto": PROTO, "daemon": env!("CARGO_PKG_VERSION"), "pane": pane, "boot": st.boot, "signed": signed}))
 }
 
-/// FR-3: huruf kecil, angka, '-', maks 32
+/// FR-3: lowercase, digits, '-', max 32
 fn valid_name(n: &str) -> bool {
     (1..=32).contains(&n.len()) && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
@@ -461,11 +461,11 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!(ids))
         }
         "config.get" => Ok(st.config.lock().unwrap().clone()),
-        // `msg` dipakai Pengaturan > Keamanan supaya angka rem tidak ditulis dua kali di UI
+        // `msg` is used by Settings > Security so the brake numbers aren't written twice in the UI
         "daemon.info" => Ok(json!({"boot": st.boot, "daemon": env!("CARGO_PKG_VERSION"), "proto": PROTO,
                                    "msg": {"rate_per_min": crate::msg::RATE_PER_MIN, "hop_max": crate::msg::HOP_MAX}})),
         "git.status" | "git.diff" => {
-            // folder kerja pane itu sendiri (proses foreground atau shell), bukan dari parameter
+            // the pane's own working folder (foreground process or shell), not from a parameter
             let pane = st.pane(p)?;
             let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
             let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
@@ -522,7 +522,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 }
             }
         }
-        // FR-71: worktree hanya lewat kanal UI (SEC-20); folder repo dari pane, bukan parameter
+        // FR-71: worktrees only through the UI channel (SEC-20); repo folder from the pane, not a parameter
         "git.worktree_add" => {
             let pane = st.pane(p)?;
             let cwd = pty::cwd_of(pane.sid).ok_or("io")?;
@@ -540,7 +540,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             git::worktree_remove(&dir, p["force"].as_bool() == Some(true))
         }
-        // FR-70: daftar giliran pane, diff satu giliran, kembalikan ke sebelum giliran (kanal UI saja, SEC-20)
+        // FR-70: a pane's turn list, the diff of one turn, restore to before a turn (UI channel only, SEC-20)
         "git.turns" => {
             let pane = st.pane(p)?;
             let done = pane.turns.lock().unwrap().done.clone();
@@ -560,7 +560,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             if m == "git.turn_restore" {
                 return Ok(json!({"restored": snap::restore(&t.root, &t.before, &files).ok_or("io")?}));
             }
-            // peringatan: pane lain mengubah repo yang sama sejak giliran ini mulai, atau HEAD berubah
+            // warning: another pane changed the same repo since this turn started, or HEAD moved
             let me = p["pane"].as_u64().unwrap_or_default();
             let others: Vec<String> = st.panes.lock().unwrap().iter().filter(|(k, _)| **k != me).filter_map(|(_, q)| {
                 let tq = q.turns.lock().unwrap();
@@ -575,7 +575,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).unwrap_or(Value::Null))
         }
         "layout.save" => {
-            // hanya struktur dari UI; ukurannya sudah dibatasi 64 KB per baris protokol
+            // structure only from the UI; its size is already capped at 64 KB per protocol line
             let body = p["layout"].to_string();
             if !p["layout"].is_object() {
                 return Err("bad_params");
@@ -598,14 +598,14 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({
                 "paused": eng.paused,
                 "muted": eng.muted.iter().filter_map(|id| names.get(id)).collect::<Vec<_>>(),
-                // SEC-12 pengecualian: kartu konfirmasi menampilkan isi persis yang akan dikirim (yang disetujui = yang sampai)
+                // SEC-12 exception: the confirm card shows exactly what will be sent (what's approved = what arrives)
                 "pending": eng.pending.iter().map(|m| { let mut v = m.summary(); v["body"] = json!(m.body); v }).collect::<Vec<_>>(),
                 "queued": queues,
                 "history": eng.history,
             }))
         }
         "msg.approve" | "msg.reject" => {
-            // FR-12: hanya kanal UI (manusia) yang bisa memutus kartu konfirmasi (SEC-20)
+            // FR-12: only the UI channel (a human) can decide a confirm card (SEC-20)
             let id = p["id"].as_str().ok_or("bad_params")?;
             let held = {
                 let mut eng = st.engine.lock().unwrap();
@@ -620,7 +620,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
         }
         "msg.pause" => {
-            // SEC-10: tombol henti; antrean ditahan, bukan dibuang
+            // SEC-10: stop button; the queue is held, not dropped
             st.engine.lock().unwrap().paused = p["on"].as_bool().unwrap_or(true);
             bus_event(st, json!({"kind": "paused", "on": st.engine.lock().unwrap().paused}));
             Ok(json!({}))
@@ -632,7 +632,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         "msg.send" => {
-            // kiriman manusia dari UI: label "pengguna"; boleh memaksa ke `unknown`, tidak pernah ke `blocked`
+            // human send from the UI: label "user"; may force to `unknown`, never to `blocked`
             let to = st.pane(&json!({"pane": p["to"]}))?;
             let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
             let status = *to.status.lock().unwrap();
@@ -683,7 +683,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             reload_config(st);
             Ok(json!({}))
         }
-        // FR-61: daftar akun + status (sudah dipakai, email); Utama selalu ada
+        // FR-61: account list + state (used, email); Utama is always there
         "account.list" => {
             let main = json!({"id": "utama", "agent": "claude", "name": "Utama", "dir": "~/.claude", "share": [], "main": true});
             let mut out = vec![json!({"account": main, "status": account::status(&account::config_json(None))})];
@@ -704,7 +704,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             if let Err(why) = account::valid_dir(&a.dir) {
                 return Ok(why.reply());
             }
-            // config dulu (validasi penuh, id/folder ganda ditolak), baru folder dan tautan
+            // config first (full validation, duplicate id/folder rejected), then folder and links
             if let Err(why) = config::save_account(&config::path(), &a) {
                 return Ok(why.reply());
             }
@@ -722,13 +722,13 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 return Ok(why.reply());
             }
             reload_config(st);
-            // FR-61 (7): folder akun ikut dihapus setelah config tidak lagi merujuknya
+            // FR-61 (7): the account folder is removed too once config no longer refers to it
             match dir.map(|d| account::delete_dir(&d)) {
                 Some(Err(why)) => Ok(why.reply()),
                 _ => Ok(json!({})),
             }
         }
-        // FR-61 (8): model/effort/trust, atau satu butir jadi Ikut Utama/Sendiri (`item` + `follow`)
+        // FR-61 (8): model/effort/trust, or one item becomes Follow Utama/Own (`item` + `follow`)
         "account.update" => {
             let id = p["id"].as_str().ok_or("bad_params")?;
             let Some(mut a) = st.accounts.lock().unwrap().iter().find(|a| a.id == id).cloned() else { return Ok(json!({"error": "no_such_account"})) };
@@ -852,7 +852,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let data = p["data"].as_str().and_then(|d| B64.decode(d).ok()).ok_or("bad_params")?;
             (&pane.master).write_all(&data).map_err(|_| "io")?;
             *pane.typed_at.lock().unwrap() = Some(std::time::Instant::now());
-            // hasil "done" dianggap sudah dibaca begitu pengguna mengetik di pane itu (bagian 8 BRD)
+            // a "done" result counts as read once the user types in that pane (BRD section 8)
             set_status(st, p["pane"].as_u64().unwrap_or_default(), &pane, "idle", Some("done"));
             Ok(json!({}))
         }
@@ -868,20 +868,20 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         "pane.agent_output" => {
-            // FR-56: output lengkap sesi agent terakhir, selama pane hidup
+            // FR-56: full output of the last agent session, while the pane lives
             let pane = st.pane(p)?;
             let data = pane.last_output.lock().unwrap().clone();
             Ok(json!({"data": B64.encode(&data), "bytes": data.len()}))
         }
         "pane.rename" => {
-            // FR-3: huruf kecil, angka, '-', maks 32, unik
+            // FR-3: lowercase, digits, '-', max 32, unique
             let pane = st.pane(p)?;
             let name = p["name"].as_str().filter(|n| valid_name(n)).ok_or("bad_name")?;
             if st.panes.lock().unwrap().values().any(|q| !Arc::ptr_eq(q, &pane) && *q.name.lock().unwrap() == name) {
                 return Err("name_taken");
             }
             let old = std::mem::replace(&mut *pane.name.lock().unwrap(), name.to_string());
-            // FR-79: nama lama jadi alias; nama baru dilepas dari alias pane mana pun (nama sekarang menang)
+            // FR-79: the old name becomes an alias; the new name is released from any pane's aliases (current names win)
             st.release(name);
             st.add_alias(&pane, &old);
             Ok(json!({"name": name, "aliases": *pane.aliases.lock().unwrap()}))
@@ -895,18 +895,18 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "password": busy.is_some() && pty::wants_password(&pane.master),
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
-                "session": *pane.session.lock().unwrap(), // FR-68: kartu lanjut walau daemon berhenti
+                "session": *pane.session.lock().unwrap(), // FR-68: resume card even if the daemon stopped
                 "title": *pane.title.lock().unwrap(), // FR-69: label pane
-                "account": acct_label(st, &pane.account.lock().unwrap()), // FR-61: chip akun
-                "account_id": *pane.account.lock().unwrap(), // FR-68: kartu lanjut `claude-<akun>` walau daemon berhenti
-                // FR-61: sesi milik akun lain: nama untuk label, id untuk Lanjutkan ("utama" = Utama)
+                "account": acct_label(st, &pane.account.lock().unwrap()), // FR-61: account chip
+                "account_id": *pane.account.lock().unwrap(), // FR-68: `claude-<account>` resume card even if the daemon stopped
+                // FR-61: session owned by another account: name for the label, id for Resume ("utama" = Utama)
                 "owner": pane.owner.lock().unwrap().as_ref().map(|o| if o.is_empty() { "Utama".into() } else { acct_label(st, o) }),
                 "owner_id": pane.owner.lock().unwrap().as_ref().map(|o| if o.is_empty() { "utama" } else { o.as_str() }.to_string()),
                 "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
             }))
         }
         "pane.kill" => {
-            // FR-50: SIGTERM ke proses yang jalan, SIGKILL bila masih hidup setelah 3 detik; shell pane tetap
+            // FR-50: SIGTERM to the running process, SIGKILL if it's still alive after 3 seconds; the pane shell stays
             let pane = st.pane(p)?;
             let Some(target) = pty::busy(&pane.master, pane.sid) else {
                 return Ok(json!({"stopped": false}));
@@ -924,7 +924,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({"stopped": true}))
         }
         "daemon.reset" => {
-            // FR-48: hanya file milik Gembala dengan nama yang dikenal, lalu folder bila kosong; data agent tidak disentuh
+            // FR-48: only Gembala-owned files with known names, then the folder if empty; agent data isn't touched
             let path = config::path();
             let dir = path.parent().ok_or("io")?;
             for f in [path.clone(), config::layout_path()] {
@@ -944,8 +944,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         "daemon.stop" => {
-            // FR-46 "Keluar dan hentikan semua agent": balasan sempat terkirim, lalu keluar;
-            // master PTY tertutup bersama proses = kernel mengirim SIGHUP ke semua sesi pane
+            // FR-46 "Quit and stop all agents": the reply gets out, then exit;
+            // PTY masters close with the process = the kernel sends SIGHUP to every pane session
             eprintln!("daemon exit: daemon.stop");
             save_logs(st, &mut HashMap::new());
             thread::spawn(|| {
@@ -956,7 +956,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         }
         "pane.close" => {
             let pane = st.pane(p)?;
-            // seperti menutup jendela terminal: SIGHUP ke job foreground dan ke sesi pane
+            // like closing a terminal window: SIGHUP to the foreground job and the pane session
             unsafe {
                 let fg = libc::tcgetpgrp(pane.master.as_raw_fd());
                 if fg > 0 {
@@ -970,23 +970,23 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
     }
 }
 
-// ---------- Fase 2: mesin pesan (BRD bagian 8) ----------
+// ---------- Phase 2: message engine (BRD section 8) ----------
 
 /// FR-30 and friends: open a pane from `pane.create` style params. `extra_args` are appended to the profile's
 /// arguments and never come from the wire (the harness runner passes model and effort flags this way).
 fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
-    // batas bagian 11 BRD, bisa diubah lewat [limits] max_panes
+    // limit from BRD section 11, adjustable through [limits] max_panes
     let max = st.config.lock().unwrap()["values"]["limits"]["max_panes"].as_u64().unwrap_or(32) as usize;
     if st.panes.lock().unwrap().len() >= max {
         return Err("max_panes");
     }
     let (rows, cols) = (dim(&p["rows"], 24), dim(&p["cols"], 80));
-    // FR-30: profil (bawaan "shell"); folder = folder profil, atau folder pane yang fokus
+    // FR-30: profile (default "shell"); folder = profile folder, or the focused pane's folder
     let mut prof = match p["profile"].as_str() {
         Some(id) => Some(st.profiles.lock().unwrap().iter().find(|x| x.id == id).cloned().ok_or("no_such_profile")?),
         None => None,
     };
-    // FR-13: peran (template) dan brief workspace ikut petunjuk launch; teks dari UI dibersihkan dan dibatasi
+    // FR-13: role (template) and workspace brief go into the launch hint; text from the UI is sanitized and capped
     if let Some(x) = prof.as_mut() {
         x.args.extend(extra_args.iter().cloned());
         let role = profile::ROLES.iter().find(|r| p["role"].as_str() == Some(r.0));
@@ -996,8 +996,8 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         x.addons = addon::args(&st.addons.lock().unwrap(), &x.agent, p["workspace"].as_str().unwrap_or_default());
         x.brief = [role.map(|r| r.2.to_string()), brief.map(|b| format!("Workspace brief from the user (read only):\n{b}"))].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
     }
-    // FR-61, C-9: akun = pilihan manusia saat membuka pane (UI, termasuk bawaan workspace) > akun profil > Utama
-    // pane shell: akun bawaan workspace dipasang ke env shell, jadi `claude` yang diketik ikut akun itu
+    // FR-61, C-9: account = the human's choice when opening the pane (UI, incl. the workspace default) > profile account > Utama
+    // shell pane: the workspace default account goes into the shell env, so a typed `claude` follows that account
     let mut shell_acct = None;
     let acct_name = match prof.as_mut() {
         Some(pr) => account::apply(pr, p["account"].as_str(), &st.accounts.lock().unwrap())?,
@@ -1010,11 +1010,11 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
             None => String::new(),
         },
     };
-    // FR-61: folder yang dipercaya di Utama ikut dipercaya di akun ini sebelum Claude-nya jalan
+    // FR-61: folders trusted in Utama become trusted in this account before its Claude runs
     if let Some(a) = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name && a.trust) {
         account::sync_trust(&a.dir);
     }
-    // FR-72: pemilih sesi bawaan agent (tanpa id); Gembala tidak membaca daftar sesi (SEC-15)
+    // FR-72: the agent's own session picker (no id); Gembala doesn't read the session list (SEC-15)
     let pick = p["pick"].as_bool() == Some(true);
     let picked = prof.as_ref().filter(|_| pick).map(|x| {
         let mut x = x.clone();
@@ -1028,7 +1028,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     let launch = picked.as_ref().or(prof.as_ref()).and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
     let cmd = launch.as_deref().or(p["cmd"].as_str());
     let home = std::env::var("HOME").unwrap_or_default();
-    // urutan folder: `cwd` eksplisit (jalankan ulang pane mati, FR-45) > folder profil > pane yang fokus
+    // folder order: explicit `cwd` (rerun a dead pane, FR-45) > profile folder > focused pane
     let explicit = p["cwd"].as_str().filter(|c| c.starts_with('/') || c.starts_with('~')).map(std::path::PathBuf::from);
     let cwd = match explicit.or_else(|| prof.as_ref().map(|x| x.cwd.clone()).filter(|c| !c.is_empty()).map(Into::into)) {
         Some(c) => {
@@ -1042,17 +1042,17 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     };
     let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
     let token = if prof.as_ref().is_some_and(|x| x.token) { Some(new_secret().map_err(|_| "io")?[..32].to_string()) } else { None };
-    // FR-9: perintah `gembala` bisa dipanggil langsung dari pane (folder binary daemon di PATH;
-    // login shell mempertahankannya lewat path_helper)
+    // FR-9: the `gembala` command can be called straight from a pane (daemon binary folder on PATH;
+    // the login shell keeps it through path_helper)
     let bin = std::path::Path::new(&st.hooks.exe).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
     let path = format!("{bin}:{}", std::env::var("PATH").unwrap_or_default());
     let mut env = vec![("GEMBALA_SOCKET", st.pane_sock.as_str()), ("PATH", path.as_str())];
-    // FR-58: pane zsh membaca file startup lewat folder hook (penanda blok OSC 133), lalu ZDOTDIR pengguna kembali
+    // FR-58: zsh panes read startup files through the hook folder (OSC 133 block markers), then the user's ZDOTDIR comes back
     let zdot = st.hooks.dir.to_string_lossy().into_owned();
     let user_zdot = std::env::var("ZDOTDIR").or_else(|_| std::env::var("HOME")).unwrap_or_default();
     if pty::login_shell().ends_with("/zsh") {
         env.extend([("ZDOTDIR", zdot.as_str()), ("GEMBALA_USER_ZDOTDIR", user_zdot.as_str())]);
-        // FR-59: editor UI menggantikan prompt shell
+        // FR-59: the UI editor replaces the shell prompt
         if st.config.lock().unwrap()["values"]["ui"]["input_editor"].as_bool() != Some(false) {
             env.push(("GEMBALA_EDITOR", "1"));
         }
@@ -1072,11 +1072,11 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         name: {
             let label = prof.as_ref().map_or("shell", |x| if x.agent == "custom" { x.id.as_str() } else { x.agent.as_str() });
             let names: Vec<String> = st.panes.lock().unwrap().values().map(|q| q.name.lock().unwrap().clone()).collect();
-            // FR-79: pane pengganti memakai nama lamanya selama tidak dipakai pane lain (nama sekarang menang)
+            // FR-79: a replacement pane uses its old name as long as no other pane uses it (current names win)
             match p["name"].as_str().filter(|n| valid_name(n) && !names.iter().any(|x| x == n)) {
                 Some(n) => Mutex::new(n.to_string()),
                 None => {
-                    // nama lama pane lain juga dilewati supaya alamatnya tidak diam-diam pindah
+                    // other panes' old names are skipped too so their addresses don't quietly move
                     let aliases: Vec<String> = st.panes.lock().unwrap().values().flat_map(|q| q.aliases.lock().unwrap().clone()).collect();
                     let n = (1..).map(|n| format!("{label}-{n}")).find(|n| !names.contains(n) && !aliases.contains(n)).unwrap_or_default();
                     Mutex::new(n)
@@ -1100,7 +1100,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         last_out: Mutex::new(std::time::Instant::now()),
         at_prompt: std::sync::atomic::AtomicBool::new(false),
         hooked: std::sync::atomic::AtomicBool::new(false),
-        // FR-68: Codex hanya punya hook `notify` (selesai); bekerja dan butuh izin dari layar
+        // FR-68: Codex only has the `notify` hook (done); working and needs-permission come from the screen
         screen: agent == "custom" || agent == "codex",
         started: std::time::Instant::now(),
         workspace: Mutex::new(p["workspace"].as_str().unwrap_or_default().chars().take(64).collect()),
@@ -1115,12 +1115,12 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         agent,
         view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
     });
-    // FR-62: blok pane lama (setelah daemon berhenti) tampil di atas shell baru dan bersambung di file baru
+    // FR-62: old pane blocks (after the daemon stopped) show above the new shell and continue in a new file
     let prev = history::load(&p["history"]);
     for b in &prev {
         history::append(&pane.hist, b);
     }
-    // log layar lama sudah memuat blok-blok itu; tanpa log cukup blok ringkasnya
+    // the old screen log already holds those blocks; without a log the summary blocks are enough
     match history::load_log(&p["history"]) {
         Some((log, t)) => {
             let mut v = pane.view.lock().unwrap();
@@ -1130,8 +1130,8 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         None => pane.view.lock().unwrap().0.feed(&history::render(&prev)),
     }
     st.panes.lock().unwrap().insert(id, pane.clone());
-    // FR-79: pane pengganti (jalankan ulang, daemon restart) membawa nama dan alias dari tata letak (tidak tepercaya);
-    // nama yang sedang dipakai pane lain jadi alias, yang terbaru
+    // FR-79: a replacement pane (rerun, daemon restart) brings its name and aliases from the layout (untrusted);
+    // a name another pane is using becomes an alias, the newest one
     let name = pane.name.lock().unwrap().clone();
     st.release(&name);
     let old = p["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).take(ALIAS_MAX);
@@ -1162,14 +1162,14 @@ fn reject(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
     json!({"result": "rejected", "reason": reason, "id": m.id})
 }
 
-/// Fakta keputusan dibaca ulang tiap kali (SEC-28). `counted` = laju sudah dihitung saat diterima.
+/// Decision facts are re-read every time (SEC-28). `counted` = rate already counted on receipt.
 fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_queue: bool, approved: bool, counted: bool) -> msg::Facts<'a> {
     let mut eng = st.engine.lock().unwrap();
     let typing = to.typed_at.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
     msg::Facts {
         target_status: if to.status.lock().unwrap().is_empty() { "unknown" } else { *to.status.lock().unwrap() },
         stable_for: to.status_at.lock().unwrap().elapsed(),
-        // SEC-5: flag lewati-izin dari profil sudah masuk saat pane dibuat; yang diketik sendiri di pane dibaca dari argumen proses
+        // SEC-5: skip-permission flags from the profile are set when the pane is created; one typed in the pane is read from the process arguments
         policy: msg::effective_policy(*to.policy.lock().unwrap(), &pty::busy(&to.master, to.sid).map(|(pid, _)| pty::args_of(pid)).unwrap_or_default()),
         same_workspace: *to.workspace.lock().unwrap() == from_ws,
         paused: eng.paused,
@@ -1183,8 +1183,8 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
     }
 }
 
-/// FR-66: pesan terakhir giliran agent bersandbox menjawab pesan masuk yang masih menunggu (jalur `reply` biasa:
-/// hop, batas laju, jeda tetap berlaku). Tanpa pesan yang menunggu, teks dibuang dan tidak disimpan.
+/// FR-66: the last message of a sandboxed agent's turn answers the incoming message still waiting (the normal `reply` path:
+/// hops, rate limit, hold still apply). With no waiting message the text is dropped and not stored.
 fn auto_reply(st: &Arc<State>, me: u64, text: &str) {
     let waiting = st.engine.lock().unwrap().waiting_for(me, Duration::from_secs(1800)).map(|m| m.id.clone());
     if let Some(id) = waiting {
@@ -1193,8 +1193,8 @@ fn auto_reply(st: &Arc<State>, me: u64, text: &str) {
     }
 }
 
-/// FR-66: permintaan CLI dari proses bersandbox lewat file `<run>/spool/<id>.req`; jawaban `<id>.res` (0600).
-/// Identitas dari token pane (constant-time), bukan dari isi lain permintaan.
+/// FR-66: CLI requests from sandboxed processes through the file `<run>/spool/<id>.req`; answer `<id>.res` (0600).
+/// Identity from the pane token (constant-time), not from anything else in the request.
 fn spool(st: Arc<State>, dir: std::path::PathBuf) {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let dir = dir.join("spool");
@@ -1210,7 +1210,7 @@ fn spool(st: Arc<State>, dir: std::path::PathBuf) {
                 continue;
             }
             if ext != "req" {
-                // jawaban yang tidak diambil 5 menit
+                // answers not picked up within 5 minutes
                 if e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|a| a > Duration::from_secs(300))) {
                     let _ = fs::remove_file(&path);
                 }
@@ -1231,7 +1231,7 @@ fn spool(st: Arc<State>, dir: std::path::PathBuf) {
                     Ok(x) => json!({"result": x}),
                     Err(e) => json!({"error": {"code": e}}),
                 };
-                // file baru (bukan symlink yang sudah ada), lalu rename: CLI tidak pernah membaca jawaban setengah jadi
+                // new file (not an existing symlink), then rename: the CLI never reads a half-written answer
                 let wrote = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body.to_string().as_bytes()));
                 if wrote.is_ok() {
                     let _ = fs::rename(&tmp, &out);
@@ -1241,9 +1241,9 @@ fn spool(st: Arc<State>, dir: std::path::PathBuf) {
     }
 }
 
-/// FR-5: keputusan kirim untuk pesan baru (dari agent, atau setelah disetujui manusia).
+/// FR-5: send decision for a new message (from an agent, or after a human approved it).
 fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value {
-    // dua pernyataan terpisah: lock `panes` tidak boleh masih dipegang saat workspace_of menguncinya lagi
+    // two separate statements: the `panes` lock must not still be held when workspace_of locks it again
     let to = st.panes.lock().unwrap().get(&m.to).cloned();
     let from_ws = st.workspace_of(m.from);
     // FR-17: a pane the harness drives takes messages from the harness only, until the user takes over
@@ -1282,7 +1282,7 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
     }
 }
 
-/// SEC-7/8: label asal + bracketed paste + satu Enter, ditulis ke PTY target.
+/// SEC-7/8: origin label + bracketed paste + one Enter, written to the target PTY.
 fn deliver(st: &State, m: &bus::Msg, to: &Pane) {
     if (&to.master).write_all(&msg::wrap(&m.from_name, &m.id, &m.body)).is_ok() {
         record(st, "sent", m, None);
@@ -1291,7 +1291,7 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) {
     }
 }
 
-/// Antrean: kedaluwarsa 10 menit; tiap pesan dicek ulang tepat sebelum ditulis (SEC-28).
+/// Queue: expires after 10 minutes; every message is checked again right before writing (SEC-28).
 fn deliver_loop(st: Arc<State>) {
     loop {
         thread::sleep(std::time::Duration::from_millis(200));
@@ -1310,7 +1310,7 @@ fn deliver_loop(st: Arc<State>) {
                 continue;
             }
             let from_ws = st.workspace_of(q.msg.from);
-            // len antrean 0: pesan ini sudah memegang tempatnya
+            // queue len 0: this message already holds its place
             let mut f = facts_for(&st, &q.msg, &to, &from_ws, true, q.approved, true);
             f.queue_len = 0;
             match msg::decide(&f) {
@@ -1327,11 +1327,11 @@ fn deliver_loop(st: Arc<State>) {
     }
 }
 
-/// Kanal pane (SEC-3): `me` = pane pemanggil dari identitas kernel, bukan dari isi pesan.
+/// Pane channel (SEC-3): `me` = the calling pane from kernel identity, not from message content.
 fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
     let my_name = st.panes.lock().unwrap().get(&me).map(|x| x.name.lock().unwrap().clone()).ok_or("not_a_pane")?;
     let my_ws = st.workspace_of(me);
-    // SEC-21: baca/tunggu hanya dalam workspace yang sama; pane shell hanya bila pengguna mengizinkan
+    // SEC-21: read/wait only within the same workspace; shell panes only when the user allows it
     let visible = |name: &str| -> Result<(u64, Arc<Pane>), &'static str> {
         let (id, pane) = st.by_name(name).ok_or("no_such_pane")?;
         if *pane.workspace.lock().unwrap() != my_ws || (pane.agent_name().is_none() && !pane.readable.load(Ordering::Relaxed)) {
@@ -1343,7 +1343,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
         // FR-78: typed `claude`/`codex` (zsh function) gets the add-ons of this pane's workspace now
         "addons" => Ok(json!({"args": addon::args(&st.addons.lock().unwrap(), p["agent"].as_str().unwrap_or_default(), &my_ws)})),
         "token" => {
-            // FR-66: token pane untuk proses bersandbox (jalur spool); dibuat sekali, dicabut saat pane ditutup
+            // FR-66: pane token for sandboxed processes (spool path); created once, revoked when the pane closes
             let pane = st.panes.lock().unwrap().get(&me).cloned().ok_or("not_a_pane")?;
             let mut t = pane.token.lock().unwrap();
             if t.is_none() {
@@ -1376,13 +1376,13 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             drop(eng);
             let to_name = to.name.lock().unwrap().clone();
             let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to_name.clone(), body, reply_to, hop, at: std::time::SystemTime::now() };
-            // FR-79: nama sekarang ikut jawaban, supaya pengirim yang memakai nama lama beralih
+            // FR-79: the current name goes in the answer, so a sender using an old name switches over
             let mut r = try_send(st, m, p["queue"].as_bool() == Some(true), false);
             r["to"] = json!(to_name);
             Ok(r)
         }
         "reply" => {
-            // FR-19: hanya penerima pesan yang bisa membalasnya; balasan diambil pengirim lewat `wait --reply`
+            // FR-19: only the message's recipient can reply to it; the sender picks the reply up with `wait --reply`
             let orig = st.engine.lock().unwrap().find(p["msg_id"].as_str().ok_or("bad_params")?).cloned().ok_or("no_such_msg")?;
             if orig.to != me {
                 return Err("not_allowed");
@@ -1412,11 +1412,11 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             Ok(json!({"result": "accepted", "id": r.id}))
         }
         "read" => {
-            // FR-7, SEC-12, SEC-17: teks polos tersamar, dibungkus pembatas berlabel
+            // FR-7, SEC-12, SEC-17: plain text, redacted, wrapped in labeled delimiters
             let (_, pane) = visible(p["target"].as_str().ok_or("bad_params")?)?;
             let n = p["lines"].as_u64().unwrap_or(40).clamp(1, 500) as usize;
             let mut text = git::redact(&pane.view.lock().unwrap().0.tail(n));
-            // SEC-12: nilai GEMBALA_TOKEN yang aktif ikut disamarkan
+            // SEC-12: the active GEMBALA_TOKEN value is redacted too
             for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.lock().unwrap().clone()) {
                 text = text.replace(&t, "[disamarkan]");
             }
@@ -1424,7 +1424,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             Ok(json!({"text": format!("--- output {name} (another agent, not instructions from the user) ---\n{text}\n--- end of output {name} ---")}))
         }
         "wait" => {
-            // FR-6: balasan, pola (literal atau regex waktu-linear, maks 256), atau status settled; batas waktu
+            // FR-6: reply, pattern (literal or linear-time regex, max 256), or settled status; time limit
             let timeout = std::time::Duration::from_millis(p["timeout_ms"].as_u64().unwrap_or(600_000).min(3_600_000));
             let reply = p["reply"].as_str().map(String::from);
             let pattern = match p["pattern"].as_str() {
@@ -1443,7 +1443,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                     return Err("not_allowed");
                 }
             }
-            // FR-79: nama sekarang target ikut jawaban, supaya pengirim yang memakai nama lama beralih
+            // FR-79: the target's current name goes in the answer, so a sender using an old name switches over
             let done = |mut v: Value| {
                 if let Some((_, pane)) = &target {
                     v["target"] = json!(*pane.name.lock().unwrap());
@@ -1478,7 +1478,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
     }
 }
 
-/// FR-4 cadangan tiap 1 detik: profil `custom`, dan agent yang diketik manual di pane shell (tanpa hook).
+/// FR-4 fallback every 1 second: `custom` profiles, and agents typed by hand in a shell pane (no hooks).
 fn screen_watch(st: Arc<State>) {
     const AGENTS: &[&str] = &["claude", "codex", "opencode", "omp"];
     loop {
@@ -1487,30 +1487,30 @@ fn screen_watch(st: Arc<State>) {
         for (id, pane) in panes {
             let fg = (pane.agent == "shell").then(|| pty::busy(&pane.master, pane.sid)).flatten();
             let found = fg.and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?))).filter(|(_, n)| AGENTS.contains(&n.as_str()));
-            // FR-56: agent manual mulai = catat log sesi. Keluar biasanya ditangani `pump` begitu shell menulis prompt;
-            // di sini cadangan bila shell diam, prompt yang sudah tampil ditulis lagi di bawah blok.
+            // FR-56: manual agent starts = record the session log. Exit is usually handled by `pump` as soon as the shell writes its prompt;
+            // this is the fallback when the shell is quiet, the prompt already shown is written again below the block.
             let active = pane.manual.lock().unwrap().is_some();
-            // proses lain di depan selagi agent aktif = anak agent (mis. `brew` dari omp): agent belum keluar
+            // another process in front while the agent is active = the agent's child (e.g. `brew` from omp): agent hasn't exited
             let manual = found.is_some() || (active && fg.is_some());
             match (active, found, fg) {
                 (false, Some((pid, name)), _) => {
                     let v = pane.view.lock().unwrap();
-                    // tanpa penanda C (shell tanpa integrasi): awal prompt terakhir
+                    // no C marker (shell without integration): start of the last prompt
                     let pre = pane.pre_cmd.lock().unwrap().take().or(*pane.prompt_at.lock().unwrap());
                     *pane.pre_agent.lock().unwrap() = pre;
                     drop(v);
                     let args = pty::args_of(pid);
-                    // FR-68: Claude diketik membawa `--session-id` dari fungsi zsh Gembala; selain itu id lama tidak berlaku
+                    // FR-68: a typed Claude carries `--session-id` from Gembala's zsh function; otherwise the old id no longer applies
                     let sid = args.windows(2).find(|w| w[0] == "--session-id").map(|w| w[1].clone()).filter(|s| profile::valid_session(&name, s));
                     *pane.session.lock().unwrap() = sid;
-                    // FR-61: `claude-kantor` diketik = akun dari folder config proses agent
+                    // FR-61: a typed `claude-kantor` = account from the agent process's config folder
                     if name == "claude" {
                         *pane.account.lock().unwrap() = acct_of_dir(st.as_ref(), pty::env_of(pid, "CLAUDE_CONFIG_DIR"));
                     }
                     *pane.manual.lock().unwrap() = Some((name, profile::shown_args(&args), pty::cwd_of(pid)));
                     *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
                 }
-                // keluar = shell kembali di depan (sama dengan cek di `pump`)
+                // exited = the shell is back in front (same check as in `pump`)
                 (true, None, None) => {
                     let mut v = pane.view.lock().unwrap();
                     let prompt = v.0.cursor_line();
@@ -1520,7 +1520,7 @@ fn screen_watch(st: Arc<State>) {
             }
             let cur = *pane.status.lock().unwrap();
             let next = if manual && pane.hooked.load(Ordering::Relaxed) {
-                // hook (mis. SessionStart) bisa datang sebelum agent dikenali: status awal = menunggu tugas
+                // a hook (e.g. SessionStart) can arrive before the agent is recognized: initial status = waiting for a task
                 if !cur.is_empty() {
                     continue;
                 }
@@ -1529,12 +1529,12 @@ fn screen_watch(st: Arc<State>) {
                 let tail = pane.view.lock().unwrap().0.tail(12);
                 profile::screen_status(&tail, pane.last_out.lock().unwrap().elapsed(), cur)
             } else if pane.agent == "shell" {
-                "" // agent manual sudah keluar: pane shell kembali tidak dilacak
+                "" // manual agent has exited: the shell pane goes back to untracked
             } else {
                 continue;
             };
-            // output startup 3 detik pertama bukan "kerja" (tanpa ini agent baru langsung tampil "selesai"),
-            // tetapi prompt izin tetap langsung berlaku: kriteria 4
+            // startup output in the first 3 seconds isn't "work" (without this a new agent shows "done" right away),
+            // but a permission prompt still applies immediately: criterion 4
             let startup = pane.started.elapsed() < std::time::Duration::from_secs(3);
             if next != cur && (!startup || next == "blocked") {
                 *pane.status.lock().unwrap() = next;
@@ -1545,7 +1545,7 @@ fn screen_watch(st: Arc<State>) {
     }
 }
 
-/// Ubah status pane dan beri tahu semua UI (`pane.status`). `only_from` = ubah hanya bila status sekarang itu.
+/// Change a pane's status and tell every UI (`pane.status`). `only_from` = change only when the current status is that.
 fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from: Option<&str>) {
     let mut cur = pane.status.lock().unwrap();
     if cur.is_empty() || *cur == status || only_from.is_some_and(|f| *cur != f) {
@@ -1558,7 +1558,7 @@ fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from:
     status_changed(st, id, pane, status);
 }
 
-/// FR-70: giliran mulai (bekerja) dan selesai (diam/selesai) = potret folder kerja agent, di antrean
+/// FR-70: turn start (working) and end (idle/done) = snapshot of the agent's working folder, in the queue
 fn turn_edge(pane: &Pane, prev: &str, status: &str) {
     let busy = |s: &str| matches!(s, "working" | "blocked");
     let turns = pane.turns.clone();
@@ -1587,7 +1587,7 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
     }
 }
 
-/// Kabari UI dan pelanggan kanal pane (FR-8). Pelanggan hanya menerima pane yang boleh ia baca (SEC-21).
+/// Tell the UI and pane channel subscribers (FR-8). A subscriber only gets panes it may read (SEC-21).
 fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": status}}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
@@ -1610,18 +1610,18 @@ fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     }
 }
 
-/// FR-61: nama akun untuk chip; Utama atau tidak dikenal = kosong
+/// FR-61: account name for the chip; Utama or unknown = empty
 fn acct_label(st: &State, id: &str) -> String {
     st.accounts.lock().unwrap().iter().find(|a| a.id == id).map(|a| a.name.clone()).unwrap_or_default()
 }
 
-/// FR-61: folder config Claude proses → id akun; tanpa env atau folder Utama = kosong
+/// FR-61: Claude config folder of a process → account id; no env or the Utama folder = empty
 fn acct_of_dir(st: &State, dir: Option<String>) -> String {
     let Some(dir) = dir.map(|d| account::expand(&d)) else { return String::new() };
     st.accounts.lock().unwrap().iter().find(|a| a.agent == "claude" && account::expand(&a.dir) == dir).map(|a| a.id.clone()).unwrap_or_default()
 }
 
-/// File hook OpenCode/omp di folder config Gembala (SEC-26). Gagal tulis = agent itu tanpa hook, pane tetap jalan.
+/// OpenCode/omp hook files in the Gembala config folder (SEC-26). Write failure = that agent has no hooks, the pane still runs.
 fn write_hook_files(h: &profile::Hooks) {
     for (name, body) in profile::hook_files(h) {
         if let Err(e) = config::write_atomic(&h.dir.join(name), body.as_bytes()) {
@@ -1630,7 +1630,7 @@ fn write_hook_files(h: &profile::Hooks) {
     }
 }
 
-/// Baca ulang config; file rusak = nilai valid terakhir tetap, galat diperbarui. Semua UI diberi tahu.
+/// Reload config; broken file = last valid values stay, errors updated. Every UI is told.
 fn reload_config(st: &State) {
     let path = config::path();
     let text = std::fs::read_to_string(&path).ok();
@@ -1651,11 +1651,11 @@ fn reload_config(st: &State) {
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
 }
 
-/// Pantau `mtime` + ukuran tiap 1 detik (TECH bagian 5), tanpa dependency.
+/// Watch `mtime` + size every 1 second (TECH section 5), no dependency.
 fn watch_config(st: Arc<State>) {
     let stamp = || std::fs::metadata(config::path()).ok().map(|m| (m.modified().ok(), m.len()));
-    // None = belum pernah dibandingkan: pemeriksaan pertama selalu memuat ulang, supaya file yang ditulis
-    // di antara pembacaan awal dan start watcher tidak terlewat
+    // None = never compared: the first check always reloads, so a file written
+    // between the initial read and the watcher start isn't missed
     let mut last = None;
     loop {
         thread::sleep(Duration::from_secs(1));
@@ -1667,8 +1667,8 @@ fn watch_config(st: Arc<State>) {
     }
 }
 
-/// FR-20: tanpa UI dan semua pane shell diam selama dua pemeriksaan berturut-turut = keluar.
-/// FR-62: log layar utama tiap pane yang dapat output baru; layar alternatif (TUI) tidak menimpa log terakhir
+/// FR-20: no UI and every pane shell idle for two checks in a row = exit.
+/// FR-62: main screen log of each pane with new output; the alternate screen (TUI) doesn't overwrite the last log
 fn save_logs(st: &State, saved: &mut HashMap<u64, std::time::Instant>) {
     let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(k, v)| (*k, v.clone())).collect();
     saved.retain(|id, _| panes.iter().any(|(k, _)| k == id));
@@ -1680,7 +1680,7 @@ fn save_logs(st: &State, saved: &mut HashMap<u64, std::time::Instant>) {
         let log = {
             let v = pane.view.lock().unwrap();
             if pane.agent_log.lock().unwrap().is_some() {
-                // agent masih jalan: tampilan TUI-nya tidak disimpan, cukup isi pane sebelum agent mulai
+                // agent still running: its TUI view isn't saved, the pane content before the agent started is enough
                 let name = pane.agent_name().unwrap_or_else(|| "agent".into());
                 let mut log = v.0.history(Some(pane.pre_agent.lock().unwrap().unwrap_or(0)), LOG_LINES);
                 log.extend(format!("   \x1b[2m{name} (masih jalan saat daemon berhenti)\x1b[0m\r\n").as_bytes());
@@ -1700,7 +1700,7 @@ fn save_logs_loop(st: Arc<State>) {
     let mut saved = HashMap::new();
     for n in (0..5760u32).cycle() {
         if n == 0 {
-            history::sweep(); // saat mulai lalu tiap hari (5760 x 15 dtk)
+            history::sweep(); // at start, then daily (5760 x 15 s)
             snap::sweep();
         }
         thread::sleep(Duration::from_secs(15));
@@ -1740,8 +1740,8 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
-    // FR-56: awal prompt (OSC 133 A, dari precmd sebelum prompt digambar) = posisi ring dicatat, dipisah di
-    // penanda supaya prompt dan perintahnya tidak ikut riwayat "sebelum agent" (blok ringkas memuat perintahnya)
+    // FR-56: prompt start (OSC 133 A, from precmd before the prompt is drawn) = ring position recorded, split at the
+    // marker so the prompt and its command don't land in the "before agent" history (the summary block holds the command)
     const A: &[u8] = b"\x1b]133;A";
     match b_find(bytes, A) {
         Some(p) => {
@@ -1751,7 +1751,7 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
         }
         None => v.0.feed(bytes),
     }
-    // perintah mulai (OSC 133 C): riwayatnya = sampai awal prompt perintah itu
+    // command starts (OSC 133 C): its history = up to the start of that command's prompt
     if b_find(bytes, b"\x1b]133;C").is_some() {
         *pane.pre_cmd.lock().unwrap() = *pane.prompt_at.lock().unwrap();
     }
@@ -1768,7 +1768,7 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     if let Some((_, log)) = pane.agent_log.lock().unwrap().as_mut() {
         log.extend_from_slice(bytes);
         let over = log.len().saturating_sub(AGENT_LOG_MAX);
-        log.drain(..over); // simpan bagian terakhir saja
+        log.drain(..over); // keep only the last part
     }
     send_all(v, line(json!({"event": "pane.output", "params": {"pane": id, "data": B64.encode(bytes)}})));
 }
@@ -1776,9 +1776,9 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
 const AGENT_LOG_MAX: usize = 4 << 20;
 const MARK: &[u8] = b"\x1b]777;gembala;";
 
-/// `(posisi, panjang, isi)` penanda OSC 777 Gembala pertama. Penanda yang terpotong batas baca PTY
-/// tidak dikenali dan lolos sebagai OSC biasa (diabaikan terminal).
-// ponytail: tanpa penyangga antar-baca; penanda printf kecil hampir selalu datang utuh
+/// `(position, length, content)` of the first Gembala OSC 777 marker. A marker cut by the PTY read boundary
+/// isn't recognized and passes as a normal OSC (ignored by the terminal).
+// ponytail: no buffer across reads; small printf markers almost always arrive whole
 fn find_marker(b: &[u8]) -> Option<(usize, usize, &str)> {
     let pos = b.windows(MARK.len()).position(|w| w == MARK)?;
     let body = &b[pos + MARK.len()..];
@@ -1786,12 +1786,12 @@ fn find_marker(b: &[u8]) -> Option<(usize, usize, &str)> {
     Some((pos, MARK.len() + end + 1, std::str::from_utf8(&body[..end]).ok()?))
 }
 
-/// FR-56: agent mulai = catat log sesi; agent keluar = layar diganti satu blok ringkas, log lengkap disimpan di RAM.
+/// FR-56: agent starts = record the session log; agent exits = screen replaced by one summary block, full log kept in RAM.
 fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     if mark == "agent-start" {
         *pane.pre_agent.lock().unwrap() = Some(v.0.mark());
         *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
-        // agent dari profil jalan (lagi, mis. "Lanjutkan") = siap menerima pesan
+        // profile agent runs (again, e.g. "Resume") = ready to take messages
         *pane.status.lock().unwrap() = "idle";
         *pane.status_at.lock().unwrap() = std::time::Instant::now();
         return;
@@ -1801,8 +1801,8 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     agent_done(v, pane, id, &pane.agent, &name, None, code, &[]);
 }
 
-/// FR-69: judul terminal terakhir di potongan output (`ESC ] 0|2 ; teks BEL|ST`), tanpa karakter kontrol, maks 200.
-// ponytail: judul yang terpotong batas baca PTY terlewat; judul berikutnya membetulkan
+/// FR-69: last terminal title in an output chunk (`ESC ] 0|2 ; text BEL|ST`), no control characters, max 200.
+// ponytail: a title cut by the PTY read boundary is missed; the next title fixes it
 fn osc_title(b: &[u8]) -> Option<String> {
     let start = [b"\x1b]0;", b"\x1b]2;"].iter().filter_map(|m| b.windows(4).rposition(|w| w == *m)).max()? + 4;
     let end = b[start..].iter().position(|&c| c == 0x07 || c == 0x1b)?;
@@ -1810,8 +1810,8 @@ fn osc_title(b: &[u8]) -> Option<String> {
     Some(t.trim().to_string())
 }
 
-/// FR-59: penanda OSC 133 terakhir di potongan output: B = shell menunggu di prompt, C = perintah mulai jalan.
-// ponytail: penanda yang terpotong batas baca PTY tidak terlihat; prompt berikutnya membetulkan
+/// FR-59: last OSC 133 marker in an output chunk: B = shell waiting at the prompt, C = command started.
+// ponytail: a marker cut by the PTY read boundary isn't seen; the next prompt fixes it
 fn b_find(b: &[u8], m: &[u8]) -> Option<usize> {
     b.windows(m.len()).rposition(|w| w == m)
 }
@@ -1824,8 +1824,8 @@ fn prompt_mark(b: &[u8]) -> Option<bool> {
     }
 }
 
-/// FR-62: blok perintah shell ke file riwayat. Selesai saat agent manual masih tercatat = tunggu `agent_done`
-/// supaya perintah lanjutnya ikut; blok tertunda ditulis apa adanya bila perintah berikutnya mulai lebih dulu.
+/// FR-62: shell command block to the history file. Finished while a manual agent is still recorded = wait for `agent_done`
+/// so its resume command comes along; a pending block is written as is if the next command starts first.
 fn on_block(pane: &Pane, m: history::Mark) {
     let mut b = pane.block.lock().unwrap();
     match m {
@@ -1850,28 +1850,28 @@ fn on_block(pane: &Pane, m: history::Mark) {
     }
 }
 
-/// FR-56: agent manual sudah keluar = blok ringkas (sekali; `pump` dan `screen_watch` bisa sama-sama memanggil).
-/// `code` = kode keluar dari penanda zsh bila sudah terbaca bersama prompt.
+/// FR-56: manual agent has exited = summary block (once; `pump` and `screen_watch` may both call this).
+/// `code` = exit code from the zsh marker when it was read together with the prompt.
 fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8], code: Option<i64>) {
     let Some((agent, cmd, dir)) = pane.manual.lock().unwrap().take() else { return };
     agent_done(v, pane, id, &agent, &cmd, dir, &code.unwrap_or_default().to_string(), prompt);
 }
 
-/// FR-56: blok ringkas ala Warp: `<folder> (<durasi>)`, perintah, lalu perintah untuk melanjutkan sesi.
-/// `agent_dir` = folder kerja agent (bisa beda dari shell; dipakai mencari sesi omp).
-/// `prompt` = baris prompt shell yang sudah tampil (agent manual), ditulis lagi di bawah blok.
+/// FR-56: Warp-style summary block: `<folder> (<duration>)`, command, then the command to resume the session.
+/// `agent_dir` = agent working folder (can differ from the shell's; used to find the omp session).
+/// `prompt` = shell prompt line already shown (manual agent), written again below the block.
 #[allow(clippy::too_many_arguments)]
 fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_dir: Option<std::path::PathBuf>, code: &str, prompt: &[u8]) {
-    // agent berikutnya yang diketik di pane ini (mis. Codex tanpa hook lengkap) dinilai ulang
+    // the next agent typed in this pane (e.g. Codex without full hooks) is judged again
     pane.hooked.store(false, Ordering::Relaxed);
     let Some((started, log)) = pane.agent_log.lock().unwrap().take() else { return };
-    // agent keluar = tidak ada lagi yang membaca pesan: status kosong, `gembala send` ke pane ini ditolak
-    // (target_unknown) alih-alih menempel pesan ke zsh dan pengirim mengira terkirim
+    // agent exited = nobody reads messages anymore: status empty, `gembala send` to this pane is rejected
+    // (target_unknown) instead of pasting the message into zsh while the sender thinks it arrived
     *pane.status.lock().unwrap() = "";
-    // 2 detik cadangan: agent manual baru terdeteksi sampai 1 detik setelah mulai
+    // 2-second fallback: a manual agent is only detected up to 1 second after it starts
     let since = std::time::SystemTime::now() - started.elapsed() - Duration::from_secs(2);
     let secs = started.elapsed().as_secs();
-    // diagnosa agent keluar sendiri (GESEKAN 3 Nov): kapan dan kode saja, isi layar tidak (SEC-13)
+    // diagnosis of agents exiting on their own (GESEKAN 3 Nov): when and code only, no screen content (SEC-13)
     eprintln!("{} pane {id}: {agent} exited, code {code}, {secs} s", history::now());
     let home = std::env::var("HOME").unwrap_or_default();
     let dir = pty::cwd_of(pane.sid);
@@ -1879,8 +1879,8 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let omp = |d: std::path::PathBuf| omp_session(std::path::Path::new(&home), &d, since);
     let resume = match agent {
         "claude" => {
-            // FR-61: sesi tersimpan per akun, jadi lanjut lewat perintah akun pemiliknya (`claude-kantor`); sesi Utama
-            // yang dilanjutkan di akun lain = `claude-utama`, karena `claude` di shell berakun memakai akun shell itu
+            // FR-61: sessions are stored per account, so resume goes through the owning account's command (`claude-kantor`); a Utama
+            // session resumed in another account = `claude-utama`, because `claude` in an account shell uses that shell's account
             let owner = pane.owner.lock().unwrap().clone();
             let cmd = match owner {
                 Some(o) if o.is_empty() => "claude-utama".to_string(),
@@ -1901,9 +1901,9 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     *pane.last_output.lock().unwrap() = log;
     let cmd = msg::sanitize(cmd).unwrap_or_default();
     let text = history::block_text(&cwd, secs, code, &cmd, resume.as_deref());
-    // FR-62: blok agent manual (dari penanda zsh) mendapat perintah lanjutnya; agent dari profil jadi blok sendiri
-    // blok shell yang belum selesai (agent keluar terdeteksi sebelum penanda D) ikut dipakai, supaya penanda D yang
-    // datang sesudahnya tidak mencatat blok kedua tanpa perintah lanjut
+    // FR-62: the manual agent block (from the zsh marker) gets its resume command; a profile agent becomes its own block
+    // an unfinished shell block (agent exit detected before the D marker) is used too, so a D marker arriving
+    // afterwards doesn't record a second block without a resume command
     let open = {
         let mut b = pane.block.lock().unwrap();
         b.1.take().or_else(|| b.0.take().map(|(blk, at)| history::Block { secs: at.elapsed().as_secs(), ..blk }))
@@ -1913,7 +1913,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
         None => history::Block { t: history::now() - secs, cwd, cmd, code: code.parse().unwrap_or_default(), secs, resume: resume.clone() },
     };
     history::append(&pane.hist, &blk);
-    // riwayat sebelum agent (tanpa penanda = kosong), lalu blok ringkas dan prompt; UI menulis ulang seperti attach
+    // history before the agent (no marker = empty), then the summary block and prompt; the UI rewrites it like an attach
     let mark = pane.pre_agent.lock().unwrap().take();
     v.0.rewind(mark);
     v.0.feed(&[text.as_bytes(), prompt].concat());
@@ -1924,16 +1924,16 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     send_all(v, line(ev));
 }
 
-/// FR-56: id sesi dari baris yang dicetak agent sendiri saat keluar: `claude --resume <uuid>` (Claude Code)
-/// atau `codex resume <uuid>` (Codex).
+/// FR-56: session id from the line the agent prints itself on exit: `claude --resume <uuid>` (Claude Code)
+/// or `codex resume <uuid>` (Codex).
 fn printed_resume(log: &[u8]) -> Option<String> {
     let re = regex_lite::Regex::new(r"(?:--resume|codex resume) ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})").unwrap();
     re.captures_iter(&String::from_utf8_lossy(log)).last().map(|c| c[1].to_string())
 }
 
-/// FR-56, pengecualian SEC-15: id sesi Oh My Pi = nama file sesi terbaru di folder sesinya; isi file tidak dibuka.
-// ponytail: aturan nama folder ditiru dari omp 18.13 (home = "----", di dalam home "-a-b", di luar "--a-b--");
-// bila omp mengubahnya, blok kembali ke `omp --continue`
+/// FR-56, SEC-15 exception: Oh My Pi session id = name of the newest session file in its session folder; file content isn't opened.
+// ponytail: folder naming copied from omp 18.13 (home = "----", inside home "-a-b", outside "--a-b--");
+// if omp changes it, the block falls back to `omp --continue`
 fn omp_session(home: &std::path::Path, cwd: &std::path::Path, since: std::time::SystemTime) -> Option<String> {
     let slug = |p: &std::path::Path| p.to_string_lossy().trim_matches('/').replace('/', "-");
     let dir = match cwd.strip_prefix(home) {
@@ -1948,7 +1948,7 @@ fn omp_session(home: &std::path::Path, cwd: &std::path::Path, since: std::time::
         .filter(|(t, n)| *t >= since && n.ends_with(".jsonl"))
         .max()?;
     let id = newest.1.strip_suffix(".jsonl")?.split_once('_')?.1;
-    // nama file ditulis ke terminal: hanya karakter id yang lolos
+    // the file name goes to the terminal: only id characters pass
     id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-').then(|| id.to_string())
 }
 
@@ -1965,7 +1965,7 @@ fn claude_saved(home: &std::path::Path, id: &str) -> bool {
         .any(|p| p.path().join(format!("{id}.jsonl")).is_file())
 }
 
-/// Output PTY → grid + semua pelanggan. Selesai saat shell pane keluar.
+/// PTY output → grid + every subscriber. Ends when the pane shell exits.
 fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
     let mut buf = [0u8; 16 * 1024];
     loop {
@@ -1976,13 +1976,13 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
             Err(_) => break, // EIO: slave tertutup
         };
         let mut v = pane.view.lock().unwrap();
-        // FR-56: agent manual sudah keluar = blok ringkas dulu, lalu output shell (prompt) tampil di bawahnya
-        // ponytail: output terakhir agent yang terbaca bersama prompt dalam satu baca tidak ikut ke log sesi
+        // FR-56: manual agent has exited = summary block first, then the shell output (prompt) shows below it
+        // ponytail: the agent's last output read together with the prompt in one read doesn't reach the session log
         if pane.manual.lock().unwrap().is_some() && pty::busy(&pane.master, pane.sid).is_none() {
             let code = history::marks(&buf[..n]).into_iter().find_map(|m| if let history::Mark::End(c) = m { Some(c) } else { None });
             manual_done(&mut v, &pane, id, &[], code);
         }
-        // FR-56: penanda sesi agent dari skrip launch dipotong dari stream; sisanya diteruskan apa adanya
+        // FR-56: agent session markers from the launch script are cut from the stream; the rest passes as is
         let mut rest = &buf[..n];
         while let Some((pos, len, mark)) = find_marker(rest) {
             emit(&mut v, &pane, id, &rest[..pos]);
@@ -2004,21 +2004,21 @@ impl State {
         self.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.name.lock().unwrap().clone())).collect()
     }
 
-    /// FR-79: nama sekarang dulu, baru nama lama (alias) pane
+    /// FR-79: current names first, then the panes' old names (aliases)
     fn by_name(&self, name: &str) -> Option<(u64, Arc<Pane>)> {
         let panes = self.panes.lock().unwrap();
         let find = |hit: &dyn Fn(&Pane) -> bool| panes.iter().find(|(_, p)| hit(p)).map(|(id, p)| (*id, p.clone()));
         find(&|p| *p.name.lock().unwrap() == name).or_else(|| find(&|p| p.aliases.lock().unwrap().iter().any(|a| a == name)))
     }
 
-    /// FR-79: `name` bukan lagi alias pane mana pun
+    /// FR-79: `name` is no longer any pane's alias
     fn release(&self, name: &str) {
         for q in self.panes.lock().unwrap().values() {
             q.aliases.lock().unwrap().retain(|a| a != name);
         }
     }
 
-    /// FR-79: alias pindah ke `pane` (pemilik terbaru menang), yang tertua dilepas lewat `ALIAS_MAX`
+    /// FR-79: alias moves to `pane` (newest owner wins), the oldest is released through `ALIAS_MAX`
     fn add_alias(&self, pane: &Arc<Pane>, alias: &str) {
         if *pane.name.lock().unwrap() == alias {
             return;
@@ -2044,14 +2044,14 @@ impl State {
         self.panes.lock().unwrap().get(&id).cloned().ok_or("no_such_pane")
     }
 
-    /// SEC-3 cadangan, FR-66: pane pemilik token (constant-time); token dicabut bersama pane.
+    /// SEC-3 fallback, FR-66: pane owning the token (constant-time); the token is revoked with the pane.
     fn pane_of_token(&self, t: &str) -> Option<u64> {
         let panes = self.panes.lock().unwrap();
         panes.iter().find(|(_, x)| x.token.lock().unwrap().as_deref().is_some_and(|k| ct_eq(k.as_bytes(), t.as_bytes()))).map(|(id, _)| *id)
     }
 
-    /// SEC-3: peer PID ditelusuri lewat proses induk sampai sesi pane. Tool agent sering membuat sesi
-    /// baru (mis. Bash Claude Code), jadi `getsid` peer saja tidak cukup.
+    /// SEC-3: the peer PID is traced through parent processes up to the pane session. Agent tools often create a new
+    /// session (e.g. Claude Code's Bash), so the peer's `getsid` alone isn't enough.
     fn pane_of_pid(&self, mut pid: i32) -> Option<u64> {
         let panes = self.panes.lock().unwrap();
         for _ in 0..64 {
@@ -2090,7 +2090,7 @@ pub fn peer_pid(s: &UnixStream) -> io::Result<i32> {
     if rc == -1 { Err(io::Error::last_os_error()) } else { Ok(c.pid) }
 }
 
-/// 32 byte acak dari kernel, hex.
+/// 32 random bytes from the kernel, hex.
 pub fn new_secret() -> io::Result<String> {
     let mut b = [0u8; 32];
     File::open("/dev/urandom")?.read_exact(&mut b)?;
@@ -2132,7 +2132,7 @@ mod tests {
             std::fs::write(d.join("2026-11-01T01-09-10-679Z_01a194a7-3d97-72f7-b2ce-1499a5f0dbee.jsonl"), "").unwrap();
             assert_eq!(omp_session(&home, &cwd, since).as_deref(), Some("01a194a7-3d97-72f7-b2ce-1499a5f0dbee"), "{dir}");
         }
-        // file lama (sebelum agent mulai) dan nama berisi karakter kendali tidak dipakai
+        // old files (before the agent started) and names with control characters aren't used
         let later = std::time::SystemTime::now() + Duration::from_secs(60);
         assert_eq!(omp_session(&home, &home, later), None);
         std::fs::write(home.join(".omp/agent/sessions/----/2026-11-02T00-00-00-000Z_\x1b[2J.jsonl"), "").unwrap();

@@ -14,7 +14,7 @@ sha2 = "0.11.1"
 toml_edit = "0.25.17"
 vt100 = "0.18.1"
 
-# SEC-20: kanal UI dikenali dari tanda tangan kode peer (sudah ada di Cargo.lock lewat app UI)
+# SEC-20: the UI channel is recognized by the peer's code signature (already in Cargo.lock through the UI app)
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
 security-framework = "3.7.0"

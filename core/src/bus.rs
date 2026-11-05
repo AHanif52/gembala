@@ -1,4 +1,4 @@
-//! Keadaan mesin pesan (BRD bagian 8) dan log audit (SEC-11). Tanpa PTY: daemon yang menulis ke pane.
+//! Message engine state (BRD section 8) and audit log (SEC-11). No PTY: the daemon writes to panes.
 
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -15,7 +15,7 @@ pub struct Msg {
     pub from_name: String,
     pub to: u64,
     pub to_name: String,
-    /// sudah lewat penyaring SEC-7/23
+    /// already through the SEC-7/23 filter
     pub body: String,
     pub reply_to: Option<String>,
     pub hop: u32,
@@ -32,21 +32,21 @@ impl Msg {
 pub struct Queued {
     pub msg: Msg,
     pub since: Instant,
-    /// sudah disetujui manusia (kartu konfirmasi) sebelum antre
+    /// already approved by a human (confirm card) before queueing
     pub approved: bool,
 }
 
 #[derive(Default)]
 pub struct Engine {
     seq: u64,
-    /// pesan yang pernah diterima, untuk hop dan pemilik balasan (dibatasi 1000 terakhir)
+    /// messages received so far, for hops and reply owners (capped at the last 1000)
     known: VecDeque<Msg>,
     pub replies: HashMap<String, Msg>,
     pub queues: HashMap<u64, VecDeque<Queued>>,
     sent: HashMap<u64, VecDeque<Instant>>,
     pub paused: bool,
     pub muted: HashSet<u64>,
-    /// menunggu Setujui/Tolak manusia (FR-12)
+    /// waiting for a human's Approve/Reject (FR-12)
     pub pending: Vec<Msg>,
     pub history: VecDeque<Value>,
 }
@@ -61,13 +61,13 @@ impl Engine {
         self.known.iter().rev().find(|m| m.id == id)
     }
 
-    /// Hop dihitung daemon: hop(reply_to) + 1; reply_to yang tidak dikenal = rantai baru.
+    /// Hops are counted by the daemon: hop(reply_to) + 1; an unknown reply_to = a new chain.
     pub fn hop_for(&self, reply_to: Option<&str>) -> u32 {
         reply_to.and_then(|r| self.find(r)).map_or(0, |m| m.hop + 1)
     }
 
-    /// FR-66: pesan masuk ke `to` yang menunggu balasan: bukan balasan, belum dibalas, tidak tertahan di antrean
-    /// atau persetujuan, umurnya di bawah `max_age`. Yang terbaru.
+    /// FR-66: incoming message to `to` waiting for a reply: not a reply, not answered, not held in the queue
+    /// or approval, younger than `max_age`. The newest.
     pub fn waiting_for(&self, to: u64, max_age: Duration) -> Option<&Msg> {
         let held = |id: &str| self.queues.get(&to).is_some_and(|q| q.iter().any(|x| x.msg.id == id)) || self.pending.iter().any(|m| m.id == id);
         self.known.iter().rev().find(|m| {
@@ -108,8 +108,8 @@ impl Engine {
     }
 }
 
-/// SEC-11: log audit append-only per hari, `0600`, HMAC-SHA256 isi dengan kunci acak per instalasi,
-/// cuplikan 80 karakter setelah redaksi SEC-12, retensi 14 hari.
+/// SEC-11: append-only audit log per day, `0600`, HMAC-SHA256 of the content with a random per-install key,
+/// 80-character excerpt after SEC-12 redaction, 14-day retention.
 pub struct Audit {
     dir: PathBuf,
     key: Vec<u8>,
@@ -117,7 +117,7 @@ pub struct Audit {
 
 impl Audit {
     pub fn open(dir: PathBuf) -> io::Result<Audit> {
-        crate::config::write_atomic(&dir.join(".probe"), b"")?; // membuat folder 0700 berantai
+        crate::config::write_atomic(&dir.join(".probe"), b"")?; // creates the 0700 folders along the way
         let _ = fs::remove_file(dir.join(".probe"));
         let key_path = dir.join("audit.key");
         let key = match fs::read(&key_path) {
@@ -180,7 +180,7 @@ mod tests {
         }
     }
 
-    /// FR-66: hanya pesan asli yang belum dibalas dan tidak tertahan yang dijawab otomatis
+    /// FR-66: only real messages that aren't answered or held get an automatic answer
     #[test]
     fn pesan_menunggu_balasan() {
         let mut e = Engine::default();

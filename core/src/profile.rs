@@ -1,5 +1,5 @@
-//! Profil agent (FR-18, 29, 30, 32, 33; SEC-32) dan deteksi agent terpasang (FR-28, 31).
-//! Perintah launch disusun di sini sebagai teks shell yang semua bagian pengguna di-quote.
+//! Agent profiles (FR-18, 29, 30, 32, 33; SEC-32) and detection of installed agents (FR-28, 31).
+//! Launch commands are built here as shell text with every user-supplied part quoted.
 
 use serde_json::{Value, json};
 use std::io::Read;
@@ -13,36 +13,36 @@ pub struct Profile {
     pub id: String,
     pub name: String,
     pub agent: String,
-    /// Kosong = shell login interaktif.
+    /// Empty = interactive login shell.
     pub command: String,
     pub args: Vec<String>,
-    /// Kosong = ikut pane yang fokus (FR-30). `~` diganti `$HOME`.
+    /// Empty = follow the focused pane (FR-30). `~` becomes `$HOME`.
     pub cwd: String,
     pub env: Vec<(String, String)>,
-    /// Rujukan saja: `op://…` atau `keychain:service/akun` (SEC-32).
+    /// References only: `op://…` or `keychain:service/account` (SEC-32).
     pub secret_env: Vec<(String, String)>,
-    /// FR-56: ringkas output saat agent keluar (bawaan nyala).
+    /// FR-56: summarize output when the agent exits (on by default).
     pub summarize: bool,
-    /// FR-40: notifikasi untuk pane dari profil ini (bawaan nyala).
+    /// FR-40: notifications for panes from this profile (on by default).
     pub notify: bool,
-    /// SEC-5: kebijakan penerima `auto` | `confirm` | `deny`
+    /// SEC-5: recipient policy `auto` | `confirm` | `deny`
     pub policy: String,
-    /// FR-64: mode izin agent sendiri, `default` | `auto`; Gembala hanya menambah flag launch (lihat `permission_flags`)
+    /// FR-64: the agent's own permission mode, `default` | `auto`; Gembala only adds launch flags (see `permission_flags`)
     pub permission: String,
-    /// SEC-3 cadangan: beri `GEMBALA_TOKEN` (mis. agent yang jalan di dalam tmux)
+    /// SEC-3 fallback: hand out `GEMBALA_TOKEN` (e.g. an agent running inside tmux)
     pub token: bool,
-    /// FR-61: id `[[account]]` bawaan profil; kosong = Utama
+    /// FR-61: the profile's default `[[account]]` id; empty = Utama
     pub account: String,
-    /// FR-13: peran dan brief workspace untuk pane ini (bukan dari config profil), ikut petunjuk launch
+    /// FR-13: role and workspace brief for this pane (not from the profile config), go into the launch hint
     pub brief: String,
-    /// FR-13: peran baca saja; Claude dikunci lewat `--disallowedTools`, agent lain hanya petunjuk
+    /// FR-13: read-only role; Claude is locked through `--disallowedTools`, other agents only get a hint
     pub readonly: bool,
     /// FR-78: add-on flags for this pane's workspace (set at launch, not from the profile config)
     pub addons: Vec<String>,
 }
 
-/// (agent, nama, perintah, perintah instal yang ditampilkan bila tidak ada, versi teruji major.minor)
-/// Perintah instal dicek dari cara pasang di mesin pengembang 1 Nov 2026; codex belum (TECH bagian 7).
+/// (agent, name, command, install command shown when missing, tested major.minor version)
+/// Install commands checked against how they were installed on the dev machine 1 Nov 2026; codex not yet (TECH section 7).
 const AGENTS: &[(&str, &str, &str, &str, &str)] = &[
     ("claude", "Claude Code", "claude", "brew install --cask claude-code", "2.1"),
     ("codex", "Codex", "codex", "npm install -g @openai/codex", "0.166"),
@@ -85,10 +85,10 @@ pub fn builtin() -> Vec<Profile> {
     std::iter::once(shell.clone()).chain(agents).collect()
 }
 
-/// SEC-12/SEC-32: nilai yang tampak seperti kunci rahasia.
+/// SEC-12/SEC-32: values that look like secret keys.
 pub const SECRET: &[&str] = &["sk-ant-", "sk-", "ghp_", "github_pat_", "AKIA", "PRIVATE KEY", "xoxb-", "xoxp-"];
 
-/// Posisi `pat` yang tidak menempel di akhir kata lain (`task-list` bukan `sk-`).
+/// Position of `pat` not glued to the end of another word (`task-list` isn't `sk-`).
 pub fn word_start(s: &str, pat: &str) -> Option<usize> {
     s.match_indices(pat).map(|(i, _)| i).find(|&i| !s[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-'))
 }
@@ -112,7 +112,7 @@ fn ok_ref(s: &str) -> bool {
     }
 }
 
-/// `[[profile]]` dari config: id sama dengan bawaan = menimpa bagian yang diisi; id baru = profil tambahan.
+/// `[[profile]]` from config: same id as a built-in = overrides the filled parts; new id = extra profile.
 pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<Diag>) {
     let mut out = builtin();
     let mut errors = Vec::new();
@@ -150,7 +150,7 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<D
             Some(Some(v)) if crate::msg::Policy::parse(v).is_some() => p.policy = v.into(),
             Some(_) => errors.push(Diag::new("one_of").at(at("policy")).arg("opts", "auto, confirm, deny")),
         }
-        // FR-61: dicocokkan ke [[account]] oleh config::load (akun belum terbaca di sini)
+        // FR-61: matched to [[account]] by config::load (accounts aren't read here yet)
         if let Some(a) = t.get("account").and_then(|v| v.as_str()) {
             p.account = a.to_string();
         }
@@ -186,20 +186,20 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<D
     (out, errors)
 }
 
-/// Kutip tunggal untuk shell POSIX.
+/// Single quotes for POSIX shells.
 fn q(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// Lokasi binary `gembala` dan folder file hook milik Gembala (SEC-26: config agent tidak disentuh).
+/// Location of the `gembala` binary and of Gembala's hook files folder (SEC-26: agent config isn't touched).
 pub struct Hooks {
     pub exe: String,
     pub dir: std::path::PathBuf,
 }
 
-/// FR-4: event hook agent → status pane. `None` = event tidak mengubah status.
-/// `payload` = stdin (Claude) atau argumen terakhir (Codex); hanya dipakai untuk membedakan "butuh izin",
-/// isinya tidak diteruskan ke daemon (SEC-33), kecuali pesan terakhir giliran Codex untuk balasan otomatis (FR-66).
+/// FR-4: agent hook event → pane status. `None` = the event doesn't change the status.
+/// `payload` = stdin (Claude) or the last argument (Codex); only used to tell "needs permission" apart,
+/// its content isn't passed to the daemon (SEC-33), except the last message of a Codex turn for the auto reply (FR-66).
 /// Codex TUI names a new thread with a side turn on its own thread (`last-assistant-message` = `{"title":"…"}`),
 /// reported through `notify` like a real turn, often before the real one ends. It isn't the pane's turn: not done,
 /// not a reply (FR-66), not the session to resume (FR-68). Recognised by Codex's title prompt; `thread-id` can't
@@ -215,15 +215,15 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
     Some(match (agent, event) {
         ("claude", "prompt" | "tool") => "working",
         ("claude", "stop") => "done",
-        // FR-61: SessionStart = id sesi + akun pemilik, status tidak berubah
+        // FR-61: SessionStart = session id + owning account, status unchanged
         ("claude", "start") => "start",
-        // Notification Claude Code: izin alat = blocked; "menunggu input" = siap menerima tugas
-        // dibaca dari `notification_type`/`message` saja: payload selalu memuat `permission_mode`, jadi menunggu input ikut "butuh izin"
+        // Claude Code Notification: tool permission = blocked; "waiting for input" = ready for a task
+        // read from `notification_type`/`message` only: the payload always holds `permission_mode`, so waiting for input would read as "needs permission"
         ("claude", "notify") if claude_permission(payload) => "blocked",
         ("claude", "notify") => "idle",
         ("codex", "notify") if codex_title_turn(payload) => return None,
         ("codex", "notify") if payload.contains("agent-turn-complete") => "done",
-        // FR-68: omp menunggu persetujuan tool = butuh izin; setelah diputus kembali bekerja
+        // FR-68: omp waiting for tool approval = needs permission; once decided it's working again
         ("omp", "approval") => "blocked",
         ("opencode", "busy") | ("omp", "start" | "resolved") => "working",
         ("opencode", "idle") | ("omp", "end") => "done",
@@ -240,15 +240,15 @@ fn claude_permission(payload: &str) -> bool {
     }
 }
 
-/// Teks di layar yang berarti agent menunggu jawaban manusia (huruf kecil).
+/// On-screen text meaning the agent waits for a human answer (lowercase).
 // FR-68: dialog persetujuan Codex ("Would you like to run/make the following …")
-// hanya kalimat khas dialog: kata lepas seperti "approve" juga muncul di jawaban agent ("approve kalau muncul") = butuh izin palsu
+// only phrases typical of dialogs: loose words like "approve" also show up in agent answers ("approve if it shows") = false needs-permission
 const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to proceed", "do you want to make", "do you want to create", "would you like to run", "would you like to make", "allow once", "allow tool:",
     // Codex dialog footer, always on the bottom line: a long "Reason:" pushes "Would you like to run" out of the 12-line tail
     "press enter to confirm or esc to cancel"];
 
-/// FR-4 cadangan: status dari layar untuk agent tanpa hook. `tail` = beberapa baris terbawah layar,
-/// `quiet` = lama tanpa output, `prev` = status sebelumnya.
+/// FR-4 fallback: status from the screen for agents without hooks. `tail` = the bottom few screen rows,
+/// `quiet` = time without output, `prev` = previous status.
 pub fn screen_status(tail: &str, quiet: std::time::Duration, prev: &str) -> &'static str {
     let t = tail.to_lowercase();
     if PROMPTS.iter().any(|p| t.contains(p)) {
@@ -262,8 +262,8 @@ pub fn screen_status(tail: &str, quiet: std::time::Duration, prev: &str) -> &'st
     }
 }
 
-/// Petunjuk perintah `gembala` untuk agent dari profil, lewat flag resmi `--append-system-prompt` (Claude, OMP).
-/// Config agent tidak disentuh; agent yang diketik manual memakai paragraf di file instruksi global pengguna.
+/// `gembala` command hint for profile agents, through the official `--append-system-prompt` flag (Claude, OMP).
+/// Agent config isn't touched; agents typed by hand use a paragraph in the user's global instruction file.
 const PETUNJUK_START: &str = "You run in a Gembala pane.";
 pub const PETUNJUK: &str = "You run in a Gembala pane. Reach other agents in the same workspace with `gembala` (on PATH, \
 JSON output): `gembala status` = list panes; `gembala send <pane> <message>` = send, wait for the reply with `gembala wait --reply <id>`; \
@@ -279,8 +279,8 @@ Errors: `target_busy` = retry with `--queue`; `no_such_pane` = closed (old names
 `acl_denied` = other workspace or the pane refuses messages, tell the user. `gembala wait` gives up after 10 minutes unless `--timeout <seconds>` (max 3600). \
 Do not look for processes via ps.";
 
-/// FR-56: perintah agent manual untuk blok ringkas, tanpa flag sisipan Gembala (petunjuk, hook) yang
-/// ditambah fungsi zsh: yang tampil cukup yang diketik pengguna.
+/// FR-56: manual agent command for the summary block, without the flags Gembala inserts (hint, hooks) that the
+/// zsh function adds: showing what the user typed is enough.
 /// The hint is matched by its opening sentence, not the whole text: the hook file can come from another daemon build.
 /// `--session-id` is added by Gembala's zsh function too; the session card already shows `claude --resume <id>`.
 pub fn shown_args(args: &[String]) -> String {
@@ -295,7 +295,7 @@ pub fn shown_args(args: &[String]) -> String {
         if ["--session-id", "--plugin-dir", "--mcp-config"].contains(&a.as_str()) {
             skip = true;
         } else if ours(a) {
-            // flag pemilik nilai ini (`--settings`, `-c`, `--append-system-prompt`) ikut dibuang
+            // the flag that owns this value (`--settings`, `-c`, `--append-system-prompt`) is dropped too
             if !a.starts_with('-') && out.last().is_some_and(|f| f.starts_with('-') && !f.contains('=')) {
                 out.pop();
             }
@@ -306,11 +306,11 @@ pub fn shown_args(args: &[String]) -> String {
     out.join(" ")
 }
 
-/// Flag/env hook per agent saat launch (TECH bagian 7, teruji 31 Okt 2026).
-/// FR-13: tool pengubah file Claude Code yang ditolak untuk peran baca saja (Bash tetap, untuk `gembala send`)
+/// Hook flags/env per agent at launch (TECH section 7, tested 31 Oct 2026).
+/// FR-13: Claude Code file-changing tools denied for the read-only role (Bash stays, for `gembala send`)
 pub const READONLY_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
-/// FR-13: peran yang dikenal: (id, baca saja, petunjuk)
+/// FR-13: known roles: (id, read only, hint)
 pub const ROLES: &[(&str, bool, &str)] = &[
     ("koordinator", true, "Your role: coordinator. Do not modify files. Read the code, split the work into small tasks, send them to the worker panes with `gembala send`, and check their results before reporting back."),
     ("planner", true, "Your role: planner. Do not modify files. Write a short step-by-step plan for the task and send it to the worker pane with `gembala send`."),
@@ -318,9 +318,9 @@ pub const ROLES: &[(&str, bool, &str)] = &[
     ("reviewer", true, "Your role: reviewer. Do not modify files. Review the changes you are asked to check and reply with concrete findings (file, line, problem)."),
 ];
 
-/// FR-4: hook status Claude Code, sama untuk profil dan `claude` yang diketik.
-/// PostToolUse: status `blocked` kembali `working` begitu izin disetujui (PreToolUse jalan sebelum dialog izin).
-/// StopFailure: giliran berhenti karena galat API/limit; tanpa ini pane tetap "bekerja".
+/// FR-4: Claude Code status hooks, same for profiles and a typed `claude`.
+/// PostToolUse: `blocked` goes back to `working` once permission is granted (PreToolUse runs before the permission dialog).
+/// StopFailure: the turn stopped on an API/limit error; without this the pane stays "working".
 fn claude_hooks(exe: &str) -> Value {
     let one = |ev: &str| json!([{"hooks": [{"type": "command", "command": format!("{} hook claude {ev}", q(exe))}]}]);
     json!({"hooks": {
@@ -342,7 +342,7 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
             }
             (f, vec![])
         }
-        // ponytail: developer_instructions milik config pengguna tertimpa; gabungkan kalau ada yang memakainya
+        // ponytail: the user config's developer_instructions get overwritten; merge them if anyone uses it
         "codex" => (
             vec![
                 "-c".into(),
@@ -358,9 +358,9 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
     }
 }
 
-/// FR-58: folder hook dipakai sebagai `ZDOTDIR` pane zsh. Tiap file membaca file pengguna yang sama apa adanya
-/// (dengan `ZDOTDIR` pengguna selama dibaca), `.zshrc` menambah penanda blok OSC 133, `.zlogin` mengembalikan
-/// `ZDOTDIR` supaya agent dan subshell tidak ikut. File pengguna tidak diubah.
+/// FR-58: the hook folder serves as `ZDOTDIR` for zsh panes. Each file sources the user's same file as is
+/// (with the user's `ZDOTDIR` while sourcing), `.zshrc` adds the OSC 133 block markers, `.zlogin` restores
+/// `ZDOTDIR` so agents and subshells don't inherit it. User files aren't changed.
 fn zsh_file(name: &str, extra: &str) -> String {
     format!(
         "# made by Gembala (FR-58); your {name} is read as is\n\
@@ -386,20 +386,20 @@ __gembala_preexec() { builtin print -rn -- $'\e]133;C;'"$(builtin print -rn -- "
 autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hook preexec __gembala_preexec
 "#;
 
-/// FR-9: agent yang diketik manual di pane juga menerima petunjuk `gembala` (flag yang sama dengan profil).
-/// `function name` (bukan `name()`) supaya alias pengguna bernama sama tidak merusak definisi; alias tetap jalan
-/// lewat fungsi ini. Claude/OMP hanya saat membuka TUI (tanpa argumen atau argumen pertama opsi), bukan subperintah.
-/// Claude tanpa flag lanjut diberi `--session-id` sejak mulai (FR-68): daemon membacanya dari argumen proses.
+/// FR-9: agents typed by hand in a pane get the `gembala` hint too (same flags as profiles).
+/// `function name` (not `name()`) so a user alias with the same name doesn't break the definition; the alias still works
+/// through this function. Claude/OMP only when opening the TUI (no arguments or first argument is an option), not subcommands.
+/// Claude without resume flags gets `--session-id` from the start (FR-68): the daemon reads it from the process arguments.
 /// FR-78: Claude and Codex ask the daemon for the add-ons of the pane's current workspace (one argument per line).
-/// ponytail: `claude "prompt"` positional tidak diberi petunjuk.
+/// ponytail: positional `claude "prompt"` gets no hint.
 fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let f = q(&dir.join("gembala.md").to_string_lossy());
-    // FR-68: Codex diketik = hook notify sama dengan profil; OpenCode diketik = config Gembala (petunjuk + plugin)
+    // FR-68: typed Codex = same notify hook as the profile; typed OpenCode = Gembala config (hint + plugin)
     let notify = q(&format!("notify={}", json!([exe, "hook", "codex", "notify"])));
     let oc = q(&dir.join("opencode.json").to_string_lossy());
-    // FR-67: omp manual juga mendapat hook (status + tool pesan) dan petunjuk khusus omp
+    // FR-67: manual omp gets hooks too (status + message tool) and the omp-specific hint
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
-    // FR-4, FR-61: Claude diketik = hook sama dengan profil (status, id sesi + akun pemilik); daemon tidak membaca layarnya
+    // FR-4, FR-61: typed Claude = same hooks as the profile (status, session id + owning account); the daemon doesn't read its screen
     let start = q(&claude_hooks(exe).to_string());
     format!(
         "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
@@ -411,11 +411,11 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     )
 }
 
-/// FR-61: `claude-<akun>` di pane shell = `claude` (dengan hook di atas) memakai folder akun itu.
-/// Ditulis ulang daemon tiap config dimuat, jadi akun baru ada di pane yang dibuka sesudahnya.
+/// FR-61: `claude-<account>` in a shell pane = `claude` (with the hooks above) using that account's folder.
+/// Rewritten by the daemon each time config loads, so a new account works in panes opened after that.
 pub fn zsh_accounts(accounts: &[crate::account::Account]) -> String {
     let mut s = String::from("# made by Gembala (FR-61): one command per agent account\n");
-    // sesi Utama yang dilanjutkan dari shell berakun lain (perintah lanjut `claude-utama --resume <id>`)
+    // a Utama session resumed from a shell on another account (resume command `claude-utama --resume <id>`)
     if accounts.iter().any(|a| a.agent == "claude") {
         s += "function claude-utama { (unset CLAUDE_CONFIG_DIR; claude \"$@\") }\n";
     }
@@ -427,7 +427,7 @@ pub fn zsh_accounts(accounts: &[crate::account::Account]) -> String {
     s
 }
 
-/// `~/…` di luar kutip supaya jadi folder home
+/// `~/…` outside the quotes so it becomes the home folder
 pub fn home_q(v: &str) -> String {
     v.strip_prefix("~/").map_or_else(|| q(v), |rest| format!("\"$HOME\"/{}", q(rest)))
 }
@@ -435,7 +435,7 @@ pub fn home_q(v: &str) -> String {
 const ZSH_RESTORE: &str = "ZDOTDIR=$GEMBALA_USER_ZDOTDIR\n[[ -f \"$ZDOTDIR/.zlogin\" ]] && builtin source \"$ZDOTDIR/.zlogin\"\n\
 if [[ $ZDOTDIR == $HOME ]]; then unset ZDOTDIR; else export ZDOTDIR; fi\nunset GEMBALA_USER_ZDOTDIR GEMBALA_ZDOTDIR\n";
 
-/// File hook OpenCode dan Oh My Pi, plus file zsh blok perintah, ditulis daemon saat start ke folder config Gembala (`0700`/`0600`).
+/// OpenCode and Oh My Pi hook files, plus the command block zsh files, written by the daemon at start to the Gembala config folder (`0700`/`0600`).
 pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
     let exe = json!(h.exe);
     let plugin = h.dir.join("opencode-gembala.js").to_string_lossy().into_owned();
@@ -452,8 +452,8 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
         ),
         ("gembala.md", format!("{PETUNJUK}\n")),
         ("gembala.md.omp", format!("{PETUNJUK} {OMP_TOOLS}\n")),
-        // nilai `-c` Codex untuk agent manual (string TOML = string JSON tanpa karakter khusus)
-        // FR-66: di sandbox, jawaban akhir giliran ikut terkirim sebagai balasan bila `gembala reply` gagal
+        // Codex `-c` value for manual agents (TOML string = JSON string without special characters)
+        // FR-66: in the sandbox, the turn's final answer goes out as the reply when `gembala reply` fails
         ("gembala.md.codex", format!("developer_instructions={}", json!(format!("{PETUNJUK} Your final message of a turn is also delivered as the reply to a waiting message.")))),
         (
             "opencode-gembala.js",
@@ -463,8 +463,8 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Plugin OpenCode: status pane (FR-4). Sesi anak (subagent `task`) hanya meneruskan izin/pertanyaan: idle-nya bukan
-/// akhir giliran pane. Status selain `idle` (busy, retry) = bekerja. Pola dari plugin herdr/Warp (5 Nov 2026).
+/// OpenCode plugin: pane status (FR-4). Child sessions (`task` subagents) only pass on permissions/questions: their idle isn't the
+/// end of the pane's turn. Any status other than `idle` (busy, retry) = working. Pattern from the herdr/Warp plugins (5 Nov 2026).
 const OPENCODE_HOOK: &str = r#"// made by Gembala; pane status (FR-4)
 import { execFile } from "node:child_process";
 const hook = (s, id) => execFile(__EXE__, ["hook", "opencode", s, String(id ?? "")], () => {});
@@ -473,7 +473,7 @@ export const Gembala = async () => ({
   event: async ({ event }) => {
     const t = event.type, p = event.properties ?? {};
     if (p.info?.id && p.info.parentID) child.add(p.info.id);
-    // FR-68: lanjutkan sesi ini persis; sesi anak tidak menggantikan sesi pane
+    // FR-68: resume exactly this session; child sessions don't replace the pane session
     const sub = child.has(p.sessionID), id = sub ? "" : p.sessionID;
     if (t === "question.asked" || (t.startsWith("permission.") && t !== "permission.replied")) hook("permission", id);
     else if (t === "permission.replied" || t === "question.replied" || t === "question.rejected") hook("busy", id);
@@ -484,8 +484,8 @@ export const Gembala = async () => ({
 });
 "#;
 
-/// Hook omp: status pane (FR-4) dan tool pesan (FR-67). Tool dari hook tidak lewat bash, jadi pola bash pengguna
-/// (mis. `*psql*` = prompt) tidak menahan pesan yang kebetulan menyebut kata itu.
+/// omp hook: pane status (FR-4) and message tool (FR-67). Hook tools don't go through bash, so the user's bash patterns
+/// (e.g. `*psql*` = prompt) don't hold a message that happens to mention that word.
 const OMP_HOOK: &str = r#"// made by Gembala; pane status (FR-4) and message tools without bash (FR-67)
 import { execFile } from "node:child_process";
 const exe = __EXE__;
@@ -494,9 +494,9 @@ const run = (args: string[], signal?: AbortSignal) =>
   new Promise<string>((ok) => execFile(exe, args, { signal, maxBuffer: 1 << 20 }, (e, out, err) => ok(String(out || err || (e ? e.message : "")).trim())));
 export default function (pi: any) {
   pi.on("agent_start", async () => hook("start"));
-  // omp mengulang otomatis (willContinue) = giliran belum selesai; tanpa ini "selesai" palsu lalu bekerja lagi
+  // omp retries automatically (willContinue) = turn not done yet; without this a false "done", then working again
   pi.on("agent_end", async (e: any) => { if (e?.willContinue !== true) hook("end"); });
-  // tool `ask` = agent menunggu jawaban manusia
+  // `ask` tool = agent waiting for a human answer
   pi.on("tool_execution_start", async (e: any) => { if (e?.toolName === "ask") hook("approval"); });
   pi.on("tool_execution_end", async (e: any) => { if (e?.toolName === "ask") hook("resolved"); });
   pi.on("tool_approval_requested", async () => hook("approval")); // FR-68: butuh izin
@@ -517,17 +517,17 @@ export default function (pi: any) {
 }
 "#;
 
-/// FR-67: petunjuk tambahan omp: pakai tool hook, bukan bash
+/// FR-67: extra omp hint: use the hook tool, not bash
 pub const OMP_TOOLS: &str = "In omp, use the gembala_status, gembala_send, gembala_reply, gembala_wait and gembala_read tools instead of running gembala in bash.";
 
-/// FR-53: id sesi dari Gembala (UUID) dan apakah pane melanjutkan sesi sebelumnya.
+/// FR-53: session id from Gembala (UUID) and whether the pane resumes the previous session.
 pub struct Session {
     pub id: Option<String>,
     pub resume: bool,
 }
 
-/// FR-68: id sesi yang boleh dipakai untuk agent itu (ditulis ke perintah shell): UUID untuk Claude/Codex,
-/// huruf, angka, `_`, `-` untuk OpenCode/omp.
+/// FR-68: session ids allowed for that agent (written into a shell command): UUID for Claude/Codex,
+/// letters, digits, `_`, `-` for OpenCode/omp.
 pub fn valid_session(agent: &str, s: &str) -> bool {
     match agent {
         "claude" | "codex" => valid_uuid(s),
@@ -539,13 +539,13 @@ pub fn valid_uuid(s: &str) -> bool {
     s.len() == 36 && s.chars().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() })
 }
 
-/// Claude Code menerima id dari luar; agent lain hanya "lanjutkan terakhir" (TECH bagian 7a, `--help` 1 Nov 2026).
+/// Claude Code accepts an id from outside; other agents only "resume the last one" (TECH section 7a, `--help` 1 Nov 2026).
 fn session_flags(agent: &str, s: &Session) -> Vec<String> {
     let id = s.id.as_deref().filter(|i| valid_session(agent, i));
     match (agent, s.resume, id) {
         ("claude", false, Some(id)) => vec!["--session-id".into(), id.into()],
         ("claude", true, Some(id)) => vec!["--resume".into(), id.into()],
-        // FR-68: id persis, bukan sesi terakhir di folder
+        // FR-68: the exact id, not the last session in the folder
         ("codex", true, Some(id)) => vec!["resume".into(), id.into()],
         ("opencode", true, Some(id)) => vec!["--session".into(), id.into()],
         ("claude", true, None) | ("opencode" | "omp", true, _) => vec!["--continue".into()],
@@ -554,7 +554,7 @@ fn session_flags(agent: &str, s: &Session) -> Vec<String> {
     }
 }
 
-/// FR-72: pemilih sesi bawaan agent (`--help` 3 Nov 2026); OpenCode tidak punya pemilih dari baris perintah
+/// FR-72: the agent's own session picker (`--help` 3 Nov 2026); OpenCode has no picker from the command line
 pub fn picker_flags(agent: &str) -> &'static [&'static str] {
     match agent {
         "claude" | "omp" => &["--resume"],
@@ -563,8 +563,8 @@ pub fn picker_flags(agent: &str) -> &'static [&'static str] {
     }
 }
 
-/// FR-64: flag mode izin per agent (`--help` 2 Nov 2026). OpenCode tidak punya flag untuk TUI (`--auto` hanya di `run`): kosong.
-/// Codex tetap bersandbox `workspace-write`; omp `yolo` tetap menghormati rule `bash.patterns` milik pengguna.
+/// FR-64: permission mode flags per agent (`--help` 2 Nov 2026). OpenCode has no flag for the TUI (`--auto` is only on `run`): empty.
+/// Codex stays sandboxed `workspace-write`; omp `yolo` still honors the user's `bash.patterns` rules.
 pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
     let f: &[&str] = match (agent, permission) {
         ("claude", "auto") => &["--permission-mode", "auto"],
@@ -575,9 +575,9 @@ pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
     f.iter().map(|s| s.to_string()).collect()
 }
 
-/// Teks yang dijalankan `$SHELL -l -c` (TECH bagian 6). `None` = shell login interaktif.
-/// Agent jalan di subshell supaya env rahasia tidak tertinggal di shell pane setelah agent keluar;
-/// lalu `exec $SHELL -l` membuat pane tetap hidup (FR-18). Exit 127 = pesan instal (FR-32).
+/// Text run by `$SHELL -l -c` (TECH section 6). `None` = interactive login shell.
+/// The agent runs in a subshell so secret env doesn't linger in the pane shell after the agent exits;
+/// then `exec $SHELL -l` keeps the pane alive (FR-18). Exit 127 = install message (FR-32).
 pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Option<String> {
     if p.command.is_empty() {
         return None;
@@ -587,25 +587,25 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
     // before the session flags: Codex `resume <id>` is a subcommand, `-c` must come first
     flags.extend(p.addons.iter().cloned());
     flags.extend(session.map(|s| session_flags(&p.agent, s)).unwrap_or_default());
-    // FR-56: penanda tak terlihat untuk daemon (OSC 777), mengapit output sesi agent
+    // FR-56: invisible markers for the daemon (OSC 777), around the agent session output
     let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
-    // PATH interaktif (sudah diambil detect saat daemon mulai), supaya agent yang hanya ada di PATH `.zshrc` ketemu
+    // interactive PATH (already taken by detect at daemon start), so agents only on the `.zshrc` PATH are found
     if let Some(path) = USER_PATH.get().cloned().flatten() {
         s += &format!("export PATH={}:\"$PATH\"; ", q(&path));
     }
     for (k, v) in p.env.iter().chain(&hook_env) {
-        // `~/…` di luar kutip supaya jadi folder home (mis. CLAUDE_CONFIG_DIR per akun)
+        // `~/…` outside the quotes so it becomes the home folder (e.g. CLAUDE_CONFIG_DIR per account)
         s += &format!("export {k}={}; ", home_q(v));
     }
     for (k, r) in &p.secret_env {
-        // rahasia dibuka shell pane; nilainya tidak pernah lewat daemon (SEC-32)
+        // secrets are resolved by the pane shell; their values never pass through the daemon (SEC-32)
         if let Some((svc, acct)) = r.strip_prefix("keychain:").and_then(|x| x.split_once('/')) {
             s += &format!("export {k}=\"$(security find-generic-password -w -s {} -a {})\"; ", q(svc), q(acct));
         } else {
             s += &format!("export {k}=\"$(op read {})\"; ", q(r));
         }
     }
-    // FR-66: sandbox Codex menolak socket pane; token (nama tanpa TOKEN supaya tidak dibuang Codex) untuk jalur spool
+    // FR-66: the Codex sandbox blocks the pane socket; token (name without TOKEN so Codex doesn't drop it) for the spool path
     if p.agent == "codex" {
         s += "export GEMBALA_SPOOL=\"$(gembala token 2>/dev/null)\"; ";
     }
@@ -623,8 +623,8 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
         s += "printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\"; ";
     }
     s += &format!("[ \"$s\" -eq 127 ] && printf '\\n%s\\n' {}; ", q(&hint));
-    // FR-58/59: `.zlogin` hook sudah mengembalikan ZDOTDIR pengguna, jadi zsh sesudah agent keluar dipasangi folder
-    // hook lagi (sama dengan pane shell); tanpa ini tidak ada penanda blok dan input editor
+    // FR-58/59: the hook `.zlogin` already restored the user's ZDOTDIR, so zsh after the agent exits gets the hook
+    // folder again (same as a shell pane); without this there are no block markers and no input editor
     match h {
         Some(h) => s += &format!(
             "case \"$SHELL\" in */zsh) exec env ZDOTDIR={} GEMBALA_USER_ZDOTDIR=\"${{ZDOTDIR:-$HOME}}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac",
@@ -645,8 +645,8 @@ pub fn to_json(p: &Profile) -> Value {
 
 static USER_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
-/// PATH shell login interaktif, seperti pane. Banyak pemasang hanya menambah PATH di `.zshrc`
-/// (Codex standalone: `~/.local/bin`), yang tidak dibaca `-l -c`. Diambil sekali per daemon.
+/// Interactive login shell PATH, like a pane. Many installers only add to PATH in `.zshrc`
+/// (standalone Codex: `~/.local/bin`), which `-l -c` doesn't read. Taken once per daemon.
 fn user_path() -> Option<String> {
     USER_PATH
         .get_or_init(|| {
@@ -662,7 +662,7 @@ fn user_path() -> Option<String> {
         .clone()
 }
 
-/// FR-28: cari agent lewat login shell (PATH sama dengan terminal biasa), batas 10 detik.
+/// FR-28: find agents through the login shell (same PATH as a normal terminal), 10-second limit.
 pub fn detect() -> Value {
     let names: Vec<&str> = AGENTS.iter().map(|a| a.0).collect();
     let script = format!(
@@ -710,8 +710,8 @@ fn version_of(raw: &str) -> Option<String> {
 
 pub fn run_with_timeout(mut c: Command, limit: Duration) -> Option<String> {
     let mut child = c.spawn().ok()?;
-    // stdout dibaca sambil menunggu: output di atas buffer pipe (~64 KB, mis. git diff besar) membuat proses
-    // menunggu dibaca, jadi baca-setelah-selesai selalu macet sampai batas waktu
+    // stdout is read while waiting: output above the pipe buffer (~64 KB, e.g. a big git diff) makes the process
+    // wait to be read, so reading after it finishes always hangs until the time limit
     let mut stdout = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut out = String::new();
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn launch_jalan_dan_pesan_127() {
-        // perintah tidak ada: pesan instal tampil, lalu shell login (di sini `exit` lewat env SHELL palsu)
+        // command missing: the install message shows, then a login shell (here `exit` through a fake SHELL env)
         let p = Profile { command: "gembala-tidak-ada-xyz".into(), ..builtin()[1].clone() };
         let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None, None).unwrap()).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
@@ -841,15 +841,15 @@ mod tests {
         let claude = launch(&by("claude"), Some(&h), None).unwrap();
         assert!(claude.contains("'claude' '--settings' '{\"hooks\":"), "{claude}");
         assert!(claude.contains("hook claude stop"), "{claude}");
-        // zsh sesudah agent keluar memuat hook lagi (input editor + blok), ZDOTDIR pengguna dibawa
+        // zsh after the agent exits loads the hooks again (input editor + blocks), the user's ZDOTDIR carried along
         assert!(claude.ends_with("exec env ZDOTDIR='/cfg/hooks' GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac"), "{claude}");
         let tail = "case \"$SHELL\" in */zsh) exec env ZDOTDIR=/h GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac";
         let out = std::process::Command::new("/bin/sh").args(["-c", &tail.replace("\"$SHELL\" -l ;; *)", "sh -c 'echo $ZDOTDIR $GEMBALA_USER_ZDOTDIR' ;; *)")]).env("SHELL", "/bin/zsh").env("ZDOTDIR", "/u").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/h /u");
-        // petunjuk `gembala` lewat flag resmi; tanda kutip tunggal di dalamnya akan merusak kutipan shell
+        // `gembala` hint through the official flag; a single quote inside would break the shell quoting
         assert!(!PETUNJUK.contains('\'') && claude.contains(&format!("'--append-system-prompt' '{PETUNJUK}'")), "{claude}");
         assert!(launch(&by("omp"), Some(&h), None).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK} {OMP_TOOLS}'")));
-        // FR-13: peran baca saja dikunci di Claude, brief ikut petunjuk
+        // FR-13: read-only role locked in Claude, brief goes into the hint
         let ro = Profile { readonly: true, brief: "Your role: reviewer.".into(), ..by("claude") };
         let l = launch(&ro, Some(&h), None).unwrap();
         assert!(l.contains("'--disallowedTools' 'Edit' 'Write'") && l.contains("Your role: reviewer."), "{l}");
@@ -863,7 +863,7 @@ mod tests {
         assert_eq!(oc["instructions"][0], "/cfg/hooks/gembala.md");
         assert!(files.iter().any(|f| f.0 == "gembala.md" && f.1.contains(PETUNJUK)));
         let rc = &files.iter().find(|f| f.0 == ".zshrc").unwrap().1;
-        // fungsi agent di .zshrc harus sintaks zsh yang sah
+        // the agent functions in .zshrc must be valid zsh syntax
         let tmp = std::env::temp_dir().join(format!("gembala-zshrc-{}", std::process::id()));
         std::fs::write(&tmp, rc).unwrap();
         let ok = std::process::Command::new("zsh").arg("-n").arg(&tmp).status().unwrap().success();
@@ -874,12 +874,12 @@ mod tests {
         assert!(launch(&by("opencode"), Some(&h), None).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
         assert!(launch(&by("omp"), Some(&h), None).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
         assert_eq!(launch(&by("shell"), Some(&h), None), None);
-        // perintah hook Claude dijalankan shell: path berspasi tetap satu kata
+        // the Claude hook command runs in a shell: a path with spaces stays one word
         let settings: serde_json::Value = serde_json::from_str(hook_flags(&by("claude"), &h).0[1].as_str()).unwrap();
         assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
         assert_eq!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude tool");
         assert_eq!(settings["hooks"]["StopFailure"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
-        // FR-4: claude diketik membawa hook yang sama (status dari hook, bukan layar)
+        // FR-4: a typed claude carries the same hooks (status from hooks, not the screen)
         assert!(rc.contains(&q(&settings.to_string())), "{rc}");
     }
 
@@ -891,10 +891,10 @@ mod tests {
         let again = Session { id: Some(id.into()), resume: true };
         assert!(launch(&by("claude"), None, Some(&new)).unwrap().contains(&format!("'claude' '--session-id' '{id}'")));
         assert!(launch(&by("claude"), None, Some(&again)).unwrap().contains(&format!("'claude' '--resume' '{id}'")));
-        // FR-68: id persis bila ada, "sesi terakhir di folder" hanya tanpa id
+        // FR-68: exact id when there is one, "last session in folder" only without an id
         assert!(launch(&by("codex"), None, Some(&again)).unwrap().contains(&format!("'codex' 'resume' '{id}'")));
         assert!(launch(&by("opencode"), None, Some(&Session { id: Some("ses_4Ab-9".into()), resume: true })).unwrap().contains("'opencode' '--session' 'ses_4Ab-9'"));
-        // FR-72: pemilih sesi bawaan = flag pemilih, tanpa id sesi baru
+        // FR-72: the agent's own session picker = picker flag, no new session id
         let mut pick = by("claude");
         pick.args.extend(picker_flags("claude").iter().map(|s| s.to_string()));
         let l = launch(&pick, None, Some(&Session { id: None, resume: false })).unwrap();
@@ -916,7 +916,7 @@ mod tests {
         assert_eq!(hook_status("omp", "resolved", ""), Some("working"));
         assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude needs your permission to use Bash"}"#), Some("blocked"));
         assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude is waiting for your input"}"#), Some("idle"));
-        // payload asli selalu membawa permission_mode: menunggu input tetap idle
+        // the real payload always carries permission_mode: waiting for input stays idle
         let idle = r#"{"permission_mode":"auto","message":"Claude is waiting for your input","notification_type":"idle_prompt"}"#;
         assert_eq!(hook_status("claude", "notify", idle), Some("idle"));
         let ask = r#"{"permission_mode":"auto","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}"#;
@@ -945,7 +945,7 @@ mod tests {
         assert_eq!(s("Allow tool: bash\n❯ Approve\n  Deny", 100, "working"), "blocked");
         // Codex 0.166 (5 Nov 2026): only the options and footer are left in the tail
         assert_eq!(s("› 1. Yes, proceed (y)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel", 4000, "working"), "blocked");
-        // jawaban agent yang menyebut approve/izin bukan dialog
+        // an agent answer mentioning approve or permission isn't a dialog
         assert_eq!(s("psql bakal minta izin di shell-2, jadi approve kalau muncul", 4000, "working"), "done");
         assert_eq!(s("needs permission to write", 4000, "done"), "done");
     }
@@ -960,7 +960,7 @@ mod tests {
 
     #[test]
     fn output_besar_tidak_macet() {
-        // 1 MB > buffer pipe: dulu macet sampai batas waktu lalu kosong (panel perubahan "Memuat…" lama)
+        // 1 MB > pipe buffer: used to hang until the time limit and come back empty (changes panel "Loading…" for long)
         let mut c = std::process::Command::new("/bin/sh");
         c.args(["-c", "head -c 1048576 /dev/zero | tr '\\0' x"]).stdout(std::process::Stdio::piped());
         let t0 = Instant::now();
@@ -999,17 +999,17 @@ mod tests {
         let a = |id: &str, agent: &str, dir: &str| crate::account::Account { id: id.into(), agent: agent.into(), name: id.into(), dir: dir.into(), share: vec![], model: String::new(), effort: String::new(), trust: true };
         let rc = zsh_accounts(&[a("kantor", "claude", "~/.claude-kantor"), a("x", "codex", "~/.codex-x")]);
         assert!(!rc.contains("claude-x"), "{rc}");
-        // fungsi `claude` (hook) menerima folder akun lewat env yang sampai ke proses anak
+        // the `claude` function (hooks) gets the account folder through env that reaches child processes
         let script = format!("function claude {{ command env | grep '^CLAUDE_CONFIG_DIR=' }}\n{rc}claude-kantor --versi");
         let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).env("HOME", "/rumah").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "CLAUDE_CONFIG_DIR=/rumah/.claude-kantor", "{rc}");
-        // FR-61 (8): model/effort akun jadi flag sebelum argumen pengguna
+        // FR-61 (8): account model/effort become flags before the user's arguments
         let mut k = a("kantor", "claude", "~/.claude-kantor");
         (k.model, k.effort) = ("opus".into(), "high".into());
         let script = format!("function claude {{ print -r -- \"$*\" }}\n{}claude-kantor --resume x", zsh_accounts(&[k]));
         let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "--model opus --effort high --resume x");
-        // sesi Utama dari shell berakun Kantor: `claude-utama` membuang folder akun cuma untuk perintah itu
+        // Utama session from a Kantor account shell: `claude-utama` drops the account folder for that command only
         let script = format!("export CLAUDE_CONFIG_DIR=/k\nfunction claude {{ print -r -- \"${{CLAUDE_CONFIG_DIR:-utama}} $*\" }}\n{}claude-utama --resume x; print -r -- $CLAUDE_CONFIG_DIR", zsh_accounts(&[a("kantor", "claude", "~/.claude-kantor")]));
         let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "utama --resume x\n/k");

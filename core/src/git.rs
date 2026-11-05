@@ -1,6 +1,6 @@
-//! Panel perubahan dan toolbar (FR-22, FR-55; SEC-29): git milik pengguna, baca saja, tanpa jaringan.
-//! Tidak ada input pengguna yang menjadi argumen git; folder kerja diambil dari pane. Pengecualian FR-71: worktree
-//! (nama tervalidasi, hook repo dimatikan) hanya dari kanal UI.
+//! Changes panel and toolbar (FR-22, FR-55; SEC-29): the user's git, read only, no network.
+//! No user input becomes a git argument; the working folder comes from the pane. Exception FR-71: worktrees
+//! (validated name, repo hooks off) only from the UI channel.
 //! FR-23 exception: restore and commit one file (paths from the panel's own diff), UI channel only too.
 
 use serde_json::{Value, json};
@@ -16,19 +16,19 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) -> Option<String> {
 
 pub(crate) fn git_for(cwd: &Path, args: &[&str], limit: Duration) -> Option<String> {
     let mut c = Command::new("git");
-    // SEC-29: config milik repo tidak boleh menjalankan perintah (fsmonitor, hook, repo bare tersemat)
+    // SEC-29: repo-owned config must not run commands (fsmonitor, hooks, embedded bare repos)
     c.args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "safe.bareRepository=explicit", "-C"]).arg(cwd).args(args);
     c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     crate::pty::scrub_env(&mut c);
     crate::profile::run_with_timeout(c, limit)
 }
 
-/// FR-71: nama worktree = bagian folder dan branch `gembala/<nama>`
+/// FR-71: worktree name = part of the folder and of branch `gembala/<name>`
 pub fn valid_name(n: &str) -> bool {
     (1..=40).contains(&n.len()) && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) && n.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) && !n.contains("..")
 }
 
-/// FR-71: worktree baru dari HEAD repo `cwd` di `dir` (bawaan `<repo>.<nama>` di samping repo), branch `gembala/<nama>`.
+/// FR-71: new worktree from HEAD of the repo at `cwd` in `dir` (default `<repo>.<name>` next to the repo), branch `gembala/<name>`.
 pub fn worktree_add(cwd: &Path, name: &str, dir: Option<&str>) -> Result<Value, &'static str> {
     if !valid_name(name) {
         return Err("bad_name");
@@ -52,12 +52,12 @@ pub fn worktree_add(cwd: &Path, name: &str, dir: Option<&str>) -> Result<Value, 
     let d = dir.to_string_lossy().into_owned();
     git_for(Path::new(&root), &["worktree", "add", "-b", &branch, &d, "HEAD"], Duration::from_secs(120));
     if !dir.join(".git").exists() {
-        return Err("worktree_failed"); // mis. branch sudah ada
+        return Err("worktree_failed"); // e.g. the branch already exists
     }
     Ok(json!({"dir": d, "branch": branch}))
 }
 
-/// FR-71: hapus worktree tambahan (bukan repo utama). Ada perubahan dan belum `force` = daftar file, tidak dihapus.
+/// FR-71: remove an extra worktree (not the main repo). Changes present and no `force` = file list, nothing removed.
 pub fn worktree_remove(dir: &Path, force: bool) -> Result<Value, &'static str> {
     let list = git(dir, &["worktree", "list", "--porcelain"]).ok_or("not_repo")?;
     let trees: Vec<&str> = list.lines().filter_map(|l| l.strip_prefix("worktree ")).collect();
@@ -177,8 +177,8 @@ fn output_for(mut c: Command, limit: Duration) -> Option<String> {
     rx.recv_timeout(Duration::from_secs(2)).ok()
 }
 
-/// SEC-29: filter clean/smudge/process di config lokal repo berjalan saat diff membandingkan worktree dan tidak bisa
-/// dimatikan lewat `-c`; repo seperti itu dianggap bukan repo. Filter dari config global (mis. git-lfs) tetap dipercaya.
+/// SEC-29: clean/smudge/process filters in the repo's local config run when diff compares the worktree and can't be
+/// turned off with `-c`; a repo like that is treated as no repo. Filters from global config (e.g. git-lfs) are still trusted.
 pub(crate) fn repo_runs_filters(cwd: &Path) -> bool {
     git(cwd, &["config", "--list", "--show-scope", "--includes"]).is_none_or(|s| {
         s.lines().any(|l| {
@@ -189,7 +189,7 @@ pub(crate) fn repo_runs_filters(cwd: &Path) -> bool {
     })
 }
 
-/// `{repo:false}` bila bukan repo; selain itu repo, branch, ahead/behind upstream, jumlah file dan baris.
+/// `{repo:false}` when it isn't a repo; otherwise repo, branch, ahead/behind upstream, file and line counts.
 pub fn status(cwd: &Path) -> Value {
     let Some(root) = git(cwd, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
         return json!({"repo": false});
@@ -216,7 +216,7 @@ pub fn status(cwd: &Path) -> Value {
            "files": files + untracked, "untracked": untracked, "add": add, "del": del})
 }
 
-/// Diff terhadap HEAD (staged + belum) plus daftar file baru; disamarkan (SEC-12) dan dibatasi 200 KB.
+/// Diff against HEAD (staged + unstaged) plus the list of new files; redacted (SEC-12) and capped at 200 KB.
 pub fn diff(cwd: &Path) -> Value {
     if git(cwd, &["rev-parse", "--show-toplevel"]).is_none_or(|s| s.trim().is_empty()) {
         return json!({"repo": false});
@@ -237,7 +237,7 @@ pub fn diff(cwd: &Path) -> Value {
     json!({"repo": true, "diff": redact(&text), "truncated": truncated, "untracked": untracked})
 }
 
-/// SEC-12: kata yang diawali pola rahasia diganti; blok PRIVATE KEY dibuang.
+/// SEC-12: words starting with a secret pattern are replaced; PRIVATE KEY blocks are dropped.
 pub fn redact(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_key = false;
@@ -378,7 +378,7 @@ mod tests {
         assert!(df["diff"].as_str().unwrap().contains("+dua") && !df["diff"].as_str().unwrap().contains("sk-rahasia"), "{df}");
         assert_eq!(df["untracked"], json!(["baru.txt"]));
 
-        // audit run-1: config repo tidak boleh menjalankan perintah lewat panel (SEC-29)
+        // audit run-1: repo config must not run commands through the panel (SEC-29)
         let jejak = |n: &str| format!("touch '{}'; false", d.join(n).display());
         run(&["config", "core.fsmonitor", &jejak("FSMON")]);
         run(&["config", "diff.x.textconv", &jejak("TEXTCONV")]);

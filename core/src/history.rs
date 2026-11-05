@@ -1,6 +1,6 @@
-//! FR-62: riwayat blok per pane di disk, supaya blok perintah tetap tampil setelah daemon berhenti atau laptop
-//! restart (ala "Previous session" Warp): baris perintah, folder, waktu, kode keluar, dan perintah lanjut, plus log
-//! layar utama yang disamarkan (`.log`, pengecualian SEC-13).
+//! FR-62: per-pane block history on disk, so command blocks still show after the daemon stops or the laptop
+//! restarts (like Warp's "Previous session"): command line, folder, time, exit code, and resume command, plus a
+//! redacted log of the main screen (`.log`, exception to SEC-13).
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -19,7 +19,7 @@ pub struct Block {
     pub resume: Option<String>,
 }
 
-/// Penanda blok zsh di stream PTY: `OSC 133;C;<perintah base64>` dan `OSC 133;D;<kode keluar>`.
+/// zsh block markers in the PTY stream: `OSC 133;C;<base64 command>` and `OSC 133;D;<exit code>`.
 pub enum Mark {
     Start(String),
     End(i64),
@@ -38,13 +38,13 @@ fn log_path(from: &Value) -> Option<PathBuf> {
     (boot.len() == 16 && boot.bytes().all(|c| c.is_ascii_hexdigit())).then(|| dir().join(format!("{boot}-{pane}.log")))
 }
 
-/// Log layar pane (baris berwarna) ditulis utuh lewat file sementara; gagal tulis diabaikan.
+/// Pane screen log (colored lines) written whole through a temp file; write failures are ignored.
 pub fn save_log(boot: &str, pane: u64, bytes: &[u8]) {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let Some(file) = log_path(&json!({"boot": boot, "pane": pane})) else { return };
     let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir());
     let tmp = file.with_extension("tmp");
-    // disamarkan per potongan di antara kode warna: `\x1b[32mghp_…` tetap kena (huruf `m` bukan awal kata)
+    // redacted per chunk between color codes: `\x1b[32mghp_…` still gets caught (the `m` isn't a word start)
     let raw = String::from_utf8_lossy(bytes);
     let (mut text, mut last) = (String::new(), 0);
     for m in regex_lite::Regex::new("\x1b\\[[0-9;]*m").unwrap().find_iter(&raw) {
@@ -59,7 +59,7 @@ pub fn save_log(boot: &str, pane: u64, bytes: &[u8]) {
     }
 }
 
-/// Log pane lama dan waktu terakhir ditulis, bila ada.
+/// Old pane log and when it was last written, if any.
 pub fn load_log(from: &Value) -> Option<(Vec<u8>, u64)> {
     let file = log_path(from)?;
     let meta = std::fs::metadata(&file).ok().filter(|m| m.len() <= LOG_MAX)?;
@@ -67,22 +67,22 @@ pub fn load_log(from: &Value) -> Option<(Vec<u8>, u64)> {
     Some((trim_separator(&std::fs::read(file).ok()?), t))
 }
 
-/// Garis "Sesi sebelumnya" (dan baris kosong) di ujung log dibuang: pane yang tidak dipakai sejak restart terakhir
-/// tidak menumpuk garis, cukup satu yang terbaru
+/// The "Previous session" line (and blank lines) at the end of the log is dropped: a pane unused since the last restart
+/// doesn't pile up lines, the latest one is enough
 fn trim_separator(log: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(log);
     let ansi = regex_lite::Regex::new("\x1b\\[[0-9;?]*[A-Za-z]").unwrap();
     let plain = |l: &str| ansi.replace_all(l, "").trim().to_string();
     let mut lines: Vec<&str> = text.split("\r\n").collect();
-    // garis "Sesi sebelumnya" yang hanya diikuti baris kosong dibuang (bisa bertumpuk)
+    // a "Previous session" line followed only by blank lines is dropped (they can stack)
     let last_sep = |lines: &[&str]| {
         lines.iter().rposition(|l| plain(l).trim_start_matches(['─', ' ']).starts_with("Sesi sebelumnya")).filter(|&i| lines[i + 1..].iter().all(|l| plain(l).is_empty()))
     };
     while let Some(i) = last_sep(&lines) {
         lines.truncate(i);
     }
-    // ujung log selalu tiga baris kosong, sama dengan block_text: baris tombol blok terakhir (dua baris terminal, digambar
-    // UI) tidak tertutup garis baru. Log disimpan dari grid tanpa baris kosong di ujung, jadi jangan andalkan isinya
+    // the log always ends in three blank lines, same as block_text: the button row of the last block (two terminal rows, drawn
+    // by the UI) isn't covered by the new line. The log is saved from the grid without trailing blank lines, so don't rely on its content
     while lines.last().is_some_and(|l| plain(l).is_empty()) {
         lines.pop();
     }
@@ -96,7 +96,7 @@ fn trim_separator(log: &[u8]) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// Garis pemisah di bawah log lama
+/// Separator line below the old log
 pub fn separator(t: u64) -> Vec<u8> {
     format!("{GUTTER}\x1b[2mSesi sebelumnya · {}\x1b[0m\r\n\r\n", date(t)).into_bytes()
 }
@@ -105,7 +105,7 @@ pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Tambah satu blok; gagal tulis diabaikan (riwayat tidak boleh mengganggu pane).
+/// Add one block; write failures are ignored (history must never get in the pane's way).
 pub fn append(file: &Path, b: &Block) {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let Some(parent) = file.parent() else { return };
@@ -116,7 +116,7 @@ pub fn append(file: &Path, b: &Block) {
     }
 }
 
-/// Bentuk perintah lanjut yang dibuat daemon (FR-56); selain itu dibuang.
+/// Resume command shapes the daemon builds (FR-56); anything else is dropped.
 fn safe_resume(r: &str) -> bool {
     const UUID: &str = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
     regex_lite::Regex::new(&format!(
@@ -129,7 +129,7 @@ fn clean(s: &str) -> String {
     crate::msg::sanitize(&s.chars().take(4096).collect::<String>()).unwrap_or_default()
 }
 
-/// `{boot, pane}` dari tata letak UI (tidak tepercaya): 200 blok terakhir pane lama, isinya dibersihkan.
+/// `{boot, pane}` from the UI layout (untrusted): last 200 blocks of the old pane, content sanitized.
 pub fn load(from: &Value) -> Vec<Block> {
     let (Some(boot), Some(pane)) = (from["boot"].as_str(), from["pane"].as_u64()) else { return Vec::new() };
     if boot.len() != 16 || !boot.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -150,8 +150,8 @@ pub fn load(from: &Value) -> Vec<Block> {
         })
         .filter(|b| !b.cmd.trim().is_empty())
         .fold(Vec::new(), |mut out: Vec<Block>, b| {
-            // satu sesi agent yang tercatat dua kali (blok shell + blok agent, sebelum perbaikan 4 Nov 2026):
-            // mulai dan durasinya sama; yang punya perintah lanjut dipakai
+            // one agent session recorded twice (shell block + agent block, before the 4 Nov 2026 fix):
+            // same start and duration; the one with a resume command wins
             match out.last_mut() {
                 Some(p) if p.t.abs_diff(b.t) <= 5 && p.secs.abs_diff(b.secs) <= 5 => {
                     if p.resume.is_none() && b.resume.is_some() {
@@ -172,14 +172,14 @@ pub fn dur(secs: u64) -> String {
     }
 }
 
-/// Titik dan garis linimasa digambar UI di luar grid (pen layar 02), jadi teks blok mulai di kolom 0
+/// Timeline dots and lines are drawn by the UI outside the grid (pen screen 02), so block text starts at column 0
 const GUTTER: &str = "";
 
-/// Satu blok seperti FR-56 (linimasa): `<ikon> <folder> · <durasi>[ · keluar n]` redup, perintah tebal,
-/// perintah lanjut redup bila ada (lalu satu baris untuk tombol UI), lalu satu baris kosong sebagai jarak antarblok.
+/// One block like FR-56 (timeline): `<icon> <folder> · <duration>[ · exit n]` dim, command bold,
+/// resume command dim if any (then one row for the UI buttons), then one blank row as spacing between blocks.
 pub fn block_text(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&str>) -> String {
     let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
-    // ikon agent berwarna seperti di sidebar (FR-52); perintah lain tanpa ikon
+    // agent icon colored like in the sidebar (FR-52); other commands have no icon
     let first = cmd.split_whitespace().next().unwrap_or_default();
     let icon = [("claude", "\x1b[38;2;217;119;87m✳"), ("omp", "\x1b[38;2;168;85;247mπ"), ("codex", "\x1b[38;2;16;163;127m◎"), ("opencode", "\x1b[38;2;96;165;250m◇")]
         .iter()
@@ -187,7 +187,7 @@ pub fn block_text(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&s
         .map_or(String::new(), |(_, g)| format!("{g}\x1b[0m\x1b[2m "));
     let cmd = cmd.replace('\n', &format!("\r\n{GUTTER}"));
     let mut t = format!("{GUTTER}\x1b[2m{icon}{cwd} · {}{exit}\x1b[0m\r\n{GUTTER}\x1b[1m{cmd}\x1b[0m\r\n", dur(secs));
-    // pen layar 02: perintah lanjut redup tanpa tanda, lalu dua baris untuk tombol yang digambar UI
+    // pen screen 02: resume command dim without a marker, then two rows for the buttons the UI draws
     if let Some(r) = resume {
         t += &format!("{GUTTER}\x1b[2m{r}\x1b[0m\r\n\r\n\r\n");
     }
@@ -205,7 +205,7 @@ fn date(t: u64) -> String {
     String::from_utf8_lossy(&buf[..n]).trim().to_string()
 }
 
-/// Blok-blok pane lama lalu garis "Sesi sebelumnya", ditulis ke grid sebelum output shell baru.
+/// Old pane blocks, then the "Previous session" line, written to the grid before the new shell output.
 pub fn render(blocks: &[Block]) -> Vec<u8> {
     let Some(first) = blocks.first() else { return Vec::new() };
     let mut out = String::new();
@@ -217,8 +217,8 @@ pub fn render(blocks: &[Block]) -> Vec<u8> {
     out
 }
 
-/// Penanda blok dalam potongan output, berurutan.
-// ponytail: penanda yang terpotong batas baca PTY terlewat (blok itu tidak tercatat)
+/// Block markers in an output chunk, in order.
+// ponytail: a marker cut by the PTY read boundary is missed (that block isn't recorded)
 pub fn marks(b: &[u8]) -> Vec<Mark> {
     use base64::Engine;
     let mut out = Vec::new();
@@ -239,7 +239,7 @@ pub fn marks(b: &[u8]) -> Vec<Mark> {
     out
 }
 
-/// File riwayat dan log yang tidak disentuh lebih dari 14 hari dihapus.
+/// History and log files untouched for more than 14 days are deleted.
 pub fn sweep() {
     let Ok(entries) = std::fs::read_dir(dir()) else { return };
     let limit = std::time::Duration::from_secs(KEEP_DAYS * 86400);
@@ -250,8 +250,8 @@ pub fn sweep() {
     }
 }
 
-/// FR-61: akun pemilik sesi Claude ditebak dari perintah lanjut di riwayat (`claude-kantor --resume <id>` = "kantor",
-/// `claude --resume <id>` = "" Utama), blok terbaru menang. Untuk sesi yang dimulai sebelum pemilik dicatat.
+/// FR-61: the account owning a Claude session is guessed from the resume command in history (`claude-kantor --resume <id>` = "kantor",
+/// `claude --resume <id>` = "" Utama), newest block wins. For sessions started before owners were recorded.
 pub fn resume_account(id: &str) -> Option<String> {
     resume_account_in(&dir(), id)
 }
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn blok_kembar_digabung() {
         let d = std::env::temp_dir().join(format!("gembala-uji-{}", std::process::id()));
-        // SAFETY: test lain yang memakai GEMBALA_CONFIG menulis nilai yang sama (folder uji per proses)
+        // SAFETY: other tests using GEMBALA_CONFIG write the same value (test folder per process)
         unsafe { std::env::set_var("GEMBALA_CONFIG", d.join("config.toml")) };
         let f = path("00000000000000aa", 1);
         let r = "claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb";
@@ -326,24 +326,24 @@ mod tests {
     #[test]
     fn log_pulih_dan_disamarkan() {
         let d = std::env::temp_dir().join(format!("gembala-uji-{}", std::process::id()));
-        // SAFETY: test lain yang memakai GEMBALA_CONFIG menulis nilai yang sama (folder uji per proses)
+        // SAFETY: other tests using GEMBALA_CONFIG write the same value (test folder per process)
         unsafe { std::env::set_var("GEMBALA_CONFIG", d.join("config.toml")) };
         save_log("0123456789abcdef", 7, b"\x1b[32mok\x1b[m\r\n\x1b[33mghp_abcd1234abcd1234\x1b[m\r\n");
         let (b, _) = load_log(&json!({"boot": "0123456789abcdef", "pane": 7})).unwrap();
         let t = String::from_utf8(b).unwrap();
         assert!(t.contains("\x1b[32mok") && !t.contains("abcd1234abcd1234"), "{t}");
         assert!(load_log(&json!({"boot": "../../etc/passwd", "pane": 7})).is_none());
-        // garis "Sesi sebelumnya" lama di ujung log tidak menumpuk
+        // an old "Previous session" line at the end of the log doesn't pile up
         let t = String::from_utf8(trim_separator(&[b"ls\r\nok\r\n".as_slice(), &separator(0), &separator(1), b"\r\n"].concat())).unwrap();
         assert_eq!(t, "ls\r\nok\r\n\r\n\r\n\r\n");
-        // baris kosong jatah tombol sebelum garis tetap ada
+        // the blank rows reserved for buttons before the line stay
         let blk = block_text("~", 1, "0", "claude", Some("claude --resume x"));
         let t = String::from_utf8(trim_separator(&[blk.as_bytes(), &separator(0)].concat())).unwrap();
         assert_eq!(t, blk);
-        // log dari grid (baris kosong di ujung hilang): jatah tombol blok terakhir dikembalikan
+        // log from the grid (trailing blank rows gone): the last block's button rows are given back
         let t = String::from_utf8(trim_separator(blk.trim_end().as_bytes())).unwrap();
         assert_eq!(t, blk);
-        let _ = std::fs::remove_file(d.join("history/0123456789abcdef-7.log")); // folder dipakai test lain
+        let _ = std::fs::remove_file(d.join("history/0123456789abcdef-7.log")); // folder used by another test
     }
 
     #[test]
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(resume_account_in(&d, id).as_deref(), Some("kantor"));
         append(&d.join("a-3.jsonl"), &blk(30, &format!("claude-utama --resume {id}")));
         assert_eq!(resume_account_in(&d, id).as_deref(), Some(""));
-        // bentuk asing dan id lain diabaikan
+        // foreign shapes and other ids are ignored
         append(&d.join("a-4.jsonl"), &blk(40, &format!("claude-x;id --resume {id}")));
         assert_eq!(resume_account_in(&d, id).as_deref(), Some(""));
         assert_eq!(resume_account_in(&d, "00000000-0000-0000-0000-000000000000"), None);

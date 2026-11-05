@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 /// `sun_path` macOS 104 byte termasuk NUL.
 const SUN_PATH_MAX: usize = 103;
 
-/// `$TMPDIR/gembala`. TMPDIR macOS sudah per-user; fallback `/tmp` tetap aman
-/// karena `ensure_private_dir` menolak folder milik orang lain.
+/// `$TMPDIR/gembala`. macOS TMPDIR is already per user; the `/tmp` fallback is still safe
+/// because `ensure_private_dir` rejects folders owned by someone else.
 pub fn default_dir() -> PathBuf {
     std::env::var_os("TMPDIR")
         .map(PathBuf::from)
@@ -17,8 +17,8 @@ pub fn default_dir() -> PathBuf {
         .join("gembala")
 }
 
-/// Buat folder `0700` bila belum ada, lalu tolak bila symlink, bukan folder,
-/// bukan milik UID ini, atau bisa diakses grup/lainnya.
+/// Create the `0700` folder if missing, then reject it if it's a symlink, not a folder,
+/// not owned by this UID, or accessible to group/others.
 pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     match fs::symlink_metadata(dir) {
         Err(e) if e.kind() == ErrorKind::NotFound => DirBuilder::new().mode(0o700).create(dir)?,

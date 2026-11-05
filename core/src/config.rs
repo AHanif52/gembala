@@ -1,5 +1,5 @@
-//! `config.toml` (TECH bagian 5, FR-42): validasi per kunci, nilai bawaan untuk yang rusak,
-//! file tidak pernah ditimpa otomatis. Tulis dari Pengaturan lewat `toml_edit` supaya komentar tetap.
+//! `config.toml` (TECH section 5, FR-42): validation per key, defaults for broken values,
+//! the file is never overwritten automatically. Settings writes go through `toml_edit` so comments survive.
 
 use serde_json::{Map, Value, json};
 use std::fs;
@@ -11,18 +11,18 @@ use toml_edit::DocumentMut;
 use crate::diag::Diag;
 
 enum Kind {
-    Int(i64, i64, i64), // min, max, bawaan
+    Int(i64, i64, i64), // min, max, default
     Float(f64, f64, f64),
     Bool(bool),
     Enum(&'static [&'static str], &'static str),
     Str(&'static str),
-    /// Daftar id dari pilihan tetap, urutan = tampilan (bawaan)
+    /// List of ids from the fixed choices, order = display (default)
     List(&'static [&'static str], &'static [&'static str]),
 }
 
 use Kind::*;
 
-// ponytail: hanya bagian yang sudah dipakai app; notify/app/toolbar/workspace/profile ditambah di M4–M7
+// ponytail: only the sections the app uses so far; notify/app/toolbar/workspace/profile get added in M4–M7
 const UI: &[(&str, Kind)] = &[
     // BRD 11: system = first of id/en in the macOS language list, else English (TECH 20)
     ("language", Enum(&["system", "id", "en"], "system")),
@@ -33,19 +33,19 @@ const UI: &[(&str, Kind)] = &[
     ("cursor", Enum(&["bar", "block", "underline"], "bar")),
     ("cursor_blink", Bool(true)),
     ("option_as_meta", Enum(&["none", "left", "right", "both"], "left")),
-    // xterm sekitar 12 byte per sel: 5.000 baris × 200 kolom ≈ 12 MB per pane bila penuh
+    // xterm about 12 bytes per cell: 5,000 rows × 200 columns ≈ 12 MB per pane when full
     ("scrollback_lines", Int(0, 100_000, 5_000)),
     ("screen_reader", Bool(false)),
-    // FR-59: input editor di prompt zsh; prompt shell disembunyikan (berlaku untuk pane baru)
+    // FR-59: editor input at the zsh prompt; the shell prompt is hidden (applies to new panes)
     ("input_editor", Bool(true)),
-    // FR-58: linimasa blok perintah di pane shell (garis, titik, kepala blok, tombol Ulangi/Ubah/Salin);
-    // mati = terminal polos, penanda OSC 133 tetap dilacak untuk lompat blok
+    // FR-58: command block timeline in shell panes (line, dot, block head, Rerun/Edit/Copy buttons);
+    // off = plain terminal, OSC 133 markers are still tracked for block jumps
     ("command_timeline", Bool(true)),
-    // FR-20: Cmd+Q = app ditutup, agent tetap jalan (keep) atau semua pane dihentikan (stop)
+    // FR-20: Cmd+Q = app closes, agents keep running (keep) or every pane is stopped (stop)
     ("on_quit", Enum(&["keep", "stop"], "keep")),
 ];
 const CHIPS: &[&str] = &["attach", "diff", "rich_input", "cwd", "branch", "settings"];
-/// FR-55: isi dan urutan chip toolbar agent
+/// FR-55: content and order of the agent toolbar chips
 const TOOLBAR: &[(&str, Kind)] = &[("left", List(CHIPS, &["attach", "diff", "rich_input"])), ("right", List(CHIPS, &["cwd", "branch", "settings"]))];
 const LIMITS: &[(&str, Kind)] = &[("max_panes", Int(1, 256, 32))];
 /// FR-40: banner macOS + badge Dock + Dock melompat
@@ -54,14 +54,14 @@ const NOTIFY: &[(&str, Kind)] =
 const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY), ("toolbar", TOOLBAR)];
 
 pub struct Config {
-    /// Profil bawaan + `[[profile]]` yang lolos validasi (FR-29). Rujukan rahasia ikut, nilainya tidak.
+    /// Built-in profiles + `[[profile]]` entries that pass validation (FR-29). Secret references come along, values don't.
     pub profiles: Vec<crate::profile::Profile>,
-    /// `{ui, limits, keys}` yang berlaku (nilai bawaan untuk yang rusak atau tidak ada).
+    /// `{ui, limits, keys}` in effect (defaults for broken or missing values).
     pub values: Value,
     pub errors: Vec<Diag>,
-    /// File tidak bisa diurai sama sekali: pemanggil memakai nilai valid terakhir.
+    /// The file can't be parsed at all: the caller uses the last valid values.
     pub broken: bool,
-    /// FR-61: `[[account]]` yang lolos validasi
+    /// FR-61: `[[account]]` entries that pass validation
     pub accounts: Vec<crate::account::Account>,
     /// FR-78: plugin and per-workspace MCP add-ons that passed validation
     pub addons: crate::addon::Addons,
@@ -75,7 +75,7 @@ pub fn path() -> PathBuf {
     home.join("Library/Application Support/Gembala/config.toml")
 }
 
-/// Tata letak (FR-45) di sebelah config: struktur workspace, tab, split, profil, folder. Tanpa isi layar (SEC-13).
+/// Layout (FR-45) next to config: workspace structure, tabs, splits, profiles, folders. No screen content (SEC-13).
 pub fn layout_path() -> PathBuf {
     path().with_file_name("layout.json")
 }
@@ -125,7 +125,7 @@ fn to_json(item: &toml_edit::Item) -> Value {
     }
 }
 
-/// `None` = file belum ada (semua nilai bawaan, tanpa galat).
+/// `None` = file doesn't exist yet (all defaults, no errors).
 pub fn load(text: Option<&str>) -> Config {
     let mut errors = Vec::new();
     let doc = match text.map(str::parse::<DocumentMut>) {
@@ -157,7 +157,7 @@ pub fn load(text: Option<&str>) -> Config {
         }
         values.insert(section.to_string(), Value::Object(out));
     }
-    // [keys] diteruskan apa adanya (teks → teks); UI yang tahu daftar aksi dan menandai bentrok
+    // [keys] passed through as is (text → text); the UI knows the action list and flags conflicts
     let mut keys = Map::new();
     if let Some(t) = doc.as_ref().and_then(|d| d.get("keys")).and_then(|t| t.as_table_like()) {
         for (k, v) in t.iter() {
@@ -176,7 +176,7 @@ pub fn load(text: Option<&str>) -> Config {
     let tables: Vec<&dyn toml_edit::TableLike> = arr.map(|a| a.iter().map(|t| t as &dyn toml_edit::TableLike).collect()).unwrap_or_default();
     let (mut profiles, perr) = crate::profile::from_config(&tables);
     errors.extend(perr);
-    // FR-61: akun, lalu rujukan akun di profil (akun tak dikenal atau env ganda = profil memakai Utama)
+    // FR-61: accounts, then account references in profiles (unknown account or duplicate env = profile uses Utama)
     let item = doc.as_ref().and_then(|d| d.get("account"));
     let arr = item.and_then(|v| v.as_array_of_tables());
     if item.is_some() && arr.is_none() {
@@ -217,7 +217,7 @@ fn defaults() -> Value {
     Value::Object(values)
 }
 
-/// Ubah satu kunci dari Pengaturan. Komentar dan urutan file tetap; file rusak tidak disentuh.
+/// Change one key from Settings. Comments and file order stay; a broken file isn't touched.
 pub fn set(path: &Path, section: &str, key: &str, value: &Value) -> Result<(), Diag> {
     let kind = SECTIONS
         .iter()
@@ -261,7 +261,7 @@ fn read_doc(path: &Path) -> Result<(DocumentMut, Vec<Diag>), Diag> {
     Ok((doc, load(Some(&text)).errors))
 }
 
-/// Tulis hanya bila tidak menambah galat baru; galat baru pertama dikembalikan ke Pengaturan, file tidak disentuh.
+/// Write only when it adds no new error; the first new error goes back to Settings, the file isn't touched.
 fn commit(path: &Path, doc: &DocumentMut, before: &[Diag]) -> Result<(), Diag> {
     let text = doc.to_string();
     if let Some(fresh) = load(Some(&text)).errors.into_iter().find(|e| !before.contains(e)) {
@@ -270,11 +270,11 @@ fn commit(path: &Path, doc: &DocumentMut, before: &[Diag]) -> Result<(), Diag> {
     write_atomic(path, text.as_bytes()).map_err(|e| io_err("io_write", e))
 }
 
-/// FR-29: simpan profil dari Pengaturan ke `[[profile]]` dengan id yang sama (atau tambah baru).
+/// FR-29: save a profile from Settings to `[[profile]]` with the same id (or add a new one).
 pub fn save_profile(path: &Path, p: &Value) -> Result<(), Diag> {
     let id = p["id"].as_str().ok_or_else(|| Diag::new("required").at("id"))?;
     let (mut doc, before) = read_doc(path)?;
-    // gabung dengan entri lama: kunci yang tidak dikirim (mis. env yang nilainya tidak ditampilkan) tetap
+    // merge with the old entry: keys that weren't sent (e.g. env whose values aren't shown) stay
     let old = doc
         .get("profile")
         .and_then(|v| v.as_array_of_tables())
@@ -294,7 +294,7 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), Diag> {
             t[k] = toml_edit::value(b);
         }
     }
-    // env digabung per kunci (nilai lama tidak dikirim ke UI); secret_env diganti utuh (rujukannya tampil di form)
+    // env merged per key (old values are never sent to the UI); secret_env replaced whole (its references show in the form)
     for (k, merge) in [("env", true), ("secret_env", false)] {
         if let Some(m) = p[k].as_object() {
             let mut sub = match (merge, t.get(k).and_then(|v| v.as_table())) {
@@ -319,8 +319,8 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), Diag> {
     commit(path, &doc, &before)
 }
 
-/// FR-39: pintasan dari Pengaturan. Kombinasi lama untuk aksi itu dibuang; `combo` kosong = kembali ke bawaan.
-/// Kombinasi dan nama aksi diperiksa lagi (wajib cmd, bentrok) oleh sisi Rust app yang membangun menu.
+/// FR-39: shortcuts from Settings. The old combo for that action is dropped; empty `combo` = back to default.
+/// Combo and action name are checked again (cmd required, conflicts) by the Rust app side that builds the menu.
 pub fn set_key(path: &Path, action: &str, combo: &str) -> Result<(), Diag> {
     let ok = |s: &str, extra: &str| s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
     if action.is_empty() || !ok(action, "._") || !ok(combo, "+.,=-;'/[]\\`") {
@@ -341,7 +341,7 @@ pub fn set_key(path: &Path, action: &str, combo: &str) -> Result<(), Diag> {
     commit(path, &doc, &before)
 }
 
-/// FR-61: tambah `[[account]]` (id unik per agent; validasi penuh oleh `load` lewat `commit`).
+/// FR-61: add `[[account]]` (id unique per agent; full validation by `load` through `commit`).
 pub fn save_account(path: &Path, a: &crate::account::Account) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     if !doc.contains_key("account") {
@@ -361,7 +361,7 @@ pub fn save_account(path: &Path, a: &crate::account::Account) -> Result<(), Diag
     commit(path, &doc, &before)
 }
 
-/// FR-61 (8): ubah setelan akun yang sudah ada (share, model, effort, trust); validasi penuh oleh `load` lewat `commit`.
+/// FR-61 (8): change settings of an existing account (share, model, effort, trust); full validation by `load` through `commit`.
 pub fn update_account(path: &Path, a: &crate::account::Account) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     let t = doc
@@ -385,13 +385,13 @@ pub fn update_account(path: &Path, a: &crate::account::Account) -> Result<(), Di
     commit(path, &doc, &before)
 }
 
-/// FR-61: hapus `[[account]]`; folder, tautan, dan Keychain tidak disentuh.
+/// FR-61: remove `[[account]]`; folder, links, and Keychain aren't touched.
 pub fn remove_account(path: &Path, id: &str) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     if let Some(arr) = doc.get_mut("account").and_then(|v| v.as_array_of_tables_mut()) {
         arr.retain(|x| x.get("id").and_then(|v| v.as_str()) != Some(id));
     }
-    // profil yang merujuk akun ini kembali ke Utama (tanpa ini commit menolak karena rujukan jadi galat)
+    // profiles referencing this account go back to Utama (without this commit rejects, since the reference becomes an error)
     if let Some(arr) = doc.get_mut("profile").and_then(|v| v.as_array_of_tables_mut()) {
         for t in arr.iter_mut().filter(|t| t.get("account").and_then(|v| v.as_str()) == Some(id)) {
             t.remove("account");
@@ -451,7 +451,7 @@ pub fn set_mcp(path: &Path, ws: &str, mcp: Option<(&str, bool)>) -> Result<(), D
     commit(path, &doc, &before)
 }
 
-/// FR-29: profil bawaan kembali ke asal / profil tambahan dihapus = semua `[[profile]]` dengan id itu dibuang.
+/// FR-29: reset a built-in profile / delete an extra profile = drop every `[[profile]]` with that id.
 pub fn reset_profile(path: &Path, id: &str) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     if let Some(arr) = doc.get_mut("profile").and_then(|v| v.as_array_of_tables_mut()) {
@@ -460,10 +460,10 @@ pub fn reset_profile(path: &Path, id: &str) -> Result<(), Diag> {
     commit(path, &doc, &before)
 }
 
-/// Tulis ke file sementara di folder yang sama lalu `rename` (TECH bagian 5). Folder `0700` (SEC-25).
+/// Write to a temp file in the same folder, then `rename` (TECH section 5). Folder `0700` (SEC-25).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("path tanpa folder"))?;
-    // folder Gembala dan subfoldernya (hooks/) dibuat 0700; satu tingkat di atasnya cukup
+    // the Gembala folder and its subfolders (hooks/) are created 0700; one level above is enough
     if let Some(up) = dir.parent().filter(|u| !u.exists()) {
         crate::rundir::ensure_private_dir(up)?;
     }
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn linimasa_perintah_dari_config() {
-        // FR-58: bawaan nyala; false dari config bertahan, nilai bukan bool jatuh ke bawaan dan ditandai
+        // FR-58: on by default; false from config sticks, a non-bool value falls back to the default and is flagged
         assert_eq!(load(None).values["ui"]["command_timeline"], true);
         let c = load(Some("[ui]\ncommand_timeline = false\n"));
         assert_eq!(c.values["ui"]["command_timeline"], false);
@@ -521,7 +521,7 @@ mod tests {
         let c = load(Some("[ui]\ncommand_timeline = \"mati\"\n"));
         assert_eq!(c.values["ui"]["command_timeline"], true);
         assert!(c.errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("").contains("ui.command_timeline"), "{:?}", c.errors);
-        // ditulis lewat config.set, bukan hanya dibaca
+        // written through config.set, not just read
         let p = scratch("linimasa");
         set(&p, "ui", "command_timeline", &json!(false)).unwrap();
         assert_eq!(load(Some(&fs::read_to_string(&p).unwrap())).values["ui"]["command_timeline"], false);
@@ -542,7 +542,7 @@ mod tests {
     fn pintasan_dari_pengaturan() {
         let p = scratch("keys");
         set_key(&p, "pane.split.right", "Cmd+T").unwrap();
-        set_key(&p, "pane.split.right", "cmd+e").unwrap(); // menggantikan, bukan menambah
+        set_key(&p, "pane.split.right", "cmd+e").unwrap(); // replaces, doesn't add
         let c = load(Some(&fs::read_to_string(&p).unwrap()));
         assert_eq!(c.values["keys"], json!({"cmd+e": "pane.split.right"}));
         set_key(&p, "pane.split.right", "").unwrap();
@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn set_menjaga_komentar_dan_menolak_nilai_salah() {
         let p = scratch("set");
-        set(&p, "ui", "font_size", &json!(15)).unwrap(); // file dan folder belum ada
+        set(&p, "ui", "font_size", &json!(15)).unwrap(); // file and folder don't exist yet
         let mut text = fs::read_to_string(&p).unwrap();
         text = format!("# punya pengguna\n{text}[keys]\n\"cmd+t\" = \"pane.split.right\" # komentar\n");
         fs::write(&p, &text).unwrap();
@@ -592,11 +592,11 @@ mod tests {
         assert_eq!((claude.args.len(), claude.summarize), (2, false));
         assert!(c.profiles.iter().any(|x| x.id == "lazygit"));
         assert_eq!(c.values["ui"]["font_size"], 14, "bagian lain tetap");
-        // ubah tanpa mengirim env: env lama tetap
+        // change without sending env: old env stays
         save_profile(&p, &json!({"id": "claude", "name": "Claude"})).unwrap();
         let c = load(Some(&fs::read_to_string(&p).unwrap()));
         assert_eq!(c.profiles.iter().find(|x| x.id == "claude").unwrap().env.len(), 1);
-        // rahasia di env biasa ditolak, file tidak berubah
+        // a secret in plain env is rejected, the file doesn't change
         let before = fs::read_to_string(&p).unwrap();
         let bad = save_profile(&p, &json!({"id": "claude", "env": {"KEY": "sk-ant-123"}})).unwrap_err();
         assert_eq!(bad.code, "env_secret", "{bad}");

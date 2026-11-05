@@ -1,13 +1,13 @@
-//! SEC-20: kanal UI dikenali dari tanda tangan kode peer, tanpa rahasia di Keychain. Item Keychain milik app
-//! bersertifikat self-signed (tanpa TeamIdentifier) terikat ke cdhash build, jadi tiap build baru ditanya ulang.
-//! Peer lolos bila prosesnya (audit token saat connect, kebal exec dan PID dipakai ulang) memenuhi
-//! `identifier "dev.gembala.app" and certificate leaf = <sertifikat daemon sendiri>`. Daemon tanpa sertifikat
-//! (build dev, uji) = `None`: hanya jalur rahasia.
+//! SEC-20: the UI channel is recognized by the peer's code signature, no secret in the Keychain. Keychain items of an app
+//! with a self-signed certificate (no TeamIdentifier) are tied to the build's cdhash, so every new build asks again.
+//! A peer passes when its process (audit token at connect, immune to exec and PID reuse) satisfies
+//! `identifier "dev.gembala.app" and certificate leaf = <the daemon's own certificate>`. A daemon without a certificate
+//! (dev build, tests) = `None`: secret path only.
 
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 
-/// Requirement dari tanda tangan binary daemon ini sendiri (sidecar di bundle app yang sama dengan UI).
+/// Requirement from the signature of this daemon binary (sidecar in the same app bundle as the UI).
 #[cfg(target_os = "macos")]
 pub fn ui_requirement() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
@@ -17,7 +17,7 @@ pub fn ui_requirement() -> Option<String> {
     Some(format!(r#"identifier "dev.gembala.app" and certificate leaf = H"{leaf}""#))
 }
 
-/// Audit token peer saat connect (`LOCAL_PEERTOKEN`).
+/// Peer audit token at connect (`LOCAL_PEERTOKEN`).
 #[cfg(target_os = "macos")]
 pub fn peer_ok(s: &UnixStream, requirement: &str) -> bool {
     use core_foundation::base::TCFType;
@@ -38,7 +38,7 @@ pub fn peer_ok(s: &UnixStream, requirement: &str) -> bool {
 
 #[cfg(not(target_os = "macos"))]
 pub fn ui_requirement() -> Option<String> {
-    None // ponytail: Linux belum; kanal UI tetap memakai rahasia
+    None // ponytail: no Linux yet; the UI channel still uses the secret
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -50,13 +50,13 @@ pub fn peer_ok(_s: &UnixStream, _requirement: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Proses uji (tanpa sertifikat Gembala) tidak boleh lolos; requirement rusak juga ditolak.
+    /// A test process (no Gembala certificate) must not pass; a broken requirement is rejected too.
     #[test]
     fn peer_tanpa_tanda_tangan_ditolak() {
         let (a, _b) = UnixStream::pair().unwrap();
         assert!(!peer_ok(&a, r#"identifier "dev.gembala.app" and certificate leaf = H"0000000000000000000000000000000000000000""#));
         assert!(!peer_ok(&a, "bukan requirement"));
-        // binary uji tidak bertanda tangan sertifikat: tidak ada requirement, daemon hanya memakai rahasia
+        // the test binary isn't signed with the certificate: no requirement, the daemon only uses the secret
         assert_eq!(ui_requirement(), None);
     }
 }

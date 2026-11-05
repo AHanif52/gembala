@@ -1,4 +1,4 @@
-//! PTY pane: spawn lewat login shell, baca/tulis, resize (TECH bagian 6, pekerjaan 0.1).
+//! Pane PTY: spawn through the login shell, read/write, resize (TECH section 6, work item 0.1).
 
 use std::fs::File;
 use std::io;
@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 pub struct Pty {
-    /// Master PTY; baca = output pane, tulis = input pane. `try_clone` untuk thread baca terpisah.
+    /// PTY master; read = pane output, write = pane input. `try_clone` for a separate read thread.
     pub master: File,
     pub child: Child,
 }
@@ -25,11 +25,11 @@ fn cloexec(fd: libc::c_int) -> io::Result<()> {
     check(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) })
 }
 
-// ponytail: daftar tetap dari env sesi Claude Code 2.1 yang teramati; tambah prefix saat agent lain ketahuan menurunkan penanda
-// FR-61: `CLAUDE_CONFIG_DIR` app yang dibuka dari sesi akun lain jangan jadi akun pane; akun hanya dari profil/`claude-<akun>`
+// ponytail: fixed list from the observed Claude Code 2.1 session env; add a prefix when another agent turns out to pass down markers
+// FR-61: `CLAUDE_CONFIG_DIR` of an app opened from another account's session must not become the pane account; accounts only come from the profile/`claude-<account>`
 const INHERITED_DROP: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CONFIG_DIR", "CODEX_", "OPENCODE_", "GEMBALA_"];
 
-/// SEC-35: penanda sesi agent yang menjalankan Gembala (termasuk socket + token pesannya) tidak ikut ke pane.
+/// SEC-35: session markers of the agent running Gembala (including its message socket + token) don't reach panes.
 pub fn scrub_env(c: &mut Command) {
     for (k, _) in std::env::vars_os() {
         let k = k.to_string_lossy();
@@ -44,13 +44,13 @@ pub fn login_shell() -> String {
 }
 
 impl Pty {
-    /// `$SHELL -l -c <cmd>`, atau `$SHELL -l` interaktif bila `cmd` kosong.
+    /// `$SHELL -l -c <cmd>`, or interactive `$SHELL -l` when `cmd` is empty.
     pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16, env: &[(&str, &str)], cwd: Option<&Path>) -> io::Result<Pty> {
         let (mut m, mut s) = (0, 0);
         let mut ws = winsize(rows, cols);
         check(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) })?;
         let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
-        // master jangan sampai diwarisi proses pane (agent tidak boleh pegang PTY pane lain)
+        // the master must not be inherited by pane processes (an agent must not hold another pane's PTY)
         cloexec(m)?;
         cloexec(s)?;
 
@@ -60,7 +60,7 @@ impl Pty {
             c.arg("-c").arg(cmd);
         }
         scrub_env(&mut c);
-        // app dari Finder/Dock mewarisi cwd `/` dari launchd; tanpa folder dari profil/pane, mulai di home
+        // an app from Finder/Dock inherits cwd `/` from launchd; without a folder from the profile/pane, start in home
         match cwd.filter(|d| d.is_dir()) {
             Some(d) => drop(c.current_dir(d)),
             None => {
@@ -74,7 +74,7 @@ impl Pty {
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
-        // setsid + jadikan slave terminal pengendali, supaya Ctrl+C/job control jalan
+        // setsid + make the slave the controlling terminal, so Ctrl+C/job control work
         unsafe {
             c.pre_exec(|| {
                 check(libc::setsid())?;
@@ -82,7 +82,7 @@ impl Pty {
             });
         }
         let child = c.spawn()?;
-        drop(c); // tutup salinan slave di daemon; tanpa ini baca master tidak pernah EOF
+        drop(c); // close the daemon's copy of the slave; without this reading the master never hits EOF
         Ok(Pty { master: File::from(master), child })
     }
 }
@@ -92,8 +92,8 @@ pub fn resize(master: &File, rows: u16, cols: u16) -> io::Result<()> {
     check(unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) })
 }
 
-/// Proses yang sedang jalan di pane (FR-38, FR-50): `(pid, grup)`. Job foreground bila shell
-/// memakai job control; anak langsung shell bila tidak (`$SHELL -l -c`). `None` = shell diam.
+/// Process running in the pane (FR-38, FR-50): `(pid, group)`. The foreground job when the shell
+/// uses job control; the shell's direct child when it doesn't (`$SHELL -l -c`). `None` = shell idle.
 pub fn busy(master: &File, shell: i32) -> Option<(i32, bool)> {
     let fg = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
     if fg > 0 && fg != shell {
@@ -102,8 +102,8 @@ pub fn busy(master: &File, shell: i32) -> Option<(i32, bool)> {
     children(shell).first().map(|&c| (c, false))
 }
 
-/// FR-40: terminal menunggu password = mode kanonik (baris) tetapi echo mati, pola `sudo`/`read -s`.
-/// TUI agent memakai mode raw (non-kanonik), jadi tidak ikut terdeteksi.
+/// FR-40: terminal waiting for a password = canonical (line) mode but echo off, the `sudo`/`read -s` pattern.
+/// Agent TUIs use raw (non-canonical) mode, so they aren't detected.
 pub fn wants_password(master: &File) -> bool {
     let mut t: libc::termios = unsafe { std::mem::zeroed() };
     if unsafe { libc::tcgetattr(master.as_raw_fd(), &mut t) } != 0 {
@@ -112,7 +112,7 @@ pub fn wants_password(master: &File) -> bool {
     t.c_lflag & libc::ICANON != 0 && t.c_lflag & libc::ECHO == 0
 }
 
-/// Sinyal ke proses `busy`; `0` = cek masih hidup.
+/// Signal to the `busy` process; `0` = check it's still alive.
 pub fn signal((pid, group): (i32, bool), sig: libc::c_int) -> bool {
     unsafe { if group { libc::killpg(pid, sig) == 0 } else { libc::kill(pid, sig) == 0 } }
 }
@@ -122,7 +122,7 @@ pub fn proc_name(pid: i32) -> Option<String> {
     proc_path(pid)?.file_name()?.to_str().map(str::to_string)
 }
 
-/// Path binary proses (serah-terima rahasia: lawan bicara harus binary Gembala yang benar).
+/// Binary path of a process (secret handover: the other side must be the right Gembala binary).
 #[cfg(target_os = "macos")]
 pub fn proc_path(pid: i32) -> Option<std::path::PathBuf> {
     use std::os::unix::ffi::OsStrExt;
@@ -131,7 +131,7 @@ pub fn proc_path(pid: i32) -> Option<std::path::PathBuf> {
     Some(std::ffi::OsStr::from_bytes(&buf[..usize::try_from(n).ok().filter(|&n| n > 0)?]).into())
 }
 
-/// Folder kerja proses (FR-30: pane baru ikut folder pane yang fokus).
+/// Working folder of a process (FR-30: a new pane follows the focused pane's folder).
 #[cfg(target_os = "macos")]
 pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
     let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
@@ -166,19 +166,19 @@ pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
-/// Argumen proses (SEC-5: flag lewati-izin pada agent yang diketik sendiri di pane shell).
+/// Process arguments (SEC-5: skip-permission flags on an agent typed by hand in a shell pane).
 #[cfg(target_os = "macos")]
 pub fn args_of(pid: i32) -> Vec<String> {
     procargs(pid).0
 }
 
-/// Satu variabel env proses (FR-61: `CLAUDE_CONFIG_DIR` agent yang diketik = akun mana). Nilai lain tidak disimpan.
+/// One env variable of a process (FR-61: `CLAUDE_CONFIG_DIR` of a typed agent = which account). Nothing else is kept.
 #[cfg(target_os = "macos")]
 pub fn env_of(pid: i32, key: &str) -> Option<String> {
     procargs(pid).1.into_iter().find_map(|kv| kv.strip_prefix(key)?.strip_prefix('=').map(String::from))
 }
 
-/// (argv, env) dari KERN_PROCARGS2
+/// (argv, env) from KERN_PROCARGS2
 #[cfg(target_os = "macos")]
 fn procargs(pid: i32) -> (Vec<String>, Vec<String>) {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
@@ -188,7 +188,7 @@ fn procargs(pid: i32) -> (Vec<String>, Vec<String>) {
     if rc != 0 || len < 4 {
         return (vec![], vec![]);
     }
-    // tata letak: argc (i32), path exec, NUL pengisi, lalu argv[0..argc], lalu env
+    // layout: argc (i32), exec path, NUL padding, then argv[0..argc], then env
     let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]).max(0) as usize;
     let rest = &buf[4..len];
     let mut parts = rest.split(|&b| b == 0).filter(|p| !p.is_empty()).skip(1); // lewati path exec
@@ -232,7 +232,7 @@ fn children(pid: i32) -> Vec<i32> {
     s.split_whitespace().filter_map(|p| p.parse().ok()).collect()
 }
 
-/// Baca master sampai pane tutup. macOS/Linux memberi EIO, bukan EOF, saat slave sudah tertutup.
+/// Read the master until the pane closes. macOS/Linux give EIO, not EOF, once the slave is closed.
 #[cfg(test)]
 pub fn read_to_end(mut r: impl io::Read) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
@@ -294,13 +294,13 @@ mod tests {
 
     #[test]
     fn punya_tty_pengendali() {
-        // /dev/tty hanya bisa dibuka bila setsid + TIOCSCTTY berhasil
+        // /dev/tty can only be opened when setsid + TIOCSCTTY succeeded
         let out = run(Pty::spawn(Some("tty; echo x > /dev/tty"), 24, 80, &[], None).unwrap());
         assert!(!out.contains("Device not configured"), "{out:?}");
         assert!(out.contains("/dev/ttys") || out.contains("/dev/pts/"), "{out:?}");
     }
 
-    /// dipanggil `env_of_membaca_folder_akun` sebagai proses anak
+    /// called by `env_of_membaca_folder_akun` as a child process
     #[test]
     #[ignore]
     fn tidur() {
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn env_of_membaca_folder_akun() {
-        // macOS menyembunyikan env binary Apple (mis. /bin/sleep); agent (claude, node) bukan binary Apple
+        // macOS hides the env of Apple binaries (e.g. /bin/sleep); agents (claude, node) aren't Apple binaries
         let exe = std::env::current_exe().unwrap();
         let mut c = std::process::Command::new(exe).args(["--ignored", "--exact", "pty::tests::tidur", "-q"]).env("CLAUDE_CONFIG_DIR", "/rumah/.claude-kantor")
             .stdout(std::process::Stdio::null()).spawn().unwrap();
