@@ -43,8 +43,8 @@
     onactdo?: () => void;
     onactcancel?: () => void;
   } = $props();
-  const hm = (t: number) => new Date(t * 1000).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" });
-  const askTurn = $derived(ask ? turns.find((t) => t.i === ask.i) : undefined);
+  const hm = (s: number) => new Date(s * 1000).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" });
+  const askTurn = $derived(ask ? turns.find((x) => x.i === ask.i) : undefined);
 
   function grip(e: PointerEvent) {
     const move = (m: PointerEvent) => onwidth(Math.min(innerWidth * 0.7, Math.max(320, innerWidth - m.clientX)));
@@ -98,57 +98,57 @@
 
   let copied = $state("");
   const copy = (text: string, what: string) =>
-    invoke("copy_text", { text }).then(() => (copied = `${what} tersalin`), () => (copied = "Gagal menyalin"));
+    invoke("copy_text", { text }).then(() => (copied = what), () => (copied = t("chg.copyFailed")));
 </script>
 
-<aside class="panel" aria-label="Panel perubahan" style:width="{width}px">
-  <div class="grip" onpointerdown={grip} role="separator" aria-orientation="vertical" aria-label="Lebar panel"></div>
+<aside class="panel" aria-label={t("chg.aria")} style:width="{width}px">
+  <div class="grip" onpointerdown={grip} role="separator" aria-orientation="vertical" aria-label={t("chg.width")}></div>
   <header>
     {#if status?.repo}
       <span class="repo">{status.root?.split("/").at(-1)}</span>
-      <span class="m">{status.branch ?? "HEAD terlepas"} · {status.files} file <span class="add">+{status.add}</span> <span class="del">−{status.del}</span></span>
+      <span class="m">{status.branch ?? t("chg.detached")} · {tn("chg.files", status.files)} <span class="add">+{status.add}</span> <span class="del">−{status.del}</span></span>
     {:else}
-      <span class="repo">Perubahan</span>
+      <span class="repo">{t("chg.title")}</span>
     {/if}
     <span class="m">{copied}</span>
     {#if diff?.repo && turn == null && (files.length || diff.untracked?.length)}
       <button class="mini" onclick={() => onact("commit", [...files.map((f) => f.path), ...(diff?.untracked ?? [])])}>{t("chg.commitAll")}</button>
     {/if}
-    <button class="mini" onclick={onreload} title="Muat ulang" aria-label="Muat ulang diff">↻</button>
-    <button class="mini" onclick={onclose} title="Tutup ⌘⇧= atau Esc" aria-label="Tutup panel">×</button>
+    <button class="mini" onclick={onreload} title={t("chg.reload")} aria-label={t("chg.reloadAria")}>↻</button>
+    <button class="mini" onclick={onclose} title={t("chg.closeTip")} aria-label={t("chg.close")}>×</button>
   </header>
   {#if turns.length}
     <div class="turns">
-      <span class="m">Giliran {pname} · disimpan di luar repo, 7 hari</span>
+      <span class="m">{t("chg.turns", { name: pname })}</span>
       <button class="trow" class:on={turn == null} onclick={() => onturn(null)}>
-        <i class="tdot"></i><span>Semua sejak commit</span><span class="m"></span>
-        <span class="m">{status?.files ?? 0} file · <span class="add">+{status?.add ?? 0}</span> <span class="del">−{status?.del ?? 0}</span></span>
+        <i class="tdot"></i><span>{t("chg.sinceCommit")}</span><span class="m"></span>
+        <span class="m">{tn("chg.files", status?.files ?? 0)} · <span class="add">+{status?.add ?? 0}</span> <span class="del">−{status?.del ?? 0}</span></span>
       </button>
-      {#each turns as t (t.i)}
-        <button class="trow" class:on={turn === t.i} onclick={() => onturn(t.i)}>
-          <i class="tdot"></i><span>{hm(t.start)} → {hm(t.end)}</span><span class="m ttl">{t.title}</span>
-          <span class="m">{t.files} file{#if t.files} · <span class="add">+{t.add}</span> <span class="del">−{t.del}</span>{/if}</span>
+      {#each turns as tr (tr.i)}
+        <button class="trow" class:on={turn === tr.i} onclick={() => onturn(tr.i)}>
+          <i class="tdot"></i><span>{hm(tr.start)} → {hm(tr.end)}</span><span class="m ttl">{tr.title}</span>
+          <span class="m">{tn("chg.files", tr.files)}{#if tr.files} · <span class="add">+{tr.add}</span> <span class="del">−{tr.del}</span>{/if}</span>
         </button>
       {/each}
       {#if turn != null}
-        <button class="mini undo" onclick={() => onrestore(turn!)}>↶ Kembalikan ke sebelum giliran ini</button>
+        <button class="mini undo" onclick={() => onrestore(turn!)}>{t("chg.restoreBtn")}</button>
       {/if}
     </div>
   {/if}
   {#if ask}
-    <div class="ask" role="alertdialog" aria-label="Kembalikan giliran">
-      <b>Kembalikan ke sebelum giliran {askTurn ? hm(askTurn.start) : ""}?</b>
-      <span class="m">File di folder kerja balik ke kondisi saat itu. Percakapan agent tidak ikut mundur; file yang di-ignore tidak disentuh.</span>
+    <div class="ask" role="alertdialog" aria-label={t("chg.restoreAria")}>
+      <b>{t("chg.restoreAsk", { time: askTurn ? hm(askTurn.start) : "" })}</b>
+      <span class="m">{t("chg.turnRestoreSub")}</span>
       <div class="flist">
         {#each ask.files.slice(0, 40) as f (f.path)}<div><span class={f.kind}>{f.kind}</span> {f.path}</div>{/each}
-        {#if ask.files.length > 40}<div class="m">… {ask.files.length - 40} file lagi</div>{/if}
+        {#if ask.files.length > 40}<div class="m">{tn("chg.more", ask.files.length - 40)}</div>{/if}
       </div>
-      {#if ask.others.length}<span class="warn">Hati-hati: {ask.others.join(", ")} juga mengubah folder ini sejak giliran itu</span>{/if}
-      {#if ask.head_moved}<span class="warn">HEAD sudah berubah sejak giliran itu (commit, checkout, atau rebase)</span>{/if}
-      {#if ask.skipped.length}<span class="m">Dilewati (≥ 100 MB): {ask.skipped.join(", ")}</span>{/if}
+      {#if ask.others.length}<span class="warn">{t("chg.turnOthers", { names: ask.others.join(", ") })}</span>{/if}
+      {#if ask.head_moved}<span class="warn">{t("chg.headMoved")}</span>{/if}
+      {#if ask.skipped.length}<span class="m">{t("chg.skipped", { files: ask.skipped.join(", ") })}</span>{/if}
       <span class="acts">
-        <button class="mini" onclick={oncancel}>Batal</button>
-        <button class="mini undo" onclick={onconfirm}>Kembalikan</button>
+        <button class="mini" onclick={oncancel}>{t("common.cancel")}</button>
+        <button class="mini undo" onclick={onconfirm}>{t("chg.restore")}</button>
       </span>
     </div>
   {/if}
@@ -182,24 +182,24 @@
   {/if}
   <div class="body">
     {#if !diff}
-      <p class="m">Memuat…</p>
+      <p class="m">{t("common.loading")}</p>
     {:else if !diff.repo}
-      <p class="m">Folder ini bukan repo git</p>
+      <p class="m">{t("err.not_repo")}</p>
     {:else if !files.length && !diff.untracked?.length}
-      <p class="m">Tidak ada perubahan</p>
+      <p class="m">{t("chg.none")}</p>
     {:else}
       {#each files as f (f.path)}
         <details open={files.length <= 5}>
           <summary>
             <span class="path">{f.path}</span>
             <span class="m"><span class="add">+{f.add}</span> <span class="del">−{f.del}</span></span>
-            <button class="mini" onclick={(e) => (e.preventDefault(), copy(f.path, "Path"))}>Salin path</button>
+            <button class="mini" onclick={(e) => (e.preventDefault(), copy(f.path, t("chg.pathCopied")))}>{t("chg.copyPath")}</button>
             {#if turn == null}
               {#if !f.isNew}<button class="mini" onclick={(e) => (e.preventDefault(), onact("restore", [f.path]))}>{t("chg.restore")}</button>{/if}
               <button class="mini" onclick={(e) => (e.preventDefault(), onact("commit", [f.path]))}>{t("chg.commit")}</button>
             {/if}
           </summary>
-          <pre>{#each compact(f.lines) as l}{#if typeof l === "number"}<span class="skip">⋯ {l} baris sama</span>{"\n"}{:else}<span
+          <pre>{#each compact(f.lines) as l}{#if typeof l === "number"}<span class="skip">{tn("chg.same", l)}</span>{"\n"}{:else}<span
                   class:add={l.startsWith("+")}
                   class:del={l.startsWith("-")}
                   class:hunk={l.startsWith("@")}>{l}</span>{"\n"}{/if}{/each}</pre>
@@ -207,7 +207,7 @@
       {/each}
       {#if diff.untracked?.length}
         <details>
-          <summary><span class="path">File baru belum ditambahkan</span><span class="m">{diff.untracked.length}</span></summary>
+          <summary><span class="path">{t("chg.untracked")}</span><span class="m">{diff.untracked.length}</span></summary>
           <div class="ulist">
             {#each diff.untracked as u (u)}
               <div><span class="path">{u}</span><button class="mini" onclick={() => onact("commit", [u])}>{t("chg.commit")}</button></div>
@@ -215,8 +215,8 @@
           </div>
         </details>
       {/if}
-      {#if diff.truncated}<p class="m">Diff dipotong di 200 KB.</p>{/if}
-      {#if diff.diff}<button class="mini" onclick={() => copy(diff?.diff ?? "", "Diff")}>Salin diff</button>{/if}
+      {#if diff.truncated}<p class="m">{t("chg.truncated")}</p>{/if}
+      {#if diff.diff}<button class="mini" onclick={() => copy(diff?.diff ?? "", t("chg.diffCopied"))}>{t("chg.copyDiff")}</button>{/if}
     {/if}
   </div>
 </aside>

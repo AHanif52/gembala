@@ -5,6 +5,7 @@
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
   import { call, unb64 } from "./daemon";
+  import { t } from "./i18n/state.svelte";
 
   let { pane, onclose }: { pane: number; onclose: () => void } = $props();
   let el: HTMLDivElement;
@@ -39,8 +40,8 @@
   });
 </script>
 
-<div class="out" role="dialog" aria-label="Output sesi agent">
-  <header><span>Output sesi agent sebelumnya · baca saja</span><button onclick={onclose}>Esc</button></header>
+<div class="out" role="dialog" aria-label={t("out.aria")}>
+  <header><span>{t("out.title")}</span><button onclick={onclose}>Esc</button></header>
   <div class="t" bind:this={el}></div>
 </div>
 

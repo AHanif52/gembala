@@ -2,6 +2,7 @@
   // Laci pesan (Fase 2): panel status agent (FR-10), kartu menunggu (FR-12), antrean, riwayat,
   // kebijakan penerima (SEC-5), mute (SEC-10), izin baca pane shell (SEC-21). Semua aksi lewat kanal UI.
   import { call } from "./daemon";
+  import { t, tOr } from "./i18n/state.svelte";
 
   type Row = { pane: number; name: string; agent: string; status?: string; policy?: string; readable?: boolean };
   let {
@@ -11,28 +12,6 @@
     onclose,
   }: { data: any; rows: Row[]; onchange: () => void; onclose: () => void } = $props();
 
-  const KIND: Record<string, string> = {
-    sent: "terkirim",
-    queued: "antre",
-    confirm: "menunggu persetujuan",
-    rejected: "ditolak",
-    reply: "balasan",
-    expired: "kedaluwarsa",
-  };
-  const REASON: Record<string, string> = {
-    target_busy: "target sedang bekerja",
-    target_blocked: "target butuh izin",
-    target_unknown: "status target tidak diketahui",
-    acl_denied: "aturan akses",
-    rate_limited: "lebih dari 10 pesan/menit",
-    hop_limit: "lebih dari 3 hop",
-    paused: "dijeda",
-    queue_full: "antrean penuh",
-    expired: "lewat 10 menit",
-    rejected_by_user: "ditolak kamu",
-    too_large: "lebih dari 32 KB",
-    target_gone: "pane sudah ditutup",
-  };
 
   const act = (method: string, params: object) => call(method, params).then(onchange, onchange);
   const muted = $derived(new Set<string>(data?.muted ?? []));
@@ -42,48 +21,48 @@
   );
 </script>
 
-<aside class="drawer" aria-label="Laci pesan">
+<aside class="drawer" aria-label={t("msg.aria")}>
   <header>
-    <span>Pesan antar agent</span>
+    <span>{t("msg.title")}</span>
     <button class="mini" class:on={data?.paused} onclick={() => act("msg.pause", { on: !data?.paused })}
-      >{data?.paused ? "Lanjutkan semua" : "Henti semua"} <span class="k">⌘⇧.</span></button
+      >{data?.paused ? t("msg.resumeAll") : t("msg.pauseAll")} <span class="k">⌘⇧.</span></button
     >
-    <button class="mini" onclick={onclose} aria-label="Tutup laci">Esc</button>
+    <button class="mini" onclick={onclose} aria-label={t("msg.close")}>Esc</button>
   </header>
   <div class="body">
-    <h4>Agent di workspace ini</h4>
+    <h4>{t("msg.agents")}</h4>
     <section>
       {#each rows as r (r.pane)}
         <div class="row">
           <span class="grow"
-            ><b>{r.name}</b><small>{r.agent} · {r.status || "tidak dilacak"}{lastTask[r.name] ? ` · tugas terakhir: ${lastTask[r.name]}` : ""}</small></span
+            ><b>{r.name}</b><small>{r.agent} · {r.status ? tOr(`status.${r.status}`, r.status) : t("msg.untracked")}{lastTask[r.name] ? ` · ${t("msg.lastTask", { task: lastTask[r.name] })}` : ""}</small></span
           >
           {#if r.agent === "shell"}
-            <label class="sw"><input type="checkbox" checked={r.readable} onchange={(e) => act("pane.readable", { pane: r.pane, on: e.currentTarget.checked })} /> boleh dibaca agent</label>
+            <label class="sw"><input type="checkbox" checked={r.readable} onchange={(e) => act("pane.readable", { pane: r.pane, on: e.currentTarget.checked })} /> {t("msg.readable")}</label>
           {:else}
-            <select aria-label="Kebijakan penerima {r.name}" value={r.policy} onchange={(e) => act("pane.policy", { pane: r.pane, policy: e.currentTarget.value })}>
-              <option value="auto">otomatis</option>
-              <option value="confirm">konfirmasi</option>
-              <option value="deny">tolak</option>
+            <select aria-label={t("msg.policyAria", { name: r.name })} value={r.policy} onchange={(e) => act("pane.policy", { pane: r.pane, policy: e.currentTarget.value })}>
+              <option value="auto">{t("policy.auto")}</option>
+              <option value="confirm">{t("policy.confirm")}</option>
+              <option value="deny">{t("policy.deny")}</option>
             </select>
-            <label class="sw"><input type="checkbox" checked={muted.has(r.name)} onchange={(e) => act("msg.mute", { pane: r.pane, on: e.currentTarget.checked })} /> mute</label>
+            <label class="sw"><input type="checkbox" checked={muted.has(r.name)} onchange={(e) => act("msg.mute", { pane: r.pane, on: e.currentTarget.checked })} /> {t("msg.mute")}</label>
           {/if}
         </div>
       {:else}
-        <div class="row"><span class="m">Belum ada pane</span></div>
+        <div class="row"><span class="m">{t("msg.noPanes")}</span></div>
       {/each}
     </section>
 
     {#if data?.pending?.length}
-      <h4>Menunggu persetujuan</h4>
+      <h4>{t("msg.pending")}</h4>
       <section>
         {#each data.pending as m (m.id)}
           <div class="msg">
             <span><b>{m.from}</b> → <b>{m.to}</b> <span class="m">{m.id}</span></span>
             <pre>{m.body}</pre>
             <span class="acts">
-              <button class="mini" onclick={() => act("msg.reject", { id: m.id })}>Tolak</button>
-              <button class="mini" onclick={() => act("msg.approve", { id: m.id })}>Setujui</button>
+              <button class="mini" onclick={() => act("msg.reject", { id: m.id })}>{t("msg.reject")}</button>
+              <button class="mini" onclick={() => act("msg.approve", { id: m.id })}>{t("msg.approve")}</button>
             </span>
           </div>
         {/each}
@@ -91,7 +70,7 @@
     {/if}
 
     {#if data?.queued?.length}
-      <h4>Antrean</h4>
+      <h4>{t("msg.queue")}</h4>
       <section>
         {#each data.queued as m (m.id)}
           <div class="row"><span class="grow"><b>{m.from}</b> → <b>{m.to}</b><small>{m.preview}</small></span></div>
@@ -99,19 +78,19 @@
       </section>
     {/if}
 
-    <h4>Riwayat</h4>
+    <h4>{t("msg.history")}</h4>
     <section>
       {#each [...(data?.history ?? [])].reverse() as h, i (i)}
         <div class="row">
           <span class="grow"
-            ><span class="kind {h.kind}">{KIND[h.kind] ?? h.kind}</span> <b>{h.msg.from}</b> → <b>{h.msg.to}</b>{#if h.reason}<span class="m">
-                · {REASON[h.reason] ?? h.reason}</span
+            ><span class="kind {h.kind}">{tOr(`msg.kind.${h.kind}`, h.kind)}</span> <b>{h.msg.from}</b> → <b>{h.msg.to}</b>{#if h.reason}<span class="m">
+                · {tOr(`msg.reason.${h.reason}`, h.reason)}</span
               >{/if}<small>{h.msg.preview}</small></span
           >
           <span class="m">{h.msg.hop ? `hop ${h.msg.hop}` : ""}</span>
         </div>
       {:else}
-        <div class="row"><span class="m">Belum ada pesan</span></div>
+        <div class="row"><span class="m">{t("msg.none")}</span></div>
       {/each}
     </section>
   </div>
