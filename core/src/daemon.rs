@@ -384,7 +384,10 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     let mut v = pane.view.lock().unwrap();
                     let (rows, cols) = v.0.size();
                     let prompt = pane.at_prompt.load(Ordering::Relaxed);
-                    reply(&tx, id, Ok(json!({"snapshot": B64.encode(v.0.replay()), "rows": rows, "cols": cols, "prompt": prompt, "sync": true})));
+                    // FR-2: raw history per size (UI writes each at its size, then resizes), snapshot = tail at rows/cols
+                    let (segs, tail) = v.0.replay();
+                    let segs: Vec<_> = segs.iter().map(|s| json!({"rows": s.rows, "cols": s.cols, "data": B64.encode(&s.data)})).collect();
+                    reply(&tx, id, Ok(json!({"segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "prompt": prompt, "sync": true})));
                     // penanda urutan di antrean yang sama: event pane sebelum ini sudah ada di snapshot, sesudahnya belum.
                     // UI (balasan dan event lewat jalur berbeda di Tauri) membuang event sebelum penanda; tanpa ini event
                     // yang ditahan selama attach ditulis dua kali dan gambar ulang TUI (kursor relatif) jadi berantakan

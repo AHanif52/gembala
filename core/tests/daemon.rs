@@ -64,6 +64,16 @@ fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> D
     Daemon { child, dir, secret: secret.trim().into() }
 }
 
+/// Isi attach seperti yang ditulis UI: riwayat mentah per ukuran (`segments`) lalu ekornya (`snapshot`), base64.
+fn snapshot(r: &Value) -> String {
+    let mut out = Vec::new();
+    for s in r["result"]["segments"].as_array().into_iter().flatten() {
+        out.extend(B64.decode(s["data"].as_str().unwrap()).unwrap());
+    }
+    out.extend(B64.decode(r["result"]["snapshot"].as_str().unwrap()).unwrap());
+    B64.encode(out)
+}
+
 struct Cli {
     r: BufReader<UnixStream>,
     w: UnixStream,
@@ -107,7 +117,7 @@ impl Cli {
     /// Kumpulkan output pane (snapshot + event) sampai `want` muncul atau pane keluar.
     fn attach_until(&mut self, pane: u64, want: &[&str]) -> String {
         let r = self.call("pane.attach", json!({"pane": pane}));
-        let mut out = B64.decode(r["result"]["snapshot"].as_str().unwrap()).unwrap();
+        let mut out = B64.decode(snapshot(&r)).unwrap();
         for e in std::mem::take(&mut self.events) {
             out.extend(B64.decode(e["params"]["data"].as_str().unwrap_or("")).unwrap());
         }
@@ -674,7 +684,7 @@ fn ringkas_output_saat_agent_keluar() {
     let text = String::from_utf8(B64.decode(e["params"]["data"].as_str().unwrap()).unwrap()).unwrap();
     assert!(text.contains("palsu-1") && text.contains("keluar 3"), "{text}");
     let mut ui2 = Cli::ui(&d);
-    let snap = ui2.call("pane.attach", json!({"pane": pane}))["result"]["snapshot"].as_str().unwrap().to_string();
+    let snap = snapshot(&ui2.call("pane.attach", json!({"pane": pane})));
     let snap = String::from_utf8(B64.decode(snap).unwrap()).unwrap();
     assert!(snap.contains("palsu-1") && !snap.contains("OUTPUT-AGENT-PANJANG"), "{snap}");
     let full = ui.call("pane.agent_output", json!({"pane": pane}))["result"]["data"].as_str().unwrap().to_string();
@@ -702,7 +712,7 @@ fn ringkas_agent_manual() {
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode("\x03")}));
     let e = next_event(&mut ui, "pane.replace", Duration::from_secs(15));
     let Some(data) = e["params"]["data"].as_str() else {
-        let snap = Cli::ui(&d).call("pane.attach", json!({"pane": pane}))["result"]["snapshot"].as_str().unwrap().to_string();
+        let snap = snapshot(&Cli::ui(&d).call("pane.attach", json!({"pane": pane})));
         panic!("tanpa pane.replace; layar: {}", String::from_utf8_lossy(&B64.decode(snap).unwrap()));
     };
     let text = String::from_utf8(B64.decode(data).unwrap()).unwrap();
@@ -712,7 +722,7 @@ fn ringkas_agent_manual() {
     assert!(text.contains("RIWAYAT-42") && text.find("RIWAYAT-42") < text.find("omp watch"), "{text}");
     assert_eq!(text.matches("watch").count(), 1, "{text}");
     std::thread::sleep(Duration::from_millis(500));
-    let snap = Cli::ui(&d).call("pane.attach", json!({"pane": pane}))["result"]["snapshot"].as_str().unwrap().to_string();
+    let snap = snapshot(&Cli::ui(&d).call("pane.attach", json!({"pane": pane})));
     let snap = String::from_utf8_lossy(&B64.decode(snap).unwrap()).into_owned();
     // prompt shell tampil di bawah blok, dengan bracketed paste tetap menyala
     let after = snap.split("--continue").nth(1).unwrap_or_default();
@@ -741,7 +751,7 @@ fn riwayat_blok_tersimpan_tanpa_output() {
     assert!(isi.contains("echo RIWAYAT-$((6*7))") && !isi.contains("RIWAYAT-42"), "output tidak boleh tersimpan: {isi}");
     assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
     let snap = |ui: &mut Cli, q: u64| {
-        let s = ui.call("pane.attach", json!({"pane": q}))["result"]["snapshot"].as_str().unwrap().to_string();
+        let s = snapshot(&ui.call("pane.attach", json!({"pane": q})));
         String::from_utf8_lossy(&B64.decode(s).unwrap()).into_owned()
     };
     let q = ui.call("pane.create", json!({"history": {"boot": boot, "pane": p}}))["result"]["pane"].as_u64().unwrap();

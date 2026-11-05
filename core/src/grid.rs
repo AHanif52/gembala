@@ -2,8 +2,99 @@
 
 use std::num::NonZeroU16;
 
-/// Parser, then the prefix of a sequence/UTF-8 char cut off at the end of the stream (see `pending`).
-pub struct Grid(vt100::Parser, Vec<u8>);
+/// Parser, then the prefix of a sequence/UTF-8 char cut off at the end of the stream (see `pending`), then the raw
+/// main-screen history (`Ring`) that attach replays.
+pub struct Grid(vt100::Parser, Vec<u8>, Ring);
+
+/// Raw main-screen bytes per pane size, oldest first. ~140 bytes per coloured line against ~5 KB per line in vt100
+/// scrollback, so attach can carry thousands of lines. Bytes while the alternate screen is on are dropped (a TUI
+/// redraws itself constantly and has no history); its screen comes from `snapshot` instead.
+pub struct Ring {
+    pub segs: Vec<Seg>,
+    len: usize,
+    alt: bool,
+}
+
+/// Bytes written while the pane had this size. Replaying them at that size, then resizing, gives what an xterm that
+/// stayed attached shows: cursor moves and wraps depend on the width.
+pub struct Seg {
+    pub rows: u16,
+    pub cols: u16,
+    pub data: Vec<u8>,
+}
+
+/// ~7,000 coloured lines; trimmed back to this once it is a quarter over, so the copy runs rarely.
+const RING_MAX: usize = 1 << 20;
+const ALT_ON: [&[u8]; 3] = [b"\x1b[?1049h", b"\x1b[?1047h", b"\x1b[?47h"];
+const ALT_OFF: [&[u8]; 3] = [b"\x1b[?1049l", b"\x1b[?1047l", b"\x1b[?47l"];
+
+/// Earliest of `seqs` in `b`: (position, length).
+fn find_any(b: &[u8], seqs: &[&[u8]]) -> Option<(usize, usize)> {
+    seqs.iter().filter_map(|s| b.windows(s.len()).position(|w| w == *s).map(|i| (i, s.len()))).min()
+}
+
+impl Ring {
+    fn new(rows: u16, cols: u16) -> Ring {
+        Ring { segs: vec![Seg { rows, cols, data: Vec::new() }], len: 0, alt: false }
+    }
+
+    /// Keeps main-screen bytes plus the enter/exit sequences themselves, so cursor save/restore still pairs up.
+    // ponytail: a switch sequence split across two reads is missed; `feed` then resyncs from vt100's state
+    fn push(&mut self, mut b: &[u8]) {
+        loop {
+            let seqs = if self.alt { &ALT_OFF } else { &ALT_ON };
+            let Some((i, n)) = find_any(b, seqs) else {
+                if !self.alt {
+                    self.add(b);
+                }
+                return;
+            };
+            self.add(if self.alt { &b[i..i + n] } else { &b[..i + n] });
+            self.alt = !self.alt;
+            b = &b[i + n..];
+        }
+    }
+
+    fn add(&mut self, b: &[u8]) {
+        self.segs.last_mut().unwrap().data.extend_from_slice(b);
+        self.len += b.len();
+        if self.len > RING_MAX + RING_MAX / 4 {
+            self.trim();
+        }
+    }
+
+    /// Drops the oldest bytes down to `RING_MAX`, cutting after a newline and resetting attributes so the first kept
+    /// line does not start mid sequence. An enter/exit pair has no newline between them, so it goes as a whole.
+    fn trim(&mut self) {
+        let mut over = self.len - RING_MAX;
+        while over > 0 {
+            let n = self.segs[0].data.len();
+            if over >= n && self.segs.len() > 1 {
+                over -= n;
+                self.len -= n;
+                self.segs.remove(0);
+                continue;
+            }
+            let first = &mut self.segs[0];
+            let from = over.min(n);
+            let cut = first.data[from..].iter().position(|&c| c == b'\n').map_or(first.data.len(), |i| from + i + 1);
+            self.len -= cut;
+            first.data.drain(..cut);
+            first.data.splice(0..0, *b"\x1b[m");
+            self.len += 3;
+            break;
+        }
+    }
+
+    fn resize(&mut self, rows: u16, cols: u16) {
+        let last = self.segs.last_mut().unwrap();
+        if last.data.is_empty() {
+            (last.rows, last.cols) = (rows, cols);
+        } else if (last.rows, last.cols) != (rows, cols) {
+            self.segs.push(Seg { rows, cols, data: Vec::new() });
+        }
+    }
+}
 
 /// Start of the incomplete tail of `b`: an escape sequence (CSI, OSC, ESC + intermediates) or a cut-off UTF-8
 /// char; `b.len()` if the end is intact. The vt100 parser keeps that prefix inside itself, a snapshot does not.
@@ -64,11 +155,13 @@ fn nz(n: u16) -> NonZeroU16 {
 
 impl Grid {
     pub fn new(rows: u16, cols: u16, scrollback: usize) -> Grid {
-        Grid(vt100::Parser::new(nz(rows), nz(cols), scrollback), Vec::new())
+        Grid(vt100::Parser::new(nz(rows), nz(cols), scrollback), Vec::new(), Ring::new(rows.max(1), cols.max(1)))
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
         self.0.process(bytes);
+        self.2.push(bytes);
+        self.2.alt = self.0.screen().alternate_screen();
         let joined;
         let all = if self.1.is_empty() {
             bytes
@@ -83,6 +176,7 @@ impl Grid {
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.0.set_size(nz(rows), nz(cols));
+        self.2.resize(rows.max(1), cols.max(1));
     }
 
     /// Byte yang ditulis ke terminal kosong berukuran sama supaya tampil identik:
@@ -101,18 +195,23 @@ impl Grid {
         out
     }
 
-    /// FR-2: scrollback layar utama lalu snapshot, supaya riwayat ikut tampil saat app dibuka lagi.
-    /// Baris scrollback didorong keluar layar dengan baris baru sebelum snapshot menggambar ulang layar.
-    // ponytail: baris panjang yang terbungkus jadi baris terpisah (tanpa reflow saat lebar berubah)
-    pub fn replay(&mut self) -> Vec<u8> {
-        let n = self.0.screen().scrollback_len();
-        let rows = self.size().0 as usize;
-        let mut out = if self.0.screen().alternate_screen() { Vec::new() } else { self.before((n, 0)) };
-        if !out.is_empty() {
-            out.extend(b"\r\n".repeat(rows));
-        }
-        out.extend(self.snapshot());
-        out
+    /// FR-2: what attach writes, in order: each ring segment at its own size, then the tail at the current size.
+    /// Main screen: the ring already ends in the live state, the tail only re-applies input modes set before the
+    /// trimmed part (not when the ring ends mid sequence: the next live event finishes that one). Alternate screen: the
+    /// ring stops at the switch, the tail is the snapshot of the TUI screen.
+    pub fn replay(&self) -> (&[Seg], Vec<u8>) {
+        let s = self.0.screen();
+        let tail = if s.alternate_screen() {
+            // a second ?1049h would save the alternate cursor over the main one, so leaving the TUI lands wrong
+            let switched = self.2.segs.iter().rev().find(|g| !g.data.is_empty()).is_some_and(|g| ALT_ON.iter().any(|s| g.data.ends_with(s)));
+            let snap = self.snapshot();
+            if switched { snap.strip_prefix(b"\x1b[?1049h").map_or(snap.clone(), <[u8]>::to_vec) } else { snap }
+        } else if self.1.is_empty() {
+            s.input_mode_formatted().into_bytes()
+        } else {
+            Vec::new()
+        };
+        (&self.2.segs, tail)
     }
 
     /// `(panjang scrollback, baris kursor)`: posisi baris sekarang di riwayat layar utama.
@@ -193,6 +292,20 @@ mod tests {
         assert_eq!(fix_intensity("\x1b[38;5;2m\x1b[m"), "\x1b[38;5;2m\x1b[m");
     }
 
+    /// What the UI does on attach: each segment at its size, then the tail at the current size.
+    fn replayed(a: &Grid, scrollback: usize) -> Grid {
+        let (segs, tail) = a.replay();
+        let mut b = Grid::new(segs[0].rows, segs[0].cols, scrollback);
+        for s in segs {
+            b.resize(s.rows, s.cols);
+            b.feed(&s.data);
+        }
+        let (rows, cols) = a.size();
+        b.resize(rows, cols);
+        b.feed(&tail);
+        b
+    }
+
     /// Attach ulang = snapshot A ditulis ke grid baru B; B harus sama persis dengan A.
     fn assert_roundtrip(a: &Grid) {
         let (rows, cols) = a.0.screen().size();
@@ -222,8 +335,7 @@ mod tests {
         for cut in 1..stream.len() {
             let mut a = Grid::new(5, 40, 0);
             a.feed(&stream[..cut]);
-            let mut b = Grid::new(5, 40, 0);
-            b.feed(&a.replay());
+            let mut b = replayed(&a, 0);
             b.feed(&stream[cut..]);
             assert_eq!(b.text(), whole.text(), "dipotong di byte {cut}");
         }
@@ -244,13 +356,53 @@ mod tests {
         for i in 0..12 {
             g.feed(format!("baris \x1b[1m{i}\x1b[m\r\n").as_bytes());
         }
-        let mut b = Grid::new(5, 30, 100);
-        b.feed(&g.replay());
+        let mut b = replayed(&g, 100);
         assert_eq!(b.0.screen().contents(), g.0.screen().contents());
         assert_eq!(b.0.screen().cursor_position(), g.0.screen().cursor_position());
         assert!(b.before((b.0.screen().scrollback_len(), 0)).windows(7).any(|w| w == b"baris \x1b"), "riwayat ikut");
         let teks = String::from_utf8_lossy(&b.before(b.position())).replace("\x1b[m", "").replace("\x1b[22;1m", "");
         assert!(teks.starts_with("baris 0\r\nbaris 1\r\n") && teks.contains("baris 11"), "{teks}");
+    }
+
+    /// Ring: bytes in the alternate screen are dropped, the switch pair stays, a resize starts a new segment,
+    /// and replay (ring + tail) gives the same screen, cursor and history as the live grid, in and out of a TUI.
+    #[test]
+    fn ring_tanpa_layar_alternatif() {
+        let mut g = Grid::new(5, 30, 100);
+        g.feed(b"satu\r\ndua\r\n\x1b[?1049h\x1b[2J\x1b[Htui berat");
+        g.resize(6, 20);
+        g.feed(b"\x1b[Hgambar ulang tui\x1b[?1049ltiga\r\n");
+        let (segs, _) = g.replay();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].data, b"satu\r\ndua\r\n\x1b[?1049h");
+        assert_eq!((segs[1].rows, segs[1].cols, &segs[1].data[..]), (6, 20, &b"\x1b[?1049ltiga\r\n"[..]));
+        let b = replayed(&g, 100);
+        assert_eq!(b.0.screen().contents(), g.0.screen().contents());
+        assert_eq!(b.0.screen().cursor_position(), g.0.screen().cursor_position());
+
+        // still inside the TUI: tail is the snapshot without a second ?1049h; leaving it restores the main cursor
+        let mut g = Grid::new(5, 30, 100);
+        g.feed(b"satu\r\ndua\x1b[?1049h\x1b[2;3Hpanel");
+        let mut b = replayed(&g, 100);
+        assert_eq!(b.0.screen().contents(), g.0.screen().contents());
+        g.feed(b"\x1b[?1049lx");
+        b.feed(b"\x1b[?1049lx");
+        assert_eq!(b.0.screen().contents(), g.0.screen().contents());
+        assert_eq!(b.0.screen().cursor_position(), g.0.screen().cursor_position());
+    }
+
+    #[test]
+    fn ring_dipangkas_di_baris() {
+        let mut g = Grid::new(5, 30, 0);
+        g.feed(b"\x1b[1mtebal");
+        for i in 0..RING_MAX / 5 {
+            g.feed(format!("{i:08}\r\n").as_bytes());
+        }
+        let (segs, _) = g.replay();
+        let d = &segs[0].data;
+        assert!(g.2.len <= RING_MAX + RING_MAX / 4 && g.2.len == d.len());
+        assert!(d.starts_with(b"\x1b[m") && d[3..].iter().take(8).all(u8::is_ascii_digit), "cut after a newline, reset first");
+        assert!(!d.windows(5).any(|w| w == b"tebal"));
     }
 
     #[test]

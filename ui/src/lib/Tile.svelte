@@ -515,18 +515,28 @@
         // balasan attach dan event lewat jalur berbeda di Tauri: event yang datang duluan ditahan
         const a = await call("pane.attach", { pane });
         if (!a.sync) synced = true;
+        const segs: { rows: number; cols: number; data: string }[] = a.segments ?? [];
+        const raw = segs.map((s) => unb64(s.data));
         const snap = unb64(a.snapshot);
-        // TECH 19 #10: snapshot ditulis di ukuran grid daemon (mis. 80 kolom sebelum UI menempel), baru dipaskan ke pane;
+        // resize langsung berlaku, write diantrekan: tiap potongan ditunggu dulu; event live tertahan sampai `attached`
+        const put = (d: Uint8Array) => new Promise<void>((r) => term.write(d, r));
+        // FR-2: riwayat mentah ditulis di ukuran saat dulu keluar (lebar menentukan bungkus dan gerak kursor), lalu
+        // xterm sendiri membungkus ulang saat resize; hasilnya sama dengan tab yang tidak pernah dilepas
+        for (let i = 0; i < segs.length; i++) {
+          term.resize(segs[i].cols, segs[i].rows);
+          await put(raw[i]);
+        }
+        // TECH 19 #10: ekor ditulis di ukuran grid daemon (mis. 80 kolom sebelum UI menempel), baru dipaskan ke pane;
         // xterm membungkus ulang baris panjang, grid daemon (vt100) yang dikecilkan duluan malah memotongnya
         if (a.cols && a.rows) term.resize(a.cols, a.rows);
-        term.write(snap, () => {
-          sized = true;
-          if (el.offsetParent) fit.fit();
-          call("pane.resize", { pane, rows: term.rows, cols: term.cols }).catch(() => {});
-          decorateSummary();
-        });
+        await put(snap);
+        sized = true;
+        if (el.offsetParent) fit.fit();
+        call("pane.resize", { pane, rows: term.rows, cols: term.cols }).catch(() => {});
+        decorateSummary();
         if (a.prompt) onprompt(true); // FR-59: penanda B sebelum attach tidak ikut snapshot
-        if (/\S/.test(new TextDecoder().decode(snap).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
+        const text = [...raw, snap].map((d) => new TextDecoder().decode(d)).join("");
+        if (/\S/.test(text.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
         attached = true;
         if (synced) early.splice(0).forEach(onEvent); // belum: penanda yang datang nanti membuang yang tertahan
       } catch (e) {
