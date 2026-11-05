@@ -83,17 +83,17 @@ providers. Gembala isn't a proxy, doesn't read tokens, and doesn't touch your ag
 
 ### Agents messaging each other
 
-Codex adds a test, then sends a summary to Claude with `gembala send`. The message arrives with its origin label, and
-Claude replies after checking for itself.
+Claude asks Codex for pytest tests with `gembala send`. The message lands in Codex's pane labeled
+`[Gembala · from claude-1 · msg_…]`; Codex writes the tests, answers with `gembala reply`, and Claude sums it up.
 
-![Codex and Claude messaging each other in Gembala](docs/images/pesan-antar-agent.png)
+![Claude and Codex messaging each other in Gembala](docs/images/agents-messaging.png)
 
 ### Needs you
 
 Codex asks permission to run a command. Its pane goes straight into the "Needs you" strip in the sidebar, and Gembala
 never answers that permission prompt on its own.
 
-![The Needs you strip while Codex waits for permission](docs/images/butuh-izin.png)
+![The Needs you strip while Codex waits for permission](docs/images/needs-you.png)
 
 ## 🔐 Privacy and security
 

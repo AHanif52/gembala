@@ -83,10 +83,10 @@ penyedianya. Gembala nggak jadi proxy, nggak baca token, dan nggak ngubah config
 
 ### Agent saling kirim pesan
 
-Codex nambah tes, lalu ngirim ringkasan ke Claude pakai `gembala send`. Pesan sampai dengan label asalnya, dan Claude
-balas setelah ngecek sendiri.
+Claude minta Codex bikin tes pytest pakai `gembala send`. Pesannya masuk ke pane Codex dengan label
+`[Gembala · from claude-1 · msg_…]`; Codex nulis tesnya, balas pakai `gembala reply`, lalu Claude ngerangkum.
 
-![Codex dan Claude saling kirim pesan di Gembala](docs/images/pesan-antar-agent.png)
+![Claude dan Codex saling kirim pesan di Gembala](docs/images/pesan-antar-agent.png)
 
 ### Butuh lu
 
