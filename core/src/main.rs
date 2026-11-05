@@ -21,11 +21,11 @@ use std::io::Write;
 use std::os::fd::FromRawFd;
 use std::process::ExitCode;
 
-const USAGE: &str = "pakai: gembala daemon [--secret-fd N | --secret-sock <path>]
-       gembala send <pane> <pesan…> [--queue] [--reply-to <msg_id>]
-       gembala wait [<pane>] [--reply <msg_id>] [--pattern <regex>] [--timeout <detik>]
-       gembala read <pane> [-n <baris>]
-       gembala reply <msg_id> <teks…>
+const USAGE: &str = "usage: gembala daemon [--secret-fd N | --secret-sock <path>]
+       gembala send <pane> <message…> [--queue] [--reply-to <msg_id>]
+       gembala wait [<pane>] [--reply <msg_id>] [--pattern <regex>] [--timeout <seconds>]
+       gembala read <pane> [-n <lines>]
+       gembala reply <msg_id> <text…>
        gembala status
        gembala watch";
 
@@ -79,7 +79,7 @@ fn daemon(args: &[String]) -> ExitCode {
             let (Some(h), Some(s)) = (handoff, s) else { return };
             if let Err(e) = hand_over(h, &s) {
                 // tanpa serah-terima, kanal UI tidak bisa dipakai siapa pun: daemon tidak berguna
-                eprintln!("gembala daemon: serah-terima rahasia: {e}");
+                eprintln!("gembala daemon: secret handover: {e}");
                 std::process::exit(1);
             }
         })
@@ -170,7 +170,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
         _ => return usage(),
     };
     let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else {
-        eprintln!("gembala {cmd}: GEMBALA_SOCKET tidak ada; jalankan dari dalam pane Gembala");
+        eprintln!("gembala {cmd}: GEMBALA_SOCKET isn't set; run this from inside a Gembala pane");
         return ExitCode::from(2);
     };
     let run = || -> std::io::Result<Value> {
@@ -251,7 +251,7 @@ fn spool_call(sock: &std::path::Path, token: &str, method: &str, params: &serde_
         }
         if start.elapsed() > limit {
             let _ = std::fs::remove_file(&req);
-            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "daemon tidak menjawab lewat spool"));
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the daemon didn't answer through the spool"));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -267,7 +267,7 @@ fn hand_over(h: Handoff, secret: &str) -> std::io::Result<()> {
             let ui = me.ancestors().nth(5).map(|c| c.join("MacOS/gembala-ui")).and_then(|p| p.canonicalize().ok());
             let peer = pty::proc_path(daemon::peer_pid(&s)?).and_then(|p| p.canonicalize().ok());
             if ui.is_none() || peer != ui {
-                return Err(std::io::Error::other(format!("pemilik socket bukan gembala-ui bundle ini: {peer:?}")));
+                return Err(std::io::Error::other(format!("socket owner isn't this bundle's gembala-ui: {peer:?}")));
             }
             writeln!(s, "{secret}")?;
             // tetap tersambung sampai UI selesai memeriksa siapa pengirimnya (LOCAL_PEERPID gagal setelah ditutup)

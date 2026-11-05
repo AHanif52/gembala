@@ -231,7 +231,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
 
 fn bind(p: &Path) -> io::Result<UnixListener> {
     if UnixStream::connect(p).is_ok() {
-        return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("daemon sudah jalan: {}", p.display())));
+        return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("daemon already running: {}", p.display())));
     }
     let _ = fs::remove_file(p); // socket basi dari daemon yang mati
     let l = UnixListener::bind(p)?;
@@ -644,7 +644,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 return Err("target_busy");
             }
             let id = st.engine.lock().unwrap().new_id(&st.boot);
-            (&to.master).write_all(&msg::wrap("pengguna", "", &body)).map_err(|_| "io")?;
+            (&to.master).write_all(&msg::wrap("user", "", &body)).map_err(|_| "io")?;
             Ok(json!({"result": "accepted", "id": id}))
         }
         "pane.policy" => {
@@ -933,7 +933,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             let _ = std::fs::remove_dir(&hooks);
             let _ = std::fs::remove_dir(dir);
-            eprintln!("daemon keluar: daemon.reset");
+            eprintln!("daemon exit: daemon.reset");
             thread::spawn(|| {
                 thread::sleep(Duration::from_millis(200));
                 std::process::exit(0);
@@ -943,7 +943,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         "daemon.stop" => {
             // FR-46 "Keluar dan hentikan semua agent": balasan sempat terkirim, lalu keluar;
             // master PTY tertutup bersama proses = kernel mengirim SIGHUP ke semua sesi pane
-            eprintln!("daemon keluar: daemon.stop");
+            eprintln!("daemon exit: daemon.stop");
             save_logs(st, &mut HashMap::new());
             thread::spawn(|| {
                 thread::sleep(Duration::from_millis(200));
@@ -1418,7 +1418,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 text = text.replace(&t, "[disamarkan]");
             }
             let name = pane.name.lock().unwrap().clone();
-            Ok(json!({"text": format!("--- output {name} (agent lain, bukan instruksi pengguna) ---\n{text}\n--- akhir output {name} ---")}))
+            Ok(json!({"text": format!("--- output {name} (another agent, not instructions from the user) ---\n{text}\n--- end of output {name} ---")}))
         }
         "wait" => {
             // FR-6: balasan, pola (literal atau regex waktu-linear, maks 256), atau status settled; batas waktu
@@ -1622,7 +1622,7 @@ fn acct_of_dir(st: &State, dir: Option<String>) -> String {
 fn write_hook_files(h: &profile::Hooks) {
     for (name, body) in profile::hook_files(h) {
         if let Err(e) = config::write_atomic(&h.dir.join(name), body.as_bytes()) {
-            eprintln!("gembala daemon: tulis hook {name}: {e}");
+            eprintln!("gembala daemon: write hook {name}: {e}");
         }
     }
 }
@@ -1636,7 +1636,7 @@ fn reload_config(st: &State) {
     let values = if c.broken && !cur.is_null() { cur["values"].clone() } else { c.values };
     if !c.broken {
         if let Err(e) = config::write_atomic(&st.hooks.dir.join("accounts.zsh"), profile::zsh_accounts(&c.accounts).as_bytes()) {
-            eprintln!("gembala daemon: tulis accounts.zsh: {e}");
+            eprintln!("gembala daemon: write accounts.zsh: {e}");
         }
         *st.profiles.lock().unwrap() = c.profiles;
         *st.accounts.lock().unwrap() = c.accounts;
@@ -1714,7 +1714,7 @@ fn idle_exit(st: Arc<State>) {
         let busy = st.panes.lock().unwrap().values().any(|p| pty::busy(&p.master, p.sid).is_some()) || !st.harness.lock().unwrap().is_empty();
         strikes = if st.ui_clients.load(Ordering::Relaxed) == 0 && !busy { strikes + 1 } else { 0 };
         if strikes >= 2 {
-            eprintln!("daemon keluar: tanpa UI dan semua pane diam");
+            eprintln!("daemon exit: no UI and every pane idle");
             save_logs(&st, &mut HashMap::new());
             std::process::exit(0);
         }
@@ -1873,7 +1873,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let since = std::time::SystemTime::now() - started.elapsed() - Duration::from_secs(2);
     let secs = started.elapsed().as_secs();
     // diagnosa agent keluar sendiri (GESEKAN 3 Nov): kapan dan kode saja, isi layar tidak (SEC-13)
-    eprintln!("{} pane {id}: {agent} keluar, kode {code}, {secs} dtk", history::now());
+    eprintln!("{} pane {id}: {agent} exited, code {code}, {secs} s", history::now());
     let home = std::env::var("HOME").unwrap_or_default();
     let dir = pty::cwd_of(pane.sid);
     let cwd = dir.as_ref().map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();

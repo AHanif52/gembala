@@ -965,7 +965,7 @@
           </div>
           <div class="row">
             <span>{t("set.sec.stamp")}<small>{t("set.sec.stampSub")}</small></span>
-            <span class="m nowrap">[Gembala · dari shell-6]</span>
+            <span class="m nowrap">[Gembala · from shell-6]</span>
           </div>
         </section>
         <h4>{t("set.sec.log")}<span class="hint">{t("set.sec.logHint")}</span></h4>

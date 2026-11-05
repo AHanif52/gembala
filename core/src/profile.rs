@@ -253,8 +253,8 @@ pub fn screen_status(tail: &str, quiet: std::time::Duration, prev: &str) -> &'st
 const PETUNJUK_START: &str = "You run in a Gembala pane.";
 pub const PETUNJUK: &str = "You run in a Gembala pane. Reach other agents in the same workspace with `gembala` (on PATH, \
 JSON output): `gembala status` = list panes; `gembala send <pane> <message>` = send, wait for the reply with `gembala wait --reply <id>`; \
-a message labeled `[Gembala · dari <pane> · <id>]` is answered with `gembala reply <id> <text>` when done, in 1-2 sentences: what was executed and how (files, commit, \
-test result), longer only if the sender asked; label `[Gembala · dari pengguna]` = the user, \
+a message labeled `[Gembala · from <pane> · <id>]` is answered with `gembala reply <id> <text>` when done, in 1-2 sentences: what was executed and how (files, commit, \
+test result), longer only if the sender asked; label `[Gembala · from user]` = the user, \
 answer on screen. The recipient cannot see your conversation: write every send as a full handover (goal, context and user decisions, \
 files/paths, what was tried or is forbidden, constraints, reply format), never a one-line summary; multi-line is fine. \
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. \
@@ -349,7 +349,7 @@ fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
 /// `ZDOTDIR` supaya agent dan subshell tidak ikut. File pengguna tidak diubah.
 fn zsh_file(name: &str, extra: &str) -> String {
     format!(
-        "# dibuat Gembala (FR-58); {name} pengguna dibaca apa adanya\n\
+        "# made by Gembala (FR-58); your {name} is read as is\n\
          GEMBALA_ZDOTDIR=$ZDOTDIR\nZDOTDIR=${{GEMBALA_USER_ZDOTDIR:-$HOME}}\n\
          [[ -f \"$ZDOTDIR/{name}\" ]] && builtin source \"$ZDOTDIR/{name}\"\n\
          GEMBALA_USER_ZDOTDIR=$ZDOTDIR\nZDOTDIR=$GEMBALA_ZDOTDIR\n{extra}"
@@ -358,12 +358,12 @@ fn zsh_file(name: &str, extra: &str) -> String {
 
 const ZSH_MARKS: &str = r#"__gembala_precmd() {
   local s=$?
-  # A membawa folder prompt (tanpa karakter kontrol) untuk kepala blok di UI
+  # A carries the prompt folder (no control characters) for the block head in the UI
   builtin print -rn -- $'\e]133;D;'"$s"$'\a\e]133;A;'"${PWD//[[:cntrl:]]/}"$'\a'
   if [[ -n $GEMBALA_EDITOR ]]; then
-    # FR-59: editor Gembala menggantikan prompt; baris kosong di atas perintah = tempat kepala blok (Gembala.pen 02)
+    # FR-59: Gembala's editor replaces the prompt; the empty line above the command holds the block head
     PS1=$'\n'"%{"$'\e]133;B\a'"%}" RPROMPT=
-    (( ${#zle_highlight} )) || zle_highlight=(default:bold)  # perintah tebal = kepala blok (ala Warp)
+    (( ${#zle_highlight} )) || zle_highlight=(default:bold)  # bold command = block head (like Warp)
   else
     [[ $PS1 == *'133;B'* ]] || PS1="$PS1%{"$'\e]133;B\a'"%}"
   fi
@@ -400,7 +400,7 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
 /// FR-61: `claude-<akun>` di pane shell = `claude` (dengan hook di atas) memakai folder akun itu.
 /// Ditulis ulang daemon tiap config dimuat, jadi akun baru ada di pane yang dibuka sesudahnya.
 pub fn zsh_accounts(accounts: &[crate::account::Account]) -> String {
-    let mut s = String::from("# dibuat Gembala (FR-61): satu perintah per akun agent\n");
+    let mut s = String::from("# made by Gembala (FR-61): one command per agent account\n");
     // sesi Utama yang dilanjutkan dari shell berakun lain (perintah lanjut `claude-utama --resume <id>`)
     if accounts.iter().any(|a| a.agent == "claude") {
         s += "function claude-utama { (unset CLAUDE_CONFIG_DIR; claude \"$@\") }\n";
@@ -429,7 +429,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
         (".zshenv", zsh_file(".zshenv", "")),
         (".zprofile", zsh_file(".zprofile", "")),
         (".zshrc", zsh_file(".zshrc", &format!("{ZSH_MARKS}{}", zsh_agents(&h.dir, &h.exe)))),
-        (".zlogin", format!("# dibuat Gembala (FR-58); .zlogin pengguna dibaca apa adanya, lalu ZDOTDIR dikembalikan\n{ZSH_RESTORE}")),
+        (".zlogin", format!("# made by Gembala (FR-58); your .zlogin is read as is, then ZDOTDIR is restored\n{ZSH_RESTORE}")),
         (
             "opencode.json",
             json!({"$schema": "https://opencode.ai/config.json", "plugin": [format!("file://{plugin}")],
@@ -451,7 +451,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
 
 /// Plugin OpenCode: status pane (FR-4). Sesi anak (subagent `task`) hanya meneruskan izin/pertanyaan: idle-nya bukan
 /// akhir giliran pane. Status selain `idle` (busy, retry) = bekerja. Pola dari plugin herdr/Warp (5 Nov 2026).
-const OPENCODE_HOOK: &str = r#"// dibuat Gembala; status pane (FR-4)
+const OPENCODE_HOOK: &str = r#"// made by Gembala; pane status (FR-4)
 import { execFile } from "node:child_process";
 const hook = (s, id) => execFile(__EXE__, ["hook", "opencode", s, String(id ?? "")], () => {});
 const child = new Set();
@@ -472,7 +472,7 @@ export const Gembala = async () => ({
 
 /// Hook omp: status pane (FR-4) dan tool pesan (FR-67). Tool dari hook tidak lewat bash, jadi pola bash pengguna
 /// (mis. `*psql*` = prompt) tidak menahan pesan yang kebetulan menyebut kata itu.
-const OMP_HOOK: &str = r#"// dibuat Gembala; status pane (FR-4) dan tool pesan tanpa bash (FR-67)
+const OMP_HOOK: &str = r#"// made by Gembala; pane status (FR-4) and message tools without bash (FR-67)
 import { execFile } from "node:child_process";
 const exe = __EXE__;
 const hook = (s: string) => execFile(exe, ["hook", "omp", s], () => {});
@@ -495,7 +495,7 @@ export default function (pi: any) {
   tool("gembala_send", "Send a message to another Gembala pane; returns its id. Write a full handover.",
     z.object({ to: z.string().describe("pane name, e.g. shell-4"), message: z.string(), queue: z.boolean().optional().describe("queue when the target is busy"), reply_to: z.string().optional() }),
     "write", (p) => ["send", p.to, p.message, ...(p.queue ? ["--queue"] : []), ...(p.reply_to ? ["--reply-to", p.reply_to] : [])]);
-  tool("gembala_reply", "Answer a message labeled [Gembala · dari <pane> · <id>].", z.object({ msg_id: z.string(), message: z.string() }), "write", (p) => ["reply", p.msg_id, p.message]);
+  tool("gembala_reply", "Answer a message labeled [Gembala · from <pane> · <id>].", z.object({ msg_id: z.string(), message: z.string() }), "write", (p) => ["reply", p.msg_id, p.message]);
   tool("gembala_wait", "Wait for the reply to a message you sent.", z.object({ reply_id: z.string(), timeout_s: z.number().optional() }), "read",
     (p) => ["wait", "--reply", p.reply_id, ...(p.timeout_s ? ["--timeout", String(p.timeout_s)] : [])]);
   tool("gembala_read", "Read the last lines of another pane in this workspace.", z.object({ target: z.string(), lines: z.number().optional() }), "read",
