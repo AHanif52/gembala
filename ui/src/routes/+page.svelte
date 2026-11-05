@@ -1774,19 +1774,28 @@
     const t = tabOf(pane);
     invoke("notify_pane", { body: `${m.name || m.profile}${t ? ` di ${title(t)}` : ""} ${label}`, sound: notify.sound, pane }).catch(() => {});
   }
-  // FR-76: bell history, same content as the macOS banner (pane name + status, SEC-33); newest first, max 100.
+  // FR-76: bell history; unlike the macOS banner it may carry the task label (FR-69), being in-app only (SEC-33).
+  // Newest first, max 100.
   // ponytail: kept in UI memory, so it clears when the app restarts; move to the daemon if it must outlive the UI
-  type Note = { id: number; pane: number; agent: string; name: string; tab: string; ws: string; kind: string; label: string; at: number; seen?: boolean };
+  type Note = { id: number; pane: number; agent: string; name: string; task: string; tab: string; ws: string; kind: string; label: string; at: number; seen?: boolean };
   let notes = $state<Note[]>([]);
   let bell = $state(false);
+  let unfold = $state<Record<number, boolean>>({});
   let noteId = 0;
-  const unseen = $derived(notes.filter((n) => !n.seen).length);
   function note(pane: number, kind: string, label: string) {
     const t = tabOf(pane);
     const w = wss.find((w) => t && w.tabs.includes(t));
-    const n = { id: ++noteId, pane, agent: agentOf(pane), name: meta[pane].name || meta[pane].profile, tab: t ? title(t) : "", ws: w?.name ?? "", kind, label, at: Date.now() };
+    const n = { id: ++noteId, pane, agent: agentOf(pane), name: meta[pane].name || meta[pane].profile, task: labels[pane] ?? "", tab: t ? title(t) : "", ws: w?.name ?? "", kind, label, at: Date.now() };
     notes = [n, ...notes].slice(0, 100);
   }
+  // one row per pane (newest note, older ones folded); a permission still waiting goes first, the rest stay newest first
+  const groups = $derived.by(() => {
+    const by = new Map<number, Note[]>();
+    for (const n of notes) by.get(n.pane)?.push(n) ?? by.set(n.pane, [n]);
+    return [...by.values()].sort((a, b) => +waiting.has(b[0].id) - +waiting.has(a[0].id));
+  });
+  const unseen = $derived(groups.filter((g) => g.some((n) => !n.seen)).length);
+  const noteWhere = (n: Note) => [n.ws, n.tab].filter(Boolean).join(" › ");
   // a blocked note is still waiting only while it is its pane's newest note and the pane is still blocked
   const waiting = $derived.by(() => {
     const open = new Set<number>(), saw = new Set<number>();
@@ -2089,22 +2098,31 @@
     <div class="notes" role="dialog" aria-label="Notifikasi">
       <div class="nhead"><b>Notifikasi</b>{#if unseen}<button class="nlink" onclick={() => notes.forEach((n) => (n.seen = true))}>Tandai semua dilihat</button>{/if}</div>
       <div class="nlist">
-        {#each notes as n (n.id)}
+        {#each groups as g, i (g[0].pane)}
+          {@const n = g[0]}
           {@const past = n.kind === "blocked" && !waiting.has(n.id)}
-          <button class="nrow" class:seen={n.seen} class:past onclick={() => ((n.seen = true), (bell = false), meta[n.pane] && !dead[n.pane] && jumpTo(n.pane))}>
+          {#if noteWhere(n) && (i === 0 || noteWhere(groups[i - 1][0]) !== noteWhere(n))}<div class="nwhere">{noteWhere(n)}</div>{/if}
+          <button class="nrow" class:seen={g.every((o) => o.seen)} class:past onclick={() => (g.forEach((o) => (o.seen = true)), (bell = false), meta[n.pane] && !dead[n.pane] && jumpTo(n.pane))}>
             <span class="dot {n.kind}" aria-hidden="true"></span>
             <span class="nmain">
-              <span class="ntitle">{#if GLYPH[n.agent]}<span class="aico {n.agent}">{GLYPH[n.agent]}</span>{/if}{n.name}{n.tab && n.tab !== n.name ? ` · ${n.tab}` : ""}</span>
+              <span class="ntitle">{#if GLYPH[n.agent]}<span class="aico {n.agent}">{GLYPH[n.agent]}</span>{/if}{n.name}{n.task && n.task !== n.tab ? ` · ${n.task}` : ""}</span>
               <span class="nwhat">{n.label}{#if past}{` · ${meta[n.pane] && !dead[n.pane] ? "udah dijawab" : "pane ditutup"}`}{/if}</span>
-              {#if n.ws}<span class="nwhere">tab di {n.ws}</span>{/if}
             </span>
             <span class="k">{noteTime(n.at)}</span>
           </button>
+          {#if g.length > 1}
+            <button class="nmore" aria-expanded={!!unfold[n.pane]} onclick={() => (unfold[n.pane] = !unfold[n.pane])}>{unfold[n.pane] ? "Sembunyikan" : `+${g.length - 1} sebelumnya`}</button>
+            {#if unfold[n.pane]}
+              {#each g.slice(1) as o (o.id)}
+                <div class="nold"><span>{o.label}{o.kind === "blocked" ? " · udah dijawab" : ""}{o.task && o.task !== n.task ? ` · ${o.task}` : ""}</span><span class="k">{noteTime(o.at)}</span></div>
+              {/each}
+            {/if}
+          {/if}
         {:else}
           <div class="nempty">Belum ada kabar. Nanti muncul di sini kalau agent butuh izin atau udah kelar.</div>
         {/each}
       </div>
-      <div class="nfoot">Isinya cuma nama pane dan status. Hilang kalau app ditutup, maks 100.</div>
+      <div class="nfoot">Isinya nama pane, tugas, dan status, tanpa isi layar. Hilang kalau app ditutup, maks 100.</div>
     </div>
   {/if}
   <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label="Lebar sidebar"></div>
@@ -3172,13 +3190,34 @@
     flex: none;
     margin: 5px 0 0;
   }
-  /* seen = ring in the kind's colour, like pen 11 */
-  .nrow.seen .dot {
-    background: transparent;
-    box-shadow: inset 0 0 0 1px #16a34a;
+  /* FR-76: unseen = bold title, the dot only tells the kind */
+  .nrow.seen .ntitle {
+    font-weight: 400;
   }
-  .nrow.seen .dot.blocked {
-    box-shadow: inset 0 0 0 1px #d97706;
+  .notes .nwhere {
+    padding: 10px 12px 0;
+    font-weight: 600;
+  }
+  /* folded history, indented under the title (row padding + dot + gap) */
+  .nmore,
+  .nold {
+    display: flex;
+    justify-content: space-between;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0 12px 8px 25px;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+  }
+  .nmore {
+    margin-top: -6px;
+  }
+  .nmore:hover {
+    color: var(--fg);
   }
   /* FR-76: a permission that is no longer waiting fades into history */
   .nrow.past {
