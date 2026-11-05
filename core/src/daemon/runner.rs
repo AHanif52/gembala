@@ -76,6 +76,8 @@ pub struct Live {
     outbox: Option<Outbox>,
     /// message id per stage, for the `reply` pass condition
     msgs: HashMap<usize, String>,
+    /// agent actually running each stage (after fallbacks), for the pane's tile in the UI
+    agents: HashMap<usize, String>,
     shell: Option<Shell>,
     trace_saved: usize,
     released: bool,
@@ -258,7 +260,7 @@ fn snapshot(st: &State, l: &Live) -> Value {
     let steps: Vec<Value> = l.run.recipe.steps.iter().enumerate().map(|(i, s)| {
         let pane = l.panes.get(&i).copied();
         json!({"id": s.id, "name": s.name, "kind": s.kind, "human": s.human, "shell": s.shell, "gate": s.gate, "agents": s.agents, "output": s.output,
-               "pane": pane, "pane_name": pane.and_then(|p| names.get(&p)), "message": l.msgs.get(&i)})
+               "pane": pane, "pane_name": pane.and_then(|p| names.get(&p)), "pane_agent": l.agents.get(&i), "message": l.msgs.get(&i)})
     }).collect();
     let (halt, halt_step) = match &l.run.state {
         Hs::Halted(h) => {
@@ -348,6 +350,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
                 Err(_) => return Some(Event::Exit(1)),
             };
             l.panes.insert(step, id);
+            l.agents.insert(step, agent.clone());
             l.cur = Some(id);
             l.born = Instant::now();
             l.seen = None;
@@ -651,6 +654,7 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
         seen: None,
         outbox: None,
         msgs: HashMap::new(),
+        agents: HashMap::new(),
         shell: None,
         trace_saved: 0,
         released: false,

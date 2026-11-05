@@ -6,6 +6,9 @@
   import Changes from "$lib/Changes.svelte";
   import OutputView from "$lib/OutputView.svelte";
   import Messages from "$lib/Messages.svelte";
+  import NewTask from "$lib/NewTask.svelte";
+  import HarnessFlow from "$lib/HarnessFlow.svelte";
+  import { live as runLive, stagePanes, type Snap } from "$lib/harness";
   import ContextMenu, { type MenuAt, type MItem } from "$lib/ContextMenu.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -134,6 +137,11 @@
   });
   // Fase 2: laci pesan, kirim manual, data mesin pesan dari daemon
   let drawer = $state(false);
+  // FR-16, FR-26, FR-73: harness. `runs` = latest run per workspace id (the daemon pushes harness.state)
+  let newTask = $state(false);
+  let flow = $state(false);
+  let runs = $state<Record<string, Snap>>({});
+  const runTab: Record<string, string> = {}; // run id -> tab id
   let msgData = $state<any>(null);
   let compose = $state<{ to: number | null; body: string; force: boolean; error: string } | null>(null);
   async function refreshMsgs() {
@@ -818,6 +826,56 @@
     zoomed = false;
   }
 
+  /// FR-16: the daemon opens the panes of a harness run; each gets a tile in one tab per run, in recipe order
+  function adoptRun(snap: Snap, select = false) {
+    const wi = wss.findIndex((w) => w.id === snap.workspace);
+    if (wi < 0) return;
+    const w = wss[wi];
+    const placed = new Set(wss.flatMap((x) => x.tabs.flatMap((t) => panes(t.tree))));
+    let tb = w.tabs.find((t) => t.id === runTab[snap.run]);
+    for (const sp of stagePanes(snap)) {
+      if (placed.has(sp.pane) || dead[sp.pane]) continue;
+      const agent = sp.agent || "shell";
+      meta[sp.pane] ??= { profile: agent, cwd: snap.cwd, agent, name: sp.name, status: "idle" };
+      if (!tb) {
+        tb = { id: uid(), title: tt("hn.tabTitle", { name: snap.name }), tree: { pane: sp.pane }, focus: sp.pane };
+        runTab[snap.run] = tb.id;
+        w.tabs.push(tb);
+      } else {
+        const ps = panes(tb.tree);
+        tb.tree = split(tb.tree, ps[ps.length - 1], ps.length % 2 ? "row" : "col", sp.pane);
+      }
+      placed.add(sp.pane);
+    }
+    if (select && tb) {
+      const id = tb.id;
+      at = { ws: wi, tab: w.tabs.findIndex((t) => t.id === id) };
+      zoomed = false;
+    }
+  }
+  function onRun(snap: Snap, select = false) {
+    runs[snap.workspace] = snap;
+    adoptRun(snap, select);
+  }
+  /// banner for the moments that need you (a stage waiting on a permission already has one from its pane's status)
+  function runNotice(p: { run?: string; workspace: string; notice: string; step: number | null }) {
+    if (seen || p.notice === "blocked") return;
+    const snap = runs[p.workspace];
+    const ps = snap ? stagePanes(snap) : [];
+    const pane = (ps.find((x) => x.step === p.step) ?? ps[ps.length - 1])?.pane;
+    invoke("notify_pane", { body: tt(`hn.notify.${p.notice}` as Key, { name: snap?.name ?? "" }), sound: notify.sound, pane }).catch(() => {});
+  }
+  /// FR-73 manual: one agent pane in the folder, the task as its first prompt. If the agent isn't ready to take it,
+  /// the task lands in Rich Input so nothing is lost.
+  async function startManual(o: { agent: string; task: string; cwd: string }) {
+    newTask = false;
+    const id = await newTab(o.agent, at.ws, undefined, { cwd: o.cwd });
+    await new Promise((r) => setTimeout(r, 4000));
+    const sent = await call("msg.send", { to: id, body: o.task }).then((r) => !r?.error, () => false);
+    if (!sent) rich = { pane: id, text: o.task };
+  }
+  const absPath = (p: string) => (p.startsWith("~") ? homePath + p.slice(1) : p);
+
   /// FR-38: konfirmasi bila ada proses selain shell diam
   async function askClose(pane: number) {
     if (dead[pane]) return onexit(pane);
@@ -998,14 +1056,14 @@
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen || picker || editing || rich || pal || lempar) return;
+    if (settingsOpen || picker || editing || rich || pal || lempar || newTask) return;
     if (confirm || quitAsk || linkAsk || wsAsk) return;
     // satu tombol bisa sampai lewat menu dan keydown sekaligus; jangan jalan dua kali
     if (id === last.id && performance.now() - last.at < 150) return;
     last = { id, at: performance.now() };
     const [, group, arg] = id.split(".");
     const cur = order.findIndex((o) => o.wi === at.ws && o.ti === at.tab);
-    if (id === "msg.drawer") return void ((drawer = !drawer), drawer && refreshMsgs());
+    if (id === "msg.drawer") return void ((drawer = !drawer), drawer && ((flow = false), refreshMsgs()));
     if (id === "msg.stop") return void call("msg.pause", { on: !msgData?.paused }).then(refreshMsgs);
     if (id === "msg.compose") {
       compose = { to: targets[0]?.pane ?? null, body: "", force: false, error: "" };
@@ -1098,6 +1156,7 @@
       { label: tt("act.worktree"), hint: tt("act.worktreeHint"), kind: "action", go: () => openWorktree() },
       { label: tt("act.template"), hint: tt("act.templateHint"), kind: "action", go: () => openTemplate() },
       ...pickable.map((p) => ({ label: tt("act.pickSessionOf", { name: p.label }), hint: tt("act.pickSessionHint"), kind: "action" as const, go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
+      { label: tt("hn.newTask"), hint: "", kind: "action", go: () => (newTask = true) },
       { label: tt("act.newWs"), hint: "", kind: "action", go: addWorkspace },
       { label: editorOn ? tt("act.editorOff") : tt("act.editorOn"), hint: "", kind: "action", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
       { label: tt("act.renameTab"), hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
@@ -1969,6 +2028,8 @@
         Object.assign(meta[payload.params.pane], { output: true, status: "", ended: { resume: payload.params.resume ?? null } });
       if (payload.event === "daemon.lost") onLost();
       if (payload.event === "msg.event") refreshMsgs();
+      if (payload.event === "harness.state") onRun(payload.params);
+      if (payload.event === "harness.notice") runNotice(payload.params);
     });
     const timer = setInterval(poll, 2000);
     // FR-15: seret file ke jendela = path ber-quote ditempel ke pane yang fokus (bracketed paste, tanpa Enter)
@@ -1995,6 +2056,7 @@
         // pane yang hidup dari run sebelumnya: daemon diberi tahu workspace-nya (aturan akses SEC-4/21)
         for (const p of Object.keys(meta).map(Number).filter((p) => !dead[p])) call("pane.workspace", { pane: p, workspace: wsIdOf(p) }).catch(() => {});
         refreshMsgs();
+        for (const w of wss) call("harness.state", { workspace: w.id }).then((r) => r?.run && onRun(r)).catch(() => {});
         poll();
         // FR-21: app baru + daemon lama = tanya dulu; menjalankan ulang daemon menghentikan semua pane
         const [d, app] = await Promise.all([call("daemon.info"), getVersion()]);
@@ -2056,6 +2118,12 @@
     <!-- title bar transparan: area tombol jendela + geser jendela -->
     <div class="drag" data-tauri-drag-region></div>
     <button class="add find" onclick={openPalette}>{tt("side.find")} <span class="n">⌘P</span></button>
+    <button class="add" onclick={() => (newTask = true)}>{tt("hn.newTask")}</button>
+    {#if ws && runs[ws.id]}
+      <button class="add" onclick={() => ((drawer = false), (flow = !flow))}>
+        {runLive(runs[ws.id]) ? "● " : ""}{runs[ws.id].name} · {tOr(`hn.state.${runs[ws.id].state}`, runs[ws.id].state)}
+      </button>
+    {/if}
     <!-- FR-44: di bawah kotak cari, selalu terlihat walau daftar tab panjang -->
     {#if queue.length}
       <!-- FR-65: antrean perhatian; hilang bila tidak ada yang menunggu -->
@@ -2525,6 +2593,25 @@
   {/if}
   {#if msgData?.paused}
     <div class="paused" role="status">{tt("main.paused")}</div>
+  {/if}
+  {#if flow && ws && runs[ws.id]}
+    <HarnessFlow snap={runs[ws.id]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onclose={() => (flow = false)} />
+  {/if}
+  {#if newTask && ws}
+    <NewTask
+      ws={{ id: ws.id, name: ws.name }}
+      cwd={absPath(meta[tab?.focus ?? -1]?.cwd ?? ws.root)}
+      brief={ws.brief}
+      agents={installed}
+      onclose={() => (newTask = false)}
+      onstarted={(s: Snap) => {
+        newTask = false;
+        drawer = false;
+        onRun(s, true);
+        flow = true;
+      }}
+      onmanual={startManual}
+    />
   {/if}
   {#if drawer}
     <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} />
