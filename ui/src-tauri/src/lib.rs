@@ -14,68 +14,68 @@ const ALLOWED: &[&str] =
       "account.list", "account.create", "account.remove", "account.update", "git.worktree_add", "git.worktree_remove", "git.turns", "git.turn_diff", "git.turn_preview", "git.turn_restore", "msg.list", "msg.approve", "msg.reject", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace",
       "addon.plugin", "addon.mcp.get", "addon.mcp.set", "addon.status"];
 
-/// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview.
-const PANE_KEYS: &[(&str, &str, &str)] = &[
-    ("pane.split.right", "Split ke kanan", "Cmd+D"),
-    ("pane.split.down", "Split ke bawah", "Cmd+Shift+D"),
-    ("pane.focus.left", "Fokus ke kiri", "Cmd+Alt+Left"),
-    ("pane.focus.right", "Fokus ke kanan", "Cmd+Alt+Right"),
-    ("pane.focus.up", "Fokus ke atas", "Cmd+Alt+Up"),
-    ("pane.focus.down", "Fokus ke bawah", "Cmd+Alt+Down"),
-    ("pane.resize.left", "Geser pemisah ke kiri", "Ctrl+Cmd+Left"),
-    ("pane.resize.right", "Geser pemisah ke kanan", "Ctrl+Cmd+Right"),
-    ("pane.resize.up", "Geser pemisah ke atas", "Ctrl+Cmd+Up"),
-    ("pane.resize.down", "Geser pemisah ke bawah", "Ctrl+Cmd+Down"),
-    ("pane.swap.left", "Tukar dengan pane kiri", "Cmd+Shift+Alt+Left"),
-    ("pane.swap.right", "Tukar dengan pane kanan", "Cmd+Shift+Alt+Right"),
-    ("pane.swap.up", "Tukar dengan pane atas", "Cmd+Shift+Alt+Up"),
-    ("pane.swap.down", "Tukar dengan pane bawah", "Cmd+Shift+Alt+Down"),
-    ("pane.zoom.toggle", "Maksimalkan pane", "Cmd+Shift+Enter"),
-    ("pane.move.newtab", "Pindahkan pane ke tab baru", ""),
-    ("pane.input.rich", "Rich Input", "Cmd+G"),
-    ("pane.diff.toggle", "Panel perubahan", "Cmd+Shift+="), // = Cmd+Shift++ bawaan Warp (tombol yang sama)
-    ("pane.proc.kill", "Hentikan proses", "Cmd+."),
-    ("pane.proc.close", "Tutup pane", "Cmd+W"),
+/// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview; label di i18n.rs.
+const PANE_KEYS: &[(&str, &str)] = &[
+    ("pane.split.right", "Cmd+D"),
+    ("pane.split.down", "Cmd+Shift+D"),
+    ("pane.focus.left", "Cmd+Alt+Left"),
+    ("pane.focus.right", "Cmd+Alt+Right"),
+    ("pane.focus.up", "Cmd+Alt+Up"),
+    ("pane.focus.down", "Cmd+Alt+Down"),
+    ("pane.resize.left", "Ctrl+Cmd+Left"),
+    ("pane.resize.right", "Ctrl+Cmd+Right"),
+    ("pane.resize.up", "Ctrl+Cmd+Up"),
+    ("pane.resize.down", "Ctrl+Cmd+Down"),
+    ("pane.swap.left", "Cmd+Shift+Alt+Left"),
+    ("pane.swap.right", "Cmd+Shift+Alt+Right"),
+    ("pane.swap.up", "Cmd+Shift+Alt+Up"),
+    ("pane.swap.down", "Cmd+Shift+Alt+Down"),
+    ("pane.zoom.toggle", "Cmd+Shift+Enter"),
+    ("pane.move.newtab", ""),
+    ("pane.input.rich", "Cmd+G"),
+    ("pane.diff.toggle", "Cmd+Shift+="), // = Cmd+Shift++ bawaan Warp (tombol yang sama)
+    ("pane.proc.kill", "Cmd+."),
+    ("pane.proc.close", "Cmd+W"),
 ];
 
 /// Menu "Tab" (FR-52, FR-39 default Warp).
-const TAB_KEYS: &[(&str, &str, &str)] = &[
-    ("tab.new", "Tab baru dari profil…", "Cmd+T"),
-    ("tab.prev", "Tab sebelumnya", "Cmd+Shift+["),
-    ("tab.next", "Tab berikutnya", "Cmd+Shift+]"),
-    ("tab.goto.1", "Tab 1", "Cmd+1"),
-    ("tab.goto.2", "Tab 2", "Cmd+2"),
-    ("tab.goto.3", "Tab 3", "Cmd+3"),
-    ("tab.goto.4", "Tab 4", "Cmd+4"),
-    ("tab.goto.5", "Tab 5", "Cmd+5"),
-    ("tab.goto.6", "Tab 6", "Cmd+6"),
-    ("tab.goto.7", "Tab 7", "Cmd+7"),
-    ("tab.goto.8", "Tab 8", "Cmd+8"),
-    ("tab.goto.9", "Tab 9", "Cmd+9"),
-    ("tab.sidebar", "Tampilkan/sembunyikan sidebar", "Cmd+B"),
-    ("tab.search", "Palet perintah", "Cmd+P"),
-    ("pane.attention.next", "Pane berikutnya yang butuh izin", "Cmd+Shift+U"), // FR-65
+const TAB_KEYS: &[(&str, &str)] = &[
+    ("tab.new", "Cmd+T"),
+    ("tab.prev", "Cmd+Shift+["),
+    ("tab.next", "Cmd+Shift+]"),
+    ("tab.goto.1", "Cmd+1"),
+    ("tab.goto.2", "Cmd+2"),
+    ("tab.goto.3", "Cmd+3"),
+    ("tab.goto.4", "Cmd+4"),
+    ("tab.goto.5", "Cmd+5"),
+    ("tab.goto.6", "Cmd+6"),
+    ("tab.goto.7", "Cmd+7"),
+    ("tab.goto.8", "Cmd+8"),
+    ("tab.goto.9", "Cmd+9"),
+    ("tab.sidebar", "Cmd+B"),
+    ("tab.search", "Cmd+P"),
+    ("pane.attention.next", "Cmd+Shift+U"), // FR-65
 ];
 
 /// Menu "Pesan" (Fase 2: FR-10 sampai 12, SEC-10). ⌘K dan ⌘. sudah dipakai Fase 1 (TECH, keputusan Fase 2).
-const MSG_KEYS: &[(&str, &str, &str)] = &[
-    ("msg.compose", "Kirim ke agent lain…", "Cmd+Shift+K"),
-    ("msg.drawer", "Laci pesan", "Cmd+J"),
-    ("msg.stop", "Henti / lanjutkan semua pesan", "Cmd+Shift+."),
+const MSG_KEYS: &[(&str, &str)] = &[
+    ("msg.compose", "Cmd+Shift+K"),
+    ("msg.drawer", "Cmd+J"),
+    ("msg.stop", "Cmd+Shift+."),
 ];
 
 /// Menu "View" (FR-34, FR-36).
-const VIEW_KEYS: &[(&str, &str, &str)] = &[
-    ("term.find", "Cari…", "Cmd+F"),
-    ("term.clear", "Bersihkan layar", "Cmd+K"),
-    ("term.block.prev", "Blok perintah sebelumnya", "Cmd+Up"),
-    ("term.block.next", "Blok perintah berikutnya", "Cmd+Down"),
-    ("term.zoom.in", "Perbesar", "Cmd+="),
-    ("term.zoom.out", "Perkecil", "Cmd+-"),
-    ("term.zoom.reset", "Ukuran asli", "Cmd+0"),
-    ("term.zoom.pane_in", "Perbesar pane ini", "Alt+Cmd+="),
-    ("term.zoom.pane_out", "Perkecil pane ini", "Alt+Cmd+-"),
-    ("term.zoom.pane_reset", "Ukuran asli pane ini", "Alt+Cmd+0"),
+const VIEW_KEYS: &[(&str, &str)] = &[
+    ("term.find", "Cmd+F"),
+    ("term.clear", "Cmd+K"),
+    ("term.block.prev", "Cmd+Up"),
+    ("term.block.next", "Cmd+Down"),
+    ("term.zoom.in", "Cmd+="),
+    ("term.zoom.out", "Cmd+-"),
+    ("term.zoom.reset", "Cmd+0"),
+    ("term.zoom.pane_in", "Alt+Cmd+="),
+    ("term.zoom.pane_out", "Alt+Cmd+-"),
+    ("term.zoom.pane_reset", "Alt+Cmd+0"),
 ];
 
 /// SEC-14: hanya http/https, tanpa spasi atau karakter kontrol; dibuka lewat `open`, bukan shell.
@@ -125,7 +125,7 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
                 None => {
                     let emit: daemon::OnEvent = Arc::new(move |v| {
                         if v["event"] == "config.changed" {
-                            apply_keys(&app2, &v["params"]["values"]["keys"]);
+                            apply_keys(&app2, &v["params"]["values"]);
                         }
                         let _ = app2.emit("daemon", v);
                     });
@@ -137,7 +137,7 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
         };
         let r = c.call(&method, params)?;
         if method == "config.get" {
-            apply_keys(&app, &r["values"]["keys"]);
+            apply_keys(&app, &r["values"]);
         }
         Ok(r)
     })
@@ -436,9 +436,9 @@ const MODS: &[(&str, &[&str])] =
 const NAMED: &[&str] = &["enter", "tab", "space", "left", "right", "up", "down", "escape", "backspace", "delete", "home", "end", "pageup", "pagedown"];
 
 /// "cmd+shift+d" → "Shift+Cmd+D". Wajib memakai ⌘: tombol lain milik terminal (FR-39).
-fn canon_key(raw: &str) -> Result<String, String> {
+fn canon_key(raw: &str, lang: &str) -> Result<String, String> {
     let parts: Vec<String> = raw.split('+').map(|t| t.trim().to_lowercase()).collect();
-    let (key, mods) = parts.split_last().ok_or("kosong")?;
+    let (key, mods) = parts.split_last().ok_or(i18n::tr(lang, "key.empty"))?;
     let mut out: Vec<&str> = Vec::new();
     for (name, aliases) in MODS {
         if mods.iter().any(|m| aliases.contains(&m.as_str())) {
@@ -446,10 +446,10 @@ fn canon_key(raw: &str) -> Result<String, String> {
         }
     }
     if mods.iter().any(|m| !MODS.iter().any(|(_, a)| a.contains(&m.as_str()))) {
-        return Err(format!("modifier tidak dikenal di \"{raw}\""));
+        return Err(i18n::fmt(lang, "key.bad_mod", &[("raw", raw)]));
     }
     if !out.contains(&"Cmd") {
-        return Err(format!("\"{raw}\" harus memakai cmd; tombol lain milik terminal"));
+        return Err(i18n::fmt(lang, "key.need_cmd", &[("raw", raw)]));
     }
     let key = if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric() || ".,=-;'/[]\\`".contains(c)) {
         key.to_uppercase()
@@ -457,24 +457,24 @@ fn canon_key(raw: &str) -> Result<String, String> {
         let mut c = key.chars();
         c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
     } else {
-        return Err(format!("tombol tidak dikenal di \"{raw}\""));
+        return Err(i18n::fmt(lang, "key.bad_key", &[("raw", raw)]));
     };
     Ok(out.into_iter().chain([key.as_str()]).collect::<Vec<_>>().join("+"))
 }
 
 /// Pintasan bawaan ditimpa `[keys]` ("kombinasi" = "id aksi"). Bentrok: aksi yang ditimpa menang,
 /// lawannya kehilangan pintasan dan ditandai.
-fn resolve_keys(overrides: &serde_json::Map<String, Value>) -> (Vec<Shortcut>, Vec<String>) {
+fn resolve_keys(overrides: &serde_json::Map<String, Value>, lang: &str) -> (Vec<Shortcut>, Vec<String>) {
     let mut items: Vec<(Shortcut, bool)> =
-        TAB_KEYS.iter().chain(PANE_KEYS).chain(VIEW_KEYS).chain(MSG_KEYS).map(|(id, label, key)| ((*id, *label, canon_key(key).unwrap_or_default()), false)).collect();
+        TAB_KEYS.iter().chain(PANE_KEYS).chain(VIEW_KEYS).chain(MSG_KEYS).map(|(id, key)| ((*id, i18n::tr(lang, id), canon_key(key, lang).unwrap_or_default()), false)).collect();
     let mut errors = Vec::new();
     for (raw, action) in overrides {
         let Some(action) = action.as_str() else { continue };
         let Some(item) = items.iter_mut().find(|((id, _, _), _)| *id == action) else {
-            errors.push(format!("keys.\"{raw}\": aksi \"{action}\" tidak dikenal"));
+            errors.push(i18n::fmt(lang, "key.bad_action", &[("raw", raw), ("action", action)]));
             continue;
         };
-        match canon_key(raw) {
+        match canon_key(raw, lang) {
             Ok(k) => *item = ((item.0.0, item.0.1, k), true),
             Err(why) => errors.push(format!("keys: {why}")),
         }
@@ -488,7 +488,7 @@ fn resolve_keys(overrides: &serde_json::Map<String, Value>) -> (Vec<Shortcut>, V
             continue;
         }
         if let Some((_, owner)) = seen.iter().find(|(k, _)| k == key) {
-            errors.push(format!("bentrok: {key} dipakai {owner} dan {id}; {id} tanpa pintasan"));
+            errors.push(i18n::fmt(lang, "key.clash", &[("key", key), ("owner", owner), ("id", id)]));
             key.clear();
         } else {
             seen.push((key.clone(), id));
@@ -497,31 +497,41 @@ fn resolve_keys(overrides: &serde_json::Map<String, Value>) -> (Vec<Shortcut>, V
     (items.into_iter().map(|(s, _)| s).collect(), errors)
 }
 
-fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut]) -> tauri::Result<tauri::menu::Menu<R>> {
+fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut], lang: &str) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+    let tr = |k| i18n::tr(lang, k);
     let item = |(id, label, key): &Shortcut| {
         let b = MenuItemBuilder::with_id(*id, *label);
         if key.is_empty() { b.build(app) } else { b.accelerator(key).build(app) }
     };
+    // predefined items get our text so they follow the app language, not the macOS one (TECH 20)
     let main = SubmenuBuilder::new(app, "Gembala")
-        .about(None)
+        .about_with_text(tr("menu.about"), None)
         .separator()
-        .item(&MenuItemBuilder::with_id("app.settings", "Pengaturan…").accelerator("Cmd+,").build(app)?)
+        .item(&MenuItemBuilder::with_id("app.settings", tr("menu.settings")).accelerator("Cmd+,").build(app)?)
         .separator()
-        .hide()
-        .hide_others()
-        .show_all()
+        .hide_with_text(tr("menu.hide"))
+        .hide_others_with_text(tr("menu.hide_others"))
+        .show_all_with_text(tr("menu.show_all"))
         .separator()
         // FR-46: ⌘Q menutup jendela saja; agent jalan terus di daemon (FR-20)
-        .item(&MenuItemBuilder::with_id("app.quit_all", "Keluar dan hentikan semua agent…").build(app)?)
-        .quit()
+        .item(&MenuItemBuilder::with_id("app.quit_all", tr("menu.quit_all")).build(app)?)
+        .quit_with_text(tr("menu.quit"))
         .build()?;
-    let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
+    let edit = SubmenuBuilder::new(app, tr("menu.edit"))
+        .undo_with_text(tr("menu.undo"))
+        .redo_with_text(tr("menu.redo"))
+        .separator()
+        .cut_with_text(tr("menu.cut"))
+        .copy_with_text(tr("menu.copy"))
+        .paste_with_text(tr("menu.paste"))
+        .select_all_with_text(tr("menu.select_all"))
+        .build()?;
     // pintasan lewat key equivalent native: WKWebView tidak selalu meneruskan ⌘⇧/⌘⌥/⌃⌘ ke keydown JS
-    let mut view = SubmenuBuilder::new(app, "View");
-    let mut tab = SubmenuBuilder::new(app, "Tab");
-    let mut pane = SubmenuBuilder::new(app, "Pane");
-    let mut msgs = SubmenuBuilder::new(app, "Pesan");
+    let mut view = SubmenuBuilder::new(app, tr("menu.view"));
+    let mut tab = SubmenuBuilder::new(app, tr("menu.tab"));
+    let mut pane = SubmenuBuilder::new(app, tr("menu.pane"));
+    let mut msgs = SubmenuBuilder::new(app, tr("menu.msg"));
     let mut group = "";
     for k in keys {
         if k.0.starts_with("term.") {
@@ -543,18 +553,19 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut]) -
         group = g;
         pane = pane.item(&item(k)?);
     }
-    let window = SubmenuBuilder::new(app, "Window").minimize().fullscreen().build()?;
+    let window = SubmenuBuilder::new(app, tr("menu.window")).minimize_with_text(tr("menu.minimize")).fullscreen_with_text(tr("menu.fullscreen")).build()?;
     MenuBuilder::new(app).items(&[&main, &edit, &view.build()?, &tab.build()?, &pane.build()?, &msgs.build()?, &window]).build()
 }
 
-/// `[keys]` dari config → menu baru (FR-39, berlaku tanpa restart).
-fn apply_keys(app: &tauri::AppHandle, keys: &Value) {
+/// `[keys]` and `[ui] language` from config → new menu (FR-39, TECH 20; no restart).
+fn apply_keys(app: &tauri::AppHandle, values: &Value) {
     let empty = serde_json::Map::new();
-    let (items, errors) = resolve_keys(keys.as_object().unwrap_or(&empty));
+    let lang = i18n::of_config(values);
+    let (items, errors) = resolve_keys(values["keys"].as_object().unwrap_or(&empty), lang);
     *app.state::<Shortcuts>().0.lock().unwrap() = (items.clone(), errors);
     let app2 = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Ok(menu) = build_menu(&app2, &items) {
+        if let Ok(menu) = build_menu(&app2, &items, lang) {
             let _ = app2.set_menu(menu);
         }
     });
@@ -563,6 +574,8 @@ fn apply_keys(app: &tauri::AppHandle, keys: &Value) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     sweep_paste();
+    // until the first config.get: macOS language (TECH 20)
+    let lang0 = i18n::resolve("system", &i18n::system_langs());
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -583,9 +596,9 @@ pub fn run() {
             })?;
             Ok(())
         })
-        .manage(Shortcuts(Mutex::new(resolve_keys(&serde_json::Map::new()))))
+        .manage(Shortcuts(Mutex::new(resolve_keys(&serde_json::Map::new(), lang0))))
         // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
-        .menu(|app| build_menu(app, &resolve_keys(&serde_json::Map::new()).0))
+        .menu(move |app| build_menu(app, &resolve_keys(&serde_json::Map::new(), lang0).0, lang0))
         .on_menu_event(|app, ev| {
             if ["pane.", "app.", "term.", "tab.", "msg."].iter().any(|p| ev.id().0.starts_with(p)) {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
@@ -614,10 +627,12 @@ pub fn run() {
 fn on_exit(app: &tauri::AppHandle) {
     use tauri_plugin_notification::NotificationExt;
     let Some(c) = app.state::<Daemon>().0.lock().unwrap().clone() else { return };
-    if c.call("config.get", json!({})).is_ok_and(|v| v["values"]["ui"]["on_quit"] == "stop") {
+    let values = c.call("config.get", json!({})).map(|v| v["values"].clone()).unwrap_or_default();
+    if values["ui"]["on_quit"] == "stop" {
         let _ = c.call("daemon.stop", json!({}));
         return;
     }
+    let lang = i18n::of_config(&values);
     let Ok(ids) = c.call("pane.list", json!({})) else { return };
     let busy: Vec<String> = ids
         .as_array()
@@ -625,17 +640,13 @@ fn on_exit(app: &tauri::AppHandle) {
         .flatten()
         .filter_map(|id| c.call("pane.info", json!({"pane": id})).ok())
         .filter(|i| i["busy"] == true)
-        .map(|i| i["name"].as_str().unwrap_or("proses").to_string())
+        .map(|i| i["name"].as_str().unwrap_or(i18n::tr(lang, "quit.process")).to_string())
         .collect();
     if busy.is_empty() {
         return;
     }
-    let body = format!(
-        "Gembala tetap berjalan di latar karena {} pane masih menjalankan proses ({}). Buka Gembala untuk melihat atau menghentikannya.",
-        busy.len(),
-        busy.join(", ")
-    );
-    let _ = app.notification().builder().title("Gembala masih berjalan").body(body).show();
+    let body = i18n::fmt(lang, "quit.body", &[("n", &busy.len().to_string()), ("names", &busy.join(", "))]);
+    let _ = app.notification().builder().title(i18n::tr(lang, "quit.title")).body(body).show();
     std::thread::sleep(std::time::Duration::from_millis(300)); // beri waktu notifikasi terkirim sebelum proses keluar
 }
 
@@ -722,18 +733,18 @@ mod tests {
 
     #[test]
     fn canon_key_wajib_cmd() {
-        assert_eq!(super::canon_key("cmd+shift+d").unwrap(), "Shift+Cmd+D");
-        assert_eq!(super::canon_key("Option+Command+Left").unwrap(), "Alt+Cmd+Left");
-        assert_eq!(super::canon_key("cmd+,").unwrap(), "Cmd+,");
+        assert_eq!(super::canon_key("cmd+shift+d", "en").unwrap(), "Shift+Cmd+D");
+        assert_eq!(super::canon_key("Option+Command+Left", "en").unwrap(), "Alt+Cmd+Left");
+        assert_eq!(super::canon_key("cmd+,", "en").unwrap(), "Cmd+,");
         for bad in ["ctrl+c", "cmd+hyper+x", "cmd+foo", "", "shift+tab"] {
-            assert!(super::canon_key(bad).is_err(), "{bad}");
+            assert!(super::canon_key(bad, "en").is_err(), "{bad}");
         }
     }
 
     #[test]
     fn keys_override_dan_bentrok() {
         let o = json!({"cmd+t": "pane.split.right", "cmd+k": "pane.zoom.toggle", "cmd+y": "tidak.ada", "ctrl+x": "pane.proc.kill"});
-        let (items, errors) = super::resolve_keys(o.as_object().unwrap());
+        let (items, errors) = super::resolve_keys(o.as_object().unwrap(), "id");
         let key = |id: &str| items.iter().find(|i| i.0 == id).unwrap().2.clone();
         assert_eq!(key("pane.split.right"), "Cmd+T");
         assert_eq!(key("pane.zoom.toggle"), "Cmd+K"); // ditimpa = menang
@@ -743,6 +754,20 @@ mod tests {
         for want in ["tidak.ada", "ctrl+x", "bentrok: Cmd+K"] {
             assert!(all.contains(want), "{want}: {all}");
         }
+    }
+
+    /// TECH 20: every shortcut has a label in both languages (menu and Settings > Shortcuts)
+    #[test]
+    fn shortcut_labels_in_both_languages() {
+        for lang in ["en", "id"] {
+            let (items, errors) = super::resolve_keys(&serde_json::Map::new(), lang);
+            assert!(errors.is_empty(), "{errors:?}");
+            for (id, label, _) in items {
+                assert!(!label.is_empty(), "{lang} {id}");
+            }
+        }
+        assert_eq!(super::i18n::tr("en", "pane.split.right"), "Split Right");
+        assert_eq!(super::i18n::tr("id", "pane.split.right"), "Split ke Kanan");
     }
 
     #[test]
