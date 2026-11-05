@@ -23,7 +23,8 @@ test("every t()/tn() key used in src exists in en.ts", () => {
   const keys = Object.keys(en);
   for (const f of files(SRC).filter((f) => !f.includes("/i18n/"))) {
     const text = readFileSync(f, "utf8");
-    for (const [, q, k] of text.matchAll(/\bt[n]?\((["`])([^"`]+)\1/g)) {
+    // `tt`/`ttn` = alias in +page.svelte, where `t` is often a tab
+    for (const [, q, k] of text.matchAll(/\b(?:t|tn|tt|ttn)\((["`])([^"`]+)\1/g)) {
       if (q === "`" && k.includes("${")) {
         const prefix = k.slice(0, k.indexOf("${"));
         assert.ok(keys.some((x) => x.startsWith(prefix)), `${f}: no key starts with ${prefix}`);

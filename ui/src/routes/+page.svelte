@@ -22,7 +22,8 @@
   import { safeResume } from "$lib/resume";
   import { cleanTitle } from "$lib/label";
   import { resolveLang } from "$lib/i18n";
-  import { errText, i18n, loc, t } from "$lib/i18n/state.svelte";
+  import { errText, i18n, loc, t as tt, tn as ttn, tOr } from "$lib/i18n/state.svelte";
+  import type { Key } from "$lib/i18n";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: akun bawaan per agent; FR-44: warna blok; FR-13: brief
@@ -57,17 +58,14 @@
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: titik status + keterangan teks, tidak hanya warna (bagian 11 BRD)
-  const STATUS: Record<string, string> = { blocked: "butuh izin", done: "selesai", working: "bekerja" };
+  const stText = (s?: string) => (s === "blocked" || s === "done" || s === "working" ? tt(`status.${s}`) : "");
   // FR-52: warna tab pilihan pengguna (garis tipis kiri)
-  const COLORS: [string, string][] = [
-    ["red", "Merah"], ["orange", "Oranye"], ["yellow", "Kuning"], ["green", "Hijau"], ["blue", "Biru"],
-    ["purple", "Ungu"], ["pink", "Merah muda"], ["cyan", "Toska"], ["brown", "Cokelat"],
-  ];
+  const COLORS = ["red", "orange", "yellow", "green", "blue", "purple", "pink", "cyan", "brown"] as const; // label: color.<c>
   /// FR-44: workspace baru otomatis berwarna: warna yang paling jarang dipakai workspace lain, mulai biru (Gembala.pen 02)
   const FIRST = "blue";
   const nextColor = (list: Ws[]) => {
     const used = (c: string) => list.filter((w) => w.color === c).length;
-    return COLORS.map(([c]) => c).reduce((best, c) => (used(c) < used(best) ? c : best), FIRST);
+    return COLORS.reduce<string>((best, c) => (used(c) < used(best) ? c : best), FIRST);
   };
   // FR-52: tanda per agent (bukan logo merek), warna mendekati warna khas agent
   const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇" };
@@ -77,11 +75,11 @@
   /// FR-78: by current config; a pane launched before a change keeps its old flags until it is restarted
   const addonsOf = (p: number) => activeAddons(cfg?.values.addons, agentOf(p), wsIdOf(p) ?? "");
   const acctOf = (p: number) =>
-    meta[p]?.accountName || (agentOf(p) === "claude" && (cfg?.values.accounts ?? []).some((a) => a.agent === "claude") ? "Utama" : "");
+    meta[p]?.accountName || (agentOf(p) === "claude" && (cfg?.values.accounts ?? []).some((a) => a.agent === "claude") ? tt("acc.main") : "");
   /// Color submenu = swatch panel (Gembala.pen 08): colors, then the empty circle for no color; ring = current
   const colorMenu = (cur: string | null | undefined, set: (c: string | undefined) => void): MItem[] => [
-    ...COLORS.map(([c, name]) => [name, () => set(c), true, c, { on: cur === c }] as MItem),
-    ["Tanpa warna", () => set(undefined), true, "none", { on: !cur }],
+    ...COLORS.map((c) => [tt(`color.${c}`), () => set(c), true, c, { on: cur === c }] as MItem),
+    [tt("color.none"), () => set(undefined), true, "none", { on: !cur }],
   ];
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   /// status yang ditampilkan: "selesai" yang sudah dilihat pudar (FR-40)
@@ -158,7 +156,7 @@
     try {
       await call("msg.send", { to, body, force });
       refreshMsgs();
-      say(`Pesan terkirim ke ${meta[to]?.name ?? "agent"}`);
+      say(tt("main.sent", { name: meta[to]?.name ?? "agent" }));
       return "";
     } catch (e) {
       return String(e);
@@ -192,8 +190,8 @@
     const m = /^@([\w.-]*)\s*([\s\S]*)$/.exec(text);
     if (m) {
       const to = targets.find((r) => [r.name, r.agent, meta[r.pane]?.busy ?? ""].includes(m[1]));
-      if (!to) return void (editorErr[pane] = `Tidak ada agent "${m[1]}" di workspace ini`);
-      if (!m[2].trim()) return void (editorErr[pane] = `Tulis pesan untuk ${to.name} setelah nama`);
+      if (!to) return void (editorErr[pane] = tt("main.noAgent", { name: m[1] }));
+      if (!m[2].trim()) return void (editorErr[pane] = tt("main.writeAfter", { name: to.name }));
       const error = await sendMsg(to.pane, m[2], false);
       if (error) return void (lempar = { pane, to: to.pane, name: to.name, body: m[2], error });
       draft[pane] = "";
@@ -218,26 +216,19 @@
       .flatMap((p) => {
         const own = (cfg?.values.accounts ?? []).filter((a) => a.agent === p.agent);
         const base = { ...p, key: p.id, label: p.name, account: undefined as string | undefined };
-        return own.length ? [{ id: "utama", name: "Utama" }, ...own].map((a) => ({ ...base, key: `${p.id}:${a.id}`, label: `${p.name} · ${a.name}`, account: a.id })) : [base];
+        return own.length ? [{ id: "utama", name: tt("acc.main") }, ...own].map((a) => ({ ...base, key: `${p.id}:${a.id}`, label: `${p.name} · ${a.name}`, account: a.id })) : [base];
       }),
   );
   // FR-72: agent dengan pemilih sesi bawaan (OpenCode tidak punya dari baris perintah)
   const pickable = $derived(startProfiles.filter((p) => ["claude", "codex", "omp"].includes(p.agent)));
   // FR-71: agent di worktree baru (pen layar 07): nama, folder (bawaan `<repo>.<nama>`), profil
   let wt = $state<{ pane: number; wi: number; root: string; name: string; dir: string; dirSet: boolean; prof: number; err: string } | null>(null);
-  const WT_ERR: Record<string, string> = {
-    bad_name: "Nama cuma boleh huruf, angka, titik, _ dan - (maks 40)",
-    bad_dir: "Folder harus path lengkap (/… atau ~/…)",
-    dir_exists: "Folder itu sudah ada",
-    not_repo: "Pane yang fokus bukan repo git",
-    repo_filter: "Repo ini memakai filter git lokal; worktree tidak dibuat (SEC-29)",
-    worktree_failed: "git worktree gagal, mungkin branch-nya sudah ada",
-  };
+  // worktree errors have their own wording (wt.err.<code>), anything else goes through errText
   function openWorktree(wi = at.ws) {
     const w = wss[wi];
     const pane = wi === at.ws ? tab?.focus : w?.tabs[0]?.focus;
     const root = pane === undefined ? "" : meta[pane]?.git?.root;
-    if (pane === undefined || !root) return say("Pane yang fokus bukan repo git");
+    if (pane === undefined || !root) return say(tt("wt.err.not_repo"));
     const name = `agent-${(w.tabs.length + 1).toString()}`;
     wt = { pane, wi, root, name, dir: `${root}.${name}`, dirSet: false, prof: 0, err: "" };
     tick().then(() => document.querySelector<HTMLInputElement>(".wtdlg input")?.select());
@@ -246,7 +237,7 @@
     if (!wt) return;
     const p = startProfiles[wt.prof];
     const r = await call("git.worktree_add", { pane: wt.pane, name: wt.name.trim(), dir: wt.dirSet ? wt.dir : undefined }).catch((e) => ({ error: String(e?.message ?? e) }));
-    if (r.error) return void (wt.err = WT_ERR[r.error] ?? r.error);
+    if (r.error) return void (wt.err = tOr(`wt.err.${r.error}`, errText(r.error, r.args)));
     const wi = wt.wi;
     wt = null;
     await newTab(p?.id, wi, p?.account, { cwd: r.dir, from_pane: undefined });
@@ -260,9 +251,9 @@
       for (const p of panes(t.tree)) await call("pane.close", { pane: p }).catch(() => {});
       await new Promise((r) => setTimeout(r, 500));
       const r = await call("git.worktree_remove", { dir, force }).catch((e) => ({ error: String(e?.message ?? e) }));
-      if (r.error) return say(r.error === "pane_in_worktree" ? "Masih ada pane lain di folder worktree itu" : `Gagal menghapus worktree: ${r.error}`);
+      if (r.error) return say(r.error === "pane_in_worktree" ? tt("err.pane_in_worktree") : tt("wt.removeFailed", { why: errText(r.error, r.args) }));
       if (r.dirty) return void (wtDel = { wi, dir, files: r.dirty });
-      say(`Worktree ${home(dir)} dihapus · branch tetap ada`);
+      say(tt("wt.removed", { dir: home(dir) }));
     };
     wtDel = null;
     await go(false);
@@ -271,11 +262,17 @@
   let wtDel = $state<{ wi: number; dir: string; files: string[] } | null>(null);
   let wtForce: () => void = () => {};
   // FR-13: template peran (pen layar 17): satu pane per peran di tab baru, brief workspace ikut petunjuk launch
-  const TEMPLATES: { name: string; desc: string; roles: [string, string, string, string][] }[] = [
-    { name: "Koordinator + pekerja", desc: "1 baca saja · 2 pekerja · 1 reviewer", roles: [["Koordinator", "koordinator", "claude", "koord"], ["Pekerja 1", "pekerja", "claude", "kerja-1"], ["Pekerja 2", "pekerja", "codex", "kerja-2"], ["Reviewer", "reviewer", "codex", "review"]] },
-    { name: "Planner → worker", desc: "1 planner · 1 worker", roles: [["Planner", "planner", "claude", "plan"], ["Worker", "pekerja", "claude", "kerja"]] },
-    { name: "Review berpasangan", desc: "2 reviewer beda agent", roles: [["Reviewer 1", "reviewer", "claude", "review-1"], ["Reviewer 2", "reviewer", "codex", "review-2"]] },
+  // name/desc: tpl.<key>, tpl.<key>Desc; role label: tpl.role.<label key> + number; role id goes to the daemon as is;
+  // pane names are addresses agents type (`gembala send worker-1`), so they stay English in both languages
+  const TEMPLATES: { key: string; roles: [string, string, string, string][] }[] = [
+    { key: "coord", roles: [["coord", "koordinator", "claude", "coord"], ["worker 1", "pekerja", "claude", "worker-1"], ["worker 2", "pekerja", "codex", "worker-2"], ["reviewer", "reviewer", "codex", "review"]] },
+    { key: "plan", roles: [["planner", "planner", "claude", "plan"], ["worker", "pekerja", "claude", "worker"]] },
+    { key: "pair", roles: [["reviewer 1", "reviewer", "claude", "review-1"], ["reviewer 2", "reviewer", "codex", "review-2"]] },
   ];
+  const roleLabel = (l: string) => {
+    const [k, n] = l.split(" ");
+    return `${tt(`tpl.role.${k}` as Key)}${n ? ` ${n}` : ""}`;
+  };
   const READONLY = ["koordinator", "planner", "reviewer"];
   let tpl = $state<{ wi: number; t: number; rows: { label: string; role: string; prof: number; name: string }[]; brief: string } | null>(null);
   function pickTemplate(t: number) {
@@ -285,7 +282,7 @@
     tpl.rows = TEMPLATES[t].roles.map(([label, role, agent, name]) => ({ label, role, prof: prefer(agent), name }));
   }
   function openTemplate(wi = at.ws) {
-    if (!startProfiles.length) return say("Belum ada agent yang terpasang");
+    if (!startProfiles.length) return say(tt("main.noAgents"));
     tpl = { wi, t: 0, rows: [], brief: wss[wi]?.brief ?? "" };
     pickTemplate(0);
   }
@@ -294,7 +291,7 @@
   async function runTemplate() {
     if (!tpl) return;
     const { wi, rows } = tpl;
-    const title = TEMPLATES[tpl.t].name;
+    const title = tt(`tpl.${TEMPLATES[tpl.t].key}` as Key);
     const w = wss[wi];
     w.brief = tpl.brief.trim().slice(0, 4000) || undefined;
     const from = wi === at.ws ? tab?.focus : undefined;
@@ -351,7 +348,7 @@
     if (!item || !file) return; // teks biasa: textarea yang menangani
     e.preventDefault();
     const path = await invoke<string>("save_paste", { data: b64(new Uint8Array(await file.arrayBuffer())), ext: IMG[item.type] }).catch(() => "");
-    if (!path) return say("Gagal menyimpan gambar");
+    if (!path) return say(tt("main.imageFailed"));
     if (meta[pane]) meta[pane].pastes = [...(meta[pane].pastes ?? []), path];
     add(path);
   }
@@ -418,7 +415,7 @@
     if (items.length < 2 || d.length < 2 || !"claude".startsWith(d)) return;
     // sesi pane ini yang baru selesai (FR-56) = baris pertama dan terpilih, supaya Enter tidak menimpa niat lanjut
     const resume = meta[pane]?.ended?.resume;
-    if (resume?.startsWith("claude")) return void (comp = { pane, items: [{ label: resume.replace(/([0-9a-f]{8})-[0-9a-f-]{27}$/, "$1…"), kind: "sesi terakhir pane ini", insert: `${resume} ` }, ...items], sel: 0, auto: true });
+    if (resume?.startsWith("claude")) return void (comp = { pane, items: [{ label: resume.replace(/([0-9a-f]{8})-[0-9a-f-]{27}$/, "$1…"), kind: tt("comp.lastSession"), insert: `${resume} ` }, ...items], sel: 0, auto: true });
     const def = wss.find((w) => w.id === wsIdOf(pane))?.accounts?.claude;
     comp = { pane, items, sel: Math.max(0, items.findIndex((it) => it.insert === `claude-${def} `)), auto: true };
   }
@@ -725,8 +722,8 @@
     if (!changes) return;
     const pane = changes.pane;
     const r = await call("git.turn_preview", { pane, i }).catch((e) => ({ error: String(e) }));
-    if (r.error) return say(`Gagal memeriksa giliran: ${r.error}`);
-    if (!r.files.length) return say("Folder kerja sudah sama dengan sebelum giliran ini");
+    if (r.error) return say(tt("turn.checkFailed", { why: errText(r.error, r.args) }));
+    if (!r.files.length) return say(tt("turn.same"));
     if (changes?.pane === pane) changes.ask = { i, ...r };
   }
   async function doRestore() {
@@ -734,7 +731,7 @@
     if (!c?.ask) return;
     const r = await call("git.turn_restore", { pane: c.pane, i: c.ask.i }).catch((e) => ({ error: String(e) }));
     c.ask = null;
-    say(r.error ? `Gagal mengembalikan: ${r.error}` : `${r.restored} file dikembalikan`);
+    say(r.error ? tt("turn.restoreFailed", { why: errText(r.error, r.args) }) : ttn("turn.restored", r.restored));
     pickTurn(null);
   }
   /// FR-23: confirmation card for restoring one file / committing files; the daemon names other panes in the repo
@@ -756,7 +753,7 @@
     ).catch((e) => ({ error: String(e) }));
     if (r.error) return void ((a.error = r.error), (a.args = r.args)); // card stays: e.g. a hook said why
     c.act = null;
-    say(a.op === "restore" ? t("chg.restored", { file: paths[0] }) : t("chg.committed", { commit: r.commit }));
+    say(a.op === "restore" ? tt("chg.restored", { file: paths[0] }) : tt("chg.committed", { commit: r.commit }));
     loadChanges(c.pane);
   }
   let panelW = $state(460); // FR-22: lebar panel perubahan, disimpan di layout
@@ -926,7 +923,7 @@
       boot = (await call("daemon.info")).boot;
       cfg = await call("config.get");
     } catch (e) {
-      error = `daemon tidak bisa dijalankan lagi: ${e}`;
+      error = tt("main.daemonRestartFailed", { why: errText(e) });
     }
     lost = false;
   }
@@ -956,7 +953,7 @@
     const items = (cfg?.values.profiles ?? []).flatMap((p) => {
       const own = accs.filter((a) => a.agent === p.agent);
       const base = { ...p, missing: missing.has(p.agent), key: p.id, label: p.name, account: undefined as string | undefined };
-      return own.length ? [{ id: "utama", name: "Utama" }, ...own].map((a) => ({ ...base, key: `${p.id}:${a.id}`, label: `${p.name} · ${a.name}`, account: a.id })) : [base];
+      return own.length ? [{ id: "utama", name: tt("acc.main") }, ...own].map((a) => ({ ...base, key: `${p.id}:${a.id}`, label: `${p.name} · ${a.name}`, account: a.id })) : [base];
     });
     picker = { items, sel: 0 };
   }
@@ -1046,7 +1043,7 @@
     if (id.startsWith("term.zoom")) {
       const base = cfg?.values.ui.font_size ?? 13;
       const pz = id.startsWith("term.zoom.pane") ? (meta[tab.focus]?.zoom ?? 0) : 0;
-      say(`Ukuran huruf ${Math.max(6, base + zoom + pz)}${pz ? " (pane ini)" : ""} · bawaan ${base}`);
+      say(tt(pz ? "main.zoomPane" : "main.zoom", { n: Math.max(6, base + zoom + pz), base }));
     }
   }
 
@@ -1073,7 +1070,7 @@
       // satu workspace = pintasan saja (Gembala.pen 03); lebih dari satu = nama workspace ikut, tab kembar bisa dibedakan
       const key = i < 9 ? `⌘${i + 1}` : "";
       return {
-        label: [meta[o.t.focus]?.name ?? "", title(o.t), STATUS[st] ?? ""].filter(Boolean).join(" · "),
+        label: [meta[o.t.focus]?.name ?? "", title(o.t), stText(st)].filter(Boolean).join(" · "),
         hint: wss.length > 1 ? [wss[o.wi].name, key].filter(Boolean).join(" · ") : key,
         kind: "tab",
         agent,
@@ -1089,15 +1086,15 @@
     }));
     const actions: PalItem[] = [
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), kind: "action" as const, go: () => run(id) })),
-      { label: "Agent di worktree baru…", hint: "git worktree dari HEAD repo pane ini", kind: "action", go: () => openWorktree() },
-      { label: "Dari template peran…", hint: "koordinator, pekerja, reviewer + brief workspace", kind: "action", go: () => openTemplate() },
-      ...pickable.map((p) => ({ label: `Pilih sesi lama: ${p.label}`, hint: "pemilih sesi bawaan agent", kind: "action" as const, go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
-      { label: "Workspace baru…", hint: "", kind: "action", go: addWorkspace },
-      { label: editorOn ? "Matikan input editor (pane baru)" : "Nyalakan input editor (pane baru)", hint: "", kind: "action", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
-      { label: "Ganti nama tab", hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
-      { label: "Ganti nama workspace", hint: "", kind: "action", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
-      { label: "Pengaturan", hint: "⌘,", kind: "action", go: () => (settingsOpen = true) },
-      { label: "Keluar dan hentikan semua agent…", hint: "", kind: "action", go: askQuitAll },
+      { label: tt("act.worktree"), hint: tt("act.worktreeHint"), kind: "action", go: () => openWorktree() },
+      { label: tt("act.template"), hint: tt("act.templateHint"), kind: "action", go: () => openTemplate() },
+      ...pickable.map((p) => ({ label: tt("act.pickSessionOf", { name: p.label }), hint: tt("act.pickSessionHint"), kind: "action" as const, go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
+      { label: tt("act.newWs"), hint: "", kind: "action", go: addWorkspace },
+      { label: editorOn ? tt("act.editorOff") : tt("act.editorOn"), hint: "", kind: "action", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
+      { label: tt("act.renameTab"), hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
+      { label: tt("act.renameWs"), hint: "", kind: "action", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
+      { label: tt("set.title"), hint: "⌘,", kind: "action", go: () => (settingsOpen = true) },
+      { label: tt("act.quitAll"), hint: "", kind: "action", go: askQuitAll },
     ];
     const words = pal.q.toLowerCase().split(/\s+/).filter(Boolean);
     const hay = (it: PalItem) => `${it.label} ${it.hint}`.toLowerCase();
@@ -1114,11 +1111,11 @@
     const left = rest.filter((it) => !recent.includes(it.label));
     const group = (title: string, items: PalItem[]) => ({ title, items });
     return [
-      group("cocok", top),
-      group("terakhir dipakai", recycled),
-      group("tab", left.filter((it) => it.kind === "tab")),
-      group("tab baru dari profil", left.filter((it) => it.kind === "profile")),
-      group("aksi", left.filter((it) => it.kind === "action")),
+      group(tt("pal.match"), top),
+      group(tt("pal.recent"), recycled),
+      group(tt("pal.tabs"), left.filter((it) => it.kind === "tab")),
+      group(tt("pal.profiles"), left.filter((it) => it.kind === "profile")),
+      group(tt("pal.actions"), left.filter((it) => it.kind === "action")),
     ].filter((g) => g.items.length > 0);
   });
   const palItems = $derived(palGroups.flatMap((g) => g.items));
@@ -1171,7 +1168,7 @@
     menu = e.clientX || e.clientY || !r ? { x: e.clientX, y: e.clientY, items } : { x: r.left, y: r.bottom, items };
   }
   const copy = (text: string | null | undefined) =>
-    text && invoke("copy_text", { text }).then(() => say("Tersalin"), () => say("Gagal menyalin"));
+    text && invoke("copy_text", { text }).then(() => say(tt("common.copied")), () => say(tt("chg.copyFailed")));
 
   // umpan balik singkat untuk aksi tanpa hasil yang terlihat (bagian 11 BRD); role=status = dibacakan VoiceOver
   let toast = $state("");
@@ -1192,16 +1189,16 @@
     const [keys] = await invoke<[[string, string, string][], string[]]>("shortcuts").catch(() => [[], []] as [[string, string, string][], string[]]);
     const closeKey = t === tab && panes(t.tree).length === 1 ? keys.find(([id]) => id === "pane.proc.close")?.[2] : "";
     popup(e, [
-      ["Ganti nama", () => (editing = { kind: "tab", id: t.id, value: title(t) }), true, undefined, { icon: "rename" }],
-      ["Warna", colorMenu(t.color, (c) => (t.color = c)), true, undefined, { icon: "color", title: "Warna tab", hint: "Muncul sebagai garis tipis di kiri tab" }],
-      ["Tutup tab", () => closeTabs(wi, [t]), true, undefined, { icon: "close", key: closeKey ? pretty(closeKey) : "" }],
-      ["Tutup tab lain", () => closeTabs(wi, wss[wi].tabs.filter((x) => x !== t)), wss[wi].tabs.length > 1],
-      ["Tutup tab di bawahnya", () => closeTabs(wi, wss[wi].tabs.slice(ti + 1)), ti < wss[wi].tabs.length - 1],
+      [tt("menu.rename"), () => (editing = { kind: "tab", id: t.id, value: title(t) }), true, undefined, { icon: "rename" }],
+      [tt("menu.color"), colorMenu(t.color, (c) => (t.color = c)), true, undefined, { icon: "color", title: tt("menu.tabColor"), hint: tt("menu.tabColorHint") }],
+      [tt("menu.closeTab"), () => closeTabs(wi, [t]), true, undefined, { icon: "close", key: closeKey ? pretty(closeKey) : "" }],
+      [tt("menu.closeOthers"), () => closeTabs(wi, wss[wi].tabs.filter((x) => x !== t)), wss[wi].tabs.length > 1],
+      [tt("menu.closeBelow"), () => closeTabs(wi, wss[wi].tabs.slice(ti + 1)), ti < wss[wi].tabs.length - 1],
       "-",
-      ["Pindah ke workspace", others.length ? others : () => {}, others.length > 0, undefined, { icon: "move" }],
-      ["Salin folder", () => copy(meta[t.focus]?.cwd), true, undefined, { icon: "copy" }],
-      ["Agent di worktree baru…", () => ((at = { ws: wi, tab: ti }), openWorktree(wi))],
-      ...(meta[t.focus]?.git?.branch?.startsWith("gembala/") ? [["Tutup dan hapus worktree…", () => removeWorktree(wi, t), true, undefined, { danger: true }] as MItem] : []),
+      [tt("menu.moveToWs"), others.length ? others : () => {}, others.length > 0, undefined, { icon: "move" }],
+      [tt("menu.copyFolder"), () => copy(meta[t.focus]?.cwd), true, undefined, { icon: "copy" }],
+      [tt("act.worktree"), () => ((at = { ws: wi, tab: ti }), openWorktree(wi))],
+      ...(meta[t.focus]?.git?.branch?.startsWith("gembala/") ? [[tt("menu.closeWorktree"), () => removeWorktree(wi, t), true, undefined, { danger: true }] as MItem] : []),
     ]);
   }
 
@@ -1212,13 +1209,13 @@
     const agents: Agent[] = await call("agents.detect", {}).catch(() => []);
     const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
     popup(e, [
-      ...(cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? " (tidak terpasang)" : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem),
+      ...(cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? ` (${tt("main.notInstalled")})` : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem),
       "-",
-      ["Agent di worktree baru…", () => openWorktree(wi)],
-      ["Dari template peran…", () => openTemplate(wi)],
+      [tt("act.worktree"), () => openWorktree(wi)],
+      [tt("act.template"), () => openTemplate(wi)],
       pickable.length
-        ? ["Pilih sesi lama…", pickable.map((p) => [p.label, () => newTab(p.id, wi, p.account, { pick: true })] as MItem)]
-        : ["Pilih sesi lama…", () => {}, false],
+        ? [tt("act.pickSession"), pickable.map((p) => [p.label, () => newTab(p.id, wi, p.account, { pick: true })] as MItem)]
+        : [tt("act.pickSession"), () => {}, false],
     ]);
   }
 
@@ -1226,17 +1223,17 @@
   function wsMenu(e: MouseEvent, wi: number) {
     const w = wss[wi];
     // FR-61: akun Claude bawaan pane baru di workspace ini (pilihan manusia, C-9)
-    const accts = [{ id: "utama", name: "Utama" }, ...(cfg?.values.accounts ?? []).filter((a) => a.agent === "claude")];
+    const accts = [{ id: "utama", name: tt("acc.main") }, ...(cfg?.values.accounts ?? []).filter((a) => a.agent === "claude")];
     const cur = accts.find((a) => a.id === (w.accounts?.claude ?? "utama"));
     popup(e, [
-      ["Ganti nama", () => (editing = { kind: "ws", id: w.id, value: w.name }), true, undefined, { icon: "rename" }],
-      ["Ganti folder…", () => changeRoot(w), true, undefined, { icon: "folder" }],
-      ["Warna", colorMenu(w.color, (c) => (w.color = c ?? null)), true, undefined, { icon: "color", title: "Warna workspace", hint: "Mewarnai blok workspace di sidebar" }],
+      [tt("menu.rename"), () => (editing = { kind: "ws", id: w.id, value: w.name }), true, undefined, { icon: "rename" }],
+      [tt("menu.changeFolder"), () => changeRoot(w), true, undefined, { icon: "folder" }],
+      [tt("menu.color"), colorMenu(w.color, (c) => (w.color = c ?? null)), true, undefined, { icon: "color", title: tt("menu.wsColor"), hint: tt("menu.wsColorHint") }],
       ...(accts.length > 1
-        ? [[`Akun bawaan: ${cur?.name ?? "Utama"}`, accts.map((a): MItem => [a.name, () => void (w.accounts = { ...w.accounts, claude: a.id }), true, undefined, { on: a === cur }]), true, undefined, { icon: "account" }] as MItem]
+        ? [[tt("menu.defaultAccount", { name: cur?.name ?? tt("acc.main") }), accts.map((a): MItem => [a.name, () => void (w.accounts = { ...w.accounts, claude: a.id }), true, undefined, { on: a === cur }]), true, undefined, { icon: "account" }] as MItem]
         : []),
-      [w.collapsed ? "Buka" : "Ciutkan", () => (w.collapsed = !w.collapsed), true, undefined, { icon: "collapse" }],
-      ["Hapus workspace…", () => askRemoveWorkspace(wss.indexOf(w)), wss.length > 1, undefined, { icon: "delete", danger: true }],
+      [w.collapsed ? tt("menu.expand") : tt("menu.collapse"), () => (w.collapsed = !w.collapsed), true, undefined, { icon: "collapse" }],
+      [tt("menu.deleteWs"), () => askRemoveWorkspace(wss.indexOf(w)), wss.length > 1, undefined, { icon: "delete", danger: true }],
     ]);
   }
 
@@ -1245,20 +1242,20 @@
     const tile = tiles[pane];
     const blk = tile?.blockAt(e.clientY); // FR-58: blok perintah di bawah kursor
     popup(e, [
-      ["Salin", () => copy(tile?.selection()), !!tile?.selection()],
-      ["Tempel", async () => tile?.paste(await invoke<string>("paste_text").catch(() => ""))],
+      [tt("tile.copy"), () => copy(tile?.selection()), !!tile?.selection()],
+      [tt("menu.paste"), async () => tile?.paste(await invoke<string>("paste_text").catch(() => ""))],
       "-",
-      ["Salin perintah blok ini", () => copy(blk?.cmd), !!blk?.cmd],
-      ["Salin output blok ini", () => copy(blk?.output), !!blk?.output],
+      [tt("menu.copyBlockCmd"), () => copy(blk?.cmd), !!blk?.cmd],
+      [tt("menu.copyBlockOut"), () => copy(blk?.output), !!blk?.output],
       // FR-58: perintah blok masuk editor untuk diubah lalu dijalankan lagi (ala Warp)
-      ["Pakai lagi di editor", () => blk && ((draft[pane] = blk.cmd), document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus()), !!blk?.cmd && editorShown(pane)],
+      [tt("menu.reuse"), () => blk && ((draft[pane] = blk.cmd), document.querySelector<HTMLTextAreaElement>(`[data-editor="${pane}"]`)?.focus()), !!blk?.cmd && editorShown(pane)],
       "-",
-      ["Split kanan", () => splitFocused("row")],
-      ["Split bawah", () => splitFocused("col")],
-      [zoomed ? "Kembalikan ukuran" : "Maksimalkan", () => (zoomed = !zoomed), zoomed || (!!tab && panes(tab.tree).length > 1)],
-      ["Bersihkan", () => tile?.clearScreen()],
+      [tt("menu.splitRight"), () => splitFocused("row")],
+      [tt("menu.splitDown"), () => splitFocused("col")],
+      [zoomed ? tt("menu.unzoom") : tt("menu.zoom"), () => (zoomed = !zoomed), zoomed || (!!tab && panes(tab.tree).length > 1)],
+      [tt("menu.clear"), () => tile?.clearScreen()],
       "-",
-      ["Tutup pane", () => askClose(pane)],
+      [tt("menu.closePane"), () => askClose(pane)],
     ]);
   }
 
@@ -1498,7 +1495,7 @@
       editing = null;
       call("pane.rename", { pane, name: v.toLowerCase() })
         .then((r) => renamed(pane, r))
-        .catch((e) => (renameError = e === "name_taken" ? `Nama "${v}" sudah dipakai pane lain` : "Nama hanya huruf kecil, angka, dan '-'"));
+        .catch((e) => (renameError = e === "name_taken" ? tt("main.nameTaken", { name: v }) : tt("main.nameBad")));
       return;
     }
     if (editing.kind === "tab") {
@@ -1551,7 +1548,7 @@
         const to = wss[wi]?.tabs[ti];
         if (to && to !== from) {
           const r = row.getBoundingClientRect();
-          zone = { left: r.left, top: r.top, width: r.width, height: r.height, label: "Pindah ke tab ini" };
+          zone = { left: r.left, top: r.top, width: r.width, height: r.height, label: tt("drag.toTab") };
           drop = () => movePaneToTab(from, pane, to);
         }
       } else if (g) {
@@ -1570,10 +1567,10 @@
             const s = side[0];
             const half = s === "left" || s === "right" ? { width: W / 2, height: H } : { width: W, height: H / 2 };
             zone = { left: s === "right" ? L + W / 2 : L, top: s === "down" ? T + H / 2 : T, ...half,
-              label: { left: "Split ke kiri", right: "Split ke kanan", up: "Split ke atas", down: "Split ke bawah" }[s] };
+              label: tt(`drag.${s}`) };
             drop = () => (from.tree = place(from.tree, pane, target, s));
           } else {
-            zone = { left: L, top: T, width: W, height: H, label: "Tukar tempat" };
+            zone = { left: L, top: T, width: W, height: H, label: tt("drag.swap") };
             drop = () => (from.tree = swap(from.tree, pane, target));
           }
         }
@@ -1694,7 +1691,7 @@
         root: String(w.root ?? "~").slice(0, 500),
         collapsed: w.collapsed === true,
         // FR-44: warna blok; workspace lama tanpa warna diberi warna di bawah (null = sengaja tanpa warna)
-        color: COLORS.some(([c]) => c === w.color) ? w.color : w.color === null ? null : undefined,
+        color: COLORS.some((c) => c === w.color) ? w.color : w.color === null ? null : undefined,
         // FR-61: hanya id akun yang sah (dicocokkan lagi oleh daemon saat membuka pane)
         brief: typeof w.brief === "string" && w.brief.trim() ? w.brief.slice(0, 4000) : undefined,
         accounts: Object.fromEntries(Object.entries(w.accounts ?? {}).filter(([k, v]) => /^[a-z]+$/.test(k) && typeof v === "string" && /^[a-z0-9-]{1,32}$/.test(v))),
@@ -1705,7 +1702,7 @@
             title: String(t.title ?? "").slice(0, 60),
             tree: t.tree,
             focus: panes(t.tree).includes(t.focus) ? t.focus : panes(t.tree)[0],
-            color: COLORS.some(([c]) => c === t.color) ? t.color : undefined,
+            color: COLORS.some((c) => c === t.color) ? t.color : undefined,
           })),
       }));
     for (const w of out) if (w.color === undefined) w.color = nextColor(out);
@@ -1771,7 +1768,7 @@
   );
   const ago = (ms: number) => {
     const s = Math.max(0, Math.round(ms / 1000));
-    return s < 60 ? `${s} dtk` : s < 3600 ? `${Math.floor(s / 60)} mnt` : `${Math.floor(s / 3600)} jam`;
+    return s < 60 ? tt("tile.secs", { n: s }) : s < 3600 ? tt("tile.mins", { n: Math.floor(s / 60) }) : tt("tile.hours", { n: Math.floor(s / 3600) });
   };
   /// FR-65: pindah ke tab dan pane itu (klik baris antrean, Cmd+Shift+U)
   function jumpTo(p: number) {
@@ -1805,15 +1802,17 @@
   /// FR-40: banner + Dock melompat saat jendela tidak dilihat; isi nama pane + status saja (SEC-33).
   /// Klik banner = pindah ke pane itu (event `notify-click` dari `on_action` plugin, id notifikasi = id pane);
   /// fokus jendela biasa (Cmd+Tab) tidak memindah pane.
-  function alert(pane: number, kind: "blocked" | "done", label: string) {
+  /// label = alert.* key: the bell renders it in the language of the moment, the banner in the current one
+  function alert(pane: number, kind: "blocked" | "done", label: Key) {
     const m = meta[pane];
     if (m) note(pane, kind, label);
     if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
     if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
     if (kind === "blocked") invoke("attention").catch(() => {}); // Dock melompat hanya bila perlu tindakan; selesai cukup badge
     // SEC-33: nama pane, nama tab (FR-65), status; tanpa isi layar
-    const t = tabOf(pane);
-    invoke("notify_pane", { body: `${m.name || m.profile}${t ? ` di ${title(t)}` : ""} ${label}`, sound: notify.sound, pane }).catch(() => {});
+    const tb = tabOf(pane);
+    const name = m.name || m.profile;
+    invoke("notify_pane", { body: tb ? tt("alert.bodyTab", { name, tab: title(tb), what: tt(label) }) : tt("alert.body", { name, what: tt(label) }), sound: notify.sound, pane }).catch(() => {});
   }
   // FR-76: bell history; unlike the macOS banner it may carry the task label (FR-69), being in-app only (SEC-33).
   // Newest first, max 100.
@@ -1868,8 +1867,8 @@
       refreshGit(pane); // toolbar diperbarui per giliran (TECH 7a)
       if (changes?.pane === pane) loadChanges(pane); // FR-22: panel ikut diperbarui
     }
-    if (status === "blocked") alert(pane, "blocked", "butuh izin");
-    if (status === "done") alert(pane, "done", "selesai");
+    if (status === "blocked") alert(pane, "blocked", "alert.blocked");
+    if (status === "done") alert(pane, "done", "alert.done");
   }
 
   // simpan tata letak setengah detik setelah perubahan terakhir (SEC-13: tanpa isi layar)
@@ -1909,12 +1908,12 @@
         if (busy && !m.busy) m.since = Date.now();
         if (i.password && m.status !== "blocked") {
           m.status = "blocked";
-          alert(p, "blocked", "menunggu password");
+          alert(p, "blocked", "alert.password");
         } else if (!i.password && m.status === "blocked") m.status = "";
         if (!busy && m.busy && Date.now() - (m.since ?? Date.now()) >= notify.long_command_secs * 1000) {
           delete ack[p];
           m.status = "done";
-          alert(p, "done", "selesai menjalankan perintah lama");
+          alert(p, "done", "alert.longCmd");
         }
       }
       if (busy && busy !== m.busy && m.ended) delete m.ended; // FR-56: blok selesai hilang begitu proses baru jalan
@@ -1992,7 +1991,7 @@
         const [d, app] = await Promise.all([call("daemon.info"), getVersion()]);
         if (d.daemon !== app) upgrade = { daemon: d.daemon, app, panes: (await call("pane.list")).length };
       } catch (e) {
-        error = `gagal sambung ke daemon: ${e}`;
+        error = tt("main.connectFailed", { why: errText(e) });
       }
     })();
     return () => {
@@ -2028,9 +2027,9 @@
 
 {#snippet chip(c: string, pane: number, g: any)}
   {#if c === "attach"}
-    <button class="chip box" title="Lampirkan file (atau seret file ke pane)" aria-label="Lampirkan file" onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
+    <button class="chip box" title={tt("chip.attachTip")} aria-label={tt("chip.attach")} onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
   {:else if c === "diff" && g?.repo && g.files}
-    <button class="chip box" title="Panel perubahan ⌘⇧=" onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+    <button class="chip box" title={tt("chip.diffTip")} onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
     <button class="chip box" onclick={() => openRich(pane)}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
   {:else if c === "cwd"}
@@ -2039,20 +2038,20 @@
     <!-- branch tidak dipotong; yang mengalah folder (TECH 19 #9) -->
     <span class="chip box">{@render icon("branch")}{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
   {:else if c === "settings"}
-    <button class="chip box" title="Pengaturan" aria-label="Pengaturan profil" onclick={() => (settingsOpen = true)}>{@render icon("sliders")}</button>
+    <button class="chip box" title={tt("set.title")} aria-label={tt("chip.settingsAria")} onclick={() => (settingsOpen = true)}>{@render icon("sliders")}</button>
   {/if}
 {/snippet}
 
 {#if sidebar}
-  <aside class="side" aria-label="Tab" style:width="{sideW}px" class:dragging={!!dragging} class:full={fullscreen}>
+  <aside class="side" aria-label={tt("menu.tab")} style:width="{sideW}px" class:dragging={!!dragging} class:full={fullscreen}>
     <!-- title bar transparan: area tombol jendela + geser jendela -->
     <div class="drag" data-tauri-drag-region></div>
-    <button class="add find" onclick={openPalette}>Cari tab atau aksi <span class="n">⌘P</span></button>
+    <button class="add find" onclick={openPalette}>{tt("side.find")} <span class="n">⌘P</span></button>
     <!-- FR-44: di bawah kotak cari, selalu terlihat walau daftar tab panjang -->
     {#if queue.length}
       <!-- FR-65: antrean perhatian; hilang bila tidak ada yang menunggu -->
-      <div class="queue" role="region" aria-label="Butuh izin">
-        <div class="qhead">Butuh lu <span>{queue.length}</span></div>
+      <div class="queue" role="region" aria-label={tt("status.blocked")}>
+        <div class="qhead">{tt("side.needsYou")} <span>{queue.length}</span></div>
         {#each queue as q (q.p)}
           {@const ag = agentOf(q.p) || meta[q.p]?.agent || ""}
           <button class="tab" onclick={() => jumpTo(q.p)}>
@@ -2061,7 +2060,7 @@
             <span class="sub">{[title(q.t) !== labels[q.p] ? title(q.t) : "", wss.length > 1 ? q.w.name : ""].filter(Boolean).join(" · ")}</span>
           </button>
         {/each}
-        <div class="qhint">{pretty("Cmd+Shift+U")} ke pane berikutnya</div>
+        <div class="qhint">{tt("side.nextHint", { key: pretty("Cmd+Shift+U") })}</div>
       </div>
     {/if}
     <button class="add wsnew" onclick={addWorkspace}>+ Workspace</button>
@@ -2077,17 +2076,17 @@
         onpointerdown={(e) => startDrag(e, "ws", wi)} oncontextmenu={(e) => wsMenu(e, wi)}>
         {#if editing?.kind === "ws" && editing.id === w.id}
           <!-- svelte-ignore a11y_autofocus -->
-          <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama workspace" />
+          <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label={tt("side.wsName")} />
         {:else}
           <span class="chev" aria-hidden="true">{w.collapsed ? "▸" : "▾"}</span>
           <span class="wsname" title={w.name}>{w.name}</span>
           {#if w.collapsed}
             <!-- FR-44: diciutkan tetap menampilkan jumlah tab dan status terberat -->
             {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
-            <span class="wsum">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{STATUS[st]}</span>{" · "}{/if}{w.tabs.length} tab</span>
+            <span class="wsum">{#if stText(st)}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{stText(st)}</span>{" · "}{/if}{ttn("side.tabs", w.tabs.length)}</span>
           {/if}
           <!-- FR-52: tab baru di workspace INI; klik kanan/Option = pilih profil -->
-          <button class="wsadd" title="Tab baru di {w.name} · klik kanan: pilih profil" aria-label="Tab baru di workspace {w.name}"
+          <button class="wsadd" title={tt("side.newTabTip", { name: w.name })} aria-label={tt("side.newTabAria", { name: w.name })}
             onpointerdown={(e) => e.stopPropagation()}
             onclick={(e) => (e.stopPropagation(), e.altKey ? profileMenu(e, wi) : newTab(undefined, wi))}
             oncontextmenu={(e) => profileMenu(e, wi)}>+</button>
@@ -2109,19 +2108,19 @@
           ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
           {#if editing?.kind === "tab" && editing.id === t.id}
             <!-- svelte-ignore a11y_autofocus -->
-            <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama tab" />
+            <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label={tt("side.tabName")} />
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
-            <span class="tt">{#if STATUS[st]}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
-            <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label="Tutup tab {title(t)}"
+            <span class="tt">{#if stText(st)}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
+            <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
             <!-- FR-61: akun selain Utama tampil di keterangan tab -->
             <!-- agent sudah tampil sebagai ikon; proses lain (npm, vim) tetap disebut -->
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
             {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
-            {#if STATUS[st] || rest}
-              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {STATUS[stat(p)] ?? 'diam'}"></span>{/each}{:else if STATUS[st]}<span class="st {st}">{STATUS[st]}</span>{rest ? " · " : ""}{/if}{rest}</span>
+            {#if stText(st) || rest}
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {stText(stat(p)) || tt('status.idle')}"></span>{/each}{:else if stText(st)}<span class="st {st}">{stText(st)}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}
           {/if}
         </button>
@@ -2131,15 +2130,15 @@
     {#if dragging}<div class="dropline" style:top="{dragging.line.top}px" style:left="{dragging.line.left}px" style:width="{dragging.line.width}px"></div>{/if}
     <!-- pen 02/11: Settings + bell pinned to the sidebar foot -->
     <div class="sidefoot">
-      <button class="footbtn" title="Pengaturan ⌘," aria-label="Pengaturan" onclick={() => (settingsOpen = true)}>{@render icon("gear")}</button>
-      <button class="footbtn bellbtn" class:on={bell} title="Notifikasi" aria-label="Notifikasi{unseen ? `, ${unseen} belum dilihat` : ''}" aria-expanded={bell}
+      <button class="footbtn" title={tt("side.settingsTip")} aria-label={tt("set.title")} onclick={() => (settingsOpen = true)}>{@render icon("gear")}</button>
+      <button class="footbtn bellbtn" class:on={bell} title={tt("bell.title")} aria-label={unseen ? tt("bell.ariaUnseen", { n: unseen }) : tt("bell.title")} aria-expanded={bell}
         onclick={() => (bell = !bell)}>{@render icon("bell")}{#if unseen}<span class="badge">{unseen}</span>{/if}</button>
     </div>
   </aside>
   {#if bell}
     <!-- FR-76: event history from every workspace; click = jump to the pane -->
-    <div class="notes" role="dialog" aria-label="Notifikasi">
-      <div class="nhead"><b>Notifikasi</b>{#if unseen}<button class="nlink" onclick={() => notes.forEach((n) => (n.seen = true))}>Tandai semua dilihat</button>{/if}</div>
+    <div class="notes" role="dialog" aria-label={tt("bell.title")}>
+      <div class="nhead"><b>{tt("bell.title")}</b>{#if unseen}<button class="nlink" onclick={() => notes.forEach((n) => (n.seen = true))}>{tt("bell.markAll")}</button>{/if}</div>
       <div class="nlist">
         {#each groups as g, i (g[0].pane)}
           {@const n = g[0]}
@@ -2149,26 +2148,26 @@
             <span class="dot {n.kind}" aria-hidden="true"></span>
             <span class="nmain">
               <span class="ntitle">{#if GLYPH[n.agent]}<span class="aico {n.agent}">{GLYPH[n.agent]}</span>{/if}{n.name}{n.task && n.task !== n.tab ? ` · ${n.task}` : ""}</span>
-              <span class="nwhat">{n.label}{#if past}{` · ${meta[n.pane] && !dead[n.pane] ? "udah dijawab" : "pane ditutup"}`}{/if}</span>
+              <span class="nwhat">{tOr(n.label, n.label)}{#if past}{` · ${meta[n.pane] && !dead[n.pane] ? tt("bell.answered") : tt("bell.closed")}`}{/if}</span>
             </span>
             <span class="k">{noteTime(n.at)}</span>
           </button>
           {#if g.length > 1}
-            <button class="nmore" aria-expanded={!!unfold[n.pane]} onclick={() => (unfold[n.pane] = !unfold[n.pane])}>{unfold[n.pane] ? "Sembunyikan" : `+${g.length - 1} sebelumnya`}</button>
+            <button class="nmore" aria-expanded={!!unfold[n.pane]} onclick={() => (unfold[n.pane] = !unfold[n.pane])}>{unfold[n.pane] ? tt("bell.hide") : tt("bell.earlier", { n: g.length - 1 })}</button>
             {#if unfold[n.pane]}
               {#each g.slice(1) as o (o.id)}
-                <div class="nold"><span>{o.label}{o.kind === "blocked" ? " · udah dijawab" : ""}{o.task && o.task !== n.task ? ` · ${o.task}` : ""}</span><span class="k">{noteTime(o.at)}</span></div>
+                <div class="nold"><span>{tOr(o.label, o.label)}{o.kind === "blocked" ? ` · ${tt("bell.answered")}` : ""}{o.task && o.task !== n.task ? ` · ${o.task}` : ""}</span><span class="k">{noteTime(o.at)}</span></div>
               {/each}
             {/if}
           {/if}
         {:else}
-          <div class="nempty">Belum ada kabar. Nanti muncul di sini kalau agent butuh izin atau udah kelar.</div>
+          <div class="nempty">{tt("bell.empty")}</div>
         {/each}
       </div>
-      <div class="nfoot">Isinya nama pane, tugas, dan status, tanpa isi layar. Hilang kalau app ditutup, maks 100.</div>
+      <div class="nfoot">{tt("bell.foot")}</div>
     </div>
   {/if}
-  <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label="Lebar sidebar"></div>
+  <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label={tt("side.width")}></div>
 {/if}
 
 {#if !sidebar}<div class="drag top" data-tauri-drag-region></div>{/if}
@@ -2180,7 +2179,7 @@
 <div class="grid" style:left={sidebar ? `${sideW}px` : "0"} style:top={sidebar ? "0" : "28px"} style:right={changes ? `${panelW}px` : "0"} bind:this={box}>
   {#if ws && !tab}
     <div class="empty">
-      <span>Workspace {ws.name} kosong</span>
+      <span>{tt("main.wsEmpty", { name: ws.name })}</span>
       <button class="mini" onclick={openPicker}>+ Tab <span class="keys">⌘T</span></button>
     </div>
   {/if}
@@ -2209,25 +2208,25 @@
         >
           {#if dead[pane]}
             <div class="dead">
-              <span>Pane ini berhenti karena daemon berhenti atau dijalankan ulang.</span>
+              <span>{tt("pane.dead")}</span>
               <span class="keys">{meta[pane]?.name || meta[pane]?.profile} · {home(meta[pane]?.cwd) || "~"}</span>
-              <button class="mini" onclick={() => restart(pane)}>Jalankan ulang {meta[pane]?.profile ?? "shell"}</button>
+              <button class="mini" onclick={() => restart(pane)}>{tt("pane.restart", { name: meta[pane]?.profile ?? "shell" })}</button>
             </div>
           {:else}
             {#if head}
               <!-- FR-37: kepala tipis, juga saat tab cuma satu pane (Gembala.pen 02) -->
               {@const hs = stat(pane)}
               <div class="head" class:on={split && pane === t.focus} onpointerdown={(e) => startPaneDrag(e, t, pane)} role="presentation">
-                <span class="hname">{#if STATUS[hs]}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
-                {#if STATUS[hs]}<span class="st {hs}">{STATUS[hs]}</span>{/if}
+                <span class="hname">{#if stText(hs)}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
+                {#if stText(hs)}<span class="st {hs}">{stText(hs)}</span>{/if}
                 <!-- FR-78: add-ons of the running agent in this workspace, names in the tooltip -->
-                {#if addonsOf(pane).length}<span class="hadd" title="Add-on: {addonsOf(pane).join(', ')}">{addonsOf(pane).length} add-on</span>{/if}
+                {#if addonsOf(pane).length}<span class="hadd" title="Add-on: {addonsOf(pane).join(', ')}">{ttn("pane.addons", addonsOf(pane).length)}</span>{/if}
                 <!-- folder cukup sekali: toolbar agent sudah menampilkannya -->
                 {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd" title={home(meta[pane]?.cwd)}>{short(meta[pane]?.cwd)}</span>{/if}
                 <span class="grow"></span>
-                <button class="hb" title="Split ke kanan ⌘D" aria-label="Split ke kanan" onclick={() => splitFocused("row")}>◫</button>
-                <button class="hb" title="Split ke bawah ⌘⇧D" aria-label="Split ke bawah" onclick={() => splitFocused("col")}>⊟</button>
-                <button class="hb" title="Tutup pane ⌘W" aria-label="Tutup pane" onclick={() => askClose(pane)}>×</button>
+                <button class="hb" title="{tt('drag.right')} ⌘D" aria-label={tt("drag.right")} onclick={() => splitFocused("row")}>◫</button>
+                <button class="hb" title="{tt('drag.down')} ⌘⇧D" aria-label={tt("drag.down")} onclick={() => splitFocused("col")}>⊟</button>
+                <button class="hb" title="{tt('menu.closePane')} ⌘W" aria-label={tt("menu.closePane")} onclick={() => askClose(pane)}>×</button>
               </div>
             {/if}
             {@const ed = editorShown(pane)}
@@ -2264,7 +2263,7 @@
               <div class="start" class:withhead={head}>
                 {#if welcome && pane === startHere}{@render welcomeCard("wcard")}{/if}
                 <div class="scol">
-                  <span class="wm">Mulai dari sini, atau ketik aja di bawah</span>
+                  <span class="wm">{tt("start.title")}</span>
                   {#if startProfiles.length}
                     <div class="starts">
                       {#each startProfiles as p (p.key)}
@@ -2273,10 +2272,10 @@
                     </div>
                   {/if}
                   <div class="starts">
-                    <button class="sbtn" onclick={() => startInFolder(pane)}>{@render icon("folder")} Pindah folder…</button>
+                    <button class="sbtn" onclick={() => startInFolder(pane)}>{@render icon("folder")} {tt("start.cd")}</button>
                     {#if pickable.length}
                       <button class="sbtn" onclick={(e) => popup(e, pickable.map((p) => [p.label, () => swapToProfile(pane, p.id, p.account, true)] as MItem))}
-                        >{@render icon("history")} Pilih sesi lama…</button
+                        >{@render icon("history")} {tt("act.pickSession")}</button
                       >
                     {/if}
                   </div>
@@ -2288,36 +2287,36 @@
               <div class="editor" class:withbar={bar}>
                 <!-- konteks ala Warp: folder dan branch, menggantikan prompt shell -->
                 <div class="ctx">
-                  <button class="cchip" title="Lampirkan file · bisa juga seret file atau ⌘V gambar" aria-label="Lampirkan file"
+                  <button class="cchip" title={tt("ed.attachTip")} aria-label={tt("chip.attach")}
                     onclick={async () => insertPaths(pane, await invoke<string[]>("pick_files").catch(() => [] as string[]))}>{@render icon("plus")}</button>
                   <!-- FR-59: klik = pemilih folder ala Warp -->
-                  <button class="cchip dir" title="Pindah folder · {meta[pane]?.cwd ?? ''}" onclick={() => openDirs(pane)}>
+                  <button class="cchip dir" title="{tt('ed.cdTip')} · {meta[pane]?.cwd ?? ''}" onclick={() => openDirs(pane)}>
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" fill="none" stroke="currentColor" /></svg>
                     {short(meta[pane]?.cwd) || "~"}
                   </button>
                   {#if meta[pane]?.git?.repo && meta[pane].git.branch}
-                    <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${meta[pane].git.files} file` : ""}</span>
+                    <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${ttn("chg.files", meta[pane].git.files)}` : ""}</span>
                   {/if}
-                  <span class="ehint" class:off={!active || pane !== t.focus}>Enter jalankan · Shift+Enter baris baru · Tab lengkapi · Esc ke terminal · @agent pesan</span>
+                  <span class="ehint" class:off={!active || pane !== t.focus}>{tt("ed.hint")}</span>
                 </div>
                 {#if dirs?.pane === pane}
-                  <div class="mention complist acct dirs" role="listbox" aria-label="Pilih folder">
+                  <div class="mention complist acct dirs" role="listbox" aria-label={tt("ed.pickFolder")}>
                     <!-- svelte-ignore a11y_autofocus -->
-                    <input class="dq" placeholder="Cari folder…" bind:value={dirs.q} autofocus spellcheck="false" autocapitalize="off"
+                    <input class="dq" placeholder={tt("ed.findFolder")} bind:value={dirs.q} autofocus spellcheck="false" autocapitalize="off"
                       onkeydown={dirsKey} oninput={dirsInput} onblur={() => (dirs = null)} />
                     {#each dirItems as n, i (n)}
                       <button class="opt" class:on={i === dirs.sel} role="option" aria-selected={i === dirs.sel}
                         onpointerdown={(e) => e.preventDefault()} onclick={() => cdTo(n)}>
                         <span class="ico" aria-hidden="true">{#if n === ".."}↑{:else}{@render icon("folder")}{/if}</span>
-                        <span>{n === ".." ? ".. (Folder induk)" : n}</span><span></span>
+                        <span>{n === ".." ? `.. (${tt("ed.parent")})` : n}</span><span></span>
                       </button>
                     {/each}
-                    {#if !dirItems.length}<span class="keys">Tidak ada folder yang cocok</span>{/if}
+                    {#if !dirItems.length}<span class="keys">{tt("ed.noFolder")}</span>{/if}
                   </div>
                 {/if}
                 {#if comp?.pane === pane}
                   <!-- FR-59: daftar Tab ala Warp -->
-                  <div class="mention complist" class:acct={comp.auto} role="listbox" aria-label="Pilihan lengkapi">
+                  <div class="mention complist" class:acct={comp.auto} role="listbox" aria-label={tt("ed.completions")}>
                     {#each comp.items as it, i (it.label)}
                       <button class="opt" class:on={i === comp.sel} role="option" aria-selected={i === comp.sel}
                         onpointerdown={(e) => e.preventDefault()} onclick={() => ((draft[pane] = it.insert), (comp = null))}>
@@ -2329,7 +2328,7 @@
                         {:else}
                           <span class="ico" aria-hidden="true">{({ Folder: "▸", Perintah: "›", Branch: "⎇", Script: "▶" } as Record<string, string>)[it.kind] ?? "·"}</span>
                           <span>{it.label}</span>
-                          <span class="keys">{it.kind}</span>
+                          <span class="keys">{tOr(`comp.${it.kind}`, it.kind)}</span>
                         {/if}
                       </button>
                     {/each}
@@ -2342,8 +2341,8 @@
                   <!-- saran abu-abu dari riwayat; → terima -->
                   <div class="ghost" aria-hidden="true"><span class="typed">{draft[pane] ?? ""}</span>{ghost(pane)}</div>
                 <textarea bind:value={draft[pane]} rows={Math.min(6, (draft[pane] ?? "").split("\n").length)} data-editor={pane}
-                  aria-label="Perintah untuk {meta[pane]?.name}" spellcheck="false" autocapitalize="off" autocomplete="off"
-                  placeholder="Ketik perintah…"
+                  aria-label={tt("ed.aria", { name: meta[pane]?.name ?? "" })} spellcheck="false" autocapitalize="off" autocomplete="off"
+                  placeholder={tt("ed.ph")}
                   onkeydown={(e) => editorKey(pane, e)} oninput={() => onEditorInput(pane)} onfocus={() => (t.focus = pane)}
                   onpaste={(e) => pasteToEditor(pane, e)}
                   oncopy={(e) => {
@@ -2359,21 +2358,21 @@
             {/if}
             {#if mention?.pane === pane}
               <!-- FR-57: daftar @; Tab pilih, ↑↓ geser, Esc tutup, terus mengetik = @ milik agent -->
-              <div class="mention" class:withbar={bar} class:withedit={mention.editor} role="listbox" aria-label="Lempar ke agent">
+              <div class="mention" class:withbar={bar} class:withedit={mention.editor} role="listbox" aria-label={tt("men.aria")}>
                 {#if !mentionItems.length}
                   <!-- kosong tetap tampil: tanpa ini @@ terlihat rusak -->
-                  <span class="keys">{targets.length ? `Tidak ada agent yang cocok dengan "${mention.q}"` : "Belum ada agent lain di workspace ini · jalankan agent di tab atau split lain"}</span>
+                  <span class="keys">{targets.length ? tt("men.noMatch", { q: mention.q }) : tt("men.none")}</span>
                 {/if}
                 {#each mentionItems as r, i (r.pane)}
                   <button class="opt" class:on={i === mention.sel} role="option" aria-selected={i === mention.sel}
                     onpointerdown={(e) => e.preventDefault()} onclick={() => chooseMention(i)}>
                     <span class="dot {r.status}"></span>
                     <span>{r.name}</span>
-                    <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {STATUS[r.status ?? ""] ?? r.status ?? "?"}</span>
+                    <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {stText(r.status) || r.status || "?"}</span>
                   </button>
                 {/each}
                 {#if mentionItems.length}<span class="keys"
-                    >{mention.picked ? "Tab/Enter tambah agent · ↑↓ pilih · Esc selesai" : `Tab/Enter ${mention.inline ? "lengkapi nama" : "pilih"} · ↑↓ pilih · Esc tutup`}</span
+                    >{mention.picked ? tt("men.hintMore") : mention.inline ? tt("men.hintInline") : tt("men.hint")}</span
                   >{/if}
               </div>
             {/if}
@@ -2381,7 +2380,7 @@
               <div class="lempar" class:withbar={bar}>
                 <span class="to">→ {lempar.name}</span>
                 <!-- svelte-ignore a11y_autofocus -->
-                <textarea bind:value={lempar.body} rows="2" autofocus aria-label="Pesan ke {lempar.name}" placeholder="Pesan · Enter kirim · Shift+Enter baris baru · Esc batal"
+                <textarea bind:value={lempar.body} rows="2" autofocus aria-label={tt("men.msgAria", { name: lempar.name })} placeholder={tt("men.msgPh")}
                   spellcheck="false" autocapitalize="off"
                   onkeydown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), sendLempar());
@@ -2389,16 +2388,16 @@
                   }}></textarea>
                 {#if lempar.error}
                   <span class="err">{errText(lempar.error)}</span>
-                  {#if lempar.error === "target_busy"}<button class="mini" onclick={() => sendLempar(true)}>Kirim paksa</button>{/if}
+                  {#if lempar.error === "target_busy"}<button class="mini" onclick={() => sendLempar(true)}>{tt("men.force")}</button>{/if}
                 {/if}
               </div>
             {/if}
             {#if meta[pane]?.login}
               <!-- FR-61: Gembala tidak mengetik apa pun; login dilakukan pengguna di Claude Code pane ini -->
               <div class="ended" class:withhead={head} role="status">
-                <span class="etitle">Masuk ke akun {meta[pane].login}: ikuti langkah login di pane ini, atau ketik <code>/login</code></span>
+                <span class="etitle">{tt("pane.login", { name: meta[pane].login })} <code>/login</code></span>
                 <span class="grow"></span>
-                <button class="hb" aria-label="Tutup" onclick={() => delete meta[pane].login}>×</button>
+                <button class="hb" aria-label={tt("common.close")} onclick={() => delete meta[pane].login}>×</button>
               </div>
             {/if}
             <!-- FR-56: tombol sesi agent selesai ada di blok linimasa (pen layar 02), tanpa banner di atas pane -->
@@ -2408,18 +2407,18 @@
               <div class="bar" class:rest={split && !zoomed && pane !== t.focus}>
                 {#if editing?.kind === "pane" && editing.id === String(pane)}
                   <!-- svelte-ignore a11y_autofocus -->
-                  <input class="edit pname" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label="Nama pane" />
+                  <input class="edit pname" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label={tt("pane.name")} />
                 {:else}
-                  <button class="chip pname" title="Klik dua kali untuk ganti nama" ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
+                  <button class="chip pname" title={tt("pane.renameTip")} ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
                 {/if}
-                {#if acctOf(pane)}<span class="chip acc" title="Akun Claude Code (FR-61)">{acctOf(pane)}</span>{/if}
-                {#if meta[pane]?.owner && agentOf(pane) === "claude"}<span class="chip rwarn" title="Sesi ini dibuat di akun {meta[pane].owner.name}. Di akun lain Claude membuang thinking lama: lebih lambat dan boros token. Keluar, lalu Lanjutkan di blok sesi = dibuka lagi di akun {meta[pane].owner.name} (FR-61)">sesi dari {meta[pane].owner.name}</span>{/if}
-                {#if meta[pane]?.roleWarn}<span class="chip rwarn" title="Peran baca saja hanya lewat petunjuk; agent ini tidak punya pembatas tool (FR-13)">edit tidak diblokir</span>{/if}
+                {#if acctOf(pane)}<span class="chip acc" title={tt("pane.accountTip")}>{acctOf(pane)}</span>{/if}
+                {#if meta[pane]?.owner && agentOf(pane) === "claude"}<span class="chip rwarn" title={tt("pane.ownerTip", { name: meta[pane].owner.name })}>{tt("pane.owner", { name: meta[pane].owner.name })}</span>{/if}
+                {#if meta[pane]?.roleWarn}<span class="chip rwarn" title={tt("pane.roleWarnTip")}>{tt("pane.roleWarn")}</span>{/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
-                {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>Output sesi</button>{/if}
-                {#if meta[pane]?.prev}<button class="chip" onclick={() => resumePrev(pane)}>Lanjutkan sesi {meta[pane].prev.agent}</button>{/if}
+                {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>{tt("pane.output")}</button>{/if}
+                {#if meta[pane]?.prev}<button class="chip" onclick={() => resumePrev(pane)}>{tt("pane.resumePrev", { agent: meta[pane].prev.agent })}</button>{/if}
                 {#if meta[pane]?.sig && meta[pane].sig !== sig(meta[pane].profile)}
-                  <button class="chip changed" onclick={() => relaunch(pane)}>Profil berubah · jalankan ulang</button>
+                  <button class="chip changed" onclick={() => relaunch(pane)}>{tt("pane.changed")}</button>
                 {/if}
                 <span class="grow"></span>
                 {#each toolbar.right as c}{@render chip(c, pane, g)}{/each}
@@ -2432,14 +2431,14 @@
               <!-- pen 04: titled card; attachments as chips, sent as quoted paths after the text -->
               {@const agName = cfg?.values.profiles.find((p) => p.agent === agentOf(pane))?.name}
               <div class="rich" role="dialog" aria-label="Rich Input" tabindex="-1" onkeydown={(e) => e.key === "Escape" && (e.preventDefault(), (rich = null))}>
-                <div class="rhead"><b>Rich Input</b><span class="rto">ke {meta[pane]?.name}{agName ? ` · ${agName}` : ""}</span><span class="n">⌘G</span></div>
+                <div class="rhead"><b>Rich Input</b><span class="rto">{tt("rich.to", { name: meta[pane]?.name ?? "" })}{agName ? ` · ${agName}` : ""}</span><span class="n">⌘G</span></div>
                 <!-- svelte-ignore a11y_autofocus -->
                 <textarea
                   bind:value={rich.text}
                   autofocus
                   rows="4"
                   aria-label="Rich Input"
-                  placeholder="Tulis prompt di sini"
+                  placeholder={tt("rich.ph")}
                   spellcheck="false"
                   autocapitalize="off"
                   onpaste={(e) => pasteToEditor(pane, e, (p) => addRichFiles([p]))}
@@ -2450,37 +2449,37 @@
                 {#if rich.files?.length}
                   <div class="rfiles">
                     {#each rich.files as f (f)}
-                      <span class="rfile" title={f}>{@render icon("file")}{f.split("/").pop()}<button aria-label="Buang {f.split('/').pop()}"
+                      <span class="rfile" title={f}>{@render icon("file")}{f.split("/").pop()}<button aria-label={tt("set.tb.remove", { chip: f.split("/").pop() ?? "" })}
                           onclick={() => rich && (rich.files = rich.files?.filter((x) => x !== f))}>×</button></span>
                     {/each}
                   </div>
                 {/if}
                 <div class="rfoot">
-                  <button class="mini" onclick={async () => addRichFiles(await invoke<string[]>("pick_files").catch(() => []))}>+ Lampirkan</button>
-                  <span class="rhint">Enter kirim · Shift+Enter baris baru · tempel gambar langsung bisa</span>
-                  <button class="mini pri" onclick={sendRich}>Kirim <span class="keys">Enter</span></button>
+                  <button class="mini" onclick={async () => addRichFiles(await invoke<string[]>("pick_files").catch(() => []))}>{tt("rich.attach")}</button>
+                  <span class="rhint">{tt("rich.hint")}</span>
+                  <button class="mini pri" onclick={sendRich}>{tt("common.send")} <span class="keys">Enter</span></button>
                 </div>
               </div>
             {/if}
           {/if}
           {#each pendingFor(pane) as m (m.id)}
             <!-- FR-12: kartu di dekat pane target; hanya klik (Enter tidak menyetujui tanpa sengaja) -->
-            <div class="card" role="alertdialog" aria-label="Pesan menunggu persetujuan">
-              <span><b>{m.from}</b> ingin mengirim ke pane ini <span class="keys">{m.id}</span></span>
+            <div class="card" role="alertdialog" aria-label={tt("msg.pending")}>
+              <span><b>{m.from}</b> {tt("card.wants")} <span class="keys">{m.id}</span></span>
               <pre>{m.body}</pre>
               <span class="acts">
-                <button class="mini" onclick={() => call("msg.reject", { id: m.id }).then(refreshMsgs)}>Tolak</button>
-                <button class="mini" onclick={() => call("msg.approve", { id: m.id }).then(refreshMsgs)}>Setujui</button>
+                <button class="mini" onclick={() => call("msg.reject", { id: m.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
+                <button class="mini" onclick={() => call("msg.approve", { id: m.id }).then(refreshMsgs)}>{tt("msg.approve")}</button>
               </span>
             </div>
           {/each}
           {#if confirm?.pane === pane}
-            <div class="confirm ask" role="alertdialog" aria-label="Konfirmasi tutup pane">
-              <b class="ctitle">Tutup {confirm.what === "pane" ? meta[pane]?.name || "pane" : confirm.what}?</b>
-              <span>Masih jalanin <b>{confirm?.name}</b>. Kalau ditutup, prosesnya ikut berhenti.</span>
+            <div class="confirm ask" role="alertdialog" aria-label={tt("close.aria")}>
+              <b class="ctitle">{tt("close.title", { name: confirm.what === "pane" ? meta[pane]?.name || "pane" : confirm.what })}</b>
+              <span>{tt("close.running1")} <b>{confirm?.name}</b>{tt("close.running2")}</span>
               <span class="acts">
-                <button class="mini" onclick={() => (confirm = null)}>Batal <span class="keys">Esc</span></button>
-                <button class="mini danger" onclick={() => { confirm?.close.forEach((p) => call("pane.close", { pane: p }).catch(() => {})); confirm = null; }}>Tutup <span class="keys">Enter</span></button>
+                <button class="mini" onclick={() => (confirm = null)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
+                <button class="mini danger" onclick={() => { confirm?.close.forEach((p) => call("pane.close", { pane: p }).catch(() => {})); confirm = null; }}>{tt("common.close")} <span class="keys">Enter</span></button>
               </span>
             </div>
           {/if}
@@ -2497,48 +2496,48 @@
       style:height={d.dir === "row" ? pct(d.rect.h) : "0"}
       onpointerdown={(e) => drag(d, e)}
       ondblclick={() => tab && (tab.tree = setRatio(tab.tree, d.path, 0.5))}
-      title="Seret untuk ubah ukuran · klik dua kali = sama rata"
+      title={tt("main.dividerTip")}
       role="separator"
       aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
     ></div>
   {/each}
   {#if upgrade}
-    <div class="confirm ask" role="alertdialog" aria-label="Daemon versi lama">
-      <b class="ctitle">Daemon perlu di-restart</b>
-      <span>Daemon versi <b>{upgrade.daemon}</b> masih jalan, app sekarang <b>{upgrade.app}</b>.</span>
-      <span>Menjalankan ulang daemon menghentikan <b>{upgrade.panes} pane</b>; pane tampil lagi dengan tombol "Jalankan ulang".</span>
+    <div class="confirm ask" role="alertdialog" aria-label={tt("up.aria")}>
+      <b class="ctitle">{tt("up.title")}</b>
+      <span>{tt("up.versions", { daemon: upgrade.daemon, app: upgrade.app })}</span>
+      <span>{ttn("up.panes", upgrade.panes)}</span>
       <span class="acts">
-        <button class="mini" onclick={() => (upgrade = null)}>Nanti</button>
-        <button class="mini pri" onclick={() => ((upgrade = null), call("daemon.stop").catch(() => {}))}>Jalankan ulang daemon</button>
+        <button class="mini" onclick={() => (upgrade = null)}>{tt("up.later")}</button>
+        <button class="mini pri" onclick={() => ((upgrade = null), call("daemon.stop").catch(() => {}))}>{tt("up.restart")}</button>
       </span>
     </div>
   {/if}
   {#if msgData?.paused}
-    <div class="paused" role="status">Pesan antar agent dijeda · ⌘⇧. untuk lanjut</div>
+    <div class="paused" role="status">{tt("main.paused")}</div>
   {/if}
   {#if drawer}
     <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} />
   {/if}
   {#if compose}
-    <div class="confirm compose" role="dialog" aria-label="Kirim ke agent lain">
-      <b>Kirim ke agent lain</b>
-      <div class="targets" role="listbox" aria-label="Pane tujuan">
+    <div class="confirm compose" role="dialog" aria-label={tt("cmp.title")}>
+      <b>{tt("cmp.title")}</b>
+      <div class="targets" role="listbox" aria-label={tt("cmp.targets")}>
         {#each targets as r (r.pane)}
           <button class="opt" class:on={compose.to === r.pane} role="option" aria-selected={compose.to === r.pane} onclick={() => compose && (compose.to = r.pane)}>
             <span class="dot {r.status}"></span>
             <span>{r.name}</span>
-            <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {STATUS[r.status ?? ""] ?? r.status ?? "?"}</span>
+            <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {stText(r.status) || r.status || "?"}</span>
           </button>
         {:else}
-          <span class="keys">Belum ada agent lain di workspace ini</span>
+          <span class="keys">{tt("cmp.none")}</span>
         {/each}
       </div>
       <!-- svelte-ignore a11y_autofocus -->
-      <textarea bind:value={compose.body} rows="5" autofocus aria-label="Isi pesan" placeholder="Isi pesan; dikirim dengan label dari pengguna" spellcheck="false" autocapitalize="off"
+      <textarea bind:value={compose.body} rows="5" autofocus aria-label={tt("cmp.body")} placeholder={tt("cmp.bodyPh")} spellcheck="false" autocapitalize="off"
         onkeydown={(e) => e.key === "Enter" && e.metaKey && sendCompose()}></textarea>
-      <label class="inline"><input type="checkbox" bind:checked={compose.force} /> Paksa bila status target tidak diketahui</label>
+      <label class="inline"><input type="checkbox" bind:checked={compose.force} /> {tt("cmp.force")}</label>
       {#if compose.error}<span class="err">{errText(compose.error)}</span>{/if}
-      <span class="acts"><button class="mini" onclick={() => (compose = null)}>Batal</button> <button class="mini" onclick={sendCompose}>Kirim ⌘↩</button></span>
+      <span class="acts"><button class="mini" onclick={() => (compose = null)}>{tt("common.cancel")}</button> <button class="mini" onclick={sendCompose}>{tt("common.send")} ⌘↩</button></span>
     </div>
   {/if}
   {#if changes}
@@ -2551,146 +2550,146 @@
   {#if cfg?.errors.length && cfgSeen !== JSON.stringify(cfg.errors)}
     <!-- FR-42 / pen 13: a broken config is visible without opening Settings; dismissed until the errors change -->
     <div class="confirm ask warn" role="alert">
-      <b class="ctitle">Sebagian config.toml nggak kepake</b>
+      <b class="ctitle">{tt("main.cfgErrors")}</b>
       {#each cfg.errors as e}<code class="url">{errText(e)}</code>{/each}
       <span class="acts">
-        <button class="mini" onclick={() => cfg && (cfgSeen = JSON.stringify(cfg.errors))}>Tutup</button>
-        <button class="mini" onclick={() => cfg && ((cfgSeen = JSON.stringify(cfg.errors)), (settingsOpen = true))}>Buka Pengaturan</button>
+        <button class="mini" onclick={() => cfg && (cfgSeen = JSON.stringify(cfg.errors))}>{tt("common.close")}</button>
+        <button class="mini" onclick={() => cfg && ((cfgSeen = JSON.stringify(cfg.errors)), (settingsOpen = true))}>{tt("main.openSettings")}</button>
       </span>
     </div>
   {/if}
   {#if renameError}
     <div class="confirm" role="alert">
       <span>{renameError}</span>
-      <button class="mini" onclick={() => (renameError = "")}>Oke</button>
+      <button class="mini" onclick={() => (renameError = "")}>{tt("common.ok")}</button>
     </div>
   {/if}
   {#if wsAsk}
-    <div class="confirm ask" role="alertdialog" aria-label="Konfirmasi hapus workspace">
-      <b class="ctitle">Hapus workspace {wss[wsAsk.wi]?.name}?</b>
-      <span><b>{wsAsk.busy} pane</b> di workspace {wss[wsAsk.wi]?.name} masih menjalankan proses. Hapus dan hentikan?</span>
+    <div class="confirm ask" role="alertdialog" aria-label={tt("wsdel.aria")}>
+      <b class="ctitle">{tt("wsdel.title", { name: wss[wsAsk.wi]?.name ?? "" })}</b>
+      <span>{ttn("wsdel.busy", wsAsk.busy, { name: wss[wsAsk.wi]?.name ?? "" })}</span>
       <span class="acts">
-        <button class="mini" onclick={() => (wsAsk = null)}>Batal <span class="keys">Esc</span></button>
-        <button class="mini danger" onclick={() => wsAsk && removeWorkspace(wsAsk.wi)}>Hapus <span class="keys">Enter</span></button>
+        <button class="mini" onclick={() => (wsAsk = null)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
+        <button class="mini danger" onclick={() => wsAsk && removeWorkspace(wsAsk.wi)}>{tt("common.delete")} <span class="keys">Enter</span></button>
       </span>
     </div>
   {/if}
   {#snippet welcomeCard(cls: string)}
     <!-- FR-43 / pen 01: found agents with their version, then the three things people use most -->
     {@const found = (welcome ?? []).filter((a) => a.installed)}
-    <div class="{cls} welcome" role="dialog" aria-label="Selamat datang">
-      <b class="wtitle">Gembala udah siap dipakai</b>
-      <span class="wm">{found.length ? "Agent yang ketemu di laptop lu:" : "Belum ada agent yang ketemu. Shell tetap bisa dipakai."}</span>
+    <div class="{cls} welcome" role="dialog" aria-label={tt("wel.aria")}>
+      <b class="wtitle">{tt("wel.title")}</b>
+      <span class="wm">{found.length ? tt("wel.found") : tt("wel.none")}</span>
       {#each found as a (a.agent)}
-        <span class="wrow"><span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span>{a.name}<span class="wver" class:untested={!a.tested}>{a.version ?? ""}{a.tested ? "" : " · belum dicoba"}</span></span>
+        <span class="wrow"><span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span>{a.name}<span class="wver" class:untested={!a.tested}>{a.version ?? ""}{a.tested ? "" : ` · ${tt("set.agent.notTried")}`}</span></span>
       {/each}
-      <span class="wm">Tiga hal yang paling kepake:</span>
-      <span class="wrow"><kbd class="wkey">⌘P</kbd>Cari tab atau aksi apa aja</span>
-      <span class="wrow"><kbd class="wkey">kotak bawah</kbd>Ketik perintah kayak di Warp; Tab buat lengkapin</span>
-      <span class="wrow"><kbd class="wkey">@@</kbd>Di prompt agent: lempar tugas ke agent lain</span>
-      <span class="acts"><button class="mini pri" onclick={() => (welcome = null)}>Mulai</button></span>
+      <span class="wm">{tt("wel.three")}</span>
+      <span class="wrow"><kbd class="wkey">⌘P</kbd>{tt("wel.p")}</span>
+      <span class="wrow"><kbd class="wkey">{tt("wel.boxKey")}</kbd>{tt("wel.box")}</span>
+      <span class="wrow"><kbd class="wkey">@@</kbd>{tt("wel.at")}</span>
+      <span class="acts"><button class="mini pri" onclick={() => (welcome = null)}>{tt("wel.start")}</button></span>
     </div>
   {/snippet}
   <!-- with the Start panel showing, the card sits above it inside the pane (pen 01) -->
   {#if welcome && startHere === null}{@render welcomeCard("confirm")}{/if}
   {#if quitAsk}
-    <div class="confirm ask" role="alertdialog" aria-label="Konfirmasi keluar">
-      <b class="ctitle">Keluar dari Gembala?</b>
-      <span><b>{quitAsk} pane</b> masih menjalankan proses. Keluar dan hentikan semua?</span>
+    <div class="confirm ask" role="alertdialog" aria-label={tt("quit.aria")}>
+      <b class="ctitle">{tt("quit.title")}</b>
+      <span>{ttn("quit.busy", quitAsk)}</span>
       <span class="acts">
-        <button class="mini" onclick={() => (quitAsk = 0)}>Batal <span class="keys">Esc</span></button>
-        <button class="mini danger" onclick={quitAll}>Keluar <span class="keys">Enter</span></button>
+        <button class="mini" onclick={() => (quitAsk = 0)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
+        <button class="mini danger" onclick={quitAll}>{tt("set.general.quit")} <span class="keys">Enter</span></button>
       </span>
     </div>
   {/if}
   {#if linkAsk}
-    <div class="confirm ask" role="alertdialog" aria-label="Konfirmasi buka tautan">
-      <b class="ctitle">Buka di browser?</b>
+    <div class="confirm ask" role="alertdialog" aria-label={tt("link.aria")}>
+      <b class="ctitle">{tt("link.title")}</b>
       <code class="url">{linkAsk}</code>
       <span class="acts">
-        <button class="mini" onclick={() => (linkAsk = "")}>Batal <span class="keys">Esc</span></button>
-        <button class="mini" onclick={openLink}>Buka <span class="keys">Enter</span></button>
+        <button class="mini" onclick={() => (linkAsk = "")}>{tt("common.cancel")} <span class="keys">Esc</span></button>
+        <button class="mini" onclick={openLink}>{tt("common.open")} <span class="keys">Enter</span></button>
       </span>
     </div>
   {/if}
   {#if tpl}
     <!-- FR-13: dialog template peran (pen layar 17) -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="confirm tpldlg" role="dialog" aria-label="Dari template peran" tabindex="-1" onkeydown={(e) => e.key === "Escape" && (tpl = null)}>
-      <span class="thd"><b>Dari template peran</b><button class="mini" onclick={() => (tpl = null)} aria-label="Tutup">×</button></span>
+    <div class="confirm tpldlg" role="dialog" aria-label={tt("tpl.title")} tabindex="-1" onkeydown={(e) => e.key === "Escape" && (tpl = null)}>
+      <span class="thd"><b>{tt("tpl.title")}</b><button class="mini" onclick={() => (tpl = null)} aria-label={tt("common.close")}>×</button></span>
       <div class="tpls">
-        {#each TEMPLATES as t, i (t.name)}
-          <button class="tplc" class:on={tpl.t === i} onclick={() => pickTemplate(i)}><span>{t.name}</span><span class="m">{t.desc}</span></button>
+        {#each TEMPLATES as t, i (t.key)}
+          <button class="tplc" class:on={tpl.t === i} onclick={() => pickTemplate(i)}><span>{tt(`tpl.${t.key}` as Key)}</span><span class="m">{tt(`tpl.${t.key}Desc` as Key)}</span></button>
         {/each}
       </div>
       <div class="roles">
-        <div class="rrow rh"><span>Peran</span><span>Agent</span><span>Batas</span><span>Nama pane</span></div>
+        <div class="rrow rh"><span>{tt("tpl.role")}</span><span>Agent</span><span>{tt("tpl.limit")}</span><span>{tt("pane.name")}</span></div>
         {#each tpl.rows as r, i (i)}
           {@const lim = limitOf(r.role, r.prof)}
           <div class="rrow">
-            <span>{r.label}</span>
+            <span>{roleLabel(r.label)}</span>
             <select class="edit" bind:value={r.prof}>
               {#each startProfiles as p, j (p.key)}<option value={j}>{GLYPH[p.agent] ?? "›"} {p.label}</option>{/each}
             </select>
-            <span class="lim {lim}">{lim === "lock" ? "cuma bisa baca, dikunci lewat --disallowedTools" : lim === "warn" ? "cuma dikasih tahu baca saja, edit tidak bisa diblokir" : "boleh ubah file"}</span>
+            <span class="lim {lim}">{tt(`tpl.lim.${lim}`)}</span>
             <input class="edit" bind:value={r.name} spellcheck="false" autocapitalize="off" />
           </div>
         {/each}
       </div>
       <div class="brief">
-        <b>Brief workspace {wss[tpl.wi]?.name}</b>
-        <span class="m">Ikut dikirim ke tiap agent di workspace ini · agent cuma bisa baca · disimpan di Gembala, bukan di repo</span>
-        <textarea class="edit" bind:value={tpl.brief} rows="5" maxlength="4000" spellcheck="false" placeholder="Tujuan, cara build dan test, batasan"></textarea>
+        <b>{tt("tpl.brief", { name: wss[tpl.wi]?.name ?? "" })}</b>
+        <span class="m">{tt("tpl.briefSub")}</span>
+        <textarea class="edit" bind:value={tpl.brief} rows="5" maxlength="4000" spellcheck="false" placeholder={tt("tpl.briefPh")}></textarea>
       </div>
       <span class="acts">
-        <span class="m">{tpl.rows.length} pane baru di tab baru · namanya bisa diganti</span>
-        <button class="mini" onclick={() => (tpl = null)}>Batal</button>
-        <button class="mini pri" onclick={runTemplate}>Jalankan {tpl.rows.length} pane</button>
+        <span class="m">{ttn("tpl.foot", tpl.rows.length)}</span>
+        <button class="mini" onclick={() => (tpl = null)}>{tt("common.cancel")}</button>
+        <button class="mini pri" onclick={runTemplate}>{ttn("tpl.run", tpl.rows.length)}</button>
       </span>
     </div>
   {/if}
   {#if wt}
     <!-- FR-71: dialog worktree (pen layar 07) -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="confirm wtdlg" role="dialog" aria-label="Agent di worktree baru" tabindex="-1"
+    <div class="confirm wtdlg" role="dialog" aria-label={tt("wt.title")} tabindex="-1"
       onkeydown={(e) => (e.key === "Escape" ? (wt = null) : e.key === "Enter" && !e.isComposing && (e.preventDefault(), createWorktree()))}>
-      <b>Agent di worktree baru</b>
-      <span class="m">Diambil dari HEAD {home(wt.root)}. Perubahan yang belum di-commit tidak ikut.</span>
-      <label>Nama <input class="edit" bind:value={wt.name} spellcheck="false" autocapitalize="off"
+      <b>{tt("wt.title")}</b>
+      <span class="m">{tt("wt.from", { dir: home(wt.root) })}</span>
+      <label>{tt("set.prof.name")} <input class="edit" bind:value={wt.name} spellcheck="false" autocapitalize="off"
         oninput={() => wt && !wt.dirSet && (wt.dir = `${wt.root}.${wt.name.trim()}`)} /></label>
-      <label>Folder <input class="edit" bind:value={wt.dir} spellcheck="false" autocapitalize="off" oninput={() => wt && (wt.dirSet = true)} /></label>
-      <label>Branch baru <input class="edit" value={`gembala/${wt.name.trim()}`} disabled /></label>
-      <label>Profil
+      <label>{tt("set.prof.folder")} <input class="edit" bind:value={wt.dir} spellcheck="false" autocapitalize="off" oninput={() => wt && (wt.dirSet = true)} /></label>
+      <label>{tt("wt.branch")} <input class="edit" value={`gembala/${wt.name.trim()}`} disabled /></label>
+      <label>{tt("wt.profile")}
         <select class="edit" bind:value={wt.prof}>
           {#each startProfiles as p, i (p.key)}<option value={i}>{p.label}</option>{/each}
         </select>
       </label>
-      <span class="m note">Menutup pane tidak menghapus worktree. Gabungkan hasilnya lewat git biasa; Gembala tidak merge atau push.</span>
+      <span class="m note">{tt("wt.note")}</span>
       {#if wt.err}<span class="err">{wt.err}</span>{/if}
       <span class="acts">
-        <button class="mini" onclick={() => (wt = null)}>Batal <span class="keys">Esc</span></button>
-        <button class="mini pri" onclick={createWorktree} disabled={!startProfiles.length}>Buat dan jalankan <span class="keys">Enter</span></button>
+        <button class="mini" onclick={() => (wt = null)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
+        <button class="mini pri" onclick={createWorktree} disabled={!startProfiles.length}>{tt("wt.create")} <span class="keys">Enter</span></button>
       </span>
     </div>
   {/if}
   {#if wtDel}
-    <div class="confirm wtdlg" role="alertdialog" aria-label="Hapus worktree">
-      <b>Worktree {home(wtDel.dir)} punya perubahan yang belum di-commit</b>
-      <span class="m">File ini akan hilang kalau dihapus:</span>
-      <pre class="files">{wtDel.files.slice(0, 30).join("\n")}{wtDel.files.length > 30 ? `\n… ${wtDel.files.length - 30} lagi` : ""}</pre>
+    <div class="confirm wtdlg" role="alertdialog" aria-label={tt("wtdel.aria")}>
+      <b>{tt("wtdel.title", { dir: home(wtDel.dir) })}</b>
+      <span class="m">{tt("wtdel.sub")}</span>
+      <pre class="files">{wtDel.files.slice(0, 30).join("\n")}{wtDel.files.length > 30 ? `\n${ttn("chg.more", wtDel.files.length - 30)}` : ""}</pre>
       <span class="acts">
-        <button class="mini" onclick={() => (wtDel = null)}>Batal</button>
-        <button class="mini danger" onclick={() => ((wtDel = null), wtForce())}>Hapus beserta perubahannya</button>
+        <button class="mini" onclick={() => (wtDel = null)}>{tt("common.cancel")}</button>
+        <button class="mini danger" onclick={() => ((wtDel = null), wtForce())}>{tt("wtdel.go")}</button>
       </span>
     </div>
   {/if}
   {#if pal}
     <!-- FR-39: palet perintah (Gembala.pen 03) -->
-    <div class="confirm picker palette" role="dialog" aria-label="Palet perintah">
+    <div class="confirm picker palette" role="dialog" aria-label={tt("pal.aria")}>
       <div class="psearch">
         <svg class="pfind" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
         <!-- svelte-ignore a11y_autofocus -->
-        <input class="edit" bind:value={pal.q} autofocus placeholder="Cari tab atau aksi" aria-label="Cari tab atau aksi" spellcheck="false" autocapitalize="off"
+        <input class="edit" bind:value={pal.q} autofocus placeholder={tt("side.find")} aria-label={tt("side.find")} spellcheck="false" autocapitalize="off"
           oninput={() => pal && (pal.sel = 0)}
           onkeydown={(e) => {
             const n = palItems.length;
@@ -2699,9 +2698,9 @@
             if (e.key === "Enter") (e.preventDefault(), palRun(pal?.sel ?? 0));
             if (e.key === "Escape") (e.preventDefault(), (pal = null));
           }} onblur={() => setTimeout(() => (pal = null), 150)} />
-        <button class="esc" aria-label="Tutup palet" onclick={() => (pal = null)}>Esc</button>
+        <button class="esc" aria-label={tt("pal.close")} onclick={() => (pal = null)}>Esc</button>
       </div>
-      <div class="pallist" role="listbox" aria-label="Hasil">
+      <div class="pallist" role="listbox" aria-label={tt("pal.results")}>
         {#each palRows as row}
           {#if row.kind === "head"}
             <span class="ph" role="presentation">{row.h}</span>
@@ -2713,28 +2712,28 @@
             </button>
           {/if}
         {:else}
-          <span class="pempty">Tidak ada yang cocok</span>
+          <span class="pempty">{tt("pal.none")}</span>
         {/each}
       </div>
-      <span class="pfoot">↑↓ pilih · Enter jalanin · huruf berurutan udah cukup, mis. "spl kn"</span>
+      <span class="pfoot">{tt("pal.foot")}</span>
     </div>
   {/if}
   {#if picker}
-    <div class="confirm picker" role="listbox" aria-label="Pane baru dari profil">
+    <div class="confirm picker" role="listbox" aria-label={tt("pick.aria")}>
       {#each picker.items as p, i (p.key)}
         <button class="opt" class:on={i === picker.sel} role="option" aria-selected={i === picker.sel} onclick={() => pick(i)}>
           <span class="num">{i < 9 ? i + 1 : ""}</span>
           <span>{p.label}</span>
-          <span class="keys">{p.missing ? "tidak terpasang" : p.command || "$SHELL"}</span>
+          <span class="keys">{p.missing ? tt("main.notInstalled") : p.command || "$SHELL"}</span>
         </button>
       {/each}
-      <span class="keys">↑↓ pilih · Enter buka · Esc batal · folder ikut pane yang fokus</span>
+      <span class="keys">{tt("pick.hint")}</span>
     </div>
   {/if}
   {#if settingsOpen && cfg}
     <Settings {cfg} {meta} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
-  {#if zoomed}<span class="zoom">maksimal · ⌘⇧↩</span>{/if}
+  {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />
   <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
 </div>
