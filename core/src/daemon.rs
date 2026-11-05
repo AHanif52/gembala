@@ -33,9 +33,11 @@ use std::time::Duration;
 
 pub const PROTO: u64 = 1;
 const MAX_LINE: u64 = 64 * 1024;
-/// Snapshot hanya layar terlihat dan scrollback UI dipegang xterm.js, jadi daemon cukup
-/// menyimpan baris terakhir untuk `read` (FR-7). 10.000 baris penuh = sekitar 40 MB per pane di vt100.
-const SCROLLBACK: usize = 1_000;
+/// Scrollback vt100 grid daemon: riwayat attach, FR-56 dan log FR-62 datang dari ring byte mentah (`Grid::mark`,
+/// `rewind`, `history`), `read`/`wait` hanya layar terlihat. Satu baris vt100 ~5 KB, jadi tanpa scrollback.
+const SCROLLBACK: usize = 0;
+/// FR-62 / SEC-13: log layar utama di disk = 1.000 baris terakhir (keputusan pengguna 3 Nov 2026)
+const LOG_LINES: usize = 1_000;
 /// Antrean per koneksi. Penuh = klien terlalu lambat: koneksinya diputus (attach ulang dapat snapshot)
 /// supaya RAM daemon tidak membengkak dan agent tidak tertahan.
 const QUEUE: usize = 256;
@@ -65,13 +67,14 @@ struct Pane {
     /// FR-56: output sesi agent yang sedang jalan (sejak penanda mulai) dan sesi terakhir yang sudah selesai; RAM saja (SEC-13)
     agent_log: Mutex<Option<(std::time::Instant, Vec<u8>)>>,
     last_output: Mutex<Vec<u8>>,
-    /// FR-56: posisi baris perintah terakhir (penanda OSC 133 C) dan isi pane sebelum agent jalan; blok ringkas
-    /// ditulis di bawahnya saat agent keluar, riwayat perintah sebelumnya tetap (ala Warp). Urutan kunci: `view` dulu.
-    cmd_at: Mutex<(usize, u16)>,
-    /// FR-56: isi pane sebelum perintah terakhir, disalin saat perintah mulai (OSC 133 C). Agent manual baru
+    /// FR-56: posisi ring (`Grid::mark`) di awal prompt terakhir (penanda OSC 133 A) dan riwayat sebelum agent jalan;
+    /// blok ringkas ditulis di bawahnya saat agent keluar, riwayat perintah sebelumnya tetap (ala Warp).
+    /// Urutan kunci: `view` dulu.
+    prompt_at: Mutex<Option<u64>>,
+    /// FR-56: riwayat sebelum perintah terakhir, dicatat saat perintah mulai (OSC 133 C). Agent manual baru
     /// terdeteksi ±1 detik kemudian, saat itu Claude sudah membersihkan layar dan scrollback
-    pre_cmd: Mutex<Vec<u8>>,
-    pre_agent: Mutex<Vec<u8>>,
+    pre_cmd: Mutex<Option<u64>>,
+    pre_agent: Mutex<Option<u64>>,
     /// FR-62: file riwayat blok pane ini; blok yang sedang jalan (sejak OSC 133 C) dan blok agent manual yang
     /// sudah selesai tapi menunggu perintah lanjutnya dari `agent_done`.
     hist: std::path::PathBuf,
@@ -1084,9 +1087,9 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         session: Mutex::new(session.id.clone().filter(|s| profile::valid_session(&agent, s))),
         agent_log: Mutex::new(None),
         last_output: Mutex::new(Vec::new()),
-        cmd_at: Mutex::new((0, 0)),
-        pre_cmd: Mutex::new(Vec::new()),
-        pre_agent: Mutex::new(Vec::new()),
+        prompt_at: Mutex::new(None),
+        pre_cmd: Mutex::new(None),
+        pre_agent: Mutex::new(None),
         hist: history::path(&st.boot, id),
         title: Mutex::new(String::new()),
         turns: Arc::default(),
@@ -1491,10 +1494,10 @@ fn screen_watch(st: Arc<State>) {
             let manual = found.is_some() || (active && fg.is_some());
             match (active, found, fg) {
                 (false, Some((pid, name)), _) => {
-                    let mut v = pane.view.lock().unwrap();
-                    let at = *pane.cmd_at.lock().unwrap();
-                    let pre = std::mem::take(&mut *pane.pre_cmd.lock().unwrap());
-                    *pane.pre_agent.lock().unwrap() = if pre.is_empty() { v.0.before(at) } else { pre };
+                    let v = pane.view.lock().unwrap();
+                    // tanpa penanda C (shell tanpa integrasi): awal prompt terakhir
+                    let pre = pane.pre_cmd.lock().unwrap().take().or(*pane.prompt_at.lock().unwrap());
+                    *pane.pre_agent.lock().unwrap() = pre;
                     drop(v);
                     let args = pty::args_of(pid);
                     // FR-68: Claude diketik membawa `--session-id` dari fungsi zsh Gembala; selain itu id lama tidak berlaku
@@ -1675,16 +1678,15 @@ fn save_logs(st: &State, saved: &mut HashMap<u64, std::time::Instant>) {
             continue;
         }
         let log = {
-            let mut v = pane.view.lock().unwrap();
+            let v = pane.view.lock().unwrap();
             if pane.agent_log.lock().unwrap().is_some() {
                 // agent masih jalan: tampilan TUI-nya tidak disimpan, cukup isi pane sebelum agent mulai
                 let name = pane.agent_name().unwrap_or_else(|| "agent".into());
-                let mut log = pane.pre_agent.lock().unwrap().clone();
+                let mut log = v.0.history(Some(pane.pre_agent.lock().unwrap().unwrap_or(0)), LOG_LINES);
                 log.extend(format!("   \x1b[2m{name} (masih jalan saat daemon berhenti)\x1b[0m\r\n").as_bytes());
                 log
             } else {
-                let pos = v.0.position();
-                v.0.before(pos)
+                v.0.history(None, LOG_LINES)
             }
         };
         if !log.is_empty() {
@@ -1738,17 +1740,20 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
-    // FR-56: perintah mulai (OSC 133 C) = salin isi pane dulu, sebelum output perintah (mis. Claude membersihkan
-    // layar di potongan yang sama) masuk ke grid
-    const C: &[u8] = b"\x1b]133;C";
-    match b_find(bytes, C).and_then(|p| bytes[p..].iter().position(|&c| c == 0x07).map(|e| p + e + 1)) {
-        Some(end) => {
-            v.0.feed(&bytes[..end]);
-            let (sb, row) = v.0.position();
-            *pane.pre_cmd.lock().unwrap() = v.0.before(((sb + row as usize).saturating_sub(1), 0));
-            v.0.feed(&bytes[end..]);
+    // FR-56: awal prompt (OSC 133 A, dari precmd sebelum prompt digambar) = posisi ring dicatat, dipisah di
+    // penanda supaya prompt dan perintahnya tidak ikut riwayat "sebelum agent" (blok ringkas memuat perintahnya)
+    const A: &[u8] = b"\x1b]133;A";
+    match b_find(bytes, A) {
+        Some(p) => {
+            v.0.feed(&bytes[..p]);
+            *pane.prompt_at.lock().unwrap() = Some(v.0.mark());
+            v.0.feed(&bytes[p..]);
         }
         None => v.0.feed(bytes),
+    }
+    // perintah mulai (OSC 133 C): riwayatnya = sampai awal prompt perintah itu
+    if b_find(bytes, b"\x1b]133;C").is_some() {
+        *pane.pre_cmd.lock().unwrap() = *pane.prompt_at.lock().unwrap();
     }
     *pane.last_out.lock().unwrap() = std::time::Instant::now();
     for m in history::marks(bytes) {
@@ -1759,11 +1764,6 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
     }
     if let Some(on) = prompt_mark(bytes) {
         pane.at_prompt.store(on, Ordering::Relaxed);
-        if !on {
-            // perintah mulai: kursor di baris output pertama, baris perintahnya satu di atas
-            let (sb, row) = v.0.position();
-            *pane.cmd_at.lock().unwrap() = ((sb + row as usize).saturating_sub(1), 0);
-        }
     }
     if let Some((_, log)) = pane.agent_log.lock().unwrap().as_mut() {
         log.extend_from_slice(bytes);
@@ -1789,8 +1789,7 @@ fn find_marker(b: &[u8]) -> Option<(usize, usize, &str)> {
 /// FR-56: agent mulai = catat log sesi; agent keluar = layar diganti satu blok ringkas, log lengkap disimpan di RAM.
 fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     if mark == "agent-start" {
-        let at = v.0.position();
-        *pane.pre_agent.lock().unwrap() = v.0.before(at);
+        *pane.pre_agent.lock().unwrap() = Some(v.0.mark());
         *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
         // agent dari profil jalan (lagi, mis. "Lanjutkan") = siap menerima pesan
         *pane.status.lock().unwrap() = "idle";
@@ -1914,12 +1913,15 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
         None => history::Block { t: history::now() - secs, cwd, cmd, code: code.parse().unwrap_or_default(), secs, resume: resume.clone() },
     };
     history::append(&pane.hist, &blk);
-    let mut text = [std::mem::take(&mut *pane.pre_agent.lock().unwrap()), text.into_bytes()].concat();
-    text.extend_from_slice(prompt);
+    // riwayat sebelum agent (tanpa penanda = kosong), lalu blok ringkas dan prompt; UI menulis ulang seperti attach
+    let mark = pane.pre_agent.lock().unwrap().take();
+    v.0.rewind(mark);
+    v.0.feed(&[text.as_bytes(), prompt].concat());
     let (rows, cols) = v.0.size();
-    v.0 = Grid::new(rows, cols, SCROLLBACK);
-    v.0.feed(&text);
-    send_all(v, line(json!({"event": "pane.replace", "params": {"pane": id, "data": B64.encode(&text), "resume": resume}})));
+    let (segs, tail) = v.0.replay();
+    let segs: Vec<_> = segs.iter().map(|s| json!({"rows": s.rows, "cols": s.cols, "data": B64.encode(&s.data)})).collect();
+    let ev = json!({"event": "pane.replace", "params": {"pane": id, "segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "resume": resume}});
+    send_all(v, line(ev));
 }
 
 /// FR-56: id sesi dari baris yang dicetak agent sendiri saat keluar: `claude --resume <uuid>` (Claude Code)

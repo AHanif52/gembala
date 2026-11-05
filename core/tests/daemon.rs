@@ -66,12 +66,17 @@ fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> D
 
 /// Isi attach seperti yang ditulis UI: riwayat mentah per ukuran (`segments`) lalu ekornya (`snapshot`), base64.
 fn snapshot(r: &Value) -> String {
+    B64.encode(written(&r["result"]))
+}
+
+/// `segments` lalu `snapshot` dari balasan attach atau event `pane.replace`, sebagai byte yang ditulis UI.
+fn written(o: &Value) -> Vec<u8> {
     let mut out = Vec::new();
-    for s in r["result"]["segments"].as_array().into_iter().flatten() {
+    for s in o["segments"].as_array().into_iter().flatten() {
         out.extend(B64.decode(s["data"].as_str().unwrap()).unwrap());
     }
-    out.extend(B64.decode(r["result"]["snapshot"].as_str().unwrap()).unwrap());
-    B64.encode(out)
+    out.extend(B64.decode(o["snapshot"].as_str().unwrap_or("")).unwrap());
+    out
 }
 
 struct Cli {
@@ -720,7 +725,7 @@ fn ringkas_output_saat_agent_keluar() {
     let pane = ui.call("pane.create", json!({"profile": "palsu"}))["result"]["pane"].as_u64().unwrap();
     ui.call("pane.attach", json!({"pane": pane}));
     let e = next_event(&mut ui, "pane.replace", Duration::from_secs(10));
-    let text = String::from_utf8(B64.decode(e["params"]["data"].as_str().unwrap()).unwrap()).unwrap();
+    let text = String::from_utf8(written(&e["params"])).unwrap();
     assert!(text.contains("palsu-1") && text.contains("keluar 3"), "{text}");
     let mut ui2 = Cli::ui(&d);
     let snap = snapshot(&ui2.call("pane.attach", json!({"pane": pane})));
@@ -750,11 +755,11 @@ fn ringkas_agent_manual() {
     std::thread::sleep(Duration::from_secs(3));
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode("\x03")}));
     let e = next_event(&mut ui, "pane.replace", Duration::from_secs(15));
-    let Some(data) = e["params"]["data"].as_str() else {
+    if e.is_null() {
         let snap = snapshot(&Cli::ui(&d).call("pane.attach", json!({"pane": pane})));
         panic!("tanpa pane.replace; layar: {}", String::from_utf8_lossy(&B64.decode(snap).unwrap()));
-    };
-    let text = String::from_utf8(B64.decode(data).unwrap()).unwrap();
+    }
+    let text = String::from_utf8(written(&e["params"])).unwrap();
     assert!(text.contains("omp watch") && text.contains("omp --continue"), "{text}");
     assert_eq!(e["params"]["resume"], "omp --continue"); // tombol Lanjutkan di UI
     // ala Warp: perintah sebelum agent tetap ada di atas blok; baris perintah agent tidak dobel

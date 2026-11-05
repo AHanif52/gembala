@@ -3,8 +3,8 @@
 use std::num::NonZeroU16;
 
 /// Parser, then the prefix of a sequence/UTF-8 char cut off at the end of the stream (see `pending`), then the raw
-/// main-screen history (`Ring`) that attach replays.
-pub struct Grid(vt100::Parser, Vec<u8>, Ring);
+/// main-screen history (`Ring`) that attach replays, then the parser's scrollback length (kept for `rewind`).
+pub struct Grid(vt100::Parser, Vec<u8>, Ring, usize);
 
 /// Raw main-screen bytes per pane size, oldest first. ~140 bytes per coloured line against ~5 KB per line in vt100
 /// scrollback, so attach can carry thousands of lines. Bytes while the alternate screen is on are dropped (a TUI
@@ -13,6 +13,8 @@ pub struct Ring {
     pub segs: Vec<Seg>,
     len: usize,
     alt: bool,
+    /// bytes ever kept; a mark (FR-56) is this count at one moment, so it stays valid while the front is trimmed
+    total: u64,
 }
 
 /// Bytes written while the pane had this size. Replaying them at that size, then resizing, gives what an xterm that
@@ -35,7 +37,26 @@ fn find_any(b: &[u8], seqs: &[&[u8]]) -> Option<(usize, usize)> {
 
 impl Ring {
     fn new(rows: u16, cols: u16) -> Ring {
-        Ring { segs: vec![Seg { rows, cols, data: Vec::new() }], len: 0, alt: false }
+        Ring { segs: vec![Seg { rows, cols, data: Vec::new() }], len: 0, alt: false, total: 0 }
+    }
+
+    /// The first `n` kept bytes, segment by segment (empty segments keep their size).
+    fn head(&self, mut n: usize) -> Vec<(u16, u16, &[u8])> {
+        let mut out = Vec::new();
+        for s in &self.segs {
+            let k = n.min(s.data.len());
+            out.push((s.rows, s.cols, &s.data[..k]));
+            n -= k;
+            if n == 0 && k < s.data.len() {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Kept bytes before `mark`; a mark already trimmed away keeps nothing.
+    fn before(&self, mark: u64) -> usize {
+        self.len.saturating_sub(self.total.saturating_sub(mark) as usize)
     }
 
     /// Keeps main-screen bytes plus the enter/exit sequences themselves, so cursor save/restore still pairs up.
@@ -58,6 +79,7 @@ impl Ring {
     fn add(&mut self, b: &[u8]) {
         self.segs.last_mut().unwrap().data.extend_from_slice(b);
         self.len += b.len();
+        self.total += b.len() as u64;
         if self.len > RING_MAX + RING_MAX / 4 {
             self.trim();
         }
@@ -155,7 +177,43 @@ fn nz(n: u16) -> NonZeroU16 {
 
 impl Grid {
     pub fn new(rows: u16, cols: u16, scrollback: usize) -> Grid {
-        Grid(vt100::Parser::new(nz(rows), nz(cols), scrollback), Vec::new(), Ring::new(rows.max(1), cols.max(1)))
+        Grid(vt100::Parser::new(nz(rows), nz(cols), scrollback), Vec::new(), Ring::new(rows.max(1), cols.max(1)), scrollback)
+    }
+
+    /// Grid rebuilt from ring bytes (each segment at its size), then at `size`.
+    fn from_ring(head: &[(u16, u16, &[u8])], size: (u16, u16), scrollback: usize) -> Grid {
+        let first = head.first().map_or(size, |s| (s.0, s.1));
+        let mut g = Grid::new(first.0, first.1, scrollback);
+        for (rows, cols, data) in head {
+            g.resize(*rows, *cols);
+            g.feed(data);
+        }
+        g.resize(size.0, size.1);
+        g
+    }
+
+    /// FR-56: ring position now. History "before the command/agent" is just this number, not a copy of the screen.
+    pub fn mark(&self) -> u64 {
+        self.2.total
+    }
+
+    /// FR-56: back to the history before `mark` (none = empty), parser rebuilt from it at the current size, so the
+    /// block summary written next lands right under it. What came after (the agent's own output) is dropped.
+    pub fn rewind(&mut self, mark: Option<u64>) {
+        let keep = mark.map_or(0, |m| self.2.before(m));
+        *self = Grid::from_ring(&self.2.head(keep), self.size(), self.3);
+    }
+
+    /// FR-62: main-screen lines (coloured, oldest first) before `mark` (none = up to now), at most `lines`, rebuilt
+    /// from the ring. Empty while a TUI has the alternate screen, so the last log is kept instead of overwritten.
+    pub fn history(&self, mark: Option<u64>, lines: usize) -> Vec<u8> {
+        if mark.is_none() && self.0.screen().alternate_screen() {
+            return Vec::new();
+        }
+        let keep = mark.map_or(self.2.len, |m| self.2.before(m));
+        let mut g = Grid::from_ring(&self.2.head(keep), self.size(), lines);
+        let at = g.position();
+        g.before(at)
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -403,6 +461,49 @@ mod tests {
         assert!(g.2.len <= RING_MAX + RING_MAX / 4 && g.2.len == d.len());
         assert!(d.starts_with(b"\x1b[m") && d[3..].iter().take(8).all(u8::is_ascii_digit), "cut after a newline, reset first");
         assert!(!d.windows(5).any(|w| w == b"tebal"));
+    }
+
+    /// FR-56: rewind to a mark keeps the history before it, drops what came after (the agent), and the rebuilt
+    /// screen equals one that only ever saw that history; a mark trimmed off the front keeps nothing.
+    #[test]
+    fn rewind_ke_penanda() {
+        let mut g = Grid::new(4, 30, 0);
+        g.feed(b"satu\r\ndua\r\n");
+        let at = g.mark();
+        g.feed(b"\x1b[2J\x1b[3J\x1b[Hagent menulis\r\nlagi\r\n");
+        g.rewind(Some(at));
+        g.feed(b"blok ringkas\r\n");
+        let mut want = Grid::new(4, 30, 0);
+        want.feed(b"satu\r\ndua\r\nblok ringkas\r\n");
+        assert_eq!(g.text(), want.text());
+        assert_eq!(g.0.screen().cursor_position(), want.0.screen().cursor_position());
+        assert_eq!(g.replay().0[0].data, b"satu\r\ndua\r\nblok ringkas\r\n");
+
+        let mut g = Grid::new(4, 30, 0);
+        let at = g.mark();
+        for i in 0..RING_MAX / 5 {
+            g.feed(format!("{i:08}\r\n").as_bytes());
+        }
+        g.rewind(Some(at));
+        assert!(g.replay().0.iter().all(|s| s.data.is_empty()) && g.text().trim().is_empty());
+    }
+
+    /// FR-62: log lines rebuilt from the ring, at most `lines`, before a mark; none while a TUI is on screen.
+    #[test]
+    fn history_dari_ring() {
+        let mut g = Grid::new(4, 30, 0);
+        for i in 0..20 {
+            g.feed(format!("baris \x1b[1m{i}\x1b[m\r\n").as_bytes());
+        }
+        let plain = |b: Vec<u8>| String::from_utf8_lossy(&b).replace("\x1b[m", "").replace("\x1b[22;1m", "");
+        let all = plain(g.history(None, 1000));
+        assert!(all.starts_with("baris 0\r\n") && all.contains("baris 19\r\n"), "{all}");
+        // `lines` of scrollback plus the screen rows above the cursor (4 rows, cursor on the last): 12..19
+        assert!(plain(g.history(None, 5)).starts_with("baris 12\r\n"), "only the last lines");
+        let at = g.mark();
+        g.feed(b"agent\r\n\x1b[?1049hTUI");
+        assert!(g.history(None, 1000).is_empty(), "TUI on screen: keep the last log");
+        assert!(!plain(g.history(Some(at), 1000)).contains("agent"));
     }
 
     #[test]
