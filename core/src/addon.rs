@@ -40,7 +40,8 @@ pub fn valid_key(s: &str) -> bool {
 }
 
 /// `[addons.plugin.<id>]` and `[workspace.<id>.mcp]` (TECH, FR-78). `base` = Gembala config folder.
-pub fn from_config(doc: Option<&toml_edit::DocumentMut>, base: &Path) -> (Addons, Vec<String>) {
+pub fn from_config(doc: Option<&toml_edit::DocumentMut>, base: &Path) -> (Addons, Vec<crate::diag::Diag>) {
+    use crate::diag::Diag;
     let (mut out, mut errors) = (Addons::default(), Vec::new());
     fn table(item: Option<&toml_edit::Item>) -> Option<&dyn toml_edit::TableLike> {
         item.and_then(|t| t.as_table_like())
@@ -49,25 +50,25 @@ pub fn from_config(doc: Option<&toml_edit::DocumentMut>, base: &Path) -> (Addons
     for (id, t) in plugins.iter().flat_map(|t| t.iter()) {
         let at = |k: &str| format!("addons.plugin.{id}.{k}");
         let Some(t) = t.as_table_like().filter(|_| valid_key(id)) else {
-            errors.push(format!("addons.plugin.{id}: id wajib huruf, angka, '-', '_' (maks 64) berisi tabel; plugin dilewati"));
+            errors.push(Diag::new("plugin_id").at(format!("addons.plugin.{id}")).then("skip_plugin"));
             continue;
         };
         let s = |k: &str| t.get(k).and_then(|v| v.as_str()).map(str::to_string);
         // a relative folder would resolve against the pane's cwd, i.e. the repo
         let Some(path) = s("path").filter(|p| (p.starts_with('/') || p.starts_with("~/")) && !p.chars().any(char::is_control)) else {
-            errors.push(format!("{}: wajib folder absolut atau ~/…; plugin dilewati", at("path")));
+            errors.push(Diag::new("abs_dir").at(at("path")).then("skip_plugin"));
             continue;
         };
         let dir = crate::account::expand(&path);
         if !dir.join(".claude-plugin/plugin.json").is_file() {
-            errors.push(format!("{}: folder tidak berisi .claude-plugin/plugin.json; plugin dilewati", at("path")));
+            errors.push(Diag::new("no_plugin_json").at(at("path")).then("skip_plugin"));
             continue;
         }
         let scope = match s("scope") {
             None => "all".to_string(),
             Some(v) if SCOPES.contains(&v.as_str()) => v,
             Some(_) => {
-                errors.push(format!("{}: salah satu dari {}; plugin dimatikan", at("scope"), SCOPES.join(", ")));
+                errors.push(Diag::new("one_of").at(at("scope")).arg("opts", SCOPES.join(", ")).then("plugin_off"));
                 "off".to_string()
             }
         };
@@ -82,12 +83,12 @@ pub fn from_config(doc: Option<&toml_edit::DocumentMut>, base: &Path) -> (Addons
         // decision 4 Nov 2026: only a file inside the Gembala config folder (no absolute path, no `..`)
         let inside = !file.is_empty() && !file.chars().any(char::is_control) && Path::new(file).components().all(|c| matches!(c, Component::Normal(_)));
         if !valid_key(ws) || !inside {
-            errors.push(format!("{at}: wajib path relatif di folder config Gembala (tanpa / di depan atau ..); MCP workspace dilewati"));
+            errors.push(Diag::new("mcp_path").at(&at).then("skip_mcp"));
             continue;
         }
         let path = base.join(file);
         if !path.is_file() {
-            errors.push(format!("{at}: file {file} tidak ada; MCP workspace dilewati"));
+            errors.push(Diag::new("file_missing").at(&at).arg("file", file).then("skip_mcp"));
             continue;
         }
         let strict = m.get("strict").and_then(|v| v.as_bool()).unwrap_or(false);

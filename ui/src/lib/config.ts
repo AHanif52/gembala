@@ -70,7 +70,7 @@ export type Config = {
     accounts?: Account[];
     addons?: Addons;
   };
-  errors: string[];
+  errors: ({ code: string; args?: Record<string, string> } | string)[]; // core/src/diag.rs; text = older daemon
   path: string;
 };
 

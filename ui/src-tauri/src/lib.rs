@@ -86,7 +86,7 @@ fn url_ok(url: &str) -> bool {
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     if !url_ok(&url) {
-        return Err("hanya tautan http/https".into());
+        return Err("url_not_http".into());
     }
     std::process::Command::new("/usr/bin/open").arg(&url).spawn().map(drop).map_err(|e| e.to_string())
 }
@@ -98,7 +98,7 @@ const REVEAL: &[&str] = &["", "audit", "hooks", "history"];
 /// Tujuan tombol "Buka": folder di sebelah config.toml, hanya untuk nama di REVEAL.
 fn reveal_target(config: &str, sub: &str) -> Result<std::path::PathBuf, String> {
     if !REVEAL.contains(&sub) {
-        return Err("folder tidak diizinkan".into());
+        return Err("dir_not_allowed".into());
     }
     Ok(std::path::Path::new(config).with_file_name(sub))
 }
@@ -112,7 +112,7 @@ fn reveal_dir(config: String, sub: String) -> Result<(), String> {
 #[tauri::command]
 async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Result<Value, String> {
     if !ALLOWED.contains(&method.as_str()) {
-        return Err(format!("method tidak diizinkan: {method}"));
+        return Err("method_not_allowed".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<Daemon>();
@@ -182,11 +182,11 @@ fn save_paste(data: String, ext: String) -> Result<String, String> {
     use std::io::{Read, Write};
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     if !["png", "jpg", "gif", "webp"].contains(&ext.as_str()) {
-        return Err("bukan gambar".into());
+        return Err("not_image".into());
     }
     let bytes = STANDARD.decode(data).map_err(|e| e.to_string())?;
     if bytes.len() > 20 << 20 {
-        return Err("gambar lebih dari 20 MB".into());
+        return Err("image_too_big".into());
     }
     let dir = daemon::rundir().join("paste");
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| e.to_string())?;

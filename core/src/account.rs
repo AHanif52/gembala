@@ -4,6 +4,9 @@
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+use crate::config::io_err;
+use crate::diag::Diag;
+
 /// Butir folder Utama yang boleh ditautkan ke akun baru (bukan input bebas). `projects` = memori + riwayat, opsional.
 pub const SHARE: &[&str] = &["CLAUDE.md", "settings.json", "skills", "commands", "agents", "plugins", "projects"];
 pub const SHARE_DEFAULT: &[&str] = &["CLAUDE.md", "settings.json", "skills", "commands", "agents", "plugins"];
@@ -45,10 +48,10 @@ pub fn expand(dir: &str) -> PathBuf {
 }
 
 /// Folder akun sah: di bawah `$HOME` (tanpa `..`, tidak menembus lewat symlink), bukan folder Utama atau home sendiri.
-pub fn valid_dir(dir: &str) -> Result<PathBuf, String> {
+pub fn valid_dir(dir: &str) -> Result<PathBuf, Diag> {
     let p = expand(dir);
     if !p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-        return Err("folder harus path di bawah home tanpa ..".into());
+        return Err("dir_bad_path".into());
     }
     let h = home();
     // bagian yang sudah ada diresolusi: symlink yang menunjuk keluar home ditolak
@@ -56,11 +59,11 @@ pub fn valid_dir(dir: &str) -> Result<PathBuf, String> {
     let real = real.unwrap_or(p.clone());
     let home_real = h.canonicalize().unwrap_or(h.clone());
     if !real.starts_with(&home_real) || real == home_real {
-        return Err("folder harus di bawah folder home".into());
+        return Err("dir_not_home".into());
     }
     let main = main_dir().canonicalize().unwrap_or(main_dir());
     if real == main || real.starts_with(&main) {
-        return Err("folder tidak boleh folder Utama (~/.claude) atau di dalamnya".into());
+        return Err("dir_is_main".into());
     }
     Ok(p)
 }
@@ -70,41 +73,41 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// `[[account]]` dari config.toml; yang tidak lolos dilewati dengan galat (FR-42).
-pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Account>, Vec<String>) {
-    let (mut out, mut errors): (Vec<Account>, Vec<String>) = (Vec::new(), Vec::new());
+pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Account>, Vec<Diag>) {
+    let (mut out, mut errors): (Vec<Account>, Vec<Diag>) = (Vec::new(), Vec::new());
     for (i, t) in tables.iter().enumerate() {
         let at = |k: &str| format!("account[{i}].{k}");
         let s = |k: &str| t.get(k).and_then(|v| v.as_str()).map(str::to_string);
         let Some(id) = s("id").filter(|x| valid_id(x)) else {
-            errors.push(format!("{}: wajib a-z, 0-9, '-', maks 32, bukan \"utama\"; akun dilewati", at("id")));
+            errors.push(Diag::new("account_id").at(at("id")).then("skip_account"));
             continue;
         };
         let agent = s("agent").unwrap_or_else(|| "claude".into());
         if agent != "claude" {
-            errors.push(format!("{}: baru \"claude\" yang didukung; akun dilewati", at("agent")));
+            errors.push(Diag::new("account_agent").at(at("agent")).then("skip_account"));
             continue;
         }
         let name = s("name").filter(|n| (1..=60).contains(&n.chars().count()) && !n.chars().any(char::is_control)).unwrap_or_else(|| id.clone());
         let Some(dir) = s("dir") else {
-            errors.push(format!("{}: wajib diisi; akun dilewati", at("dir")));
+            errors.push(Diag::new("required").at(at("dir")).then("skip_account"));
             continue;
         };
         if let Err(e) = valid_dir(&dir) {
-            errors.push(format!("{}: {e}; akun dilewati", at("dir")));
+            errors.push(e.at(at("dir")).then("skip_account"));
             continue;
         }
         if out.iter().any(|a| a.agent == agent && (a.id == id || expand(&a.dir) == expand(&dir))) {
-            errors.push(format!("{}: id atau folder sudah dipakai akun lain; akun dilewati", at("id")));
+            errors.push(Diag::new("account_taken").at(at("id")).then("skip_account"));
             continue;
         }
         let share = match t.get("share").and_then(|v| v.as_array()) {
             None => SHARE_DEFAULT.iter().map(|x| x.to_string()).collect(),
             Some(a) => a.iter().filter_map(|v| v.as_str()).filter(|x| SHARE.contains(x)).map(String::from).collect(),
         };
-        let pick = |k: &str, ok: &[&str], errors: &mut Vec<String>| match s(k) {
+        let pick = |k: &str, ok: &[&str], errors: &mut Vec<Diag>| match s(k) {
             Some(v) if ok.contains(&v.as_str()) => v,
             Some(_) => {
-                errors.push(format!("{}: salah satu dari {}; memakai bawaan", at(k), ok.join(", ")));
+                errors.push(Diag::new("one_of").at(at(k)).arg("opts", ok.join(", ")).then("default"));
                 String::new()
             }
             None => String::new(),
@@ -155,11 +158,11 @@ pub fn apply(p: &mut crate::profile::Profile, chosen: Option<&str>, accounts: &[
 
 /// Buat folder akun (0700) dan tautan butir `share` dari Utama. Butir yang sudah ada tidak ditimpa;
 /// dikembalikan sebagai daftar yang dilewati.
-pub fn create(a: &Account) -> Result<Vec<String>, String> {
+pub fn create(a: &Account) -> Result<Vec<String>, Diag> {
     use std::os::unix::fs::PermissionsExt;
     let dir = valid_dir(&a.dir)?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("buat folder: {e}"))?;
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("izin folder: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| io_err("io_mkdir", e))?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| io_err("io_chmod", e))?;
     let main = main_dir();
     let mut skipped = Vec::new();
     for item in a.share.iter().filter(|x| SHARE.contains(&x.as_str())) {
@@ -171,16 +174,16 @@ pub fn create(a: &Account) -> Result<Vec<String>, String> {
             skipped.push(item.clone());
             continue;
         }
-        std::os::unix::fs::symlink(&src, &dst).map_err(|e| format!("tautan {item}: {e}"))?;
+        std::os::unix::fs::symlink(&src, &dst).map_err(|e| io_err("io_link", e).arg("item", item))?;
     }
     Ok(skipped)
 }
 
 /// FR-61 (8): satu butir jadi Ikut Utama (`follow`) atau Sendiri. Sendiri = tautan diganti salinan isi Utama
 /// (`projects` mulai kosong: besar); Ikut Utama = isi milik akun disimpan sebagai `<butir>.gembala-bak`, lalu ditautkan.
-pub fn set_share(a: &Account, item: &str, follow: bool) -> Result<(), String> {
+pub fn set_share(a: &Account, item: &str, follow: bool) -> Result<(), Diag> {
     if !SHARE.contains(&item) {
-        return Err(format!("butir {item} tidak dikenal"));
+        return Err(Diag::new("unknown_item").arg("item", item));
     }
     let dir = valid_dir(&a.dir)?;
     let (src, dst) = (main_dir().join(item), dir.join(item));
@@ -191,35 +194,35 @@ pub fn set_share(a: &Account, item: &str, follow: bool) -> Result<(), String> {
         }
         if dst.symlink_metadata().is_ok() {
             let bak = (0..).map(|n| dir.join(if n == 0 { format!("{item}.gembala-bak") } else { format!("{item}.gembala-bak{n}") })).find(|p| p.symlink_metadata().is_err()).unwrap();
-            std::fs::rename(&dst, &bak).map_err(|e| format!("simpan {item}: {e}"))?;
+            std::fs::rename(&dst, &bak).map_err(|e| io_err("io_backup", e).arg("item", item))?;
         }
-        return if src.exists() { std::os::unix::fs::symlink(&src, &dst).map_err(|e| format!("tautan {item}: {e}")) } else { Ok(()) };
+        return if src.exists() { std::os::unix::fs::symlink(&src, &dst).map_err(|e| io_err("io_link", e).arg("item", item)) } else { Ok(()) };
     }
     if !linked {
         return Ok(());
     }
-    std::fs::remove_file(&dst).map_err(|e| format!("lepas tautan {item}: {e}"))?;
+    std::fs::remove_file(&dst).map_err(|e| io_err("io_unlink", e).arg("item", item))?;
     if item == "projects" {
-        return std::fs::create_dir(&dst).map_err(|e| format!("buat {item}: {e}"));
+        return std::fs::create_dir(&dst).map_err(|e| io_err("io_mkdir", e).arg("item", item));
     }
     if !src.exists() {
         return Ok(());
     }
     // `cp -Rp`: isi Utama saat ini jadi titik awal milik akun; symlink di dalamnya disalin apa adanya
     let ok = std::process::Command::new("/bin/cp").arg("-Rp").arg(&src).arg(&dst).status().is_ok_and(|s| s.success());
-    if ok { Ok(()) } else { Err(format!("salin {item} dari Utama gagal")) }
+    if ok { Ok(()) } else { Err(Diag::new("copy_failed").arg("item", item)) }
 }
 
 /// FR-61 (7): folder akun ikut dihapus. `remove_dir_all` tidak mengikuti symlink, jadi tautan ke Utama hanya dilepas.
 /// Hanya folder `.claude…` yang bukan symlink, supaya folder lain yang kebetulan ditunjuk akun tidak terhapus.
-pub fn delete_dir(dir: &str) -> Result<(), String> {
+pub fn delete_dir(dir: &str) -> Result<(), Diag> {
     let p = valid_dir(dir)?;
     let Ok(meta) = p.symlink_metadata() else { return Ok(()) }; // folder sudah tidak ada
     let named = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(".claude"));
     if !named || !meta.is_dir() {
-        return Err(format!("{dir} bukan folder akun Claude; tidak dihapus"));
+        return Err(Diag::new("not_account_dir").arg("dir", dir));
     }
-    std::fs::remove_dir_all(&p).map_err(|e| format!("hapus folder: {e}"))
+    std::fs::remove_dir_all(&p).map_err(|e| io_err("io_rmdir", e))
 }
 
 /// Status akun untuk daftar: sudah dipakai (`.claude.json` ada) dan email dari `oauthAccount.emailAddress` saja.
@@ -327,7 +330,8 @@ mod tests {
         let doc: toml_edit::DocumentMut = toml.parse().unwrap();
         let arr = doc.get("account").and_then(|v| v.as_array_of_tables()).unwrap();
         let tables: Vec<&dyn toml_edit::TableLike> = arr.iter().map(|t| t as &dyn toml_edit::TableLike).collect();
-        from_config(&tables)
+        let (a, e) = from_config(&tables);
+        (a, e.iter().map(ToString::to_string).collect())
     }
 
     #[test]
@@ -344,7 +348,7 @@ mod tests {
         assert_eq!(a.len(), 1, "{a:?} {e:?}");
         assert_eq!(a[0].share, SHARE_DEFAULT.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(e.len(), 6, "{e:?}");
-        assert!(e.iter().any(|x| x.contains("Utama")) && e.iter().any(|x| x.contains("di bawah folder home")));
+        assert!(e.iter().any(|x| x.contains("account_id")) && e.iter().any(|x| x.contains("dir_not_home")));
     }
 
     #[test]

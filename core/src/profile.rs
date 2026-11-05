@@ -6,6 +6,8 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::diag::Diag;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     pub id: String,
@@ -106,17 +108,17 @@ fn ok_ref(s: &str) -> bool {
 }
 
 /// `[[profile]]` dari config: id sama dengan bawaan = menimpa bagian yang diisi; id baru = profil tambahan.
-pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<String>) {
+pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<Diag>) {
     let mut out = builtin();
     let mut errors = Vec::new();
     for (i, t) in tables.iter().enumerate() {
         let at = |k: &str| format!("profile[{i}].{k}");
         let Some(id) = t.get("id").and_then(|v| v.as_str()) else {
-            errors.push(format!("{}: wajib diisi, profil dilewati", at("id")));
+            errors.push(Diag::new("required").at(at("id")).then("skip_profile"));
             continue;
         };
         if !(1..=32).contains(&id.len()) || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-            errors.push(format!("{}: hanya a-z, 0-9, '-', maks 32; profil dilewati", at("id")));
+            errors.push(Diag::new("profile_id").at(at("id")).then("skip_profile"));
             continue;
         }
         let pos = out.iter().position(|p| p.id == id).unwrap_or_else(|| {
@@ -128,20 +130,20 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
             match t.get(key).map(|v| v.as_str()) {
                 None => {}
                 Some(Some(s)) if ok_text(s, 200) && (key != "cwd" || s.is_empty() || s.starts_with('/') || s.starts_with('~')) => *field = s.into(),
-                Some(_) => errors.push(format!("{}: teks tidak sah, memakai bawaan", at(key))),
+                Some(_) => errors.push(Diag::new("text_bad").at(at(key)).then("default")),
             }
         }
         for (key, field) in [("summarize", &mut p.summarize), ("notify", &mut p.notify), ("token", &mut p.token)] {
             match t.get(key).map(|v| v.as_bool()) {
                 None => {}
                 Some(Some(b)) => *field = b,
-                Some(None) => errors.push(format!("{}: harus true atau false", at(key))),
+                Some(None) => errors.push(Diag::new("bool").at(at(key))),
             }
         }
         match t.get("policy").map(|v| v.as_str()) {
             None => {}
             Some(Some(v)) if crate::msg::Policy::parse(v).is_some() => p.policy = v.into(),
-            Some(_) => errors.push(format!("{}: harus auto, confirm, atau deny", at("policy"))),
+            Some(_) => errors.push(Diag::new("one_of").at(at("policy")).arg("opts", "auto, confirm, deny")),
         }
         // FR-61: dicocokkan ke [[account]] oleh config::load (akun belum terbaca di sini)
         if let Some(a) = t.get("account").and_then(|v| v.as_str()) {
@@ -150,12 +152,12 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
         match t.get("permission").map(|v| v.as_str()) {
             None => {}
             Some(Some(v @ ("default" | "auto"))) => p.permission = v.into(),
-            Some(_) => errors.push(format!("{}: harus default atau auto", at("permission"))),
+            Some(_) => errors.push(Diag::new("one_of").at(at("permission")).arg("opts", "default, auto")),
         }
         if let Some(a) = t.get("args") {
             match a.as_array().map(|arr| arr.iter().map(|v| v.as_str().filter(|s| ok_text(s, 500)).map(String::from)).collect::<Option<Vec<_>>>()) {
                 Some(Some(v)) => p.args = v,
-                _ => errors.push(format!("{}: harus daftar teks, memakai bawaan", at("args"))),
+                _ => errors.push(Diag::new("text_list").at(at("args")).then("default")),
             }
         }
         for (key, secret) in [("env", false), ("secret_env", true)] {
@@ -164,11 +166,11 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<S
             for (k, v) in tbl.iter() {
                 let v = v.as_str().unwrap_or_default();
                 if !ok_env_name(k) {
-                    errors.push(format!("{}.{k}: nama env tidak sah", at(key)));
+                    errors.push(Diag::new("env_name").at(format!("{}.{k}", at(key))));
                 } else if secret && !ok_ref(v) {
-                    errors.push(format!("{}.{k}: harus rujukan op://vault/item/field atau keychain:service/akun", at(key)));
+                    errors.push(Diag::new("secret_ref").at(format!("{}.{k}", at(key))));
                 } else if !secret && (!ok_text(v, 1000) || SECRET.iter().any(|s| word_start(v, s).is_some())) {
-                    errors.push(format!("{}.{k}: nilai tampak seperti rahasia; simpan rujukan di secret_env", at(key)));
+                    errors.push(Diag::new("env_secret").at(format!("{}.{k}", at(key))));
                 } else {
                     list.push((k.to_string(), v.to_string()));
                 }
@@ -594,8 +596,8 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Opti
     }
     let install = AGENTS.iter().find(|a| a.0 == p.agent).map(|a| a.3);
     let hint = match install {
-        Some(i) => format!("{} tidak ditemukan di PATH login shell. Pasang dengan: {i}", p.name),
-        None => format!("Perintah {} tidak ditemukan di PATH login shell.", p.command),
+        Some(i) => format!("{} isn't in the login shell PATH. Install it with: {i}", p.name),
+        None => format!("Command {} isn't in the login shell PATH.", p.command),
     };
     s += " ); s=$?; ";
     if p.summarize {
@@ -716,7 +718,8 @@ mod tests {
         let doc: toml_edit::DocumentMut = text.parse().unwrap();
         let arr = doc.get("profile").and_then(|v| v.as_array_of_tables());
         let tables: Vec<&dyn toml_edit::TableLike> = arr.map(|a| a.iter().map(|t| t as &dyn toml_edit::TableLike).collect()).unwrap_or_default();
-        from_config(&tables)
+        let (p, e) = from_config(&tables);
+        (p, e.iter().map(ToString::to_string).collect())
     }
 
     #[test]
@@ -780,7 +783,7 @@ mod tests {
         let p = Profile { permission: "auto".into(), ..builtin()[4].clone() };
         assert!(launch(&p, None, None).unwrap().contains("'omp' '--approval-mode=yolo' );"));
         let (ps, errs) = parse("[[profile]]\nid = \"omp\"\npermission = \"yolo\"\n");
-        assert!(errs.iter().any(|e| e.contains("default atau auto")) && ps.iter().all(|x| x.permission == "default"));
+        assert!(errs.iter().any(|e| e.contains("opts=default, auto")) && ps.iter().all(|x| x.permission == "default"));
     }
 
     #[test]
@@ -789,7 +792,7 @@ mod tests {
         let p = Profile { command: "gembala-tidak-ada-xyz".into(), ..builtin()[1].clone() };
         let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None, None).unwrap()).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
-        assert!(text.contains("Claude Code tidak ditemukan") && text.contains("brew install"), "{text}");
+        assert!(text.contains("Claude Code isn't in the login shell PATH") && text.contains("brew install"), "{text}");
     }
 
     #[test]

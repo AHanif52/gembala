@@ -600,7 +600,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         "keys.set" => {
             let (action, combo) = (p["action"].as_str().ok_or("bad_params")?, p["combo"].as_str().unwrap_or(""));
             if let Err(why) = config::set_key(&config::path(), action, combo) {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             reload_config(st);
             Ok(json!({}))
@@ -612,7 +612,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 config::reset_profile(&config::path(), p["id"].as_str().ok_or("bad_params")?)
             };
             if let Err(why) = r {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             reload_config(st);
             Ok(json!({}))
@@ -636,36 +636,36 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             };
             let a = account::Account { id, agent: "claude".into(), name, dir, share, model: String::new(), effort: String::new(), trust: true };
             if let Err(why) = account::valid_dir(&a.dir) {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             // config dulu (validasi penuh, id/folder ganda ditolak), baru folder dan tautan
             if let Err(why) = config::save_account(&config::path(), &a) {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             let res = account::create(&a);
             reload_config(st);
             match res {
                 Ok(skipped) => Ok(json!({"id": a.id, "skipped": skipped})),
-                Err(why) => Ok(json!({"id": a.id, "error": why})),
+                Err(why) => Ok(json!({"id": a.id, "error": why.code, "args": why.json()["args"]})),
             }
         }
         "account.remove" => {
             let id = p["id"].as_str().ok_or("bad_params")?;
             let dir = st.accounts.lock().unwrap().iter().find(|a| a.id == id).map(|a| a.dir.clone());
             if let Err(why) = config::remove_account(&config::path(), id) {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             reload_config(st);
             // FR-61 (7): folder akun ikut dihapus setelah config tidak lagi merujuknya
             match dir.map(|d| account::delete_dir(&d)) {
-                Some(Err(why)) => Ok(json!({"error": why})),
+                Some(Err(why)) => Ok(why.reply()),
                 _ => Ok(json!({})),
             }
         }
         // FR-61 (8): model/effort/trust, atau satu butir jadi Ikut Utama/Sendiri (`item` + `follow`)
         "account.update" => {
             let id = p["id"].as_str().ok_or("bad_params")?;
-            let Some(mut a) = st.accounts.lock().unwrap().iter().find(|a| a.id == id).cloned() else { return Ok(json!({"error": "akun tidak ada"})) };
+            let Some(mut a) = st.accounts.lock().unwrap().iter().find(|a| a.id == id).cloned() else { return Ok(json!({"error": "no_such_account"})) };
             if let Some(m) = p["model"].as_str() {
                 a.model = m.into();
             }
@@ -677,7 +677,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             if let (Some(item), Some(follow)) = (p["item"].as_str(), p["follow"].as_bool()) {
                 if let Err(why) = account::set_share(&a, item, follow) {
-                    return Ok(json!({"error": why}));
+                    return Ok(why.reply());
                 }
                 a.share.retain(|x| x != item);
                 if follow {
@@ -685,7 +685,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 }
             }
             if let Err(why) = config::update_account(&config::path(), &a) {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             reload_config(st);
             Ok(json!({}))
@@ -693,7 +693,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         "config.set" => {
             let (section, key) = (p["section"].as_str().ok_or("bad_params")?, p["key"].as_str().ok_or("bad_params")?);
             if let Err(why) = config::set(&config::path(), section, key, &p["value"]) {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             reload_config(st);
             Ok(json!({}))
@@ -716,7 +716,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             }
             let ws: Option<Vec<String>> = p["workspaces"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect());
             if let Err(why) = config::set_plugin(&config::path(), &id, dir, p["scope"].as_str(), ws.as_deref(), p["remove"].as_bool() == Some(true)) {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             reload_config(st);
             Ok(json!({"id": id}))
@@ -737,14 +737,14 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let r = if text.is_empty() {
                 config::set_mcp(&cfg, ws, None).map(|_| drop(std::fs::remove_file(&full)))
             } else if text.len() > 64 * 1024 || !serde_json::from_str::<Value>(text).is_ok_and(|v| v["mcpServers"].is_object()) {
-                Err("isinya harus JSON {\"mcpServers\": {…}}, maks 64 KB".to_string())
+                Err(crate::diag::Diag::new("mcp_json"))
             } else {
                 config::write_atomic(&full, format!("{text}\n").as_bytes())
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| config::io_err("io_write", e))
                     .and_then(|_| config::set_mcp(&cfg, ws, Some((&file, p["strict"].as_bool() == Some(true)))))
             };
             if let Err(why) = r {
-                return Ok(json!({"error": why}));
+                return Ok(why.reply());
             }
             reload_config(st);
             Ok(json!({}))
@@ -1536,7 +1536,8 @@ fn reload_config(st: &State) {
         *st.accounts.lock().unwrap() = c.accounts;
         *st.addons.lock().unwrap() = c.addons;
     }
-    *cur = json!({"values": values, "errors": c.errors, "path": path.to_string_lossy()});
+    let errors: Vec<Value> = c.errors.iter().map(crate::diag::Diag::json).collect();
+    *cur = json!({"values": values, "errors": errors, "path": path.to_string_lossy()});
     let ev = line(json!({"event": "config.changed", "params": *cur}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
 }

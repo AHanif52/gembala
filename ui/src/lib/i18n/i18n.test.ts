@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import en from "./en.ts";
 import id from "./id.ts";
-import { resolveLang, translate, translateN } from "./index.ts";
+import { errorText, resolveLang, translate, translateN } from "./index.ts";
 
 const params = (s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
 const SRC = new URL("../..", import.meta.url).pathname;
@@ -47,4 +47,14 @@ test("translate: params, fallback to English, plural, language pick", () => {
   assert.equal(resolveLang("system", ["fr-FR"]), "en");
   assert.equal(resolveLang("id", ["en-US"]), "id");
   assert.equal(translateN("en", "no.such", 1), "no.such.other");
+});
+
+test("errorText: code + at + then from core/src/diag.rs, free text as is", () => {
+  const d = { code: "int_range", args: { at: "ui.font_size", lo: "8", hi: "32", then: "default", default: "13" } };
+  assert.equal(errorText("en", d), "ui.font_size: has to be a whole number 8–32; using the default 13");
+  assert.equal(errorText("id", d), "ui.font_size: harus bilangan bulat 8–32; memakai bawaan 13");
+  assert.equal(errorText("id", "target_busy"), "Target lagi kerja; kirim paksa kalau yakin");
+  assert.equal(errorText("en", "Error: target_busy"), "The target is working; force send if you're sure");
+  assert.equal(errorText("en", "font size salah"), "font size salah");
+  assert.equal(errorText("en", "account_exists", { id: "kantor" }), 'account "kantor" already exists');
 });

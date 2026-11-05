@@ -31,3 +31,14 @@ export function resolveLang(pref: string, system: readonly string[]): Lang {
   }
   return "en";
 }
+
+/// daemon error or config problem (core/src/diag.rs): `code` → `err.<code>`, `at` in front, `then` → `err.then.<then>`
+/// after it. Anything else (free text, OS text, older daemon) shows as is.
+export function errorText(lang: Lang, e: unknown, args?: Record<string, string>): string {
+  if (e && typeof e === "object" && "code" in e) return errorText(lang, (e as { code: string }).code, (e as { args?: Record<string, string> }).args);
+  const s = String(e ?? "").replace(/^Error: /, "");
+  if (!hasKey(`err.${s}`)) return s;
+  const text = translate(lang, `err.${s}` as Key, args);
+  const then = args?.then && hasKey(`err.then.${args.then}`) ? `; ${translate(lang, `err.then.${args.then}` as Key, args)}` : "";
+  return `${args?.at ? `${args.at}: ` : ""}${text}${then}`;
+}

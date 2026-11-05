@@ -94,9 +94,9 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
                 thread::sleep(std::time::Duration::from_millis(500));
                 connect_try(on_event, false)
             }
-            r => r.map_err(|e| err(format!("{e}; hentikan daemon lama dengan: pkill -f 'gembala daemon'"))),
+            r => r.map_err(|e| err(format!("{e}; stop the old daemon with: pkill -f 'gembala daemon'"))),
         },
-        None => Err(err("daemon jalan tapi rahasia tidak ada di Keychain; hentikan dengan: pkill -f 'gembala daemon'")),
+        None => Err(err("the daemon is running but its secret isn't in the Keychain; stop it with: pkill -f 'gembala daemon'")),
     }
 }
 
@@ -155,7 +155,7 @@ fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<Stri
         match l.accept() {
             Ok((s, _)) => break s,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(err(format!("daemon tidak menyerahkan rahasia: {e}"))),
+            Err(e) => return Err(err(format!("the daemon didn't hand over its secret: {e}"))),
         }
     };
     let _ = std::fs::remove_file(&hand);
@@ -231,7 +231,7 @@ impl Client {
         }
         let v: Value = serde_json::from_str(&l).unwrap_or(Value::Null);
         if v.get("result").is_none() {
-            return Err(err(format!("hello ditolak: {}", v["error"]["code"])));
+            return Err(err(format!("hello rejected: {}", v["error"]["code"])));
         }
         let pending: Arc<Mutex<HashMap<u64, Sender<Value>>>> = Arc::default();
         let p2 = pending.clone();

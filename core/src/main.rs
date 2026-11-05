@@ -3,6 +3,7 @@ mod addon;
 mod bus;
 mod config;
 mod daemon;
+mod diag;
 mod git;
 mod grid;
 mod history;

@@ -376,20 +376,20 @@ fn config_dibaca_dipantau_dan_ditulis() {
     let e = next_event(&mut ui, "config.changed", Duration::from_secs(3));
     assert_eq!(e["params"]["values"]["ui"]["font_size"], 15, "{e}");
     let r = ui.call("config.set", json!({"section": "ui", "key": "font_size", "value": 99}))["result"].clone();
-    assert!(r["error"].as_str().unwrap().contains("8–32"), "{r}");
+    assert!(r["error"] == "int_range" && r["args"]["hi"] == "32", "{r}");
 
     // diedit pengguna di editor: berlaku tanpa restart
     std::fs::write(&path, "[ui]\nfont_size = 17\ncursor = \"kotak\"\n").unwrap();
     let e = next_event(&mut ui, "config.changed", Duration::from_secs(4));
     assert_eq!(e["params"]["values"]["ui"]["font_size"], 17, "{e}");
-    assert!(e["params"]["errors"][0].as_str().unwrap().contains("ui.cursor"), "{e}");
+    assert_eq!(e["params"]["errors"][0]["args"]["at"], "ui.cursor", "{e}");
 
     // rusak: nilai valid terakhir tetap, galat ditandai, file tidak ditimpa
     std::fs::write(&path, "[ui\n").unwrap();
     let e = next_event(&mut ui, "config.changed", Duration::from_secs(4));
     assert_eq!(e["params"]["values"]["ui"]["font_size"], 17, "{e}");
-    assert!(e["params"]["errors"][0].as_str().unwrap().contains("tidak bisa diurai"), "{e}");
-    assert!(ui.call("config.set", json!({"section": "ui", "key": "font_size", "value": 14}))["result"]["error"].is_string());
+    assert_eq!(e["params"]["errors"][0]["code"], "toml_parse", "{e}");
+    assert_eq!(ui.call("config.set", json!({"section": "ui", "key": "font_size", "value": 14}))["result"]["error"], "config_broken");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "[ui\n");
 }
 
@@ -441,8 +441,8 @@ fn pane_dari_profil() {
 
     let r = ui.call("pane.create", json!({"profile": "hilang"}))["result"].clone();
     let p = r["pane"].as_u64().unwrap();
-    let out = ui.attach_until(p, &["tidak ditemukan"]);
-    assert!(out.contains("Perintah gembala-tidak-ada-xyz tidak ditemukan"), "{out}");
+    let out = ui.attach_until(p, &["isn't in the login shell PATH"]);
+    assert!(out.contains("Command gembala-tidak-ada-xyz isn't in the login shell PATH"), "{out}");
     assert!(ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(p)), "pane tetap hidup");
     assert_eq!(ui.call("pane.create", json!({"profile": "tidak-ada"}))["error"]["code"], "no_such_profile");
 }
@@ -491,7 +491,7 @@ fn addon_dari_pengaturan() {
     let r = ui.call("addon.plugin", json!({"path": plug}))["result"].clone();
     assert_eq!(r["id"], "caveman-plug", "{r}");
     let bad = ui.call("addon.plugin", json!({"path": d.dir}))["result"].clone();
-    assert!(bad["error"].as_str().is_some_and(|e| e.contains("plugin.json")), "{bad}");
+    assert_eq!(bad["error"], "no_plugin_json", "{bad}");
     ui.call("addon.plugin", json!({"id": "caveman-plug", "scope": "workspaces", "workspaces": ["w1"]}));
     let mcp = r#"{"mcpServers": {"probe": {"command": "node"}}}"#;
     assert!(ui.call("addon.mcp.set", json!({"workspace": "w1", "text": "{}"}))["result"]["error"].is_string());

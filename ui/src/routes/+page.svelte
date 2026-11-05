@@ -22,7 +22,7 @@
   import { safeResume } from "$lib/resume";
   import { cleanTitle } from "$lib/label";
   import { resolveLang } from "$lib/i18n";
-  import { i18n, loc } from "$lib/i18n/state.svelte";
+  import { errText, i18n, loc } from "$lib/i18n/state.svelte";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: akun bawaan per agent; FR-44: warna blok; FR-13: brief
@@ -153,7 +153,7 @@
   // tujuan kirim: pane agent selain yang fokus, termasuk agent yang diketik sendiri di pane shell (status dilacak daemon)
   const targets = $derived(rows.filter((r) => r.pane !== tab?.focus && (r.agent !== "shell" || r.status)));
 
-  /// Kirim manual dari pengguna (⌘⇧K, FR-57); "" = terkirim, selain itu alasan ditolak untuk ditampilkan
+  /// Kirim manual dari pengguna (⌘⇧K, FR-57); "" = terkirim, selain itu kode galat (teksnya lewat errText saat tampil)
   async function sendMsg(to: number, body: string, force: boolean): Promise<string> {
     try {
       await call("msg.send", { to, body, force });
@@ -161,7 +161,7 @@
       say(`Pesan terkirim ke ${meta[to]?.name ?? "agent"}`);
       return "";
     } catch (e) {
-      return e === "target_blocked" ? "Target sedang butuh izin; jawab langsung di pane itu" : e === "target_busy" ? "Target sedang bekerja; kirim paksa bila yakin" : String(e);
+      return String(e);
     }
   }
 
@@ -2364,8 +2364,8 @@
                     if (e.key === "Escape") (e.preventDefault(), (lempar = null), tiles[pane]?.focus());
                   }}></textarea>
                 {#if lempar.error}
-                  <span class="err">{lempar.error}</span>
-                  {#if lempar.error.includes("paksa")}<button class="mini" onclick={() => sendLempar(true)}>Kirim paksa</button>{/if}
+                  <span class="err">{errText(lempar.error)}</span>
+                  {#if lempar.error === "target_busy"}<button class="mini" onclick={() => sendLempar(true)}>Kirim paksa</button>{/if}
                 {/if}
               </div>
             {/if}
@@ -2513,7 +2513,7 @@
       <textarea bind:value={compose.body} rows="5" autofocus aria-label="Isi pesan" placeholder="Isi pesan; dikirim dengan label dari pengguna" spellcheck="false" autocapitalize="off"
         onkeydown={(e) => e.key === "Enter" && e.metaKey && sendCompose()}></textarea>
       <label class="inline"><input type="checkbox" bind:checked={compose.force} /> Paksa bila status target tidak diketahui</label>
-      {#if compose.error}<span class="err">{compose.error}</span>{/if}
+      {#if compose.error}<span class="err">{errText(compose.error)}</span>{/if}
       <span class="acts"><button class="mini" onclick={() => (compose = null)}>Batal</button> <button class="mini" onclick={sendCompose}>Kirim ⌘↩</button></span>
     </div>
   {/if}
@@ -2523,14 +2523,14 @@
       onturn={pickTurn} onrestore={askRestore} onconfirm={doRestore} oncancel={() => changes && (changes.ask = null)}
       onreload={() => changes && loadChanges(changes.pane)} onclose={() => (changes = null)} />
   {/if}
-  {#if cfg?.errors.length && cfgSeen !== cfg.errors.join("\n")}
+  {#if cfg?.errors.length && cfgSeen !== JSON.stringify(cfg.errors)}
     <!-- FR-42 / pen 13: a broken config is visible without opening Settings; dismissed until the errors change -->
     <div class="confirm ask warn" role="alert">
       <b class="ctitle">Sebagian config.toml nggak kepake</b>
-      {#each cfg.errors as e}<code class="url">{e}</code>{/each}
+      {#each cfg.errors as e}<code class="url">{errText(e)}</code>{/each}
       <span class="acts">
-        <button class="mini" onclick={() => cfg && (cfgSeen = cfg.errors.join("\n"))}>Tutup</button>
-        <button class="mini" onclick={() => cfg && ((cfgSeen = cfg.errors.join("\n")), (settingsOpen = true))}>Buka Pengaturan</button>
+        <button class="mini" onclick={() => cfg && (cfgSeen = JSON.stringify(cfg.errors))}>Tutup</button>
+        <button class="mini" onclick={() => cfg && ((cfgSeen = JSON.stringify(cfg.errors)), (settingsOpen = true))}>Buka Pengaturan</button>
       </span>
     </div>
   {/if}

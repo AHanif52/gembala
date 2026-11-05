@@ -8,6 +8,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
 
+use crate::diag::Diag;
+
 enum Kind {
     Int(i64, i64, i64), // min, max, bawaan
     Float(f64, f64, f64),
@@ -56,7 +58,7 @@ pub struct Config {
     pub profiles: Vec<crate::profile::Profile>,
     /// `{ui, limits, keys}` yang berlaku (nilai bawaan untuk yang rusak atau tidak ada).
     pub values: Value,
-    pub errors: Vec<String>,
+    pub errors: Vec<Diag>,
     /// File tidak bisa diurai sama sekali: pemanggil memakai nilai valid terakhir.
     pub broken: bool,
     /// FR-61: `[[account]]` yang lolos validasi
@@ -88,22 +90,22 @@ fn default(kind: &Kind) -> Value {
     }
 }
 
-fn check(kind: &Kind, v: &Value) -> Result<Value, String> {
+fn check(kind: &Kind, v: &Value) -> Result<Value, Diag> {
     match kind {
-        Int(lo, hi, _) => v.as_i64().filter(|n| (lo..=hi).contains(&n)).map(|n| json!(n)).ok_or(format!("harus bilangan bulat {lo}–{hi}")),
-        Float(lo, hi, _) => v.as_f64().filter(|n| (*lo..=*hi).contains(n)).map(|n| json!(n)).ok_or(format!("harus angka {lo}–{hi}")),
-        Bool(_) => v.as_bool().map(|b| json!(b)).ok_or("harus true atau false".into()),
-        Enum(opts, _) => v.as_str().filter(|s| opts.contains(s)).map(|s| json!(s)).ok_or(format!("harus salah satu dari {}", opts.join(", "))),
+        Int(lo, hi, _) => v.as_i64().filter(|n| (lo..=hi).contains(&n)).map(|n| json!(n)).ok_or_else(|| Diag::new("int_range").arg("lo", lo).arg("hi", hi)),
+        Float(lo, hi, _) => v.as_f64().filter(|n| (*lo..=*hi).contains(n)).map(|n| json!(n)).ok_or_else(|| Diag::new("num_range").arg("lo", lo).arg("hi", hi)),
+        Bool(_) => v.as_bool().map(|b| json!(b)).ok_or("bool".into()),
+        Enum(opts, _) => v.as_str().filter(|s| opts.contains(s)).map(|s| json!(s)).ok_or_else(|| Diag::new("one_of").arg("opts", opts.join(", "))),
         List(opts, _) => v
             .as_array()
             .filter(|a| a.len() <= opts.len() && a.iter().all(|x| x.as_str().is_some_and(|s| opts.contains(&s))))
             .map(|a| Value::Array(a.clone()))
-            .ok_or(format!("harus daftar dari {}", opts.join(", "))),
+            .ok_or_else(|| Diag::new("list_of").arg("opts", opts.join(", "))),
         Str(_) => v
             .as_str()
             .filter(|s| !s.is_empty() && s.len() <= 200 && !s.chars().any(char::is_control))
             .map(|s| json!(s))
-            .ok_or("harus teks 1–200 karakter".into()),
+            .ok_or("text_len".into()),
     }
 }
 
@@ -128,7 +130,7 @@ pub fn load(text: Option<&str>) -> Config {
     let mut errors = Vec::new();
     let doc = match text.map(str::parse::<DocumentMut>) {
         Some(Err(e)) => {
-            errors.push(format!("config.toml tidak bisa diurai: {}", e.to_string().trim()));
+            errors.push(Diag::new("toml_parse").arg("why", e.to_string().trim()));
             return Config { values: defaults(), errors, broken: true, profiles: crate::profile::builtin(), accounts: Vec::new(), addons: Default::default() };
         }
         Some(Ok(d)) => Some(d),
@@ -142,7 +144,7 @@ pub fn load(text: Option<&str>) -> Config {
             let v = match table.and_then(|t| t.get(key)) {
                 None => default(kind),
                 Some(item) => check(kind, &to_json(item)).unwrap_or_else(|why| {
-                    errors.push(format!("{section}.{key}: {why}; memakai bawaan {}", default(kind)));
+                    errors.push(why.at(format!("{section}.{key}")).then("default").arg("default", default(kind)));
                     default(kind)
                 }),
             };
@@ -150,7 +152,7 @@ pub fn load(text: Option<&str>) -> Config {
         }
         if let Some(t) = table.and_then(|t| t.as_table_like()) {
             for (k, _) in t.iter().filter(|(k, _)| !spec.iter().any(|(s, _)| s == k)) {
-                errors.push(format!("{section}.{k}: kunci tidak dikenal, diabaikan"));
+                errors.push(Diag::new("unknown_key").at(format!("{section}.{k}")).then("ignored"));
             }
         }
         values.insert(section.to_string(), Value::Object(out));
@@ -161,7 +163,7 @@ pub fn load(text: Option<&str>) -> Config {
         for (k, v) in t.iter() {
             match v.as_str() {
                 Some(a) => drop(keys.insert(k.to_string(), json!(a))),
-                None => errors.push(format!("keys.\"{k}\": nilai harus nama aksi (teks), diabaikan")),
+                None => errors.push(Diag::new("key_not_action").at(format!("keys.\"{k}\"")).then("ignored")),
             }
         }
     }
@@ -169,7 +171,7 @@ pub fn load(text: Option<&str>) -> Config {
     let item = doc.as_ref().and_then(|d| d.get("profile"));
     let arr = item.and_then(|v| v.as_array_of_tables());
     if item.is_some() && arr.is_none() {
-        errors.push("profile: harus ditulis sebagai [[profile]], diabaikan".into());
+        errors.push(Diag::new("not_array_table").at("profile").then("ignored"));
     }
     let tables: Vec<&dyn toml_edit::TableLike> = arr.map(|a| a.iter().map(|t| t as &dyn toml_edit::TableLike).collect()).unwrap_or_default();
     let (mut profiles, perr) = crate::profile::from_config(&tables);
@@ -178,21 +180,21 @@ pub fn load(text: Option<&str>) -> Config {
     let item = doc.as_ref().and_then(|d| d.get("account"));
     let arr = item.and_then(|v| v.as_array_of_tables());
     if item.is_some() && arr.is_none() {
-        errors.push("account: harus ditulis sebagai [[account]], diabaikan".into());
+        errors.push(Diag::new("not_array_table").at("account").then("ignored"));
     }
     let tables: Vec<&dyn toml_edit::TableLike> = arr.map(|a| a.iter().map(|t| t as &dyn toml_edit::TableLike).collect()).unwrap_or_default();
     let (accounts, aerr) = crate::account::from_config(&tables);
     errors.extend(aerr);
     for p in profiles.iter_mut().filter(|p| !p.account.is_empty()) {
         let why = if !accounts.iter().any(|a| a.id == p.account && a.agent == p.agent) {
-            Some("akun tidak dikenal untuk agent ini")
+            Some("no_such_account")
         } else if crate::account::conflicts(&p.env) {
-            Some("CLAUDE_CONFIG_DIR juga ditulis di env profil (dua sumber)")
+            Some("account_env_conflict")
         } else {
             None
         };
         if let Some(why) = why {
-            errors.push(format!("profile {}.account: {why}; memakai akun Utama", p.id));
+            errors.push(Diag::new(why).at(format!("profile {}.account", p.id)).then("main_account"));
             p.account.clear();
         }
     }
@@ -216,20 +218,20 @@ fn defaults() -> Value {
 }
 
 /// Ubah satu kunci dari Pengaturan. Komentar dan urutan file tetap; file rusak tidak disentuh.
-pub fn set(path: &Path, section: &str, key: &str, value: &Value) -> Result<(), String> {
+pub fn set(path: &Path, section: &str, key: &str, value: &Value) -> Result<(), Diag> {
     let kind = SECTIONS
         .iter()
         .find(|(s, _)| *s == section)
         .and_then(|(_, spec)| spec.iter().find(|(k, _)| *k == key))
         .map(|(_, kind)| kind)
-        .ok_or_else(|| format!("{section}.{key}: kunci tidak dikenal"))?;
-    let v = check(kind, value).map_err(|why| format!("{section}.{key}: {why}"))?;
+        .ok_or_else(|| Diag::new("unknown_key").at(format!("{section}.{key}")))?;
+    let v = check(kind, value).map_err(|why| why.at(format!("{section}.{key}")))?;
     let text = match fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(io_err("io_read", e)),
     };
-    let mut doc: DocumentMut = text.parse().map_err(|_| "config.toml rusak; perbaiki filenya dulu, Pengaturan tidak menimpanya".to_string())?;
+    let mut doc: DocumentMut = text.parse().map_err(|_| Diag::new("config_broken"))?;
     if doc.get(section).is_none() {
         doc[section] = toml_edit::table();
     }
@@ -241,32 +243,36 @@ pub fn set(path: &Path, section: &str, key: &str, value: &Value) -> Result<(), S
         Value::Array(a) => toml_edit::value(a.iter().filter_map(Value::as_str).collect::<toml_edit::Array>()),
         _ => unreachable!("check hanya menghasilkan skalar atau daftar teks"),
     };
-    write_atomic(path, doc.to_string().as_bytes()).map_err(|e| e.to_string())
+    write_atomic(path, doc.to_string().as_bytes()).map_err(|e| io_err("io_write", e))
 }
 
-fn read_doc(path: &Path) -> Result<(DocumentMut, Vec<String>), String> {
+/// OS error while reading/writing config: the OS text stays as is
+pub fn io_err(code: &'static str, e: io::Error) -> Diag {
+    Diag::new(code).arg("os", e)
+}
+
+fn read_doc(path: &Path) -> Result<(DocumentMut, Vec<Diag>), Diag> {
     let text = match fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(io_err("io_read", e)),
     };
-    let doc: DocumentMut = text.parse().map_err(|_| "config.toml rusak; perbaiki filenya dulu, Pengaturan tidak menimpanya".to_string())?;
+    let doc: DocumentMut = text.parse().map_err(|_| Diag::new("config_broken"))?;
     Ok((doc, load(Some(&text)).errors))
 }
 
-/// Tulis hanya bila tidak menambah galat baru; galat baru dikembalikan ke Pengaturan, file tidak disentuh.
-fn commit(path: &Path, doc: &DocumentMut, before: &[String]) -> Result<(), String> {
+/// Tulis hanya bila tidak menambah galat baru; galat baru pertama dikembalikan ke Pengaturan, file tidak disentuh.
+fn commit(path: &Path, doc: &DocumentMut, before: &[Diag]) -> Result<(), Diag> {
     let text = doc.to_string();
-    let fresh: Vec<String> = load(Some(&text)).errors.into_iter().filter(|e| !before.contains(e)).collect();
-    if !fresh.is_empty() {
-        return Err(fresh.join("; "));
+    if let Some(fresh) = load(Some(&text)).errors.into_iter().find(|e| !before.contains(e)) {
+        return Err(fresh);
     }
-    write_atomic(path, text.as_bytes()).map_err(|e| e.to_string())
+    write_atomic(path, text.as_bytes()).map_err(|e| io_err("io_write", e))
 }
 
 /// FR-29: simpan profil dari Pengaturan ke `[[profile]]` dengan id yang sama (atau tambah baru).
-pub fn save_profile(path: &Path, p: &Value) -> Result<(), String> {
-    let id = p["id"].as_str().ok_or("id wajib diisi")?;
+pub fn save_profile(path: &Path, p: &Value) -> Result<(), Diag> {
+    let id = p["id"].as_str().ok_or_else(|| Diag::new("required").at("id"))?;
     let (mut doc, before) = read_doc(path)?;
     // gabung dengan entri lama: kunci yang tidak dikirim (mis. env yang nilainya tidak ditampilkan) tetap
     let old = doc
@@ -304,7 +310,7 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), String> {
     if doc.get("profile").is_none() {
         doc["profile"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
     }
-    let arr = doc["profile"].as_array_of_tables_mut().ok_or("profile: harus ditulis sebagai [[profile]]")?;
+    let arr = doc["profile"].as_array_of_tables_mut().ok_or_else(|| Diag::new("not_array_table").at("profile"))?;
     let found = arr.iter().position(|x| x.get("id").and_then(|v| v.as_str()) == Some(id));
     match found.and_then(|i| arr.get_mut(i)) {
         Some(existing) => *existing = t,
@@ -315,16 +321,16 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), String> {
 
 /// FR-39: pintasan dari Pengaturan. Kombinasi lama untuk aksi itu dibuang; `combo` kosong = kembali ke bawaan.
 /// Kombinasi dan nama aksi diperiksa lagi (wajib cmd, bentrok) oleh sisi Rust app yang membangun menu.
-pub fn set_key(path: &Path, action: &str, combo: &str) -> Result<(), String> {
+pub fn set_key(path: &Path, action: &str, combo: &str) -> Result<(), Diag> {
     let ok = |s: &str, extra: &str| s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
     if action.is_empty() || !ok(action, "._") || !ok(combo, "+.,=-;'/[]\\`") {
-        return Err("kombinasi atau aksi tidak sah".into());
+        return Err("bad_combo".into());
     }
     let (mut doc, before) = read_doc(path)?;
     if doc.get("keys").is_none() {
         doc["keys"] = toml_edit::table();
     }
-    let keys = doc["keys"].as_table_like_mut().ok_or("keys: harus tabel")?;
+    let keys = doc["keys"].as_table_like_mut().ok_or_else(|| Diag::new("not_table").at("keys"))?;
     let old: Vec<String> = keys.iter().filter(|(_, v)| v.as_str() == Some(action)).map(|(k, _)| k.to_string()).collect();
     for k in old {
         keys.remove(&k);
@@ -336,14 +342,14 @@ pub fn set_key(path: &Path, action: &str, combo: &str) -> Result<(), String> {
 }
 
 /// FR-61: tambah `[[account]]` (id unik per agent; validasi penuh oleh `load` lewat `commit`).
-pub fn save_account(path: &Path, a: &crate::account::Account) -> Result<(), String> {
+pub fn save_account(path: &Path, a: &crate::account::Account) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     if !doc.contains_key("account") {
         doc["account"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
     }
-    let arr = doc["account"].as_array_of_tables_mut().ok_or("account: harus ditulis sebagai [[account]]")?;
+    let arr = doc["account"].as_array_of_tables_mut().ok_or_else(|| Diag::new("not_array_table").at("account"))?;
     if arr.iter().any(|x| x.get("id").and_then(|v| v.as_str()) == Some(a.id.as_str())) {
-        return Err(format!("akun \"{}\" sudah ada", a.id));
+        return Err(Diag::new("account_exists").arg("id", &a.id));
     }
     let mut t = toml_edit::Table::new();
     t["id"] = toml_edit::value(a.id.as_str());
@@ -356,13 +362,13 @@ pub fn save_account(path: &Path, a: &crate::account::Account) -> Result<(), Stri
 }
 
 /// FR-61 (8): ubah setelan akun yang sudah ada (share, model, effort, trust); validasi penuh oleh `load` lewat `commit`.
-pub fn update_account(path: &Path, a: &crate::account::Account) -> Result<(), String> {
+pub fn update_account(path: &Path, a: &crate::account::Account) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     let t = doc
         .get_mut("account")
         .and_then(|v| v.as_array_of_tables_mut())
         .and_then(|arr| arr.iter_mut().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(a.id.as_str())))
-        .ok_or_else(|| format!("akun \"{}\" tidak ada", a.id))?;
+        .ok_or_else(|| Diag::new("no_such_account").arg("id", &a.id))?;
     t["share"] = toml_edit::value(a.share.iter().map(String::as_str).collect::<toml_edit::Array>());
     for (k, v) in [("model", &a.model), ("effort", &a.effort)] {
         if v.is_empty() {
@@ -380,7 +386,7 @@ pub fn update_account(path: &Path, a: &crate::account::Account) -> Result<(), St
 }
 
 /// FR-61: hapus `[[account]]`; folder, tautan, dan Keychain tidak disentuh.
-pub fn remove_account(path: &Path, id: &str) -> Result<(), String> {
+pub fn remove_account(path: &Path, id: &str) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     if let Some(arr) = doc.get_mut("account").and_then(|v| v.as_array_of_tables_mut()) {
         arr.retain(|x| x.get("id").and_then(|v| v.as_str()) != Some(id));
@@ -395,17 +401,17 @@ pub fn remove_account(path: &Path, id: &str) -> Result<(), String> {
 }
 
 /// Implicit parent table (`[a.b]` without a bare `[a]` header), created when missing.
-fn implicit<'a>(t: &'a mut toml_edit::Table, key: &str) -> Result<&'a mut toml_edit::Table, String> {
+fn implicit<'a>(t: &'a mut toml_edit::Table, key: &str) -> Result<&'a mut toml_edit::Table, Diag> {
     if !t.contains_key(key) {
         let mut n = toml_edit::Table::new();
         n.set_implicit(true);
         t.insert(key, toml_edit::Item::Table(n));
     }
-    t[key].as_table_mut().ok_or_else(|| format!("{key}: harus tabel"))
+    t[key].as_table_mut().ok_or_else(|| Diag::new("not_table").at(key))
 }
 
 /// FR-78: add or change `[addons.plugin.<id>]` (only the given fields), or remove it; validated by `load` via `commit`.
-pub fn set_plugin(path: &Path, id: &str, dir: Option<&str>, scope: Option<&str>, workspaces: Option<&[String]>, remove: bool) -> Result<(), String> {
+pub fn set_plugin(path: &Path, id: &str, dir: Option<&str>, scope: Option<&str>, workspaces: Option<&[String]>, remove: bool) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     let plugins = implicit(implicit(doc.as_table_mut(), "addons")?, "plugin")?;
     if remove {
@@ -413,7 +419,7 @@ pub fn set_plugin(path: &Path, id: &str, dir: Option<&str>, scope: Option<&str>,
         return commit(path, &doc, &before);
     }
     if !plugins.contains_key(id) && dir.is_none() {
-        return Err(format!("plugin \"{id}\" tidak ada"));
+        return Err(Diag::new("no_such_plugin").arg("id", id));
     }
     let t = implicit(plugins, id)?;
     t.set_implicit(false);
@@ -430,7 +436,7 @@ pub fn set_plugin(path: &Path, id: &str, dir: Option<&str>, scope: Option<&str>,
 }
 
 /// FR-78: `[workspace.<id>.mcp]` = file + strict, or removed (`None`).
-pub fn set_mcp(path: &Path, ws: &str, mcp: Option<(&str, bool)>) -> Result<(), String> {
+pub fn set_mcp(path: &Path, ws: &str, mcp: Option<(&str, bool)>) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     let w = implicit(implicit(doc.as_table_mut(), "workspace")?, ws)?;
     match mcp {
@@ -446,7 +452,7 @@ pub fn set_mcp(path: &Path, ws: &str, mcp: Option<(&str, bool)>) -> Result<(), S
 }
 
 /// FR-29: profil bawaan kembali ke asal / profil tambahan dihapus = semua `[[profile]]` dengan id itu dibuang.
-pub fn reset_profile(path: &Path, id: &str) -> Result<(), String> {
+pub fn reset_profile(path: &Path, id: &str) -> Result<(), Diag> {
     let (mut doc, before) = read_doc(path)?;
     if let Some(arr) = doc.get_mut("profile").and_then(|v| v.as_array_of_tables_mut()) {
         arr.retain(|x| x.get("id").and_then(|v| v.as_str()) != Some(id));
@@ -490,7 +496,7 @@ mod tests {
         assert_eq!(c.values["ui"]["cursor"], "block");
         assert_eq!(c.values["ui"]["theme"], "system");
         assert_eq!(c.values["keys"]["cmd+t"], "pane.split.right");
-        let all = c.errors.join("\n");
+        let all = c.errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         for want in ["ui.font_size", "ui.theme", "ui.warna", "cmd+y"] {
             assert!(all.contains(want), "{want} tidak ditandai: {all}");
         }
@@ -502,7 +508,7 @@ mod tests {
         assert_eq!(load(Some("[ui]\nlanguage = \"en\"\n")).values["ui"]["language"], "en");
         let c = load(Some("[ui]\nlanguage = \"fr\"\n"));
         assert_eq!(c.values["ui"]["language"], "system");
-        assert!(c.errors.join("").contains("ui.language"), "{:?}", c.errors);
+        assert!(c.errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("").contains("ui.language"), "{:?}", c.errors);
     }
 
     #[test]
@@ -514,7 +520,7 @@ mod tests {
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         let c = load(Some("[ui]\ncommand_timeline = \"mati\"\n"));
         assert_eq!(c.values["ui"]["command_timeline"], true);
-        assert!(c.errors.join("").contains("ui.command_timeline"), "{:?}", c.errors);
+        assert!(c.errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("").contains("ui.command_timeline"), "{:?}", c.errors);
         // ditulis lewat config.set, bukan hanya dibaca
         let p = scratch("linimasa");
         set(&p, "ui", "command_timeline", &json!(false)).unwrap();
@@ -526,7 +532,7 @@ mod tests {
         let c = load(Some("[toolbar]\nleft = [\"rich_input\", \"diff\"]\nright = [\"branch\", \"jam\"]\n"));
         assert_eq!(c.values["toolbar"]["left"], json!(["rich_input", "diff"]));
         assert_eq!(c.values["toolbar"]["right"], json!(["cwd", "branch", "settings"]), "rusak = bawaan");
-        assert!(c.errors.join("").contains("toolbar.right"));
+        assert!(c.errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("").contains("toolbar.right"));
         let p = scratch("toolbar");
         set(&p, "toolbar", "left", &json!(["diff"])).unwrap();
         assert_eq!(load(Some(&fs::read_to_string(&p).unwrap())).values["toolbar"]["left"], json!(["diff"]));
@@ -593,7 +599,7 @@ mod tests {
         // rahasia di env biasa ditolak, file tidak berubah
         let before = fs::read_to_string(&p).unwrap();
         let bad = save_profile(&p, &json!({"id": "claude", "env": {"KEY": "sk-ant-123"}})).unwrap_err();
-        assert!(bad.contains("rahasia"), "{bad}");
+        assert_eq!(bad.code, "env_secret", "{bad}");
         assert_eq!(fs::read_to_string(&p).unwrap(), before);
         reset_profile(&p, "claude").unwrap();
         let c = load(Some(&fs::read_to_string(&p).unwrap()));

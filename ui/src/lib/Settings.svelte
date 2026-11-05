@@ -7,7 +7,7 @@
   import { call } from "./daemon";
   import { envRows, envPatch, type EnvRow } from "./env";
   import { pretty, type Account, type Agent, type Config, type Profile, type Ui } from "./config";
-  import { t } from "./i18n/state.svelte";
+  import { errText, t } from "./i18n/state.svelte";
 
   let {
     cfg,
@@ -53,7 +53,7 @@
   ];
   async function updateAccount(params: Record<string, unknown>) {
     const r = await call("account.update", params).catch((e) => ({ error: String(e) }));
-    accErr = r?.error ?? "";
+    accErr = r?.error ? errText(r.error, r.args) : "";
     loadAccounts();
   }
   async function setFollow(a: Account, items: string[], follow: boolean) {
@@ -69,8 +69,8 @@
   });
   async function createAccount() {
     const r = await call("account.create", { name: accForm.name.trim(), dir: accForm.dir.trim() || undefined, share: accForm.share }).catch((e) => ({ error: String(e) }));
-    if (r.error && !r.id) return void (accForm.error = r.error);
-    accForm = { name: "", dir: "", share: [...SHARE_DEFAULT], error: r.error ?? "", info: r.skipped?.length ? `Sudah ada, tidak ditimpa: ${r.skipped.join(", ")}` : "" };
+    if (r.error && !r.id) return void (accForm.error = errText(r.error, r.args));
+    accForm = { name: "", dir: "", share: [...SHARE_DEFAULT], error: r.error ? errText(r.error, r.args) : "", info: r.skipped?.length ? `Sudah ada, tidak ditimpa: ${r.skipped.join(", ")}` : "" };
     accOpen = !!(accForm.error || accForm.info);
     loadAccounts();
   }
@@ -78,7 +78,7 @@
     if (removeAsk !== id) return void (removeAsk = id);
     removeAsk = "";
     const r = await call("account.remove", { id }).catch((e) => ({ error: String(e) }));
-    accErr = r?.error ?? "";
+    accErr = r?.error ? errText(r.error, r.args) : "";
     loadAccounts();
   }
   let daemon = $state<{ daemon: string; proto: number; msg?: { rate_per_min: number; hop_max: number } } | null>(null);
@@ -167,14 +167,14 @@
       account: form.account,
     };
     const r = await call("profile.save", { profile }).catch((e) => ({ error: String(e) }));
-    if (r.error) failed = r.error;
+    if (r.error) failed = errText(r.error, r.args);
     else form = null;
   }
 
   async function resetProfile(id: string) {
     failed = "";
     const r = await call("profile.reset", { id }).catch((e) => ({ error: String(e) }));
-    if (r.error) failed = r.error;
+    if (r.error) failed = errText(r.error, r.args);
   }
   let resetAsk = $state(false);
   let copied = $state("");
@@ -262,7 +262,7 @@
     failed = "";
     for (const z of ["left", "right"] as Zone[]) {
       const r = await call("config.set", { section: "toolbar", key: z, value: next[z] }).catch((e) => ({ error: String(e) }));
-      if (r.error) failed = r.error;
+      if (r.error) failed = errText(r.error, r.args);
     }
   }
   let tbDrag = $state<{ z: Zone; i: number } | null>(null);
@@ -294,7 +294,7 @@
     failed = "";
     keyEdit = null;
     const r = await call("keys.set", { action: id, combo: combo.trim() }).catch((e) => ({ error: String(e) }));
-    if (r.error) failed = r.error;
+    if (r.error) failed = errText(r.error, r.args);
   }
   let version = $state("");
   let agents = $state<Agent[]>([]);
@@ -313,7 +313,7 @@
   });
   async function plugin(params: Record<string, unknown>) {
     const r = await call("addon.plugin", params).catch((e) => ({ error: String(e) }));
-    addonErr = r?.error ?? "";
+    addonErr = r?.error ? errText(r.error, r.args) : "";
   }
   async function addPlugin() {
     const path = await invoke<string | null>("pick_folder");
@@ -333,7 +333,7 @@
   async function saveMcp(off = false) {
     if (!mcpEdit) return;
     const r = await call("addon.mcp.set", { workspace: mcpEdit.ws, text: off ? "" : mcpEdit.text, strict: mcpEdit.strict }).catch((e) => ({ error: String(e) }));
-    if (r?.error) mcpEdit.error = r.error;
+    if (r?.error) mcpEdit.error = errText(r.error, r.args);
     else mcpEdit = null;
   }
   /// Jenis hook yang dipasang daemon (core/src/profile.rs `hook_files`); sumber status pane tiap agent.
@@ -371,7 +371,7 @@
   async function reveal(sub: string) {
     failed = "";
     const r = await invoke("reveal_dir", { config: cfg.path, sub }).catch((e) => String(e));
-    if (typeof r === "string" && r) failed = r;
+    if (typeof r === "string" && r) failed = errText(r);
   }
 
   onMount(async () => {
@@ -392,7 +392,7 @@
   async function set<K extends keyof Ui>(key: K, value: Ui[K], section = "ui") {
     failed = "";
     const r = await call("config.set", { section, key, value }).catch((e) => ({ error: String(e) }));
-    if (r.error) failed = r.error;
+    if (r.error) failed = errText(r.error, r.args);
   }
   const setNotify = (key: string, value: boolean | number) => set(key as keyof Ui, value as never, "notify");
 
@@ -496,7 +496,7 @@
       {#if cfg.errors.length}
         <div class="errs" role="alert">
           <b>{t("set.cfgErrors")}</b>
-          {#each cfg.errors as e}<span>{e}</span>{/each}
+          {#each cfg.errors as e}<span>{errText(e)}</span>{/each}
         </div>
       {/if}
       {#if failed}<div class="errs" role="alert"><span>{failed}</span></div>{/if}
