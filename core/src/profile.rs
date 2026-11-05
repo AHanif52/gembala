@@ -200,6 +200,17 @@ pub struct Hooks {
 /// FR-4: event hook agent → status pane. `None` = event tidak mengubah status.
 /// `payload` = stdin (Claude) atau argumen terakhir (Codex); hanya dipakai untuk membedakan "butuh izin",
 /// isinya tidak diteruskan ke daemon (SEC-33), kecuali pesan terakhir giliran Codex untuk balasan otomatis (FR-66).
+/// Codex TUI names a new thread with a side turn on its own thread (`last-assistant-message` = `{"title":"…"}`),
+/// reported through `notify` like a real turn, often before the real one ends. It isn't the pane's turn: not done,
+/// not a reply (FR-66), not the session to resume (FR-68). Recognised by Codex's title prompt; `thread-id` can't
+/// tell it apart because `/new` also starts a new thread.
+/// ponytail: matches Codex 0.166's prompt text; if Codex rewords it, title turns count as turns again (old behaviour)
+fn codex_title_turn(payload: &str) -> bool {
+    serde_json::from_str::<Value>(payload).is_ok_and(|v| {
+        v["input-messages"][0].as_str().is_some_and(|m| m.starts_with("Generate a concise, single-line task title"))
+    })
+}
+
 pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static str> {
     Some(match (agent, event) {
         ("claude", "prompt" | "tool") => "working",
@@ -210,6 +221,7 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
         // dibaca dari `notification_type`/`message` saja: payload selalu memuat `permission_mode`, jadi menunggu input ikut "butuh izin"
         ("claude", "notify") if claude_permission(payload) => "blocked",
         ("claude", "notify") => "idle",
+        ("codex", "notify") if codex_title_turn(payload) => return None,
         ("codex", "notify") if payload.contains("agent-turn-complete") => "done",
         // FR-68: omp menunggu persetujuan tool = butuh izin; setelah diputus kembali bekerja
         ("omp", "approval") => "blocked",
@@ -909,6 +921,11 @@ mod tests {
         assert_eq!(hook_status("claude", "notify", ask), Some("blocked"));
         assert_eq!(hook_status("codex", "notify", r#"{"type":"agent-turn-complete"}"#), Some("done"));
         assert_eq!(hook_status("codex", "notify", r#"{"type":"lain"}"#), None);
+        // payload seen from Codex 0.166 (5 Nov 2026): the thread-title side turn is ignored, a real turn isn't
+        let title = r#"{"type":"agent-turn-complete","thread-id":"01a1aa30-5331","input-messages":["Generate a concise, single-line task title of at most 36 characters"],"last-assistant-message":"{\"title\":\"Reply hello\"}"}"#;
+        assert_eq!(hook_status("codex", "notify", title), None);
+        let turn = r#"{"type":"agent-turn-complete","thread-id":"01a1aa2f-ca06","input-messages":["Reply with one word: hello"],"last-assistant-message":"hello"}"#;
+        assert_eq!(hook_status("codex", "notify", turn), Some("done"));
         assert_eq!(hook_status("opencode", "permission", ""), Some("blocked"));
         assert_eq!(hook_status("omp", "end", ""), Some("done"));
         assert_eq!(hook_status("x", "y", ""), None);
