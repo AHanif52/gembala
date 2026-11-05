@@ -1784,7 +1784,8 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
                     a => format!("claude-{a}"),
                 },
             };
-            pane.session.lock().unwrap().clone().or_else(|| printed_resume(&log)).map(|s| format!("{cmd} --resume {s}"))
+            let saved = |s: &String| claude_saved(std::path::Path::new(&home), s);
+            pane.session.lock().unwrap().clone().filter(saved).or_else(|| printed_resume(&log)).map(|s| format!("{cmd} --resume {s}"))
         }
         "codex" => Some(printed_resume(&log).or_else(|| pane.session.lock().unwrap().clone()).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
         "opencode" => Some(pane.session.lock().unwrap().clone().map_or("opencode --continue".into(), |s| format!("opencode --session {s}"))),
@@ -1840,6 +1841,19 @@ fn omp_session(home: &std::path::Path, cwd: &std::path::Path, since: std::time::
     let id = newest.1.strip_suffix(".jsonl")?.split_once('_')?.1;
     // nama file ditulis ke terminal: hanya karakter id yang lolos
     id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-').then(|| id.to_string())
+}
+
+/// FR-56: Claude writes a transcript only after the first prompt, so the `--session-id` Gembala hands out is not
+/// resumable ("No conversation found") when Claude was closed without one.
+// ponytail: looks in ~/.claude* only; an account dir elsewhere falls back to the id Claude prints on exit
+fn claude_saved(home: &std::path::Path, id: &str) -> bool {
+    let Ok(dirs) = std::fs::read_dir(home) else { return false };
+    dirs.flatten()
+        .filter(|d| d.file_name().to_string_lossy().starts_with(".claude"))
+        .filter_map(|d| std::fs::read_dir(d.path().join("projects")).ok())
+        .flatten()
+        .flatten()
+        .any(|p| p.path().join(format!("{id}.jsonl")).is_file())
 }
 
 /// Output PTY → grid + semua pelanggan. Selesai saat shell pane keluar.
@@ -2010,6 +2024,18 @@ mod tests {
         assert_eq!(omp_session(&home, &home, later), None);
         std::fs::write(home.join(".omp/agent/sessions/----/2026-11-02T00-00-00-000Z_\x1b[2J.jsonl"), "").unwrap();
         assert_eq!(omp_session(&home, &home, since), None);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn claude_session_resumable_only_with_transcript() {
+        let home = std::env::temp_dir().join(format!("gclaude-{}", std::process::id()));
+        let d = home.join(".claude-kantor/projects/-Users-x-repo");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("450814a1-b889-4ef9-b8f6-b6e4d68cf2d3.jsonl"), "").unwrap();
+        assert!(claude_saved(&home, "450814a1-b889-4ef9-b8f6-b6e4d68cf2d3"));
+        // closed before the first prompt: no transcript anywhere
+        assert!(!claude_saved(&home, "bda68e32-869e-46ca-ae5b-b09d7ffb02d4"));
         std::fs::remove_dir_all(&home).unwrap();
     }
 }
