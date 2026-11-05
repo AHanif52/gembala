@@ -11,6 +11,7 @@ use crate::config;
 use crate::msg;
 use crate::git;
 use crate::profile;
+use crate::recipe;
 use crate::grid::Grid;
 use crate::history;
 use crate::snap;
@@ -804,6 +805,34 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         "addon.status" => Ok(json!({"rtk": profile::rtk_version()})),
+        // FR-74, SEC-27: harness recipes. Approve and delete exist on the UI channel only; the pane channel has no recipe method.
+        "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" => {
+            let store = recipe::Store::new(config::path().parent().unwrap_or(std::path::Path::new("/")));
+            // agent kinds found on this Mac; unknown until detection ran once, then nothing is flagged as missing
+            let found = st.agents.lock().unwrap().clone();
+            let installed: Option<Vec<String>> = found.as_array().map(|a| a.iter().filter(|r| r["installed"] == true).filter_map(|r| r["agent"].as_str().map(String::from)).collect());
+            let inst = installed.as_deref();
+            let id = || p["id"].as_str().ok_or("bad_params");
+            let r = match m {
+                "recipe.list" => {
+                    if let Err(e) = store.ensure_defaults() {
+                        eprintln!("gembala daemon: recipe defaults: {e}");
+                    }
+                    Ok(store.list(inst))
+                }
+                "recipe.get" => store.get(id()?, inst),
+                "recipe.approve" => store.approve(id()?, p["hash"].as_str().ok_or("bad_params")?, inst).map(|_| json!({})),
+                "recipe.delete" => store.delete(id()?).map(|_| json!({})),
+                // preview of text not saved yet (Atur pakai AI, H5): same rules, no file touched
+                _ => {
+                    let text = p["text"].as_str().ok_or("bad_params")?;
+                    let r = recipe::parse(text, "preview", inst);
+                    Ok(json!({"recipe": r.recipe.as_ref().map(recipe::summary), "errors": r.errors.iter().map(crate::diag::Diag::json).collect::<Vec<_>>(),
+                              "warnings": r.warnings.iter().map(crate::diag::Diag::json).collect::<Vec<_>>()}))
+                }
+            };
+            Ok(r.unwrap_or_else(|d| d.reply()))
+        }
         "pane.create" => {
             // batas bagian 11 BRD, bisa diubah lewat [limits] max_panes
             let max = st.config.lock().unwrap()["values"]["limits"]["max_panes"].as_u64().unwrap_or(32) as usize;

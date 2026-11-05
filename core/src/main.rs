@@ -10,6 +10,7 @@ mod history;
 mod msg;
 mod profile;
 mod pty;
+mod recipe;
 mod rundir;
 mod sign;
 mod snap;

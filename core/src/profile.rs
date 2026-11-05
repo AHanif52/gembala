@@ -50,6 +50,11 @@ const AGENTS: &[(&str, &str, &str, &str, &str)] = &[
     ("omp", "Oh My Pi", "omp", "brew install can1357/tap/omp", "18.16"),
 ];
 
+/// agent kinds Gembala knows (recipes name agents by these)
+pub fn agent_ids() -> impl Iterator<Item = &'static str> {
+    AGENTS.iter().map(|a| a.0)
+}
+
 pub fn builtin() -> Vec<Profile> {
     let shell = Profile {
         id: "shell".into(),

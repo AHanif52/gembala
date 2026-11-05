@@ -1298,3 +1298,26 @@ fn lewati_izin_dari_argumen_proses() {
     let out = ui.attach_until(k, &["SELESAI-Y"]);
     assert!(out.contains("needs_confirmation"), "{out}");
 }
+
+/// FR-74, SEC-27: recipes are approved by bytes; an edit outside the app, or a stale hash, cancels the approval.
+#[test]
+fn resep_disetujui_per_isi() {
+    let d = start("resep");
+    let mut ui = Cli::ui(&d);
+    let rows = ui.call("recipe.list", json!({}))["result"].clone();
+    assert_eq!(rows.as_array().map(Vec::len), Some(2), "{rows}");
+    assert!(rows.as_array().unwrap().iter().all(|r| r["status"] == "needs_approval"), "{rows}");
+    let got = ui.call("recipe.get", json!({"id": "fitur-baru"}))["result"].clone();
+    let h = got["hash"].as_str().unwrap().to_string();
+    assert_eq!(ui.call("recipe.approve", json!({"id": "fitur-baru", "hash": "00"}))["result"]["error"], "recipe_changed");
+    assert_eq!(ui.call("recipe.approve", json!({"id": "fitur-baru", "hash": h}))["result"], json!({}));
+    assert_eq!(ui.call("recipe.get", json!({"id": "fitur-baru"}))["result"]["status"], "approved");
+    let file = d.dir.join("cfg/recipes/fitur-baru.toml");
+    std::fs::write(&file, format!("{}# edited outside\n", got["text"].as_str().unwrap())).unwrap();
+    assert_eq!(ui.call("recipe.get", json!({"id": "fitur-baru"}))["result"]["status"], "changed");
+    assert_eq!(ui.call("recipe.get", json!({"id": "../x"}))["result"]["error"], "recipe_id");
+    let v = ui.call("recipe.validate", json!({"text": "[[step]]\nid = \"a\"\n"}))["result"].clone();
+    assert_eq!(v["errors"][0]["code"], "no_agent", "{v}");
+    assert_eq!(ui.call("recipe.delete", json!({"id": "fitur-baru"}))["result"], json!({}));
+    assert!(!file.exists());
+}
