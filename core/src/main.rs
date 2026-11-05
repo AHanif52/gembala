@@ -6,6 +6,7 @@ mod daemon;
 mod diag;
 mod git;
 mod grid;
+mod harness;
 mod history;
 mod msg;
 mod profile;
