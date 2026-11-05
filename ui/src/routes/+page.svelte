@@ -22,7 +22,7 @@
   import { safeResume } from "$lib/resume";
   import { cleanTitle } from "$lib/label";
   import { resolveLang } from "$lib/i18n";
-  import { errText, i18n, loc } from "$lib/i18n/state.svelte";
+  import { errText, i18n, loc, t } from "$lib/i18n/state.svelte";
 
   type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: akun bawaan per agent; FR-44: warna blok; FR-13: brief
@@ -120,7 +120,7 @@
   let upgrade = $state<{ daemon: string; app: string; panes: number } | null>(null); // FR-21
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
   let rich = $state<{ pane: number; text: string; files?: string[] } | null>(null); // FR-14; files = attachment chips (pen 04)
-  let changes = $state<{ pane: number; diff: any; turns?: any[]; turn?: number | null; ask?: any } | null>(null); // FR-22, FR-70
+  let changes = $state<{ pane: number; diff: any; turns?: any[]; turn?: number | null; ask?: any; act?: any } | null>(null); // FR-22, FR-70, FR-23
   let outputOf = $state<number | null>(null); // FR-56
 
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
@@ -704,7 +704,8 @@
   /// FR-22: panel menempel ikut pane yang fokus; diff lama tetap tampil sampai yang baru datang
   async function loadChanges(pane: number) {
     const same = changes?.pane === pane;
-    changes = { pane, diff: same ? changes!.diff : null, turns: same ? changes!.turns : [], turn: same ? changes!.turn : null };
+    // FR-23: an open card (commit message being typed) survives the refresh after an agent's turn
+    changes = { pane, diff: same ? changes!.diff : null, turns: same ? changes!.turns : [], turn: same ? changes!.turn : null, act: same ? changes!.act : null };
     refreshGit(pane);
     const turns = await call("git.turns", { pane }).catch(() => []);
     if (changes?.pane !== pane) return;
@@ -735,6 +736,28 @@
     c.ask = null;
     say(r.error ? `Gagal mengembalikan: ${r.error}` : `${r.restored} file dikembalikan`);
     pickTurn(null);
+  }
+  /// FR-23: confirmation card for restoring one file / committing files; the daemon names other panes in the repo
+  async function askFiles(op: "restore" | "commit", paths: string[]) {
+    if (!changes) return;
+    const pane = changes.pane;
+    const r = await call("git.file_preview", { pane, paths }).catch((e) => ({ error: String(e) }));
+    if (r.error) return say(errText(r.error));
+    if (changes?.pane === pane) changes.act = { op, ...r, message: "" };
+  }
+  async function doFiles() {
+    const c = changes;
+    const a = c?.act;
+    if (!c || !a || (a.op === "commit" && !a.message.trim())) return;
+    const paths = a.files.map((f: any) => f.path);
+    const r = await (a.op === "restore"
+      ? call("git.file_restore", { pane: c.pane, path: paths[0] })
+      : call("git.file_commit", { pane: c.pane, paths, message: a.message })
+    ).catch((e) => ({ error: String(e) }));
+    if (r.error) return void ((a.error = r.error), (a.args = r.args)); // card stays: e.g. a hook said why
+    c.act = null;
+    say(a.op === "restore" ? t("chg.restored", { file: paths[0] }) : t("chg.committed", { commit: r.commit }));
+    loadChanges(c.pane);
   }
   let panelW = $state(460); // FR-22: lebar panel perubahan, disimpan di layout
   $effect(() => {
@@ -1421,7 +1444,8 @@
       return stop(e);
     }
     if (changes && e.key === "Escape") {
-      changes = null;
+      if (changes.act) changes.act = null;
+      else changes = null;
       return stop(e);
     }
     if (editing) {
@@ -2521,6 +2545,7 @@
     <Changes status={meta[changes.pane]?.git} diff={changes.diff} width={panelW} onwidth={(w: number) => (panelW = w)}
       pname={meta[changes.pane]?.name ?? ""} turns={changes.turns ?? []} turn={changes.turn ?? null} ask={changes.ask ?? null}
       onturn={pickTurn} onrestore={askRestore} onconfirm={doRestore} oncancel={() => changes && (changes.ask = null)}
+      act={changes.act ?? null} onact={askFiles} onactdo={doFiles} onactcancel={() => changes && (changes.act = null)}
       onreload={() => changes && loadChanges(changes.pane)} onclose={() => (changes = null)} />
   {/if}
   {#if cfg?.errors.length && cfgSeen !== JSON.stringify(cfg.errors)}

@@ -231,6 +231,18 @@ fn kriteria_9_skrip_di_pane() {
     assert!(out.contains(r#"{"error":{"code":"not_allowed"},"id":3}"#), "{out}");
 }
 
+/// Criterion 12 (FR-23, SEC-29): a script in a pane can't restore or commit through the pane channel.
+#[test]
+fn criterion_12_restore_commit_not_on_pane_channel() {
+    let d = start("k12");
+    let mut ui = Cli::ui(&d);
+    let script = r#"(printf '%s\n' '{"id":1,"method":"hello","params":{"proto":1}}' '{"id":2,"method":"git.file_restore","params":{"pane":1,"path":"a"}}' '{"id":3,"method":"git.file_commit","params":{"pane":1,"paths":["a"],"message":"x"}}'; sleep 1) | nc -U "$GEMBALA_SOCKET"; echo SELESAI-K12"#;
+    let pane = ui.call("pane.create", json!({"cmd": script, "rows": 40, "cols": 200}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(pane, &["SELESAI-K12"]);
+    assert!(out.contains(r#"{"error":{"code":"not_allowed"},"id":2}"#), "{out}");
+    assert!(out.contains(r#"{"error":{"code":"not_allowed"},"id":3}"#), "{out}");
+}
+
 /// Klien yang attach tapi tidak membaca diputus saat antreannya penuh; pane tetap jalan sampai selesai.
 #[test]
 fn klien_lambat_diputus() {

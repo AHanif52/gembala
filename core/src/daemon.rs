@@ -462,6 +462,29 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
             Ok(if m == "git.status" { git::status(&cwd) } else { git::diff(&cwd) })
         }
+        // FR-23: restore/commit files from the changes panel, UI channel only (SEC-20, SEC-29); repo = the pane's cwd.
+        // The preview names other panes working in the same repo, for the confirmation card's warning.
+        "git.file_preview" | "git.file_restore" | "git.file_commit" => {
+            let pane = st.pane(p)?;
+            let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
+            let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
+            let paths: Vec<String> = p["paths"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+            match m {
+                "git.file_restore" => git::restore_file(&cwd, p["path"].as_str().unwrap_or_default()),
+                "git.file_commit" => Ok(git::commit_files(&cwd, &paths, p["message"].as_str().unwrap_or_default()).unwrap_or_else(|e| e.reply())),
+                _ => {
+                    let files = git::file_kinds(&cwd, &paths)?;
+                    let root = git::git(&cwd, &["rev-parse", "--show-toplevel"]).and_then(|s| std::path::PathBuf::from(s.trim()).canonicalize().ok()).ok_or("not_repo")?;
+                    let me = p["pane"].as_u64().unwrap_or_default();
+                    let others: Vec<String> = st.panes.lock().unwrap().iter().filter(|(k, _)| **k != me).filter_map(|(_, q)| {
+                        let pid = pty::busy(&q.master, q.sid).map_or(q.sid, |(pid, _)| pid);
+                        let hit = [pty::cwd_of(pid), pty::cwd_of(q.sid)].into_iter().flatten().any(|c| c.canonicalize().is_ok_and(|c| c.starts_with(&root)));
+                        hit.then(|| q.name.lock().unwrap().clone())
+                    }).collect();
+                    Ok(json!({"files": files, "others": others}))
+                }
+            }
+        }
         // FR-71: worktree hanya lewat kanal UI (SEC-20); folder repo dari pane, bukan parameter
         "git.worktree_add" => {
             let pane = st.pane(p)?;

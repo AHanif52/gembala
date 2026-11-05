@@ -1,6 +1,7 @@
 //! Panel perubahan dan toolbar (FR-22, FR-55; SEC-29): git milik pengguna, baca saja, tanpa jaringan.
 //! Tidak ada input pengguna yang menjadi argumen git; folder kerja diambil dari pane. Pengecualian FR-71: worktree
 //! (nama tervalidasi, hook repo dimatikan) hanya dari kanal UI.
+//! FR-23 exception: restore and commit one file (paths from the panel's own diff), UI channel only too.
 
 use serde_json::{Value, json};
 use std::path::Path;
@@ -76,6 +77,104 @@ pub fn worktree_remove(dir: &Path, force: bool) -> Result<Value, &'static str> {
         return Err("remove_failed");
     }
     Ok(json!({"removed": true}))
+}
+
+/// FR-23: toplevel of `cwd` for a write action; refused when it isn't a repo, the repo runs filters (SEC-29), or a
+/// path isn't plain and relative to that toplevel (the panel only sends paths from its own diff).
+fn act_root(cwd: &Path, paths: &[String]) -> Result<std::path::PathBuf, &'static str> {
+    let root = git(cwd, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).ok_or("not_repo")?;
+    if repo_runs_filters(cwd) {
+        return Err("repo_filter");
+    }
+    let plain = |p: &String| !p.is_empty() && !p.contains('\0') && Path::new(p).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    if paths.is_empty() || paths.len() > 500 || !paths.iter().all(plain) {
+        return Err("bad_path");
+    }
+    Ok(root.into())
+}
+
+/// FR-23: whether HEAD has `path` as a file. A file HEAD doesn't have (untracked, or only staged) has no committed
+/// version: "restoring" it would delete it for good, so restore refuses it.
+fn in_head(root: &Path, path: &str) -> bool {
+    git(root, &["--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", path])
+        .is_some_and(|s| s.split('\0').any(|e| e.split_once('\t').is_some_and(|(meta, name)| name == path && meta.contains(" blob "))))
+}
+
+/// FR-23: per path, `mod` (HEAD has it: restore and commit) or `new` (commit only), for the confirmation card.
+pub fn file_kinds(cwd: &Path, paths: &[String]) -> Result<Value, &'static str> {
+    let root = act_root(cwd, paths)?;
+    Ok(json!(paths.iter().map(|p| json!({"path": p, "kind": if in_head(&root, p) { "mod" } else { "new" }})).collect::<Vec<_>>()))
+}
+
+/// FR-23 (SEC-29): one file back to HEAD, staged and unstaged changes both dropped. UI channel only.
+pub fn restore_file(cwd: &Path, path: &str) -> Result<Value, &'static str> {
+    let root = act_root(cwd, &[path.to_string()])?;
+    if !in_head(&root, path) {
+        return Err("new_file");
+    }
+    git_for(&root, &["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--", path], Duration::from_secs(30));
+    if git(&root, &["--literal-pathspecs", "status", "--porcelain", "-z", "--", path]).is_none_or(|s| !s.is_empty()) {
+        return Err("restore_failed");
+    }
+    Ok(json!({"restored": path}))
+}
+
+/// FR-23 (SEC-29): commit just `paths` (their worktree content; other staged files stay staged) with the user's
+/// message. Unlike the read-only calls, the user's hooks and signing run as with their own `git commit`; fsmonitor
+/// and embedded bare repos stay off. Failure = `commit_failed` with git's output (e.g. a hook saying why).
+pub fn commit_files(cwd: &Path, paths: &[String], message: &str) -> Result<Value, crate::diag::Diag> {
+    use crate::diag::Diag;
+    if message.trim().is_empty() {
+        return Err(Diag::new("empty_message"));
+    }
+    let root = act_root(cwd, paths).map_err(Diag::new)?;
+    // `commit -- <path>` only takes paths git knows; new files are added first
+    let new: Vec<&str> = paths.iter().filter(|p| !in_head(&root, p)).map(String::as_str).collect();
+    if !new.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "add", "--"];
+        args.extend(&new);
+        git_for(&root, &args, Duration::from_secs(30));
+    }
+    let before = git(&root, &["rev-parse", "-q", "--verify", "HEAD"]);
+    let msg = format!("--message={message}");
+    let mut c = Command::new("git");
+    c.args(["-c", "core.fsmonitor=false", "-c", "safe.bareRepository=explicit", "-C"]).arg(&root);
+    c.args(["--literal-pathspecs", "commit", &msg, "--"]).args(paths);
+    c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true").stdin(Stdio::null());
+    crate::pty::scrub_env(&mut c);
+    let out = output_for(c, Duration::from_secs(120)).unwrap_or_default();
+    let after = git(&root, &["rev-parse", "-q", "--verify", "HEAD"]);
+    if after.is_none() || after == before {
+        let tail: Vec<&str> = out.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
+        return Err(Diag::new("commit_failed").arg("os", redact(&tail.join("\n"))));
+    }
+    Ok(json!({"commit": after.unwrap_or_default().trim().get(..7).unwrap_or_default()}))
+}
+
+/// stdout and stderr together, killed after `limit` (hooks and signing can take a while or hang)
+fn output_for(mut c: Command, limit: Duration) -> Option<String> {
+    use std::io::Read;
+    let (mut r, w) = std::io::pipe().ok()?;
+    c.stdout(w.try_clone().ok()?).stderr(w);
+    let mut child = c.spawn().ok()?;
+    drop(c); // the parent's copy of the pipe's write end, otherwise the read never ends
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = r.read_to_end(&mut out);
+        let _ = tx.send(String::from_utf8_lossy(&out).into_owned());
+    });
+    let t0 = std::time::Instant::now();
+    while child.try_wait().ok()?.is_none() {
+        if t0.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // a hook's leftover background process can keep the pipe open: don't wait for it
+    rx.recv_timeout(Duration::from_secs(2)).ok()
 }
 
 /// SEC-29: filter clean/smudge/process di config lokal repo berjalan saat diff membandingkan worktree dan tidak bisa
@@ -189,6 +288,66 @@ mod tests {
         assert_eq!(worktree_remove(&dir, true).unwrap()["removed"], true);
         assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn restore_and_commit_one_file() {
+        let d = std::env::temp_dir().join(format!("gembala-act-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let run = |a: &[&str]| assert!(Command::new("git").arg("-C").arg(&d).args(a).output().unwrap().status.success(), "{a:?}");
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        for f in ["a.txt", "b c.txt", "-x.txt", "staged.txt"] {
+            std::fs::write(d.join(f), "awal\n").unwrap();
+        }
+        run(&["add", "--", "."]);
+        run(&["commit", "-q", "-m", "awal"]);
+        let p = |s: &str| s.to_string();
+        let read = |f: &str| std::fs::read_to_string(d.join(f)).unwrap();
+
+        // modified, path with a space, path starting with '-', staged and then modified again
+        for f in ["a.txt", "b c.txt", "-x.txt", "staged.txt"] {
+            std::fs::write(d.join(f), "ubah\n").unwrap();
+        }
+        run(&["add", "staged.txt"]);
+        std::fs::write(d.join("staged.txt"), "ubah lagi\n").unwrap();
+        for f in ["b c.txt", "-x.txt", "staged.txt"] {
+            assert_eq!(restore_file(&d, f).unwrap()["restored"], f);
+            assert_eq!(read(f), "awal\n", "{f}");
+        }
+        assert_eq!(read("a.txt"), "ubah\n", "only the asked file goes back");
+        run(&["diff", "--cached", "--quiet"]); // staged change dropped too
+
+        // new files: untracked and only staged are refused (restore would delete them), pathspec magic is literal
+        std::fs::write(d.join("baru.txt"), "x").unwrap();
+        std::fs::write(d.join("idx.txt"), "x").unwrap();
+        run(&["add", "idx.txt"]);
+        assert_eq!(restore_file(&d, "baru.txt"), Err("new_file"));
+        assert_eq!(restore_file(&d, "idx.txt"), Err("new_file"));
+        assert_eq!(restore_file(&d, ":(glob)*"), Err("new_file"));
+        assert!(d.join("baru.txt").exists() && d.join("idx.txt").exists());
+        assert_eq!(restore_file(&d, "../luar"), Err("bad_path"));
+        assert_eq!(restore_file(&d, "/etc/hosts"), Err("bad_path"));
+        assert_eq!(file_kinds(&d, &[p("a.txt"), p("baru.txt")]).unwrap(), json!([{"path": "a.txt", "kind": "mod"}, {"path": "baru.txt", "kind": "new"}]));
+
+        // commit: message required, only the given paths go in, an untracked file is added
+        assert_eq!(commit_files(&d, &[p("a.txt")], "  ").unwrap_err().code, "empty_message");
+        let r = commit_files(&d, &[p("a.txt"), p("baru.txt")], "-m pesan").unwrap();
+        assert_eq!(r["commit"].as_str().unwrap().len(), 7);
+        let log = Command::new("git").arg("-C").arg(&d).args(["show", "--name-only", "--format=%s", "HEAD"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&log.stdout).split_whitespace().collect::<Vec<_>>(), ["-m", "pesan", "a.txt", "baru.txt"]);
+        // idx.txt still staged, not committed
+        assert!(String::from_utf8_lossy(&Command::new("git").arg("-C").arg(&d).args(["status", "--porcelain"]).output().unwrap().stdout).contains("A  idx.txt"));
+
+        // the user's hook runs and can refuse; git's output comes back
+        std::fs::write(d.join(".git/hooks/pre-commit"), "#!/bin/sh\necho ditolak hook >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(d.join(".git/hooks/pre-commit"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let e = commit_files(&d, &[p("idx.txt")], "x").unwrap_err();
+        assert_eq!(e.code, "commit_failed");
+        assert!(e.args[0].1.contains("ditolak hook"), "{e:?}");
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

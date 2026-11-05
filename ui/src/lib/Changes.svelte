@@ -1,7 +1,7 @@
 <script lang="ts">
   // Panel perubahan ala Warp (FR-22): baca saja, menempel di kanan (terminal menyempit). Diff disamarkan daemon (SEC-12).
   import { invoke } from "@tauri-apps/api/core";
-  import { loc } from "./i18n/state.svelte";
+  import { errText, loc, t, tn } from "./i18n/state.svelte";
   let {
     status,
     diff,
@@ -17,6 +17,10 @@
     onrestore = () => {},
     onconfirm = () => {},
     oncancel = () => {},
+    act = null,
+    onact = () => {},
+    onactdo = () => {},
+    onactcancel = () => {},
   }: {
     status: any;
     diff: { repo: boolean; diff?: string; truncated?: boolean; untracked?: string[] } | null;
@@ -33,6 +37,11 @@
     onrestore?: (i: number) => void;
     onconfirm?: () => void;
     oncancel?: () => void;
+    // FR-23: confirmation card for restoring or committing files (UI channel only)
+    act?: { op: "restore" | "commit"; files: { path: string; kind: "mod" | "new" }[]; others: string[]; message: string; error?: string; args?: any } | null;
+    onact?: (op: "restore" | "commit", paths: string[]) => void;
+    onactdo?: () => void;
+    onactcancel?: () => void;
   } = $props();
   const hm = (t: number) => new Date(t * 1000).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" });
   const askTurn = $derived(ask ? turns.find((t) => t.i === ask.i) : undefined);
@@ -48,7 +57,7 @@
     e.preventDefault();
   }
 
-  type File = { path: string; lines: string[]; add: number; del: number };
+  type File = { path: string; lines: string[]; add: number; del: number; isNew: boolean };
 
   const files = $derived.by((): File[] => {
     const out: File[] = [];
@@ -59,6 +68,7 @@
       out.push({
         path: head[2],
         lines,
+        isNew: /^new file mode /m.test(block),
         add: lines.filter((l) => l.startsWith("+")).length,
         del: lines.filter((l) => l.startsWith("-")).length,
       });
@@ -101,6 +111,9 @@
       <span class="repo">Perubahan</span>
     {/if}
     <span class="m">{copied}</span>
+    {#if diff?.repo && turn == null && (files.length || diff.untracked?.length)}
+      <button class="mini" onclick={() => onact("commit", [...files.map((f) => f.path), ...(diff?.untracked ?? [])])}>{t("chg.commitAll")}</button>
+    {/if}
     <button class="mini" onclick={onreload} title="Muat ulang" aria-label="Muat ulang diff">↻</button>
     <button class="mini" onclick={onclose} title="Tutup ⌘⇧= atau Esc" aria-label="Tutup panel">×</button>
   </header>
@@ -139,6 +152,34 @@
       </span>
     </div>
   {/if}
+  {#if act}
+    <div class="ask" role="alertdialog" aria-label={act.op === "restore" ? t("chg.restore") : t("chg.commit")}>
+      {#if act.op === "restore"}
+        <b>{t("chg.restoreTitle", { file: act.files[0]?.path ?? "" })}</b>
+        <span class="m">{t("chg.restoreSub")}</span>
+      {:else}
+        <b>{tn("chg.commitTitle", act.files.length)}</b>
+        <div class="flist">
+          {#each act.files.slice(0, 40) as f (f.path)}<div><span class={f.kind}>{t(f.kind === "new" ? "chg.kind.new" : "chg.kind.mod")}</span> {f.path}</div>{/each}
+          {#if act.files.length > 40}<div class="m">… {act.files.length - 40}</div>{/if}
+        </div>
+        <!-- svelte-ignore a11y_autofocus -->
+        <textarea rows="3" placeholder={t("chg.message")} aria-label={t("chg.message")} bind:value={act.message} autofocus
+          onkeydown={(e) => e.key === "Enter" && e.metaKey && (e.preventDefault(), onactdo())}></textarea>
+        <span class="m">{t("chg.commitSub")}</span>
+      {/if}
+      {#if act.others.length}<span class="warn">{t("chg.others", { names: act.others.join(", ") })}</span>{/if}
+      {#if act.error}<span class="warn err">{errText(act.error, act.args)}</span>{/if}
+      <span class="acts">
+        <button class="mini" onclick={onactcancel}>{t("chg.cancel")} <span class="keys">Esc</span></button>
+        {#if act.op === "restore"}
+          <button class="mini undo" onclick={onactdo}>{t("chg.restore")}</button>
+        {:else}
+          <button class="mini" disabled={!act.message.trim()} onclick={onactdo}>{t("chg.commit")} <span class="keys">⌘↩</span></button>
+        {/if}
+      </span>
+    </div>
+  {/if}
   <div class="body">
     {#if !diff}
       <p class="m">Memuat…</p>
@@ -153,6 +194,10 @@
             <span class="path">{f.path}</span>
             <span class="m"><span class="add">+{f.add}</span> <span class="del">−{f.del}</span></span>
             <button class="mini" onclick={(e) => (e.preventDefault(), copy(f.path, "Path"))}>Salin path</button>
+            {#if turn == null}
+              {#if !f.isNew}<button class="mini" onclick={(e) => (e.preventDefault(), onact("restore", [f.path]))}>{t("chg.restore")}</button>{/if}
+              <button class="mini" onclick={(e) => (e.preventDefault(), onact("commit", [f.path]))}>{t("chg.commit")}</button>
+            {/if}
           </summary>
           <pre>{#each compact(f.lines) as l}{#if typeof l === "number"}<span class="skip">⋯ {l} baris sama</span>{"\n"}{:else}<span
                   class:add={l.startsWith("+")}
@@ -163,7 +208,11 @@
       {#if diff.untracked?.length}
         <details>
           <summary><span class="path">File baru belum ditambahkan</span><span class="m">{diff.untracked.length}</span></summary>
-          <pre>{diff.untracked.join("\n")}</pre>
+          <div class="ulist">
+            {#each diff.untracked as u (u)}
+              <div><span class="path">{u}</span><button class="mini" onclick={() => onact("commit", [u])}>{t("chg.commit")}</button></div>
+            {/each}
+          </div>
         </details>
       {/if}
       {#if diff.truncated}<p class="m">Diff dipotong di 200 KB.</p>{/if}
@@ -338,6 +387,39 @@
     background: rgba(217, 119, 6, 0.1);
     color: var(--tx-amber, #fbbf24);
     font-size: 12px;
+  }
+  .warn.err {
+    white-space: pre-wrap;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  .flist .new {
+    color: var(--tx-green, #16a34a);
+  }
+  .flist .mod {
+    color: var(--tx-amber, #d97706);
+  }
+  .ask textarea {
+    resize: vertical;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .ulist {
+    border-top: 1px solid var(--line);
+    padding: 4px 10px;
+  }
+  .ulist div {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 0;
+  }
+  .keys {
+    color: var(--muted);
+    font-size: 11px;
   }
   .acts {
     display: flex;
