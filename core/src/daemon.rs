@@ -462,6 +462,34 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
             Ok(if m == "git.status" { git::status(&cwd) } else { git::diff(&cwd) })
         }
+        // FR-15: Rich Input text with `@file:` / `@pane:` attachments appended as labeled blocks. Files must sit inside
+        // the pane's cwd after symlinks (SEC-18); pane output is the agents' own `read` as if this pane asked, so the
+        // same workspace and shell-pane rules apply (SEC-17, SEC-19, SEC-21). All of it redacted, sanitized, 32 KB.
+        "ctx.compose" => {
+            let me = p["pane"].as_u64().ok_or("bad_params")?;
+            let pane = st.pane(p)?;
+            let text = p["text"].as_str().ok_or("bad_params")?;
+            let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
+            let mut body = text.trim_end().to_string();
+            for (kind, arg) in msg::ctx_tokens(text) {
+                let block = if kind == "file" {
+                    let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
+                    msg::file_block(&cwd, arg).map(|mut b| {
+                        for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.lock().unwrap().clone()) {
+                            b = b.replace(&t, "[disamarkan]");
+                        }
+                        b
+                    })
+                } else {
+                    pane_method(st, me, "read", &json!({"target": arg, "lines": 100})).map(|r| r["text"].as_str().unwrap_or_default().to_string())
+                };
+                match block {
+                    Ok(b) => body = format!("{body}\n\n{b}"),
+                    Err(code) => return Ok(crate::diag::Diag::new(code).at(format!("@{kind}:{arg}")).reply()),
+                }
+            }
+            msg::sanitize(&body).map(|body| json!({"body": body}))
+        }
         // FR-23: restore/commit files from the changes panel, UI channel only (SEC-20, SEC-29); repo = the pane's cwd.
         // The preview names other panes working in the same repo, for the confirmation card's warning.
         "git.file_preview" | "git.file_restore" | "git.file_commit" => {

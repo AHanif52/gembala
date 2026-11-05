@@ -117,7 +117,7 @@
   let welcome = $state<Agent[] | null>(null); // FR-43: kartu ringkas saat pertama kali dibuka
   let upgrade = $state<{ daemon: string; app: string; panes: number } | null>(null); // FR-21
   let wsAsk = $state<{ wi: number; busy: number } | null>(null); // FR-44: hapus workspace yang masih jalan
-  let rich = $state<{ pane: number; text: string; files?: string[] } | null>(null); // FR-14; files = attachment chips (pen 04)
+  let rich = $state<{ pane: number; text: string; files?: string[]; error?: string; args?: any } | null>(null); // FR-14; files = attachment chips (pen 04)
   let changes = $state<{ pane: number; diff: any; turns?: any[]; turn?: number | null; ask?: any; act?: any } | null>(null); // FR-22, FR-70, FR-23
   let outputOf = $state<number | null>(null); // FR-56
 
@@ -764,13 +764,22 @@
 
   /// FR-14: teks dikirim sebagai bracketed paste + satu Enter. ESC, kontrol C0 selain baris baru/tab,
   /// dan kontrol C1 dibuang supaya isi tidak bisa menutup paste lebih awal.
-  function sendRich() {
-    if (!rich) return;
-    const files = (rich.files ?? []).map(quote).join(" ");
-    const clean = [rich.text, files].filter(Boolean).join(" ").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+  async function sendRich() {
+    const r0 = rich;
+    if (!r0) return;
+    const files = (r0.files ?? []).map(quote).join(" ");
+    let text = [r0.text, files].filter(Boolean).join(" ");
+    // FR-15: `@file:` / `@pane:` = the daemon appends their content as labeled blocks (checks access, redacts, 32 KB)
+    if (/(^|\s)@(file|pane):\S/.test(r0.text)) {
+      r0.error = undefined;
+      const r = await call("ctx.compose", { pane: r0.pane, text }).catch((e) => ({ error: String(e) }));
+      if (r.error) return void ((r0.error = r.error), (r0.args = r.args)); // stays open, nothing sent
+      text = r.body;
+    }
+    const clean = text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
     const bytes = new TextEncoder().encode(`\x1b[200~${clean}\x1b[201~\r`);
-    call("pane.write", { pane: rich.pane, data: b64(bytes) });
-    rich = null;
+    call("pane.write", { pane: r0.pane, data: b64(bytes) });
+    if (rich === r0) rich = null;
   }
 
   /// autofocus loses to the terminal that held focus (same as the palette): focus explicitly
@@ -2454,8 +2463,10 @@
                     {/each}
                   </div>
                 {/if}
+                {#if rich.error}<span class="rerr">{errText(rich.error, rich.args)}</span>{/if}
                 <div class="rfoot">
                   <button class="mini" onclick={async () => addRichFiles(await invoke<string[]>("pick_files").catch(() => []))}>{tt("rich.attach")}</button>
+                  <span class="rhint">{tt("rich.ctxHint")}</span>
                   <span class="rhint">{tt("rich.hint")}</span>
                   <button class="mini pri" onclick={sendRich}>{tt("common.send")} <span class="keys">Enter</span></button>
                 </div>
@@ -3974,6 +3985,11 @@
     display: flex;
     align-items: center;
     gap: 10px;
+  }
+  .rerr {
+    padding: 0 12px 6px;
+    color: var(--tx-red, #f87171);
+    font-size: 12px;
   }
   .rhint {
     flex: 1;

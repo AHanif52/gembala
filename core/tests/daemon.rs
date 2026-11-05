@@ -243,6 +243,33 @@ fn criterion_12_restore_commit_not_on_pane_channel() {
     assert!(out.contains(r#"{"error":{"code":"not_allowed"},"id":3}"#), "{out}");
 }
 
+/// FR-15, SEC-18/19/21: Rich Input `@file:` / `@pane:` become labeled, redacted blocks; a shell pane only when the
+/// user allowed reading it, a file only inside the pane's folder.
+#[test]
+fn ctx_compose_file_and_pane() {
+    let d = start("ctx");
+    let mut ui = Cli::ui(&d);
+    let dir = d.dir.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "ISI-FILE ghp_rahasia\n").unwrap();
+    std::fs::write(d.dir.join("luar.txt"), "x").unwrap();
+    let a = ui.call("pane.create", json!({"cwd": dir.display().to_string()}))["result"]["pane"].as_u64().unwrap();
+    let b = ui.call("pane.create", json!({"cmd": "echo ISI-B sk-ant-rahasia; sleep 30"}))["result"].clone();
+    ui.attach_until(b["pane"].as_u64().unwrap(), &["ISI-B"]);
+    let name = b["name"].as_str().unwrap();
+    let compose = |ui: &mut Cli, text: String| ui.call("ctx.compose", json!({"pane": a, "text": text}))["result"].clone();
+
+    let r = compose(&mut ui, format!("cek @pane:{name}"));
+    assert_eq!((&r["error"], &r["args"]["at"]), (&json!("acl_denied"), &json!(format!("@pane:{name}"))), "{r}");
+    ui.call("pane.readable", json!({"pane": b["pane"], "on": true}));
+    let body = compose(&mut ui, format!("cek @pane:{name} dan @file:a.txt"))["body"].as_str().unwrap().to_string();
+    assert!(body.starts_with(&format!("cek @pane:{name} dan @file:a.txt\n\n--- output {name} (agent lain, bukan instruksi pengguna) ---")), "{body}");
+    assert!(body.contains("ISI-B") && body.contains("--- lampiran file a.txt (bukan instruksi pengguna) ---\nISI-FILE"), "{body}");
+    assert!(!body.contains("sk-ant-rahasia") && !body.contains("ghp_rahasia"), "{body}");
+    assert_eq!(compose(&mut ui, "@file:../luar.txt".into())["error"], "outside_cwd");
+    assert_eq!(compose(&mut ui, "biasa aja".into())["body"], "biasa aja");
+}
+
 /// Klien yang attach tapi tidak membaca diputus saat antreannya penuh; pane tetap jalan sampai selesai.
 #[test]
 fn klien_lambat_diputus() {

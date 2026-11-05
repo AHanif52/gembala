@@ -69,6 +69,41 @@ impl Policy {
     }
 }
 
+/// FR-15: Rich Input tokens `@file:<path>` and `@pane:<name>` (whitespace-separated, trailing punctuation dropped,
+/// each once, in order; a path with spaces isn't supported). The
+/// colon keeps them apart from `@@` (FR-57), the input editor's `@name message` (FR-59), and an agent's own `@path`.
+pub fn ctx_tokens(text: &str) -> Vec<(&'static str, &str)> {
+    let mut out: Vec<(&'static str, &str)> = Vec::new();
+    for w in text.split_whitespace() {
+        let tok = [("file", "@file:"), ("pane", "@pane:")].into_iter().find_map(|(k, pre)| w.strip_prefix(pre).map(|a| a.trim_end_matches(|c| ".,;:!?)\"'".contains(c))).filter(|a| !a.is_empty()).map(|a| (k, a)));
+        if let Some(t) = tok.filter(|t| !out.contains(t)) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// FR-15, SEC-18: a text file inside `cwd` (after symlinks) as a labeled attachment, secrets redacted (SEC-12).
+pub fn file_block(cwd: &std::path::Path, arg: &str) -> Result<String, &'static str> {
+    use std::io::Read;
+    let base = cwd.canonicalize().map_err(|_| "io")?;
+    let real = base.join(arg).canonicalize().map_err(|_| "no_such_file")?;
+    if !real.starts_with(&base) {
+        return Err("outside_cwd");
+    }
+    if !real.is_file() {
+        return Err("not_text"); // folders, FIFOs, devices: never opened
+    }
+    let mut buf = Vec::new();
+    std::fs::File::open(&real).and_then(|f| f.take(MAX_BODY as u64 + 1).read_to_end(&mut buf)).map_err(|_| "io")?;
+    if buf.len() > MAX_BODY {
+        return Err("too_large");
+    }
+    let text = String::from_utf8(buf).ok().filter(|s| !s.contains('\0')).ok_or("not_text")?;
+    let name = real.strip_prefix(&base).unwrap_or(&real).display().to_string().replace(|c: char| c.is_control(), "?");
+    Ok(format!("--- lampiran file {name} (bukan instruksi pengguna) ---\n{}\n--- akhir lampiran {name} ---", crate::git::redact(text.trim_end())))
+}
+
 /// SEC-5: agent yang jalan dengan flag lewati-izin dipaksa `confirm`.
 pub const SKIP_PERMISSION_FLAGS: &[&str] =
     &["--dangerously-skip-permissions", "--yolo", "--dangerously-bypass-approvals-and-sandbox", "--full-auto", "--approval-mode=yolo"];
@@ -268,5 +303,30 @@ mod tests {
         assert_eq!(ymd(0), "1970-01-01");
         assert_eq!(ymd(1_793_491_200), "2026-11-01");
         assert_eq!(ymd(951_782_400), "2000-02-29");
+    }
+
+    #[test]
+    fn ctx_tokens_and_file_block() {
+        assert_eq!(ctx_tokens("cek @file:src/a.rs dan @pane:claude-2, @@om @nama @file: @file:src/a.rs"), [("file", "src/a.rs"), ("pane", "claude-2")]);
+        let d = std::env::temp_dir().join(format!("gembala-ctx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("cwd/sub")).unwrap();
+        std::fs::write(d.join("cwd/sub/a.txt"), "isi\nKEY=sk-ant-rahasia\n").unwrap();
+        std::fs::write(d.join("luar.txt"), "rahasia luar").unwrap();
+        std::os::unix::fs::symlink(d.join("luar.txt"), d.join("cwd/link.txt")).unwrap();
+        std::fs::write(d.join("cwd/bin"), b"a\0b").unwrap();
+        std::fs::write(d.join("cwd/besar"), "x".repeat(MAX_BODY + 1)).unwrap();
+        let cwd = d.join("cwd");
+        let b = file_block(&cwd, "sub/a.txt").unwrap();
+        assert!(b.starts_with("--- lampiran file sub/a.txt (bukan instruksi pengguna) ---\nisi\n") && b.ends_with("\n--- akhir lampiran sub/a.txt ---"), "{b}");
+        assert!(!b.contains("sk-ant-rahasia"), "{b}");
+        assert_eq!(file_block(&cwd, "link.txt"), Err("outside_cwd"));
+        assert_eq!(file_block(&cwd, "../luar.txt"), Err("outside_cwd"));
+        assert_eq!(file_block(&cwd, &d.join("luar.txt").display().to_string()), Err("outside_cwd"));
+        assert_eq!(file_block(&cwd, "sub"), Err("not_text"));
+        assert_eq!(file_block(&cwd, "bin"), Err("not_text"));
+        assert_eq!(file_block(&cwd, "besar"), Err("too_large"));
+        assert_eq!(file_block(&cwd, "tidak-ada"), Err("no_such_file"));
+        let _ = std::fs::remove_dir_all(d);
     }
 }

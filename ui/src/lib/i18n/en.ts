@@ -52,6 +52,8 @@ export default {
   "chg.cancel": "Cancel",
   "chg.restored": "{file} restored",
   "chg.committed": "Committed {commit}",
+  // Rich Input attachments (FR-15)
+  "rich.ctxHint": "@file:path · @pane:name = paste the content, labeled",
   // daemon error codes and config problems (core/src/diag.rs, errText)
   "err.account_env_conflict": "CLAUDE_CONFIG_DIR is also set in the profile's env (two sources)",
   "err.acl_denied": "blocked by an access rule",
@@ -91,6 +93,9 @@ export default {
   "err.empty_message": "write a commit message first",
   "err.bad_path": "invalid file path",
   "err.commit_failed": "commit failed:\n{os}",
+  "err.outside_cwd": "outside the pane's folder",
+  "err.no_such_file": "file not found",
+  "err.not_text": "not a text file",
   "err.url_not_http": "only http/https links",
   "err.dir_not_allowed": "folder not allowed",
   "err.method_not_allowed": "action not allowed",
