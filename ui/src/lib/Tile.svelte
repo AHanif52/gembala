@@ -10,6 +10,7 @@
   import { Unicode11Addon } from "@xterm/addon-unicode11";
   import "@xterm/xterm/css/xterm.css";
   import { call, b64, unb64 } from "./daemon";
+  import { errText, i18n, t } from "./i18n/state.svelte";
   import { safeResume } from "./resume";
   import { encodeKey, onCsi } from "./kitty";
   import type { Ui } from "./config";
@@ -162,6 +163,7 @@
   $effect(() => {
     if (!ready) return;
     const on = timeline;
+    void i18n.lang; // decorations hold text: redraw on a language switch
     blocks.forEach((b) => (b.live?.dispose(), (b.live = undefined)));
     hover = null;
     sticky = null;
@@ -169,6 +171,11 @@
       blocks.forEach((b) => b.cmd && (b.live = decorate(b)));
       updateSticky(); // kepala blok menempel langsung balik tanpa menunggu scroll
     }
+  });
+  // session block heads and "Previous session" lines are drawn in the UI language too
+  $effect(() => {
+    void i18n.lang;
+    if (ready) decorateSummary();
   });
   function onMark(data: string) {
     const [k, arg = ""] = data.split(";", 2);
@@ -205,7 +212,9 @@
     }
     return true; // penanda tidak menggambar apa pun
   }
-  const dur = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1).replace(".", ",")} dtk` : `${Math.round(ms / 1000)} dtk`);
+  const dur = (ms: number) => t("tile.secs", { n: ms < 10_000 ? (ms / 1000).toLocaleString(i18n.lang, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : Math.round(ms / 1000) });
+  /// session block heads are written by the daemon as `1 mnt 15 dtk` (core/src/history.rs `dur`): units in the UI language
+  const durText = (s: string) => s.replace(/(\d+) (dtk|mnt|jam)/g, (_, n, u) => t(u === "dtk" ? "tile.secs" : u === "mnt" ? "tile.mins" : "tile.hours", { n }));
   /// pen: "~/…/gembala/app" (dua folder terakhir)
   const short = (p: string) => {
     const a = p.replace(/^\/Users\/[^/]+/, "~").split("/");
@@ -217,7 +226,7 @@
     const height = Math.max(1, (b.d?.line ?? b.a.line) - b.a.line);
     const hd = !term.buffer.active.getLine(b.a.line)?.translateToString(true).trim();
     const d = term.registerDecoration({ marker: b.a, width: term.cols, height, layer: "top" });
-    const info = [hd && b.dir ? short(b.dir) : "", !b.d ? (hd ? "jalan" : "") : b.ms !== undefined ? dur(b.ms) : ""].filter(Boolean).join(" · ");
+    const info = [hd && b.dir ? short(b.dir) : "", !b.d ? (hd ? t("tile.running") : "") : b.ms !== undefined ? dur(b.ms) : ""].filter(Boolean).join(" · ");
     d?.onRender((el) => {
       if (!el.dataset.tl) {
         el.dataset.tl = "1";
@@ -225,7 +234,7 @@
         el.innerHTML = `<i class="tl-dot"></i><span class="tl-meta"></span>`;
         const m = el.querySelector(".tl-meta") as HTMLElement;
         m.textContent = info; // folder dari shell: teks, bukan HTML
-        if (b.code) m.append(Object.assign(document.createElement("b"), { textContent: ` · keluar ${b.code}` }));
+        if (b.code) m.append(Object.assign(document.createElement("b"), { textContent: ` · ${t("tile.exit", { code: b.code })}` }));
       }
       // tinggi baris bisa 0 saat render pertama: posisi dihitung ulang tiap render
       el.style.setProperty("--rh", `${rowHeight()}px`);
@@ -267,7 +276,7 @@
       const marker = term.registerMarker(y - cursor);
       if (!marker) continue;
       summary.push(marker);
-      const label = (buf.getLine(y)?.translateToString(true) ?? "").replace(/[─\s]+$/, "").replace(/^[\s─]+/, "");
+      const label = (buf.getLine(y)?.translateToString(true) ?? "").replace(/[─\s]+$/, "").replace(/^[\s─]+/, "").replace(/^Sesi sebelumnya/, t("tile.prevSession"));
       term.registerDecoration({ marker, width: term.cols, height: 1, layer: "top" })?.onRender((el) => {
         if (!el.dataset.tl) {
           el.dataset.tl = "1";
@@ -326,9 +335,9 @@
         el.innerHTML = `<i class="tl-dot"></i><div class="tl-hd"><span class="tl-info"></span><b class="tl-x"></b></div><span class="tl-acts"></span>`;
         const dot = el.querySelector(".tl-dot") as HTMLElement;
         if (agent) (dot.textContent = h.icon!), (dot.dataset.a = h.icon!);
-        (el.querySelector(".tl-info") as HTMLElement).textContent = [short(path), ...rest].join(" · ");
+        (el.querySelector(".tl-info") as HTMLElement).textContent = [short(path), ...rest.map(durText)].join(" · ");
         const x = el.querySelector(".tl-x") as HTMLElement;
-        x.textContent = h.code && h.code !== "0" ? `· keluar ${h.code}` : agent ? "· keluar normal" : "";
+        x.textContent = h.code && h.code !== "0" ? `· ${t("tile.exit", { code: h.code })}` : agent ? `· ${t("tile.exitOk")}` : "";
         x.classList.toggle("ok", !(h.code && h.code !== "0"));
         const acts = el.querySelector(".tl-acts") as HTMLElement;
         const btn = (label: string, cls: string, run: () => void) => {
@@ -342,12 +351,12 @@
           // tidak muat: tombol ringkas di kanan, tengah blok (mockup varian E), berlatar supaya tidak menimpa teks
           if (roomy) acts.classList.add("row"), acts.style.setProperty("--k", String(by - h.y));
           else acts.classList.add("side"), acts.style.setProperty("--n", String(Math.max(1, Math.min(by, end) - h.y)));
-          btn("Lanjutkan", "pri", () => onblock("run", resume));
-          btn(roomy ? "Lihat output lengkap" : "Output", "", () => onblock("output", ""));
-          btn(roomy ? "Salin perintah" : "Salin", "", () => onblock("copy", resume));
+          btn(t("tile.resume"), "pri", () => onblock("run", resume));
+          btn(roomy ? t("tile.fullOutput") : t("tile.output"), "", () => onblock("output", ""));
+          btn(roomy ? t("tile.copyCmd") : t("tile.copy"), "", () => onblock("copy", resume));
         } else if (h.fail && cmd) {
-          btn("Salin", "ghost", () => onblock("copy", cmd));
-          btn("Ulangi", "pri", () => onblock("run", cmd));
+          btn(t("tile.copy"), "ghost", () => onblock("copy", cmd));
+          btn(t("tile.rerun"), "pri", () => onblock("run", cmd));
         }
       });
     });
@@ -452,7 +461,7 @@
     const onTheme = () => (systemLight = light.matches);
     light.addEventListener("change", onTheme);
     search.onDidChangeResults(({ resultIndex, resultCount }) => {
-      found = resultCount ? `${resultIndex + 1} dari ${resultCount}` : query ? "nggak ada" : "";
+      found = resultCount ? t("tile.findCount", { i: resultIndex + 1, n: resultCount }) : query ? t("tile.findNone") : "";
     });
 
     // FR-35: Option kiri dan kanan diatur terpisah (bawaan: kiri Meta, kanan karakter, mis. ⌥⇧2 = €).
@@ -479,7 +488,7 @@
         const quoted = `'${path.replaceAll("'", "'\\''")}' `;
         call("pane.write", { pane, data: b64(enc.encode(`\x1b[200~${quoted}\x1b[201~`)) });
       } catch (err) {
-        term.write(`\r\n\x1b[31mgagal menyimpan gambar: ${err}\x1b[0m\r\n`);
+        term.write(`\r\n\x1b[31m${t("tile.pasteFailed", { why: errText(err) })}\x1b[0m\r\n`);
       }
     };
     el.addEventListener("paste", onPaste, true);
@@ -541,7 +550,7 @@
         if (synced) early.splice(0).forEach(onEvent); // belum: penanda yang datang nanti membuang yang tertahan
       } catch (e) {
         sized = true;
-        term.write(`\x1b[31mgagal attach pane ${pane}: ${e}\x1b[0m\r\n`);
+        term.write(`\x1b[31m${t("tile.attachFailed", { pane, why: errText(e) })}\x1b[0m\r\n`);
       }
     })();
 
@@ -596,10 +605,10 @@
 
 {#snippet acts(b: Block)}
   <span class="bacts-in">
-    <button class="ghost" title="Salin perintah" onclick={() => onblock("cmd", b.cmd)}>Salin</button>
-    <button class="ghost" title="Salin output" onclick={() => onblock("out", outputOf(b))} disabled={!b.d}>Output</button>
-    <button title="Masukkan ke editor untuk diubah lalu jalankan lagi" onclick={() => onblock("reuse", b.cmd)}>Ubah</button>
-    {#if b.code}<button class="pri" title="Jalankan lagi" onclick={() => onblock("run", b.cmd)}>Ulangi</button>{/if}
+    <button class="ghost" title={t("tile.copyCmd")} onclick={() => onblock("cmd", b.cmd)}>{t("tile.copy")}</button>
+    <button class="ghost" title={t("tile.copyOut")} onclick={() => onblock("out", outputOf(b))} disabled={!b.d}>{t("tile.output")}</button>
+    <button title={t("tile.editTip")} onclick={() => onblock("reuse", b.cmd)}>{t("tile.edit")}</button>
+    {#if b.code}<button class="pri" title={t("tile.rerunTip")} onclick={() => onblock("run", b.cmd)}>{t("tile.rerun")}</button>{/if}
   </span>
 {/snippet}
 
@@ -610,7 +619,7 @@
     <i class="sdot"></i>
     <span class="scmd">{sticky.cmd}</span>
     <span class="smeta"
-      >{sticky.d ? (sticky.ms !== undefined ? dur(sticky.ms) : "") : "jalan"}{#if sticky.code}<span class="scode"> · keluar {sticky.code}</span>{/if}</span
+      >{sticky.d ? (sticky.ms !== undefined ? dur(sticky.ms) : "") : t("tile.running")}{#if sticky.code}<span class="scode"> · {t("tile.exit", { code: sticky.code })}</span>{/if}</span
     >
     {@render acts(sticky)}
   </div>
@@ -627,16 +636,16 @@
       bind:value={query}
       oninput={() => find()}
       onkeydown={onFindKey}
-      placeholder="Cari di pane ini"
-      aria-label="Cari di pane"
+      placeholder={t("tile.findPh")}
+      aria-label={t("tile.findAria")}
       spellcheck="false"
     />
     <span class="count" aria-live="polite">{found}</span>
-    <button title="Sebelumnya ⇧↩" aria-label="Hasil sebelumnya" onpointerdown={(e) => e.preventDefault()} onclick={() => find(true)}
+    <button title={t("tile.prevTip")} aria-label={t("tile.prev")} onpointerdown={(e) => e.preventDefault()} onclick={() => find(true)}
       ><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4" /></svg></button>
-    <button title="Berikutnya ↩" aria-label="Hasil berikutnya" onpointerdown={(e) => e.preventDefault()} onclick={() => find()}
+    <button title={t("tile.nextTip")} aria-label={t("tile.next")} onpointerdown={(e) => e.preventDefault()} onclick={() => find()}
       ><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg></button>
-    <button title="Tutup Esc" aria-label="Tutup cari" onclick={closeFind}
+    <button title={t("tile.closeTip")} aria-label={t("tile.closeFind")} onclick={closeFind}
       ><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg></button>
   </div>
 {/if}
