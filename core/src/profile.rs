@@ -243,7 +243,9 @@ fn claude_permission(payload: &str) -> bool {
 /// Teks di layar yang berarti agent menunggu jawaban manusia (huruf kecil).
 // FR-68: dialog persetujuan Codex ("Would you like to run/make the following …")
 // hanya kalimat khas dialog: kata lepas seperti "approve" juga muncul di jawaban agent ("approve kalau muncul") = butuh izin palsu
-const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to proceed", "do you want to make", "do you want to create", "would you like to run", "would you like to make", "allow once", "allow tool:"];
+const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to proceed", "do you want to make", "do you want to create", "would you like to run", "would you like to make", "allow once", "allow tool:",
+    // Codex dialog footer, always on the bottom line: a long "Reason:" pushes "Would you like to run" out of the 12-line tail
+    "press enter to confirm or esc to cancel"];
 
 /// FR-4 cadangan: status dari layar untuk agent tanpa hook. `tail` = beberapa baris terbawah layar,
 /// `quiet` = lama tanpa output, `prev` = status sebelumnya.
@@ -941,6 +943,8 @@ mod tests {
         assert_eq!(s("selesai", 4000, "idle"), "idle");
         assert_eq!(s("Do you want to proceed?", 100, "working"), "blocked");
         assert_eq!(s("Allow tool: bash\n❯ Approve\n  Deny", 100, "working"), "blocked");
+        // Codex 0.166 (5 Nov 2026): only the options and footer are left in the tail
+        assert_eq!(s("› 1. Yes, proceed (y)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel", 4000, "working"), "blocked");
         // jawaban agent yang menyebut approve/izin bukan dialog
         assert_eq!(s("psql bakal minta izin di shell-2, jadi approve kalau muncul", 4000, "working"), "done");
         assert_eq!(s("needs permission to write", 4000, "done"), "done");
