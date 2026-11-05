@@ -418,7 +418,9 @@
     const rows: { account: { id: string; name: string; agent: string }; status: { email?: string } }[] = r?.accounts ?? [];
     const items = rows
       .filter((x) => x.account.agent === "claude")
-      .map((x) => ({ label: `claude · ${x.account.name}`, kind: x.status.email ?? "", insert: x.account.id === "utama" ? "claude " : `claude-${x.account.id} ` }));
+      // FR-61: Utama = `claude-utama`, bukan `claude` polos: shell pane ikut akun bawaan workspace (CLAUDE_CONFIG_DIR),
+      // jadi `claude` di situ jalan sebagai akun itu walau pengguna memilih Utama
+      .map((x) => ({ label: `claude · ${x.account.name}`, kind: x.status.email ?? "", insert: `claude-${x.account.id} ` }));
     const d = draft[pane] ?? "";
     if (items.length < 2 || d.length < 2 || !"claude".startsWith(d)) return;
     // sesi pane ini yang baru selesai (FR-56) = baris pertama dan terpilih, supaya Enter tidak menimpa niat lanjut
