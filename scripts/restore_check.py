@@ -1,6 +1,6 @@
-# Uji FR-45 dengan app debug asli: tata letak bertahan saat UI dibuka ulang, dan pane dari daemon lama
-# langsung diganti shell baru saat daemon dijalankan ulang. Folder run dan config terpisah dari milik pengguna.
-# pakai: npm run tauri build -- --debug && python3 -I scripts/restore_check.py target/debug/bundle/macos/Gembala.app
+# FR-45 test with the real debug app: the layout survives reopening the UI, and panes from the old daemon
+# are replaced by new shells right away when the daemon restarts. Run and config folders separate from the user's.
+# usage: npm run tauri build -- --debug && python3 -I scripts/restore_check.py target/debug/bundle/macos/Gembala.app
 import json, os, shutil, socket, subprocess, sys, time
 
 app = sys.argv[1]

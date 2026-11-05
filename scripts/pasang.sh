@@ -1,8 +1,8 @@
 #!/bin/sh
-# Build rilis lalu pasang ke /Applications, tanpa jaringan (pengganti `brew upgrade` untuk satu mesin).
-# Bundle lama dipindah ke Trash, bukan ditimpa: daemon (helper di dalam bundle) yang sedang jalan tetap
-# memakai file lamanya, jadi agent tidak terganggu. Versi baru dipakai setelah Gembala ditutup lalu dibuka lagi.
-# pakai: scripts/pasang.sh
+# Build a release and install it to /Applications, no network (stand-in for `brew upgrade` on one machine).
+# The old bundle moves to the Trash, not overwritten: a running daemon (helper inside the bundle) keeps
+# using its old files, so agents aren't disturbed. The new version is used after Gembala is closed and opened again.
+# usage: scripts/pasang.sh
 set -e
 cd "$(dirname "$0")/../ui"
 PATH="/opt/homebrew/opt/rustup/bin:$PATH" npm run tauri build -- --bundles app

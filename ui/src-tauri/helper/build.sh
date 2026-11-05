@@ -1,6 +1,6 @@
 #!/bin/sh
-# FR-20: helper app daemon (dijalankan lewat `open`, lihat ui/src-tauri/src/daemon.rs spawn_daemon).
-# Di-sign sebagai bundle di sini, sebelum Tauri menyegel bundle utama. Dijalankan dari ui/ oleh `npm run sidecar`.
+# FR-20: helper app for the daemon (launched through `open`, see spawn_daemon in ui/src-tauri/src/daemon.rs).
+# Signed as a bundle here, before Tauri seals the main bundle. Run from ui/ by `npm run sidecar`.
 set -e
 app="src-tauri/binaries/Gembala Daemon.app"
 rm -rf "$app"

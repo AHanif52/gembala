@@ -1,5 +1,5 @@
 # Ukur daemon (TECH pekerjaan 0.6): RAM 4 pane, latensi, throughput.
-# pakai: cargo build --release -p gembala && python3 -I scripts/ukur.py target/release/gembala $TMPDIR/gbl-ukur
+# usage: cargo build --release -p gembala && python3 -I scripts/ukur.py target/release/gembala $TMPDIR/gbl-ukur
 import base64, json, os, socket, subprocess, sys, time, shutil
 bin_, R = sys.argv[1], sys.argv[2]
 shutil.rmtree(R, ignore_errors=True); os.mkdir(R, 0o700)
@@ -23,7 +23,7 @@ rss = lambda: int(subprocess.check_output(["ps", "-o", "rss=", "-p", str(p.pid)]
 print(f"daemon 4 pane shell: RSS {rss()/1024:.1f} MB")
 fp = subprocess.run(["footprint", "-p", str(p.pid)], capture_output=True, text=True).stdout
 print("daemon footprint:", [l.split("Footprint:")[1].strip() for l in fp.splitlines() if "Footprint:" in l][:1])
-# latensi: pane `cat` (tanpa shell interaktif), tulis 1 byte, tunggu echo balik
+# latency: a `cat` pane (no interactive shell), write 1 byte, wait for the echo back
 pc = call("pane.create", {"cmd": "stty raw -echo; cat", "rows": 24, "cols": 80})["result"]["pane"]
 call("pane.attach", {"pane": pc}); time.sleep(1.5); ev.clear()
 lat = []

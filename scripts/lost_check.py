@@ -1,6 +1,6 @@
-# Kriteria 17 dengan app debug asli: daemon dimatikan paksa → app menjalankan daemon baru dan pane lama
-# tampil sebagai pane mati (id negatif). Folder run dan config terpisah; Keychain tidak disentuh (build debug).
-# pakai: npm run tauri build -- --debug && python3 -I scripts/lost_check.py target/debug/bundle/macos/Gembala.app
+# Criterion 17 with the real debug app: the daemon is force-killed → the app launches a new daemon and old panes
+# show as dead panes (negative id). Separate run and config folders; the Keychain isn't touched (debug build).
+# usage: npm run tauri build -- --debug && python3 -I scripts/lost_check.py target/debug/bundle/macos/Gembala.app
 import json, os, shutil, socket, subprocess, sys, time
 
 app = sys.argv[1]

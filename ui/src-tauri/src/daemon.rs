@@ -1,5 +1,5 @@
-//! Klien kanal UI (TECH bagian 8, T1): rahasia dari Keychain; bila daemon belum jalan,
-//! UI menjalankannya dan menerima rahasia lewat descriptor 3.
+//! UI channel client (TECH section 8, T1): secret from the Keychain; when the daemon isn't running,
+//! the UI launches it and receives the secret through descriptor 3.
 
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -16,9 +16,9 @@ use std::thread;
 pub const KC_SERVICE: &str = "dev.gembala.app";
 
 pub struct Client {
-    /// Daemon putus = false; pemanggil membuat klien baru (kriteria 17: daemon dijalankan lagi).
+    /// Daemon disconnected = false; the caller makes a new client (criterion 17: the daemon is launched again).
     pub alive: Arc<std::sync::atomic::AtomicBool>,
-    /// SEC-20: daemon mengenali UI ini dari tanda tangan kodenya (rahasia tidak dipakai)
+    /// SEC-20: the daemon recognizes this UI from its code signature (the secret isn't used)
     pub signed: bool,
     w: Mutex<UnixStream>,
     pending: Arc<Mutex<HashMap<u64, Sender<Value>>>>,
@@ -37,7 +37,7 @@ pub fn rundir() -> PathBuf {
 
 pub type OnEvent = Arc<dyn Fn(Value) + Send + Sync>;
 
-/// Sambung ke daemon; jalankan daemon bila belum ada. `on_event` menerima event daemon.
+/// Connect to the daemon; launch it if it isn't there. `on_event` receives daemon events.
 pub fn connect(on_event: OnEvent) -> io::Result<Client> {
     connect_try(on_event, true)
 }
@@ -45,10 +45,10 @@ pub fn connect(on_event: OnEvent) -> io::Result<Client> {
 fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     let dir = rundir();
     let sock = dir.join("ui.sock");
-    // satu rahasia per folder run: dev, uji, dan app terpasang tidak saling tindih
+    // one secret per run folder: dev, tests, and the installed app don't overwrite each other
     let account = format!("ui-secret:{}", dir.display());
-    // Hanya build debug (alat ukur, uji): rahasia dari env, tanpa Keychain. Build rilis tidak punya
-    // jalur ini, karena SEC-20 melarang rahasia kanal UI ada di environment.
+    // Debug builds only (measuring tools, tests): secret from env, no Keychain. Release builds don't have
+    // this path, because SEC-20 forbids the UI channel secret in the environment.
     #[cfg(debug_assertions)]
     let dev = std::env::var("GEMBALA_DEV_SECRET").ok();
     #[cfg(not(debug_assertions))]
@@ -56,14 +56,14 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     if let (Some(secret), Ok(s)) = (&dev, UnixStream::connect(&sock)) {
         return Client::open(s, secret, on_event);
     }
-    // socket dulu: Keychain hanya disentuh bila perlu. Item Keychain app self-signed terikat ke cdhash build,
-    // jadi membaca/menulis item build lama memunculkan dialog izin macOS tiap update.
+    // socket first: the Keychain is only touched when needed. Keychain items of a self-signed app are tied to the build's cdhash,
+    // so reading/writing an old build's item brings up a macOS permission dialog on every update.
     let Ok(s) = UnixStream::connect(&sock) else {
         let secret = spawn_daemon()?;
         let c = Client::open(UnixStream::connect(&sock)?, &secret, on_event)?;
-        // SEC-20: daemon mengenali UI dari tanda tangannya = Keychain tidak perlu. Build tanpa sertifikat:
-        // rahasia disimpan untuk sambung ulang; gagal simpan tidak menggagalkan sesi ini.
-        // Alat ukur/uji (build debug + GEMBALA_DEV_SECRET) tidak menulis Keychain pengguna.
+        // SEC-20: the daemon recognizes the UI from its signature = no Keychain needed. Build without a certificate:
+        // the secret is stored for reconnecting; a failed save doesn't fail this session.
+        // Measuring/test tools (debug build + GEMBALA_DEV_SECRET) don't write to the user's Keychain.
         if !c.signed
             && dev.is_none()
             && let Err(e) = security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes())
@@ -72,10 +72,10 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
         }
         return Ok(c);
     };
-    // daemon yang sedang berhenti sendiri (FR-20: tanpa UI, pane diam) menutup socket di tengah hello:
-    // tunggu dia keluar, lalu sambung atau jalankan daemon baru
+    // a daemon stopping on its own (FR-20: no UI, panes idle) closes the socket in the middle of hello:
+    // wait for it to exit, then connect or launch a new daemon
     let closing = |e: &io::Error| matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof);
-    // SEC-20: tanpa rahasia dulu (dikenali dari tanda tangan); Keychain hanya cadangan untuk daemon lama/tanpa sertifikat
+    // SEC-20: no secret first (recognized by signature); the Keychain is only a fallback for old/uncertified daemons
     match Client::open(s, "", on_event.clone()) {
         Ok(c) => return Ok(c),
         Err(e) if closing(&e) && retry => {
@@ -83,12 +83,12 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
             return connect_try(on_event, false);
         }
         Err(e) if closing(&e) => return Err(e),
-        Err(_) => {} // ditolak: coba rahasia dari Keychain
+        Err(_) => {} // rejected: try the secret from the Keychain
     }
     let s = UnixStream::connect(&sock)?;
     let kc = security_framework::passwords::get_generic_password(KC_SERVICE, &account).ok();
     match kc.and_then(|s| String::from_utf8(s).ok()) {
-        // ponytail: daemon hidup tapi rahasia Keychain basi/tidak ada; reset otomatis di FR-49 (Fase 1)
+        // ponytail: daemon alive but the Keychain secret is stale/missing; automatic reset in FR-49 (Phase 1)
         Some(secret) => match Client::open(s, &secret, on_event.clone()) {
             Err(e) if retry && closing(&e) => {
                 thread::sleep(std::time::Duration::from_millis(500));
@@ -100,17 +100,17 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     }
 }
 
-/// Binary daemon: helper app di dalam bundle (rilis), atau `gembala` di samping binary app (dev: `target/debug`).
+/// Daemon binary: helper app inside the bundle (release), or `gembala` next to the app binary (dev: `target/debug`).
 pub fn daemon_exe() -> Option<PathBuf> {
     let me = std::env::current_exe().ok()?;
     let helper = me.parent()?.parent()?.join("Helpers/Gembala Daemon.app/Contents/MacOS/gembala");
     Some(if helper.exists() { helper } else { me.with_file_name("gembala") })
 }
 
-/// FR-20: daemon dijalankan LaunchServices (`open`) sebagai app latar sendiri. Proses yang dijalankan app
-/// (setsid, double-fork, disclaim, bahkan job `launchctl bootstrap`) masuk atau teratribusi ke coalition app,
-/// dan saat app ditutup loginwindow menghentikan semuanya, termasuk shell pane dan agent (uji 2 Nov 2026).
-/// Tanpa helper (dev) atau `open` gagal = anak langsung seperti dulu, dengan batas itu.
+/// FR-20: the daemon is launched by LaunchServices (`open`) as its own background app. Processes launched by the app
+/// (setsid, double-fork, disclaim, even a `launchctl bootstrap` job) land in or are attributed to the app's coalition,
+/// and when the app closes loginwindow stops all of them, pane shells and agents included (tested 2 Nov 2026).
+/// No helper (dev) or `open` failing = a direct child as before, with that limitation.
 fn spawn_daemon() -> io::Result<String> {
     let exe = daemon_exe().ok_or_else(|| err("path app tidak terbaca"))?;
     let helper = exe.ancestors().nth(3).filter(|p| p.extension().is_some_and(|e| e == "app")).map(|p| p.to_path_buf());
@@ -123,8 +123,8 @@ fn spawn_daemon() -> io::Result<String> {
     }
 }
 
-/// Rahasia lewat `hand.sock` di folder run (`0700`): daemon hanya menulis bila pemilik socket `gembala-ui`
-/// bundle ini, dan UI hanya menerima dari binary daemon bundle ini.
+/// Secret through `hand.sock` in the run folder (`0700`): the daemon only writes when the socket owner is this bundle's
+/// `gembala-ui`, and the UI only accepts it from this bundle's daemon binary.
 fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<String> {
     use std::os::unix::fs::DirBuilderExt;
     use std::time::{Duration, Instant};
@@ -133,11 +133,11 @@ fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<Stri
     let hand = dir.join("hand.sock");
     let _ = std::fs::remove_file(&hand);
     let l = std::os::unix::net::UnixListener::bind(&hand)?;
-    // `open --stderr` menimpa log: catatan daemon sebelumnya disimpan satu generasi untuk diagnosa
+    // `open --stderr` overwrites the log: the previous daemon log is kept one generation for diagnosis
     let _ = std::fs::rename(dir.join("daemon.log"), dir.join("daemon.log.1"));
     let mut c = Command::new("/usr/bin/open");
     c.args(["-g", "-n", "--stderr"]).arg(dir.join("daemon.log"));
-    // lingkungan app diteruskan seperti saat daemon jadi anak app (pane mewarisinya)
+    // the app environment is passed on as when the daemon was the app's child (panes inherit it)
     for (k, v) in std::env::vars_os() {
         let (Some(k), Some(v)) = (k.to_str(), v.to_str()) else { continue };
         if !k.starts_with("XPC_") && !k.starts_with("__CF") {
@@ -173,7 +173,7 @@ fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<Stri
     Ok(secret)
 }
 
-/// Path binary proses di ujung lain socket.
+/// Binary path of the process at the other end of the socket.
 fn peer_path(s: &UnixStream) -> Option<PathBuf> {
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
@@ -188,7 +188,7 @@ fn peer_path(s: &UnixStream) -> Option<PathBuf> {
     p.canonicalize().ok()
 }
 
-/// Cara lama: anak langsung app, rahasia lewat descriptor 3.
+/// Old way: a direct child of the app, secret through descriptor 3.
 fn spawn_child(exe: &std::path::Path) -> io::Result<String> {
     let mut fds = [0; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
@@ -227,7 +227,7 @@ impl Client {
         writeln!(w, "{hello}")?;
         let mut l = String::new();
         if r.read_line(&mut l)? == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into()); // daemon menutup socket sebelum menjawab
+            return Err(io::ErrorKind::UnexpectedEof.into()); // the daemon closes the socket before answering
         }
         let v: Value = serde_json::from_str(&l).unwrap_or(Value::Null);
         if v.get("result").is_none() {
@@ -249,7 +249,7 @@ impl Client {
                     None => on_event(v),
                 }
             }
-            // panggilan yang masih menunggu dibatalkan, bukan menggantung selamanya
+            // calls still waiting are cancelled, not left hanging forever
             alive2.store(false, std::sync::atomic::Ordering::Relaxed);
             p2.lock().unwrap().clear();
             on_event(json!({"event": "daemon.lost"}));
@@ -280,13 +280,13 @@ impl Client {
 mod tests {
     use super::*;
 
-    /// Daemon yang sedang berhenti menutup socket sebelum menjawab hello: error harus jenis yang memicu sambung ulang.
+    /// A stopping daemon closes the socket before answering hello: the error must be the kind that triggers a reconnect.
     #[test]
     fn hello_putus_bisa_diulang() {
         let (a, b) = UnixStream::pair().unwrap();
         let t = thread::spawn(move || {
             let mut l = String::new();
-            let _ = BufReader::new(&b).read_line(&mut l); // terima hello, lalu tutup tanpa jawab
+            let _ = BufReader::new(&b).read_line(&mut l); // accept hello, then close without answering
         });
         let e = Client::open(a, "x", Arc::new(|_| {})).err().unwrap();
         t.join().unwrap();

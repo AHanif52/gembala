@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- FR-20: daemon dijalankan sebagai app latar sendiri lewat LaunchServices, supaya tidak ikut dihentikan saat Gembala ditutup -->
+<!-- FR-20: the daemon runs as its own background app through LaunchServices, so it isn't stopped when Gembala closes -->
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key><string>dev.gembala.app.daemon</string>

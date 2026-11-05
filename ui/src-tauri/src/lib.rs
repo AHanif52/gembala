@@ -1,4 +1,4 @@
-// UI hanya klien daemon (BRD R-5): jangan buka PTY di sini.
+// The UI is only a daemon client (BRD R-5): never open a PTY here.
 mod daemon;
 mod i18n;
 
@@ -8,7 +8,7 @@ use tauri::{Emitter, Manager};
 
 struct Daemon(Mutex<Option<Arc<daemon::Client>>>);
 
-/// Webview hanya boleh memanggil method pane; aksi manusia lain ditambah per fitur.
+/// The webview may only call pane methods; other human actions are added per feature.
 const ALLOWED: &[&str] =
     &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset", "git.status", "git.diff", "pane.rename", "pane.agent_output", "profile.save", "profile.reset", "keys.set",
       "account.list", "account.create", "account.remove", "account.update", "git.worktree_add", "git.worktree_remove", "git.turns", "git.turn_diff", "git.turn_preview", "git.turn_restore", "git.file_preview", "git.file_restore", "git.file_commit", "ctx.compose", "msg.list", "msg.approve", "msg.reject", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace",
@@ -16,7 +16,7 @@ const ALLOWED: &[&str] =
       "recipe.list", "recipe.get", "recipe.approve", "recipe.delete", "recipe.validate",
       "harness.preflight", "harness.start", "harness.state", "harness.stop", "harness.gate", "harness.takeover", "harness.release"];
 
-/// Pintasan pane (FR-37, 38, 39, 50), default ala Warp. Id = aksi yang dijalankan webview; label di i18n.rs.
+/// Pane shortcuts (FR-37, 38, 39, 50), Warp-style defaults. Id = action the webview runs; labels in i18n.rs.
 const PANE_KEYS: &[(&str, &str)] = &[
     ("pane.split.right", "Cmd+D"),
     ("pane.split.down", "Cmd+Shift+D"),
@@ -35,7 +35,7 @@ const PANE_KEYS: &[(&str, &str)] = &[
     ("pane.zoom.toggle", "Cmd+Shift+Enter"),
     ("pane.move.newtab", ""),
     ("pane.input.rich", "Cmd+G"),
-    ("pane.diff.toggle", "Cmd+Shift+="), // = Cmd+Shift++ bawaan Warp (tombol yang sama)
+    ("pane.diff.toggle", "Cmd+Shift+="), // = Warp's default Cmd+Shift++ (same key)
     ("pane.proc.kill", "Cmd+."),
     ("pane.proc.close", "Cmd+W"),
 ];
@@ -59,7 +59,7 @@ const TAB_KEYS: &[(&str, &str)] = &[
     ("pane.attention.next", "Cmd+Shift+U"), // FR-65
 ];
 
-/// Menu "Pesan" (Fase 2: FR-10 sampai 12, SEC-10). ⌘K dan ⌘. sudah dipakai Fase 1 (TECH, keputusan Fase 2).
+/// "Messages" menu (Phase 2: FR-10 to 12, SEC-10). ⌘K and ⌘. are already taken by Phase 1 (TECH, Phase 2 decision).
 const MSG_KEYS: &[(&str, &str)] = &[
     ("msg.compose", "Cmd+Shift+K"),
     ("msg.drawer", "Cmd+J"),
@@ -80,7 +80,7 @@ const VIEW_KEYS: &[(&str, &str)] = &[
     ("term.zoom.pane_reset", "Alt+Cmd+0"),
 ];
 
-/// SEC-14: hanya http/https, tanpa spasi atau karakter kontrol; dibuka lewat `open`, bukan shell.
+/// SEC-14: only http/https, no spaces or control characters; opened through `open`, not a shell.
 fn url_ok(url: &str) -> bool {
     (url.starts_with("https://") || url.starts_with("http://")) && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
@@ -93,11 +93,11 @@ fn open_url(url: String) -> Result<(), String> {
     std::process::Command::new("/usr/bin/open").arg(&url).spawn().map(drop).map_err(|e| e.to_string())
 }
 
-/// Folder di sebelah config.toml yang boleh dibuka dari Finder (Pengaturan > Keamanan > log audit).
-/// `sub` adalah nama folder dari daftar ini, bukan path, jadi webview tidak bisa meminta folder lain.
+/// Folders next to config.toml that may be opened in Finder (Settings > Security > audit log).
+/// `sub` is a folder name from this list, not a path, so the webview can't ask for another folder.
 const REVEAL: &[&str] = &["", "audit", "hooks", "history"];
 
-/// Tujuan tombol "Buka": folder di sebelah config.toml, hanya untuk nama di REVEAL.
+/// Target of the "Open" button: a folder next to config.toml, only for names in REVEAL.
 fn reveal_target(config: &str, sub: &str) -> Result<std::path::PathBuf, String> {
     if !REVEAL.contains(&sub) {
         return Err("dir_not_allowed".into());
@@ -123,7 +123,7 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
             let mut slot = st.0.lock().unwrap();
             match slot.as_ref().filter(|c| c.alive.load(std::sync::atomic::Ordering::Relaxed)) {
                 Some(c) => c.clone(),
-                // belum tersambung, atau daemon mati: sambung/jalankan lagi (kriteria 17)
+                // not connected yet, or the daemon died: connect/launch again (criterion 17)
                 None => {
                     let emit: daemon::OnEvent = Arc::new(move |v| {
                         if v["event"] == "config.changed" {
@@ -147,13 +147,13 @@ async fn daemon_call(app: tauri::AppHandle, method: String, params: Value) -> Re
     .map_err(|e| e.to_string())?
 }
 
-/// Pintasan yang berlaku + masalah `[keys]`, untuk Pengaturan > Pintasan (FR-39).
+/// Shortcuts in effect + `[keys]` problems, for Settings > Shortcuts (FR-39).
 #[tauri::command]
 fn shortcuts(app: tauri::AppHandle) -> (Vec<Shortcut>, Vec<String>) {
     app.state::<Shortcuts>().0.lock().unwrap().clone()
 }
 
-/// FR-40: badge Dock = jumlah pane butuh perhatian saat jendela tidak dilihat; 0 = hapus.
+/// FR-40: Dock badge = number of panes needing attention while the window isn't being looked at; 0 = clear.
 #[tauri::command]
 fn badge(app: tauri::AppHandle, count: i64) {
     if let Some(w) = app.get_webview_window("main") {
@@ -161,7 +161,7 @@ fn badge(app: tauri::AppHandle, count: i64) {
     }
 }
 
-/// FR-40: Dock melompat sekali saat agent butuh izin dan jendela tidak dilihat.
+/// FR-40: the Dock bounces once when an agent needs permission and the window isn't being looked at.
 #[tauri::command]
 fn attention(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -169,15 +169,15 @@ fn attention(app: tauri::AppHandle) {
     }
 }
 
-/// FR-48: lupakan rahasia kanal UI di Keychain (item milik app ini saja).
+/// FR-48: forget the UI channel secret in the Keychain (this app's items only).
 #[tauri::command]
 fn forget_secret() {
     let account = format!("ui-secret:{}", daemon::rundir().display());
     let _ = security_framework::passwords::delete_generic_password(daemon::KC_SERVICE, &account);
 }
 
-/// FR-54/SEC-34: gambar tempelan disimpan di `$TMPDIR/gembala/paste/` (`0700`), file `0600` bernama acak.
-/// Hanya PNG/JPEG/GIF/WebP dan maks 20 MB; path dikembalikan untuk ditempel ke pane.
+/// FR-54/SEC-34: pasted images are stored in `$TMPDIR/gembala/paste/` (`0700`), `0600` files with random names.
+/// Only PNG/JPEG/GIF/WebP and max 20 MB; the path is returned to paste into the pane.
 #[tauri::command]
 fn save_paste(data: String, ext: String) -> Result<String, String> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -202,7 +202,7 @@ fn save_paste(data: String, ext: String) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// SEC-34: hapus gambar tempelan milik pane yang ditutup; hanya file di folder paste milik Gembala.
+/// SEC-34: delete pasted images of a closed pane; only files in Gembala's paste folder.
 #[tauri::command]
 fn forget_paste(paths: Vec<String>) {
     let dir = daemon::rundir().join("paste");
@@ -214,7 +214,7 @@ fn forget_paste(paths: Vec<String>) {
     }
 }
 
-/// SEC-34: gambar tempelan lebih dari 24 jam dibuang saat app dibuka.
+/// SEC-34: pasted images older than 24 hours are dropped when the app opens.
 fn sweep_paste() {
     let Ok(entries) = std::fs::read_dir(daemon::rundir().join("paste")) else { return };
     for e in entries.flatten() {
@@ -225,12 +225,12 @@ fn sweep_paste() {
     }
 }
 
-/// FR-15: path asli (symlink diselesaikan); yang gagal diselesaikan dibuang.
+/// FR-15: real path (symlinks resolved); ones that fail to resolve are dropped.
 fn canonical(paths: impl IntoIterator<Item = std::path::PathBuf>) -> Vec<String> {
     paths.into_iter().filter_map(|p| std::fs::canonicalize(p).ok()).map(|p| p.to_string_lossy().into_owned()).collect()
 }
 
-/// FR-15: dialog pilih file; path yang dipilih ditempel UI ke prompt agent (agent membaca dengan izinnya sendiri).
+/// FR-15: file picker dialog; the UI pastes the chosen paths into the agent prompt (the agent reads them with its own permissions).
 #[tauri::command]
 async fn pick_files(app: tauri::AppHandle) -> Vec<String> {
     use tauri_plugin_dialog::DialogExt;
@@ -246,18 +246,18 @@ async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     canonical(picked.and_then(|f| f.into_path().ok())).pop()
 }
 
-/// FR-15: file yang diseret ke pane juga diselesaikan symlink-nya.
+/// FR-15: files dragged onto a pane get their symlinks resolved too.
 #[tauri::command]
 fn resolve_paths(paths: Vec<String>) -> Vec<String> {
     canonical(paths.into_iter().map(Into::into))
 }
 
-/// FR-40 banner macOS (T5). Isi hanya nama pane + status (SEC-33): bisa tampil di layar kunci.
+/// FR-40 macOS banner (T5). Content is only pane name + status (SEC-33): it may show on the lock screen.
 #[tauri::command]
 fn notify_pane(app: tauri::AppHandle, body: String, sound: bool, pane: Option<u64>) {
     use tauri_plugin_notification::NotificationExt;
     let body: String = body.chars().filter(|c| !c.is_control()).take(80).collect();
-    // id = pane: klik banner (`on_action` di `run`) memindah ke pane itu
+    // id = pane: clicking the banner (`on_action` in `run`) moves to that pane
     let mut n = app.notification().builder().title("Gembala").body(body).id(pane.and_then(|p| i32::try_from(p).ok()).unwrap_or(0));
     if sound {
         n = n.sound("default");
@@ -265,8 +265,8 @@ fn notify_pane(app: tauri::AppHandle, body: String, sound: bool, pane: Option<u6
     let _ = n.show();
 }
 
-/// FR-60: proses milik Gembala untuk Pengaturan > Proses: UI ini, WebKit-nya, daemon, dan semua turunan daemon.
-/// Dibaca dari `ps` tanpa argumen proses (argumen proses lain bisa memuat rahasia).
+/// FR-60: Gembala-owned processes for Settings > Processes: this UI, its WebKit, the daemon, and all daemon descendants.
+/// Read from `ps` without process arguments (other processes' arguments may hold secrets).
 #[tauri::command]
 fn proc_list() -> Vec<Value> {
     let Ok(out) = std::process::Command::new("/bin/ps").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,comm="]).output() else {
@@ -287,7 +287,7 @@ fn procs_of(ps: &str, me: u32, daemon_exe: &str) -> Vec<Value> {
     let all: Vec<P> = ps
         .lines()
         .filter_map(|l| {
-            // lima kolom angka, sisanya comm (boleh berisi spasi)
+            // five number columns, the rest is comm (may contain spaces)
             let mut rest = l.trim_start();
             let mut f = [""; 5];
             for x in f.iter_mut() {
@@ -303,8 +303,8 @@ fn procs_of(ps: &str, me: u32, daemon_exe: &str) -> Vec<Value> {
     let mut rows = vec![];
     let Some(ui) = all.iter().find(|p| p.pid == me) else { return rows };
     rows.push(row(ui, "ui"));
-    // WebKit milik UI dijalankan launchd, bukan anak UI: dikenali dari waktu mulai yang hampir sama
-    // ponytail: dua app WebKit yang dibuka di detik yang sama bisa tertukar; pakai audit token XPC kalau perlu pasti
+    // The UI's WebKit is launched by launchd, not as a UI child: recognized by an almost identical start time
+    // ponytail: two WebKit apps opened in the same second can get swapped; use the XPC audit token if it has to be certain
     for (svc, role) in [("WebContent", "webkit-content"), ("GPU", "webkit-gpu"), ("Networking", "webkit-net")] {
         let name = format!("com.apple.WebKit.{svc}");
         if let Some(p) = all.iter().filter(|p| p.comm.ends_with(&name) && p.age <= ui.age && ui.age - p.age <= 10).min_by_key(|p| ui.age - p.age) {
@@ -326,8 +326,8 @@ fn procs_of(ps: &str, me: u32, daemon_exe: &str) -> Vec<Value> {
     rows
 }
 
-/// FR-37/52: salin dari menu klik kanan (teks pilihan pengguna, folder tab) lewat pbcopy;
-/// clipboard web butuh gesture yang tidak ada di callback menu native.
+/// FR-37/52: copy from the context menu (the user's selected text, tab folder) through pbcopy;
+/// the web clipboard needs a gesture that doesn't exist in a native menu callback.
 #[tauri::command]
 fn copy_text(text: String) -> Result<(), String> {
     use std::io::Write;
@@ -336,8 +336,8 @@ fn copy_text(text: String) -> Result<(), String> {
     c.wait().map(drop).map_err(|e| e.to_string())
 }
 
-/// FR-59 autocomplete: isi folder yang diawali `prefix` (nama + folder?), folder dulu, maks 200.
-/// Berkas tersembunyi hanya bila awalan diawali titik. Baca saja.
+/// FR-59 autocomplete: folder entries starting with `prefix` (name + is folder?), folders first, max 200.
+/// Hidden files only when the prefix starts with a dot. Read only.
 #[tauri::command]
 fn list_dir(dir: String, prefix: String) -> Vec<(String, bool)> {
     let Ok(rd) = std::fs::read_dir(&dir) else { return vec![] };
@@ -354,7 +354,7 @@ fn list_dir(dir: String, prefix: String) -> Vec<(String, bool)> {
     out
 }
 
-/// FR-59 autocomplete kata pertama: perintah di PATH (app dari Finder punya PATH minim, jadi folder umum ditambah).
+/// FR-59 first-word autocomplete: commands on PATH (an app from Finder has a minimal PATH, so common folders are added).
 #[tauri::command]
 fn list_commands(prefix: String) -> Vec<String> {
     use std::os::unix::fs::PermissionsExt;
@@ -378,7 +378,7 @@ fn list_commands(prefix: String) -> Vec<String> {
     out
 }
 
-/// FR-59 autocomplete argumen git: branch lokal dan remote (tanpa `origin/HEAD`). Baca saja.
+/// FR-59 git argument autocomplete: local and remote branches (without `origin/HEAD`). Read only.
 #[tauri::command]
 fn git_branches(dir: String) -> Vec<String> {
     let out = std::process::Command::new("git").args(["-C", &dir, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).output();
@@ -386,7 +386,7 @@ fn git_branches(dir: String) -> Vec<String> {
     String::from_utf8_lossy(&out.stdout).lines().filter(|b| !b.ends_with("/HEAD") && !b.is_empty()).map(String::from).collect()
 }
 
-/// FR-59 autocomplete `npm run`: nama script di package.json folder itu.
+/// FR-59 `npm run` autocomplete: script names in that folder's package.json.
 #[tauri::command]
 fn npm_scripts(dir: String) -> Vec<String> {
     let text = std::fs::read_to_string(std::path::Path::new(&dir).join("package.json")).unwrap_or_default();
@@ -394,7 +394,7 @@ fn npm_scripts(dir: String) -> Vec<String> {
     v["scripts"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
 }
 
-/// FR-59 saran abu-abu: riwayat zsh pengguna, terbaru dulu, tanpa duplikat (format extended `: ts:0;cmd` atau polos).
+/// FR-59 gray suggestion: the user's zsh history, newest first, no duplicates (extended format `: ts:0;cmd` or plain).
 #[tauri::command]
 fn shell_history() -> Vec<String> {
     let path = std::env::var("HISTFILE").unwrap_or_else(|_| format!("{}/.zsh_history", std::env::var("HOME").unwrap_or_default()));
@@ -410,7 +410,7 @@ fn shell_history() -> Vec<String> {
         .collect()
 }
 
-/// FR-37: Tempel dari menu klik kanan terminal (teks saja; gambar tetap lewat ⌘V, FR-54).
+/// FR-37: Paste from the terminal context menu (text only; images still go through ⌘V, FR-54).
 #[tauri::command]
 fn paste_text() -> Result<String, String> {
     let o = std::process::Command::new("/usr/bin/pbpaste").output().map_err(|e| e.to_string())?;
@@ -428,16 +428,16 @@ fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-type Shortcut = (&'static str, &'static str, String); // id aksi, label, kombinasi ("" = tanpa)
+type Shortcut = (&'static str, &'static str, String); // action id, label, combo ("" = none)
 
-/// Pintasan yang berlaku + masalah `[keys]` (untuk Pengaturan > Pintasan).
+/// Shortcuts in effect + `[keys]` problems (for Settings > Shortcuts).
 struct Shortcuts(Mutex<(Vec<Shortcut>, Vec<String>)>);
 
 const MODS: &[(&str, &[&str])] =
     &[("Ctrl", &["ctrl", "control"]), ("Alt", &["alt", "option"]), ("Shift", &["shift"]), ("Cmd", &["cmd", "command", "super", "meta"])];
 const NAMED: &[&str] = &["enter", "tab", "space", "left", "right", "up", "down", "escape", "backspace", "delete", "home", "end", "pageup", "pagedown"];
 
-/// "cmd+shift+d" → "Shift+Cmd+D". Wajib memakai ⌘: tombol lain milik terminal (FR-39).
+/// "cmd+shift+d" → "Shift+Cmd+D". Must use ⌘: other keys belong to the terminal (FR-39).
 fn canon_key(raw: &str, lang: &str) -> Result<String, String> {
     let parts: Vec<String> = raw.split('+').map(|t| t.trim().to_lowercase()).collect();
     let (key, mods) = parts.split_last().ok_or(i18n::tr(lang, "key.empty"))?;
@@ -464,8 +464,8 @@ fn canon_key(raw: &str, lang: &str) -> Result<String, String> {
     Ok(out.into_iter().chain([key.as_str()]).collect::<Vec<_>>().join("+"))
 }
 
-/// Pintasan bawaan ditimpa `[keys]` ("kombinasi" = "id aksi"). Bentrok: aksi yang ditimpa menang,
-/// lawannya kehilangan pintasan dan ditandai.
+/// Default shortcuts overridden by `[keys]` ("combo" = "action id"). Conflict: the overriding action wins,
+/// the other one loses its shortcut and gets flagged.
 fn resolve_keys(overrides: &serde_json::Map<String, Value>, lang: &str) -> (Vec<Shortcut>, Vec<String>) {
     let mut items: Vec<(Shortcut, bool)> =
         TAB_KEYS.iter().chain(PANE_KEYS).chain(VIEW_KEYS).chain(MSG_KEYS).map(|(id, key)| ((*id, i18n::tr(lang, id), canon_key(key, lang).unwrap_or_default()), false)).collect();
@@ -482,7 +482,7 @@ fn resolve_keys(overrides: &serde_json::Map<String, Value>, lang: &str) -> (Vec<
         }
     }
     let mut order: Vec<usize> = (0..items.len()).collect();
-    order.sort_by_key(|&i| !items[i].1); // yang ditimpa diperiksa duluan
+    order.sort_by_key(|&i| !items[i].1); // overrides are checked first
     let mut seen: Vec<(String, &'static str)> = Vec::new();
     for i in order {
         let ((id, _, key), _) = &mut items[i];
@@ -516,7 +516,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut], l
         .hide_others_with_text(tr("menu.hide_others"))
         .show_all_with_text(tr("menu.show_all"))
         .separator()
-        // FR-46: ⌘Q menutup jendela saja; agent jalan terus di daemon (FR-20)
+        // FR-46: ⌘Q only closes the window; agents keep running in the daemon (FR-20)
         .item(&MenuItemBuilder::with_id("app.quit_all", tr("menu.quit_all")).build(app)?)
         .quit_with_text(tr("menu.quit"))
         .build()?;
@@ -529,7 +529,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut], l
         .paste_with_text(tr("menu.paste"))
         .select_all_with_text(tr("menu.select_all"))
         .build()?;
-    // pintasan lewat key equivalent native: WKWebView tidak selalu meneruskan ⌘⇧/⌘⌥/⌃⌘ ke keydown JS
+    // shortcuts through native key equivalents: WKWebView doesn't always pass ⌘⇧/⌘⌥/⌃⌘ to the JS keydown
     let mut view = SubmenuBuilder::new(app, tr("menu.view"));
     let mut tab = SubmenuBuilder::new(app, tr("menu.tab"));
     let mut pane = SubmenuBuilder::new(app, tr("menu.pane"));
@@ -582,8 +582,8 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Daemon(Mutex::new(None)))
-        // FR-40: klik banner = jendela tampil + pindah ke pane-nya (id notifikasi = id pane, lihat `notify_pane`).
-        // ponytail: plugin menunggu klik di satu thread per banner sampai banner hilang dari Notification Center
+        // FR-40: clicking a banner = window shows + moves to its pane (notification id = pane id, see `notify_pane`).
+        // ponytail: the plugin waits for clicks on one thread per banner until the banner leaves Notification Center
         .setup(|app| {
             use tauri_plugin_notification::NotificationExt;
             let h = app.handle().clone();
@@ -599,14 +599,14 @@ pub fn run() {
             Ok(())
         })
         .manage(Shortcuts(Mutex::new(resolve_keys(&serde_json::Map::new(), lang0))))
-        // menu bawaan Tauri memasang ⌘W = tutup jendela; ⌘W di sini milik "tutup pane" (FR-38, FR-39)
+        // Tauri's default menu sets ⌘W = close window; ⌘W here belongs to "close pane" (FR-38, FR-39)
         .menu(move |app| build_menu(app, &resolve_keys(&serde_json::Map::new(), lang0).0, lang0))
         .on_menu_event(|app, ev| {
             if ["pane.", "app.", "term.", "tab.", "msg."].iter().any(|p| ev.id().0.starts_with(p)) {
                 let _ = app.emit("shortcut", ev.id().0.as_str());
             }
         })
-        // FR-46: tutup jendela = UI keluar (tidak tinggal di latar tanpa jendela); agent tetap jalan di daemon (FR-20)
+        // FR-46: closing the window = the UI exits (doesn't linger in the background without a window); agents keep running in the daemon (FR-20)
         .on_window_event(|w, ev| {
             if let tauri::WindowEvent::Destroyed = ev {
                 w.app_handle().exit(0);
@@ -616,16 +616,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, ev| {
-            // Cmd+Q (terminate AppKit) hanya memberi Exit, tanpa ExitRequested
+            // Cmd+Q (AppKit terminate) only gives Exit, no ExitRequested
             if let tauri::RunEvent::Exit = ev {
                 on_exit(app);
             }
         });
 }
 
-/// App keluar (Cmd+Q, tutup jendela). Pengaturan "Saat Cmd+Q: Hentikan semua" = daemon dihentikan (FR-20).
-/// Selain itu, FR-60: daemon tetap hidup karena pane masih menjalankan proses = beri tahu pengguna alasannya,
-/// supaya proses latar tidak dikira diam-diam. "Hentikan semua" menghentikan daemon dulu, jadi tidak muncul.
+/// App exits (Cmd+Q, window closed). Setting "On Cmd+Q: Stop everything" = the daemon is stopped (FR-20).
+/// Otherwise, FR-60: the daemon stays alive because panes are still running processes = tell the user why,
+/// so background processes aren't taken as sneaky. "Stop everything" stops the daemon first, so it doesn't show.
 fn on_exit(app: &tauri::AppHandle) {
     use tauri_plugin_notification::NotificationExt;
     let Some(c) = app.state::<Daemon>().0.lock().unwrap().clone() else { return };
@@ -649,14 +649,14 @@ fn on_exit(app: &tauri::AppHandle) {
     }
     let body = i18n::fmt(lang, "quit.body", &[("n", &busy.len().to_string()), ("names", &busy.join(", "))]);
     let _ = app.notification().builder().title(i18n::tr(lang, "quit.title")).body(body).show();
-    std::thread::sleep(std::time::Duration::from_millis(300)); // beri waktu notifikasi terkirim sebelum proses keluar
+    std::thread::sleep(std::time::Duration::from_millis(300)); // give the notification time to go out before the process exits
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    /// FR-60: UI, WebKit yang mulai bersamaan, daemon, dan turunannya; proses lain tidak ikut
+    /// FR-60: the UI, the WebKit started at the same time, the daemon, and its descendants; no other processes
     #[test]
     fn proses_milik_gembala() {
         let d = "/Apps/Gembala.app/Contents/MacOS/gembala";
@@ -683,7 +683,7 @@ mod tests {
         assert_eq!(super::etime_secs("01-02:03:04"), 93784);
     }
 
-    /// FR-59: folder dulu, saring awalan, tersembunyi hanya bila awalan diawali titik
+    /// FR-59: folders first, prefix filter, hidden only when the prefix starts with a dot
     #[test]
     fn list_dir_saring_dan_urut() {
         let d = std::env::temp_dir().join(format!("gbl-lsdir-{}", std::process::id()));
@@ -695,7 +695,7 @@ mod tests {
         assert_eq!(super::list_dir(dir.clone(), "".into()), vec![("alpha".into(), true), ("Beta".into(), true), ("aku.txt".into(), false)]);
         assert_eq!(super::list_dir(dir.clone(), "a".into()), vec![("alpha".into(), true), ("aku.txt".into(), false)]);
         assert_eq!(super::list_dir(dir.clone(), ".".into()), vec![(".git".into(), true)]);
-        // package.json tanpa scripts = kosong; dengan scripts = namanya
+        // package.json without scripts = empty; with scripts = their names
         assert!(super::npm_scripts(dir.clone()).is_empty());
         std::fs::write(d.join("package.json"), r#"{"scripts":{"dev":"vite","test":"node --test"}}"#).unwrap();
         assert_eq!(super::npm_scripts(dir), vec!["dev".to_string(), "test".to_string()]);
@@ -719,7 +719,7 @@ mod tests {
     fn paste_gambar_aman() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("gembala-paste-{}", std::process::id()));
-        // satu-satunya test yang memakai env ini; test lain di crate ini tidak membaca env
+        // the only test using this env; other tests in this crate don't read env
         unsafe { std::env::set_var("GEMBALA_RUNDIR", &dir) };
         let p = super::save_paste("iVBORw0KGgo=".into(), "png".into()).unwrap();
         let meta = std::fs::metadata(&p).unwrap();
@@ -750,8 +750,8 @@ mod tests {
         let key = |id: &str| items.iter().find(|i| i.0 == id).unwrap().2.clone();
         assert_eq!(key("pane.split.right"), "Cmd+T");
         assert_eq!(key("pane.zoom.toggle"), "Cmd+K"); // ditimpa = menang
-        assert_eq!(key("term.clear"), ""); // bawaan Cmd+K kalah
-        assert_eq!(key("pane.proc.kill"), "Cmd+."); // override salah = bawaan tetap
+        assert_eq!(key("term.clear"), ""); // default Cmd+K loses
+        assert_eq!(key("pane.proc.kill"), "Cmd+."); // bad override = default stays
         let all = errors.join("\n");
         for want in ["tidak.ada", "ctrl+x", "bentrok: Cmd+K"] {
             assert!(all.contains(want), "{want}: {all}");
@@ -781,7 +781,7 @@ mod tests {
         }
     }
 
-    /// Tombol "Buka" (Pengaturan > Keamanan) tidak boleh membuka folder di luar folder config Gembala.
+    /// The "Open" button (Settings > Security) must not open folders outside the Gembala config folder.
     #[test]
     fn reveal_hanya_folder_di_sebelah_config() {
         assert_eq!(super::reveal_target("/u/Library/Application Support/Gembala/config.toml", "audit").unwrap(), std::path::Path::new("/u/Library/Application Support/Gembala/audit"));

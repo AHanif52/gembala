@@ -1,7 +1,7 @@
-# Eksperimen RAM UI (TECH M1): app kedua (build DEBUG) dibuka ke folder run uji berisi N pane
-# berisi sama, lalu footprint semua proses app diukur. Rahasia lewat GEMBALA_DEV_SECRET (hanya ada
-# di build debug), jadi Keychain tidak disentuh. Tidak mengganggu app/daemon yang sedang dipakai.
-# pakai: npm run tauri build -- --debug && python3 -I scripts/ram_ui.py target/debug/bundle/macos/Gembala.app <n_pane>
+# UI RAM experiment (TECH M1): a second app (DEBUG build) opened on a test run folder with N panes
+# of the same content, then the footprint of all app processes is measured. Secret through GEMBALA_DEV_SECRET (only in
+# debug builds), so the Keychain isn't touched. Doesn't disturb the app/daemon in use.
+# usage: npm run tauri build -- --debug && python3 -I scripts/ram_ui.py target/debug/bundle/macos/Gembala.app <n_pane>
 import json, os, re, shutil, socket, subprocess, sys, time
 
 app, n = sys.argv[1], int(sys.argv[2])
@@ -45,7 +45,7 @@ subprocess.run(["open", "-n", "--env", f"GEMBALA_RUNDIR={R}", "--env", f"GEMBALA
 series, last = [], {}
 t0 = time.time()
 time.sleep(1.5)
-# jendela tertutup jendela lain = WebKit berhenti menggambar; paksa ke depan supaya angka sebanding
+# a window covered by other windows = WebKit stops drawing; force it to the front so the numbers compare
 for p in pids("Gembala.app/Contents/MacOS/gembala-ui") - before_ui:
     subprocess.run(["osascript", "-e", f'tell application "System Events" to set frontmost of (first process whose unix id is {p}) to true'], capture_output=True)
 for at in (5, 10, 20, 30):
@@ -54,7 +54,7 @@ for at in (5, 10, 20, 30):
     wk = pids("com.apple.WebKit") - before_wk
     last = footprint(ui | wk | {d.pid})
     series.append(sum(last.values()))
-# daemon: 1 listener ui.sock + 1 koneksi per klien UI; tanpa koneksi = UI gagal sambung, angka tidak sah
+# daemon: 1 ui.sock listener + 1 connection per UI client; no connection = the UI failed to connect, numbers invalid
 conns = subprocess.run(["lsof", "-a", "-U", "-p", str(d.pid)], capture_output=True, text=True).stdout.count("ui.sock") - 1
 parts = ", ".join(f"{k.replace('com.apple.WebKit.', '')} {v:.0f}" for k, v in sorted(last.items(), key=lambda x: -x[1]))
 ok = "ok" if conns > 0 else "UI TIDAK tersambung"
