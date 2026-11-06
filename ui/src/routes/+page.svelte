@@ -1880,7 +1880,9 @@
     if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
     if (kind === "blocked") invoke("attention").catch(() => {}); // the Dock bounces only when action is needed; done just gets the badge
     // SEC-33: pane name, tab name (FR-65), status; no screen content
-    const tb = tabOf(pane);
+    // tab title as seen from this pane: the focused pane's label/agent would name another pane's task in a split
+    const t = tabOf(pane);
+    const tb = t && { ...t, focus: pane };
     const name = m.name || m.profile;
     invoke("notify_pane", { body: tb ? tt("alert.bodyTab", { name, tab: title(tb), what: tt(label) }) : tt("alert.body", { name, what: tt(label) }), sound: notify.sound, pane }).catch(() => {});
   }

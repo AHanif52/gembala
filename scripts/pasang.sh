@@ -12,6 +12,13 @@ dst=/Applications/Gembala.app
 tmp=/Applications/.Gembala-baru.app
 rm -rf "$tmp"
 ditto "$new" "$tmp"
-if [ -d "$dst" ]; then mv "$dst" "$HOME/.Trash/Gembala-$(date +%Y%m%d-%H%M%S).app"; fi
+ls=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+if [ -d "$dst" ]; then
+  old="$HOME/.Trash/Gembala-$(date +%Y%m%d-%H%M%S).app"
+  mv "$dst" "$old"
+  # a trashed copy stays registered under dev.gembala.app; notifications may then take its (old) icon
+  "$ls" -u "$old" 2>/dev/null || true
+fi
 mv "$tmp" "$dst"
+"$ls" -f "$dst"
 echo "Terpasang di $dst. Tutup Gembala (Cmd+Q) lalu buka lagi untuk memakai versi baru."
