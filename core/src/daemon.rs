@@ -111,8 +111,8 @@ struct Pane {
     /// FR-80: terminal was waiting for a password at the last check, a shell command that ran long has just finished (secs)
     asked_pw: std::sync::atomic::AtomicBool,
     long_done: Mutex<Option<u64>>,
-    /// FR-80: Telegram message typed into this pane, answered with the result when the pane is done
-    tg_ask: Mutex<Option<i64>>,
+    /// FR-80: Telegram messages typed into this pane, answered (👍 + result) when the pane is done
+    tg_ask: Mutex<Vec<i64>>,
     /// FR-80: last text typed from the phone; the result snippet starts at its echo on screen
     tg_text: Mutex<Option<String>>,
     readable: std::sync::atomic::AtomicBool,
@@ -1148,7 +1148,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         status_seq: AtomicU64::new(0),
         asked_pw: std::sync::atomic::AtomicBool::new(false),
         long_done: Mutex::new(None),
-        tg_ask: Mutex::new(None),
+        tg_ask: Mutex::default(),
         tg_text: Mutex::new(None),
         readable: std::sync::atomic::AtomicBool::new(false),
         typed_at: Mutex::new(None),

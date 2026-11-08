@@ -695,21 +695,22 @@ pub fn on_status(st: &State, id: u64, pane: &Pane, status: &str) {
     if pane.agent_name().is_none() {
         return;
     }
-    let asked = *pane.tg_ask.lock().unwrap();
-    if !b.away.load(Ordering::Relaxed) && asked.is_none() {
+    let asked = !pane.tg_ask.lock().unwrap().is_empty();
+    if !b.away.load(Ordering::Relaxed) && !asked {
         return;
     }
     let seq = pane.status_seq.load(Ordering::Relaxed);
-    let on = |k: &str| asked.is_some() || values(st)["notify"][k].as_bool().unwrap_or(true);
+    let on = |k: &str| asked || values(st)["notify"][k].as_bool().unwrap_or(true);
     let kind = match status {
         "blocked" if on("on_blocked") => Kind::Blocked(seq),
         "done" if on("on_done") => Kind::Done,
         _ => return,
     };
-    if kind == Kind::Done
-        && let Some(m) = pane.tg_ask.lock().unwrap().take()
-    {
-        b.react(m, "👍");
+    if kind == Kind::Done {
+        // every message typed while the agent worked (a photo, then a follow-up) gets its 👍, not only the last
+        for m in pane.tg_ask.lock().unwrap().drain(..) {
+            b.react(m, "👍");
+        }
     }
     if b.first(id, seq) {
         let _ = b.out.try_send(Out::Notice(id, kind, Instant::now()));
@@ -887,7 +888,7 @@ fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64) {
             Ok(()) => {
                 audit(st, pane, text);
                 *b.last.lock().unwrap() = Some(id);
-                *pane.tg_ask.lock().unwrap() = Some(msg);
+                pane.tg_ask.lock().unwrap().push(msg);
                 *pane.tg_text.lock().unwrap() = Some(text.to_string());
                 return b.react(msg, "👀");
             }
