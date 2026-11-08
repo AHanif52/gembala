@@ -29,19 +29,29 @@ fn dir() -> PathBuf {
     crate::config::path().with_file_name("history")
 }
 
-pub fn path(boot: &str, pane: u64) -> PathBuf {
-    dir().join(format!("{boot}-{pane}.jsonl"))
+/// 16 hex digits: a pane's history key (the same across daemon restarts, so its files never depend on one daemon run),
+/// or the daemon boot id of `{boot, pane}` in layouts saved before keys (8 Nov 2026)
+pub fn hex16(s: &str) -> bool {
+    s.len() == 16 && s.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
-fn log_path(from: &Value) -> Option<PathBuf> {
+/// File name stem of the `history` the UI sends (untrusted): a pane key, or `<boot>-<pane>` from an old layout
+pub fn stem(from: &Value) -> Option<String> {
+    if let Some(k) = from.as_str() {
+        return hex16(k).then(|| k.to_string());
+    }
     let (boot, pane) = (from["boot"].as_str()?, from["pane"].as_u64()?);
-    (boot.len() == 16 && boot.bytes().all(|c| c.is_ascii_hexdigit())).then(|| dir().join(format!("{boot}-{pane}.log")))
+    hex16(boot).then(|| format!("{boot}-{pane}"))
+}
+
+pub fn path(stem: &str) -> PathBuf {
+    dir().join(format!("{stem}.jsonl"))
 }
 
 /// Pane screen log (colored lines) written whole through a temp file; write failures are ignored.
-pub fn save_log(boot: &str, pane: u64, bytes: &[u8]) {
+pub fn save_log(stem: &str, bytes: &[u8]) {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let Some(file) = log_path(&json!({"boot": boot, "pane": pane})) else { return };
+    let file = dir().join(format!("{stem}.log"));
     let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir());
     let tmp = file.with_extension("tmp");
     // redacted per chunk between color codes: `\x1b[32mghp_…` still gets caught (the `m` isn't a word start)
@@ -60,8 +70,8 @@ pub fn save_log(boot: &str, pane: u64, bytes: &[u8]) {
 }
 
 /// Old pane log and when it was last written, if any.
-pub fn load_log(from: &Value) -> Option<(Vec<u8>, u64)> {
-    let file = log_path(from)?;
+pub fn load_log(stem: &str) -> Option<(Vec<u8>, u64)> {
+    let file = dir().join(format!("{stem}.log"));
     let meta = std::fs::metadata(&file).ok().filter(|m| m.len() <= LOG_MAX)?;
     let t = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
     Some((trim_separator(&std::fs::read(file).ok()?), t))
@@ -105,14 +115,31 @@ pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+fn json_line(b: &Block) -> String {
+    json!({"t": b.t, "cwd": b.cwd, "cmd": b.cmd, "code": b.code, "secs": b.secs, "resume": b.resume}).to_string() + "\n"
+}
+
 /// Add one block; write failures are ignored (history must never get in the pane's way).
 pub fn append(file: &Path, b: &Block) {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let Some(parent) = file.parent() else { return };
     let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent);
-    let line = json!({"t": b.t, "cwd": b.cwd, "cmd": b.cmd, "code": b.code, "secs": b.secs, "resume": b.resume});
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(file) {
-        let _ = writeln!(f, "{line}");
+        let _ = f.write_all(json_line(b).as_bytes());
+    }
+}
+
+/// The file becomes exactly these blocks (the last 200 when a pane comes back, so a pane's file doesn't grow forever),
+/// through a temp file: a daemon stopping halfway leaves the old file whole.
+pub fn rewrite(file: &Path, blocks: &[Block]) {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let Some(parent) = file.parent() else { return };
+    let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent);
+    let tmp = file.with_extension("jsonl.tmp");
+    let text: String = blocks.iter().map(json_line).collect();
+    let ok = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(text.as_bytes()));
+    if ok.is_ok() {
+        let _ = std::fs::rename(&tmp, file);
     }
 }
 
@@ -129,13 +156,9 @@ fn clean(s: &str) -> String {
     crate::msg::sanitize(&s.chars().take(4096).collect::<String>()).unwrap_or_default()
 }
 
-/// `{boot, pane}` from the UI layout (untrusted): last 200 blocks of the old pane, content sanitized.
-pub fn load(from: &Value) -> Vec<Block> {
-    let (Some(boot), Some(pane)) = (from["boot"].as_str(), from["pane"].as_u64()) else { return Vec::new() };
-    if boot.len() != 16 || !boot.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Vec::new();
-    }
-    let Ok(f) = std::fs::File::open(path(boot, pane)) else { return Vec::new() };
+/// Last 200 blocks of a pane (`stem` checked by [`stem`]), content sanitized: the file is written by the daemon but sits on disk.
+pub fn load(stem: &str) -> Vec<Block> {
+    let Ok(f) = std::fs::File::open(path(stem)) else { return Vec::new() };
     let lines: Vec<String> = std::io::BufReader::new(f).lines().map_while(Result::ok).collect();
     lines[lines.len().saturating_sub(MAX)..]
         .iter()
@@ -306,21 +329,29 @@ mod tests {
         let d = std::env::temp_dir().join(format!("gembala-uji-{}", std::process::id()));
         // SAFETY: other tests using GEMBALA_CONFIG write the same value (test folder per process)
         unsafe { std::env::set_var("GEMBALA_CONFIG", d.join("config.toml")) };
-        let f = path("00000000000000aa", 1);
+        let f = path("00000000000000aa-1");
         let r = "claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb";
         append(&f, &Block { t: 100, cwd: "~".into(), cmd: "claude".into(), code: 0, secs: 60, resume: Some(r.into()) });
         append(&f, &Block { t: 101, cwd: "~".into(), cmd: "claude".into(), code: 0, secs: 61, resume: None });
         append(&f, &Block { t: 500, cwd: "~".into(), cmd: "ls".into(), code: 0, secs: 0, resume: None });
-        let b = load(&json!({"boot": "00000000000000aa", "pane": 1}));
+        let b = load(&stem(&json!({"boot": "00000000000000aa", "pane": 1})).unwrap());
         assert_eq!(b.len(), 2);
         assert_eq!(b[0].resume.as_deref(), Some(r));
+        // a pane coming back keeps its file, trimmed to these blocks
+        rewrite(&f, &b[1..]);
+        assert_eq!(load("00000000000000aa-1").len(), 1);
         let _ = std::fs::remove_file(f);
     }
 
     #[test]
-    fn boot_tidak_valid_diabaikan() {
-        assert!(load(&json!({"boot": "../../etc/passwd", "pane": 1})).is_empty());
-        assert!(load(&json!({"boot": "0123456789abcdef"})).is_empty());
+    fn history_tidak_valid_diabaikan() {
+        assert_eq!(stem(&json!("00000000000000aa")).as_deref(), Some("00000000000000aa"));
+        assert_eq!(stem(&json!({"boot": "0123456789abcdef", "pane": 3})).as_deref(), Some("0123456789abcdef-3"));
+        assert!(stem(&json!({"boot": "../../etc/passwd", "pane": 1})).is_none());
+        assert!(stem(&json!({"boot": "0123456789abcdef"})).is_none());
+        assert!(stem(&json!("../../etc/passwd")).is_none());
+        assert!(stem(&json!("0123456789abcdef/")).is_none());
+        assert!(stem(&json!(7)).is_none());
     }
 
     #[test]
@@ -328,11 +359,11 @@ mod tests {
         let d = std::env::temp_dir().join(format!("gembala-uji-{}", std::process::id()));
         // SAFETY: other tests using GEMBALA_CONFIG write the same value (test folder per process)
         unsafe { std::env::set_var("GEMBALA_CONFIG", d.join("config.toml")) };
-        save_log("0123456789abcdef", 7, b"\x1b[32mok\x1b[m\r\n\x1b[33mghp_abcd1234abcd1234\x1b[m\r\n");
-        let (b, _) = load_log(&json!({"boot": "0123456789abcdef", "pane": 7})).unwrap();
+        save_log("0123456789abcdef", b"\x1b[32mok\x1b[m\r\n\x1b[33mghp_abcd1234abcd1234\x1b[m\r\n");
+        let (b, _) = load_log("0123456789abcdef").unwrap();
         let t = String::from_utf8(b).unwrap();
         assert!(t.contains("\x1b[32mok") && !t.contains("abcd1234abcd1234"), "{t}");
-        assert!(load_log(&json!({"boot": "../../etc/passwd", "pane": 7})).is_none());
+        assert!(load_log("fedcba9876543210").is_none());
         // an old "Sesi sebelumnya" line at the end of the log doesn't pile up
         let t = String::from_utf8(trim_separator(&[b"ls\r\nok\r\n".as_slice(), &separator(0), &separator(1), b"\r\n"].concat())).unwrap();
         assert_eq!(t, "ls\r\nok\r\n\r\n\r\n\r\n");
@@ -343,7 +374,7 @@ mod tests {
         // log from the grid (trailing blank rows gone): the last block's button rows are given back
         let t = String::from_utf8(trim_separator(blk.trim_end().as_bytes())).unwrap();
         assert_eq!(t, blk);
-        let _ = std::fs::remove_file(d.join("history/0123456789abcdef-7.log")); // folder used by another test
+        let _ = std::fs::remove_file(d.join("history/0123456789abcdef.log")); // folder used by another test
     }
 
     #[test]

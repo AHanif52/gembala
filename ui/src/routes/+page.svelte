@@ -50,7 +50,8 @@
     zoom?: number; // FR-34: this pane's zoom on top of the global zoom
     policy?: string; // SEC-5
     readable?: boolean; // SEC-21
-    from?: { boot: string; pane: number }; // FR-62: old pane (previous daemon) for block history
+    hist?: string; // FR-62: history key from the daemon, sent again when this pane comes back (rerun, daemon restart)
+    from?: { boot: string; pane: number }; // FR-62: old pane (previous daemon) of a pane without `hist` (daemon from before keys)
     ended?: { resume: string | null }; // FR-56: finished agent block with buttons, gone once a new process runs
     acct?: string; // FR-61: account id picked when the pane was created (used again on rerun)
     aliases?: string[]; // FR-79: old pane names, carried to the replacement pane so they stay addresses
@@ -655,7 +656,7 @@
     const r = await call("pane.create", { workspace: ws?.id, ...opts, session, account: acct, brief });
     // FR-13: a read-only role on an agent without tool limits = only a hint, flagged in the pane head
     const roleWarn = ["koordinator", "planner", "reviewer"].includes(opts.role as string) && agent !== "claude";
-    meta[r.pane] = { profile, cwd: null, agent, name: r.name, aliases: r.aliases, session, sig: sig(profile), acct, roleWarn };
+    meta[r.pane] = { profile, cwd: null, agent, name: r.name, aliases: r.aliases, session, sig: sig(profile), acct, roleWarn, hist: r.hist };
     return r.pane;
   }
 
@@ -685,6 +686,7 @@
       session: m.session,
       resume: AGENTS.includes(m.agent),
       account: m.owner?.id ?? m.acct, // FR-61: a session owned by another account resumes in its owning account
+      history: m.hist, // FR-62: same spot, same history (e.g. "Resume session" on a restored shell keeps its old log)
       ...oldNames(m),
     });
     for (const w of wss)
@@ -935,7 +937,7 @@
       session: shell ? undefined : m?.session,
       resume: !shell && AGENTS.includes(m?.agent ?? ""), // FR-53: resume this pane's conversation
       workspace: wsIdOf(old),
-      history: m?.from, // FR-62
+      history: m?.hist ?? m?.from, // FR-62: same key = same history file, however many daemons stopped in between
       account: shell ? undefined : m?.acct,
       ...oldNames(m),
     });

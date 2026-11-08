@@ -75,6 +75,8 @@ struct Pane {
     /// detected ±1 second later, by which time Claude has cleared the screen and scrollback
     pre_cmd: Mutex<Option<u64>>,
     pre_agent: Mutex<Option<u64>>,
+    /// FR-62: history key of the layout pane (`<key>.jsonl`, `<key>.log`), the same across reruns and daemon restarts
+    key: String,
     /// FR-62: this pane's block history file; the running block (since OSC 133 C) and the manual agent block that
     /// has finished but is waiting for its resume command from `agent_done`.
     hist: std::path::PathBuf,
@@ -182,6 +184,15 @@ type Res = Result<Value, &'static str>;
 type OpenBlocks = (Option<(history::Block, std::time::Instant)>, Option<history::Block>);
 
 pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::Result<()> {
+    // FR-62: SIGTERM (kill, logout, laptop restart) is blocked before any thread starts, so every thread inherits that and
+    // only `on_sigterm` takes it. Pane processes start with a clean mask (std resets it when spawning).
+    let term = unsafe {
+        let mut s: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut s);
+        libc::sigaddset(&mut s, libc::SIGTERM);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &s, std::ptr::null_mut());
+        s
+    };
     let ui = bind(&crate::rundir::socket_path(dir, "ui.sock")?)?;
     let pane_path = crate::rundir::socket_path(dir, "pane.sock")?;
     let pn = bind(&pane_path)?;
@@ -218,6 +229,8 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     thread::spawn(move || idle_exit(st3));
     let st9 = st.clone();
     thread::spawn(move || save_logs_loop(st9)); // FR-62: screen log to disk, history older than 14 days dropped
+    let st10 = st.clone();
+    thread::spawn(move || on_sigterm(st10, term));
     let (st8, run_dir) = (st.clone(), dir.to_path_buf());
     thread::spawn(move || spool(st8, run_dir));
     let st4 = st.clone();
@@ -1064,6 +1077,15 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     if let (Some((k, _)), Some(d)) = (&shell_acct, &acct_dir) {
         env.push((k.as_str(), d.as_str()));
     }
+    // FR-62: a layout pane coming back (rerun, daemon restart) keeps its history key, so its history never hangs on one daemon
+    // run having saved it. A new pane, an old `{boot, pane}`, or a key a live pane holds = new key, the history copied into it.
+    // UI requests run one at a time per connection, so two panes don't take the same key between this check and the insert.
+    let src = history::stem(&p["history"]);
+    let held = |k: &str| st.panes.lock().unwrap().values().any(|q| q.key == k);
+    let key = match src.as_deref() {
+        Some(k) if history::hex16(k) && !held(k) => k.to_string(),
+        _ => new_secret().map_err(|_| "io")?[..16].to_string(),
+    };
     let pty = Pty::spawn(cmd, rows, cols, &env, cwd.as_deref()).map_err(|_| "spawn_failed")?;
     let id = st.next.fetch_add(1, Ordering::Relaxed);
     let pane = Arc::new(Pane {
@@ -1090,7 +1112,8 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         prompt_at: Mutex::new(None),
         pre_cmd: Mutex::new(None),
         pre_agent: Mutex::new(None),
-        hist: history::path(&st.boot, id),
+        hist: history::path(&key),
+        key: key.clone(),
         title: Mutex::new(String::new()),
         turns: Arc::default(),
         account: Mutex::new(st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name).map(|a| a.id.clone()).unwrap_or_default()),
@@ -1115,13 +1138,14 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         agent,
         view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
     });
-    // FR-62: old pane blocks (after the daemon stopped) show above the new shell and continue in a new file
-    let prev = history::load(&p["history"]);
-    for b in &prev {
-        history::append(&pane.hist, b);
+    // FR-62: old pane blocks (after the daemon stopped) show above the new shell and continue in the pane's file
+    let prev = src.as_deref().map(history::load).unwrap_or_default();
+    if !prev.is_empty() {
+        history::rewrite(&pane.hist, &prev);
     }
-    // the old screen log already holds those blocks; without a log the summary blocks are enough
-    match history::load_log(&p["history"]) {
+    // the old screen log already holds those blocks; without a log the summary blocks are enough. The log file itself is
+    // only replaced by the next save, which holds this old log too: a daemon stopping before that loses nothing
+    match src.as_deref().and_then(history::load_log) {
         Some((log, t)) => {
             let mut v = pane.view.lock().unwrap();
             v.0.feed(&log);
@@ -1141,7 +1165,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     let aliases = pane.aliases.lock().unwrap().clone();
     let st = st.clone();
     thread::spawn(move || pump(st, id, pane, pty));
-    Ok(json!({"pane": id, "name": name, "aliases": aliases}))
+    Ok(json!({"pane": id, "name": name, "aliases": aliases, "hist": key}))
 }
 
 fn bus_event(st: &State, ev: Value) {
@@ -1690,7 +1714,7 @@ fn save_logs(st: &State, saved: &mut HashMap<u64, std::time::Instant>) {
             }
         };
         if !log.is_empty() {
-            history::save_log(&st.boot, id, &log);
+            history::save_log(&pane.key, &log);
         }
         saved.insert(id, at);
     }
@@ -1705,6 +1729,17 @@ fn save_logs_loop(st: Arc<State>) {
         }
         thread::sleep(Duration::from_secs(15));
         save_logs(&st, &mut saved);
+    }
+}
+
+/// FR-62: SIGTERM = screen logs saved like `daemon.stop`, then exit; the exit line also says why the daemon stopped
+/// (SIGKILL or a crash still loses up to the last 15 seconds)
+fn on_sigterm(st: Arc<State>, set: libc::sigset_t) {
+    let mut sig = 0;
+    if unsafe { libc::sigwait(&set, &mut sig) } == 0 {
+        eprintln!("daemon exit: SIGTERM");
+        save_logs(&st, &mut HashMap::new());
+        std::process::exit(0);
     }
 }
 

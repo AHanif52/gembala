@@ -774,18 +774,20 @@ fn ringkas_agent_manual() {
     assert!(snap.contains("\x1b[?2004h"), "bracketed paste prompt hilang: {snap}");
 }
 
-/// FR-62: command blocks saved without output, then shown in a new pane that carries the old pane's `history`.
+/// FR-62: command blocks saved without output, then shown in a new pane that carries the old pane's history key;
+/// the key comes back once that pane is gone, and `{boot, pane}` from an old layout still loads.
 #[test]
 fn riwayat_blok_tersimpan_tanpa_output() {
     use std::os::unix::fs::PermissionsExt;
     let d = start("riwayat");
     let mut ui = Cli::ui(&d);
-    let boot = ui.call("daemon.info", json!({}))["result"]["boot"].as_str().unwrap().to_string();
-    let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    let r = ui.call("pane.create", json!({}))["result"].clone();
+    let (p, hist) = (r["pane"].as_u64().unwrap(), r["hist"].as_str().unwrap().to_string());
+    assert!(hist.len() == 16 && hist.bytes().all(|c| c.is_ascii_hexdigit()), "{r}");
     ui.call("pane.attach", json!({"pane": p}));
     std::thread::sleep(Duration::from_secs(1));
     ui.call("pane.write", json!({"pane": p, "data": B64.encode("echo RIWAYAT-$((6*7))\r")}));
-    let file = d.dir.join(format!("cfg/history/{boot}-{p}.jsonl"));
+    let file = d.dir.join(format!("cfg/history/{hist}.jsonl"));
     let t0 = Instant::now();
     while !std::fs::read_to_string(&file).unwrap_or_default().contains("RIWAYAT") {
         assert!(t0.elapsed() < Duration::from_secs(10), "blok tidak tercatat di {}", file.display());
@@ -798,11 +800,47 @@ fn riwayat_blok_tersimpan_tanpa_output() {
         let s = snapshot(&ui.call("pane.attach", json!({"pane": q})));
         String::from_utf8_lossy(&B64.decode(s).unwrap()).into_owned()
     };
-    let q = ui.call("pane.create", json!({"history": {"boot": boot, "pane": p}}))["result"]["pane"].as_u64().unwrap();
-    let layar = snap(&mut Cli::ui(&d), q);
+    // the key stays with the live pane: a second pane from it gets its own key, the blocks copied in
+    let r = ui.call("pane.create", json!({"history": hist}))["result"].clone();
+    assert_ne!(r["hist"], json!(hist));
+    let layar = snap(&mut Cli::ui(&d), r["pane"].as_u64().unwrap());
     assert!(layar.contains("echo RIWAYAT-$((6*7))") && layar.contains("Sesi sebelumnya"), "{layar}");
-    let r = ui.call("pane.create", json!({"history": {"boot": "../../../../etc", "pane": p}}))["result"]["pane"].as_u64().unwrap();
-    assert!(!snap(&mut Cli::ui(&d), r).contains("Sesi sebelumnya"));
+    // the pane is gone (rerun, daemon restart): its replacement takes the same key and file
+    ui.call("pane.close", json!({"pane": p}));
+    let t0 = Instant::now();
+    while ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(p)) {
+        assert!(t0.elapsed() < Duration::from_secs(5), "pane {p} tidak tertutup");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let r = ui.call("pane.create", json!({"history": hist}))["result"].clone();
+    assert_eq!(r["hist"], json!(hist));
+    let layar = snap(&mut Cli::ui(&d), r["pane"].as_u64().unwrap());
+    assert!(layar.contains("echo RIWAYAT-$((6*7))") && layar.contains("Sesi sebelumnya"), "{layar}");
+    // a layout saved before keys points at `<boot>-<pane>`
+    let old = "{\"t\":1,\"cwd\":\"~\",\"cmd\":\"echo LAYOUT-LAMA\",\"code\":0,\"secs\":0}\n";
+    std::fs::write(d.dir.join("cfg/history/0123456789abcdef-7.jsonl"), old).unwrap();
+    let q = ui.call("pane.create", json!({"history": {"boot": "0123456789abcdef", "pane": 7}}))["result"]["pane"].as_u64().unwrap();
+    assert!(snap(&mut Cli::ui(&d), q).contains("echo LAYOUT-LAMA"));
+    for bad in [json!({"boot": "../../../../etc", "pane": p}), json!("../../../../etc/x")] {
+        let r = ui.call("pane.create", json!({"history": bad}))["result"]["pane"].as_u64().unwrap();
+        assert!(!snap(&mut Cli::ui(&d), r).contains("Sesi sebelumnya"));
+    }
+}
+
+/// FR-62: SIGTERM (kill, logout, laptop restart) saves the screen log before the daemon exits, not only every 15 seconds.
+#[test]
+fn sigterm_menyimpan_log_layar() {
+    let mut d = start("sigterm");
+    let mut ui = Cli::ui(&d);
+    let r = ui.call("pane.create", json!({}))["result"].clone();
+    let (p, hist) = (r["pane"].as_u64().unwrap(), r["hist"].as_str().unwrap().to_string());
+    std::thread::sleep(Duration::from_secs(1));
+    ui.call("pane.write", json!({"pane": p, "data": B64.encode("echo LOG-$((6*7))\r")}));
+    ui.attach_until(p, &["LOG-42"]);
+    assert_eq!(unsafe { libc::kill(d.child.id() as i32, libc::SIGTERM) }, 0);
+    assert!(exited_within(&mut d, Duration::from_secs(5)), "daemon tidak keluar setelah SIGTERM");
+    let log = std::fs::read_to_string(d.dir.join(format!("cfg/history/{hist}.log"))).unwrap_or_default();
+    assert!(log.contains("LOG-42"), "log tidak tersimpan: {log:?}");
 }
 
 /// FR-58: zsh panes emit OSC 133 block markers (C + base64 command, D + exit code); the user's ZDOTDIR comes back.
