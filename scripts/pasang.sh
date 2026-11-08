@@ -23,7 +23,7 @@ if [ -d "$dst" ]; then
   mv "$dst" "$old/Gembala-$(date +%Y%m%d-%H%M%S)"
 fi
 mv "$tmp" "$dst"
-"$ls" -u "$new"
+"$ls" -u "$new" 2>/dev/null || true # fails (-10814) when the build output was never registered
 rm -rf "$new"
 "$ls" -f "$dst"
 echo "Terpasang di $dst. Tutup Gembala (Cmd+Q) lalu buka lagi untuk memakai versi baru."
