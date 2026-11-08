@@ -416,7 +416,7 @@
     const cur = cfg.values.telegram?.snippet_off ?? [];
     setTg("snippet_off", tgSkipped(w) ? cur.filter((x) => x !== w) : [...cur, w]);
   };
-  const TG_CMDS = ["plain", "reply", "photo", "to", "status", "look"] as const;
+  const TG_CMDS = ["plain", "reply", "photo", "to", "open", "status", "look"] as const;
 
 </script>
 

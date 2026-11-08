@@ -95,6 +95,10 @@ enum In {
     Use(String),
     /// pane picked from the buttons offered for plain text without an active pane
     Pick { pane: u64, cb: String, msg: i64 },
+    /// `/buka <agent> [pane]`: start an agent from the fixed list in a shell pane idle at its prompt
+    Open { agent: String, pane: Option<String> },
+    /// shell pane picked for `/buka <agent>`
+    OpenPick { pane: u64, agent: String, cb: String, msg: i64 },
     /// photo or file: saved like a pasted image (FR-54, SEC-34), its path typed into the pane after the caption
     Media { to: Option<To>, caption: String, file: String, ext: String, msg: i64 },
     Key { pane: u64, seq: u64, key: String, cb: String, msg: i64 },
@@ -204,6 +208,9 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
         if let Some(pane) = data.strip_prefix("p|").and_then(|p| p.parse().ok()) {
             return In::Pick { pane, cb, msg };
         }
+        if let Some((pane, agent)) = data.strip_prefix("o|").and_then(|r| r.split_once('|')).and_then(|(p, a)| Some((p.parse().ok()?, a))) {
+            return In::OpenPick { pane, agent: agent.to_string(), cb, msg };
+        }
         let Some((pane, seq, key)) = cb_parse(data) else { return In::Ignore };
         return In::Key { pane, seq, key, cb, msg };
     }
@@ -264,6 +271,10 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
         "/status" => In::Status,
         "/lihat" | "/look" if !rest.is_empty() => In::Look(rest.to_string()),
         "/ke" | "/to" if !rest.is_empty() => In::Use(rest.to_string()),
+        "/buka" | "/open" if !rest.is_empty() => {
+            let mut w = rest.split_whitespace();
+            In::Open { agent: w.next().unwrap_or_default().to_string(), pane: w.next().map(String::from) }
+        }
         "/kirim" | "/send" => match rest.split_once(char::is_whitespace) {
             Some((name, body)) if !body.trim().is_empty() => In::Type { to: Some(To::Name(name.to_string())), text: body.trim().to_string(), msg },
             _ => In::Help,
@@ -352,7 +363,17 @@ fn t(id: bool, k: &str) -> &'static str {
         "sent" => ("terkirim", "sent"),
         "answered" => ("dijawab", "answered"),
         "no_pane" => ("Pane itu nggak ada.", "No such pane."),
-        "shell" => ("Pane shell cuma bisa dilihat dari HP.", "Shell panes are view-only from the phone."),
+        "shell" => (
+            "Pane shell nggak nerima ketikan dari HP. Nyalain agent di situ: /buka claude <pane>.",
+            "Shell panes don't take typing from the phone. Start an agent there: /open claude <pane>.",
+        ),
+        "open_which" => ("Yang bisa dibuka:", "You can start:"),
+        "open_pick" => ("Pane mana buat", "Which pane for"),
+        "opening" => ("Nyalain", "Starting"),
+        "opened_hint" => ("Ketik aja prompt-nya begitu siap.", "Type your prompt once it's up."),
+        "already_agent" => ("Pane itu udah jalanin agent, ketik aja.", "That pane already runs an agent, just type."),
+        "busy_shell" => ("Pane itu lagi jalanin sesuatu. /buka cuma ke shell yang diam di prompt.", "That pane is busy. /open only uses a shell idle at its prompt."),
+        "no_idle" => ("Nggak ada pane shell yang lagi kosong.", "No shell pane is idle."),
         "need_ok" => ("Lagi nunggu izin, pakai tombolnya.", "It's waiting for permission, use the buttons."),
         "pw" => ("Lagi nunggu password, jawab di Mac.", "It's waiting for a password, answer on the Mac."),
         "too_long" => ("Kepanjangan, maks 4.000 karakter.", "Too long, 4,000 characters max."),
@@ -371,8 +392,8 @@ fn t(id: bool, k: &str) -> &'static str {
         "dl_fail" => ("Gagal ngunduh filenya (maks 20 MB).", "Couldn't download the file (20 MB max)."),
         "none" => ("Belum ada pane.", "No panes yet."),
         _ => (
-            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif.\n/ke <pane> — ganti pane aktif\n/status — semua pane\n/lihat <pane> — layar terbaru",
-            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane.\n/to <pane> — switch the active pane\n/status — every pane\n/look <pane> — latest screen",
+            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif.\n/ke <pane> — ganti pane aktif\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
+            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane.\n/to <pane> — switch the active pane\n/open <agent> [pane] — start claude/codex/omp/opencode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
         ),
     };
     if id { i } else { e }
@@ -968,6 +989,69 @@ fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'sta
     st.panes.lock().unwrap().get(&id).map(|p| (id, p.clone())).ok_or("no_pane")
 }
 
+/// What `/buka` may type: the four agents plus the Claude account commands Gembala writes to accounts.zsh (FR-61,
+/// `claude-utama` + `claude-<id>`). The command is typed as is, never text from the phone (SEC-36).
+fn openable(claude_accounts: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = ["claude", "codex", "omp", "opencode"].map(String::from).to_vec();
+    if !claude_accounts.is_empty() {
+        v.push("claude-utama".into());
+    }
+    v.extend(claude_accounts.iter().map(|id| format!("claude-{id}")));
+    v
+}
+
+fn openable_now(st: &State) -> Vec<String> {
+    openable(&st.accounts.lock().unwrap().iter().filter(|a| a.agent == "claude").map(|a| a.id.clone()).collect::<Vec<_>>())
+}
+
+/// a shell pane sitting at its prompt with nothing in front: the only kind `/buka` types into
+fn idle_shell(p: &Pane) -> bool {
+    p.agent_name().is_none() && p.at_prompt.load(Ordering::Relaxed) && pty::busy(&p.master, p.sid).is_none()
+}
+
+/// `/buka`: types `<agent>` + Enter like the user at the keyboard; the pane becomes an agent pane (screen_watch) and active
+fn open_in(st: &State, b: &Bot, id: u64, p: &Pane, agent: &str) {
+    let id_l = b.id_lang;
+    if p.agent_name().is_some() {
+        return b.tell(t(id_l, "already_agent"));
+    }
+    if !idle_shell(p) {
+        return b.tell(t(id_l, "busy_shell"));
+    }
+    match type_into(st, id, p, format!("{agent}\r").as_bytes()) {
+        Ok(()) => {
+            audit(st, p, &format!("[/buka {agent}]"));
+            *b.last.lock().unwrap() = Some(id);
+            b.tell(&format!("{} {agent} → {}. {}", t(id_l, "opening"), p.name.lock().unwrap(), t(id_l, "opened_hint")));
+        }
+        Err(_) => b.tell(t(id_l, "no_pane")),
+    }
+}
+
+/// `/buka <agent>` without a pane: buttons of idle shell panes, `name · workspace`
+fn open_picker(st: &State, b: &Bot, agent: &str) {
+    let names = ws_names();
+    let mut panes: Vec<(String, u64)> = st
+        .panes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, p)| idle_shell(p))
+        .map(|(id, p)| {
+            let ws = p.workspace.lock().unwrap().clone();
+            (format!("{} · {}", p.name.lock().unwrap(), names.get(&ws).unwrap_or(&ws)), *id)
+        })
+        .collect();
+    if panes.is_empty() {
+        return b.tell(t(b.id_lang, "no_idle"));
+    }
+    panes.sort();
+    let rows: Vec<Vec<Value>> =
+        panes.chunks(2).map(|c| c.iter().map(|(n, id)| json!({"text": n, "callback_data": format!("o|{id}|{agent}")})).collect()).collect();
+    let text = esc(&format!("{} {agent}?", t(b.id_lang, "open_pick")));
+    let _ = b.out.try_send(Out::Api("sendMessage", json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML", "reply_markup": {"inline_keyboard": rows}})));
+}
+
 /// buttons to pick the active pane, agent panes only, two per row
 fn picker(st: &State, b: &Bot) {
     let mut panes: Vec<(String, u64)> =
@@ -1068,10 +1152,10 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             }
             *b.stamp.lock().unwrap() = mtime();
             *b.link.lock().unwrap() = Some(link);
-            let list: [(&str, &str); 3] = if id_l {
-                [("status", "semua pane"), ("ke", "<pane> — ganti pane aktif"), ("lihat", "<pane> — layar terbaru")]
+            let list: [(&str, &str); 4] = if id_l {
+                [("status", "semua pane"), ("ke", "<pane> — ganti pane aktif"), ("buka", "<agent> [pane] — nyalain agent di shell"), ("lihat", "<pane> — layar terbaru")]
             } else {
-                [("status", "every pane"), ("to", "<pane> — switch the active pane"), ("look", "<pane> — latest screen")]
+                [("status", "every pane"), ("to", "<pane> — switch the active pane"), ("open", "<agent> [pane] — start an agent in a shell"), ("look", "<pane> — latest screen")]
             };
             let cmds: Vec<Value> = list.iter().map(|(c, d)| json!({"command": c, "description": d})).collect();
             let _ = b.out.try_send(Out::Api("setMyCommands", json!({"commands": cmds})));
@@ -1145,6 +1229,32 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                 }
             },
         },
+        In::Open { agent, pane } => {
+            let ok = openable_now(st);
+            if !ok.contains(&agent) {
+                return b.tell(&format!("{} {}", t(id_l, "open_which"), ok.join(", ")));
+            }
+            match pane {
+                None => open_picker(st, b, &agent),
+                Some(n) => match st.by_name(&n) {
+                    Some((id, p)) => open_in(st, b, id, &p, &agent),
+                    None => b.tell(t(id_l, "no_pane")),
+                },
+            }
+        }
+        In::OpenPick { pane: id, agent, cb, msg } => {
+            let _ = b.out.try_send(Out::Api("answerCallbackQuery", json!({"callback_query_id": cb})));
+            if b.picked.lock().unwrap().replace(msg) == Some(msg) {
+                return;
+            }
+            let _ = b.out.try_send(Out::Api("editMessageReplyMarkup", json!({"chat_id": b.chat(), "message_id": msg, "reply_markup": {"inline_keyboard": []}})));
+            // the button's agent is checked again: callback data comes back from Telegram, not from us
+            let pane = st.panes.lock().unwrap().get(&id).cloned();
+            match pane.filter(|_| openable_now(st).contains(&agent)) {
+                Some(p) => open_in(st, b, id, &p, &agent),
+                None => b.tell(t(id_l, "no_pane")),
+            }
+        }
         In::Key { pane: id, seq, key, cb, msg } => {
             let pane = st.panes.lock().unwrap().get(&id).cloned();
             let ok = pane.as_ref().is_some_and(|p| {
@@ -1366,6 +1476,21 @@ mod tests {
         assert!(!stats_row("2026-11-08 tanpa jam"));
         assert_eq!(label("π > Check tasks", "omp").as_deref(), Some("Check tasks"));
         assert_eq!(label("✳ Claude Code", "claude"), None);
+    }
+
+    #[test]
+    fn buka_agent_dari_daftar_tetap() {
+        let l = link();
+        let n = 1000;
+        assert_eq!(parse(&msg(42, 7, "/buka claude shell-11", n), Some(&l), n), In::Open { agent: "claude".into(), pane: Some("shell-11".into()) });
+        assert_eq!(parse(&msg(42, 7, "/open omp", n), Some(&l), n), In::Open { agent: "omp".into(), pane: None });
+        assert_eq!(parse(&msg(42, 7, "/buka", n), Some(&l), n), In::Help);
+        let q = json!({"callback_query": {"id": "c1", "from": {"id": 7}, "data": "o|11|claude-kantor", "message": {"message_id": 9, "chat": {"id": 42}}}});
+        assert_eq!(parse(&q, Some(&l), 0), In::OpenPick { pane: 11, agent: "claude-kantor".into(), cb: "c1".into(), msg: 9 });
+        assert_eq!(openable(&[]), ["claude", "codex", "omp", "opencode"]);
+        assert_eq!(openable(&["kantor".into()]), ["claude", "codex", "omp", "opencode", "claude-utama", "claude-kantor"]);
+        // free text is never an agent: "rm -rf ~" isn't in the list, so nothing is typed
+        assert!(!openable(&[]).contains(&"rm".to_string()));
     }
 
     #[test]
