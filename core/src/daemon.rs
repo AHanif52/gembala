@@ -113,6 +113,8 @@ struct Pane {
     long_done: Mutex<Option<u64>>,
     /// FR-80: Telegram message typed into this pane, answered with the result when the pane is done
     tg_ask: Mutex<Option<i64>>,
+    /// FR-80: last text typed from the phone; the result snippet starts at its echo on screen
+    tg_text: Mutex<Option<String>>,
     readable: std::sync::atomic::AtomicBool,
     typed_at: Mutex<Option<std::time::Instant>>,
     /// SEC-3 fallback: 128-bit token for processes detached from the pane session (e.g. a tmux server, profile `token = true`)
@@ -1147,6 +1149,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         asked_pw: std::sync::atomic::AtomicBool::new(false),
         long_done: Mutex::new(None),
         tg_ask: Mutex::new(None),
+        tg_text: Mutex::new(None),
         readable: std::sync::atomic::AtomicBool::new(false),
         typed_at: Mutex::new(None),
         token: Mutex::new(token),

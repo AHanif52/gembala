@@ -90,7 +90,8 @@ enum In {
 #[derive(Debug, PartialEq)]
 enum To {
     Name(String),
-    Reply(i64),
+    /// bot message id + the pane name on its first line (`claude-1 · gembala kelar`), for replies after a daemon restart
+    Reply(i64, String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -144,8 +145,10 @@ fn snippet(screen: &str, lines: usize) -> String {
 
 /// FR-69 label without the spinner and generic titles (agent name)
 fn label(title: &str, agent: &str) -> Option<String> {
-    let t = title.trim_start_matches(|c: char| ('\u{2800}'..='\u{28ff}').contains(&c) || c.is_whitespace()).trim();
-    (!t.is_empty() && !t.eq_ignore_ascii_case(agent)).then(|| t.chars().take(120).collect())
+    // spinner (braille), Claude's ✳, omp's `π >` prefix
+    let t = title.trim_start_matches(|c: char| ('\u{2800}'..='\u{28ff}').contains(&c) || matches!(c, '✳' | '✻' | 'π' | '>') || c.is_whitespace()).trim();
+    let generic = t.eq_ignore_ascii_case(agent) || t.eq_ignore_ascii_case("claude code");
+    (!t.is_empty() && !generic).then(|| t.chars().take(120).collect())
 }
 
 fn keys(agent: &str) -> &'static [&'static str] {
@@ -209,7 +212,10 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
         return In::Ignore;
     }
     let msg = m["message_id"].as_i64().unwrap_or_default();
-    let reply = m["reply_to_message"]["message_id"].as_i64();
+    let quoted = &m["reply_to_message"];
+    let first = quoted["text"].as_str().or(quoted["caption"].as_str()).and_then(|t| t.lines().next()).unwrap_or_default();
+    let name = first.split(" · ").next().filter(|n| *n != first).unwrap_or_default().trim().to_string();
+    let reply = quoted["message_id"].as_i64().map(|r| To::Reply(r, name));
     // largest photo size, or a document; Telegram's public API serves files up to 20 MB
     let media = match (m["photo"].as_array().and_then(|p| p.last()), m.get("document")) {
         (Some(p), _) => Some((p, "jpg".to_string())),
@@ -231,12 +237,12 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
                 Some((n, c)) => (Some(To::Name(n.into())), c.trim().to_string()),
                 None => (Some(To::Name(rest.trim().into())), String::new()),
             },
-            None => (reply.map(To::Reply), caption),
+            None => (reply, caption),
         };
         return In::Media { to, caption, file: f["file_id"].as_str().unwrap_or_default().to_string(), ext, msg };
     }
     if !text.is_empty() && !text.starts_with('/') {
-        return In::Type { to: reply.map(To::Reply), text: text.to_string(), msg };
+        return In::Type { to: reply, text: text.to_string(), msg };
     }
     let (cmd, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     let rest = rest.trim();
@@ -336,7 +342,7 @@ fn t(id: bool, k: &str) -> &'static str {
         "pw" => ("Lagi nunggu password, jawab di Mac.", "It's waiting for a password, answer on the Mac."),
         "too_long" => ("Kepanjangan, maks 4.000 karakter.", "Too long, 4,000 characters max."),
         "bad" => ("Teksnya kosong setelah dibersihin.", "Nothing left after cleaning the text."),
-        "old_reply" => ("Pesan itu udah lama, pakai /kirim <pane> <teks>.", "That message is too old, use /send <pane> <text>."),
+        "old_reply" => ("Pane pesan itu udah nggak ada. Ketik biasa buat ke pane aktif, atau /ke <pane>.", "That message's pane is gone. Type plainly for the active pane, or /to <pane>."),
         "snip_off" => ("Potongan layar dimatiin buat workspace ini.", "Screen snippets are off for this workspace."),
         "pick" => ("Ke pane mana?", "Which pane?"),
         "no_agent" => ("Belum ada pane agent.", "No agent pane yet."),
@@ -601,7 +607,12 @@ fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
             Out::Notice(id, kind, at) => {
                 thread::sleep(SETTLE.saturating_sub(at.elapsed()));
                 match notice(&st, &b, id, kind) {
-                    Some(body) => ("sendMessage", body, Some(id)),
+                    Some(body) => {
+                        if debug() {
+                            log(format_args!("out {}", body["text"]));
+                        }
+                        ("sendMessage", body, Some(id))
+                    }
                     None => continue,
                 }
             }
@@ -705,39 +716,61 @@ pub fn on_status(st: &State, id: u64, pane: &Pane, status: &str) {
     }
 }
 
-/// Claude/omp draw an input box (rule, prompt line, rule) and a status line under the conversation: rows above the box
+/// Agent TUIs draw an input box under the conversation: Claude = rule, `❯` line, rule (status line below); omp = a
+/// `╭…╮`/`╰…╯` box. Rows above the box (blank rows and rules right above it dropped too).
 fn above_input(rows: &[&str]) -> usize {
     let rule = |s: &str| {
         let t = s.trim();
         t.chars().count() >= 10 && t.chars().all(|c| matches!(c, '─' | '━' | '-'))
     };
-    for i in (1..rows.len()).rev() {
-        let t = rows[i].trim_start();
-        if (t.starts_with('❯') || t.starts_with('>')) && rule(rows[i - 1]) {
-            let mut j = i - 1;
-            while j > 0 && (rule(rows[j - 1]) || rows[j - 1].trim().is_empty()) {
-                j -= 1;
-            }
-            return j;
-        }
+    let starts = |r: &str, c: char| r.trim_start().starts_with(c);
+    let claude = (1..rows.len()).rev().find(|&i| (starts(rows[i], '❯') || starts(rows[i], '>')) && rule(rows[i - 1])).map(|i| i - 1);
+    let boxed = || (0..rows.len()).rev().find(|&i| starts(rows[i], '╭') && rows[i + 1..].iter().any(|r| starts(r, '╰')));
+    let Some(mut j) = claude.or_else(boxed) else { return rows.len() };
+    while j > 0 && (rule(rows[j - 1]) || rows[j - 1].trim().is_empty()) {
+        j -= 1;
     }
-    rows.len()
+    j
 }
 
-/// Claude echoes each prompt as `❯ …`: the latest turn starts at the last one (banner and older turns drop out)
-fn last_turn(rows: &[&str]) -> usize {
-    rows.iter().rposition(|r| r.trim_start().starts_with('❯')).unwrap_or(0)
+/// omp closes each turn with `YYYY-MM-DD hh:mm:ss  ⤵ …` (time, tokens)
+fn stats_row(r: &str) -> bool {
+    let b = r.trim_start().as_bytes();
+    b.len() >= 19 && b[..19].iter().enumerate().all(|(i, c)| match i {
+        4 | 7 => *c == b'-',
+        10 => *c == b' ',
+        13 | 16 => *c == b':',
+        _ => c.is_ascii_digit(),
+    })
+}
+
+/// Where the latest turn starts: the prompt typed from the phone (any agent), else Claude's `❯` echo, else after omp's
+/// previous stats row. Banner, tips and older turns drop out.
+fn turn_start(rows: &[&str], typed: Option<&str>) -> usize {
+    let key: String = typed.and_then(|t| t.lines().next()).map(|l| l.trim().chars().take(30).collect()).unwrap_or_default();
+    if let Some(i) = (!key.is_empty()).then(|| rows.iter().rposition(|r| r.contains(&key))).flatten() {
+        return i;
+    }
+    if let Some(i) = rows.iter().rposition(|r| r.trim_start().starts_with('❯')) {
+        return i;
+    }
+    let stats: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| stats_row(r)).map(|(i, _)| i).collect();
+    match stats[..] {
+        [.., prev, _] => prev + 1,
+        _ => 0,
+    }
 }
 
 /// agent panes: the latest turn above the input box; shell panes: the screen as is (a `❯` zsh prompt isn't a turn)
 fn screen_snip(pane: &Pane, lines: usize) -> String {
     let text = pane.view.lock().unwrap().0.text();
-    let rows: Vec<&str> = text.lines().collect();
     if pane.agent_name().is_none() {
         return snippet(&text, lines);
     }
+    let rows: Vec<&str> = text.lines().collect();
     let rows = &rows[..above_input(&rows)];
-    snippet(&rows[last_turn(rows)..].join("\n"), lines)
+    let typed = pane.tg_text.lock().unwrap().clone();
+    snippet(&rows[turn_start(rows, typed.as_deref())..].join("\n"), lines)
 }
 
 /// `screen_watch`, once a second per pane: password prompt (rising edge) and long shell commands that finished
@@ -812,7 +845,11 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
 fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'static str> {
     let id = match to {
         Some(To::Name(n)) => return st.by_name(&n).ok_or("no_pane"),
-        Some(To::Reply(r)) => b.sent.lock().unwrap().iter().find(|(m, _)| *m == r).map(|(_, p)| *p).ok_or("old_reply")?,
+        Some(To::Reply(r, name)) => match b.sent.lock().unwrap().iter().find(|(m, _)| *m == r).map(|(_, p)| *p) {
+            Some(id) => id,
+            // not in RAM (daemon restarted): the pane named on the message's first line
+            None => return st.by_name(&name).filter(|_| !name.is_empty()).ok_or("old_reply"),
+        },
         None => {
             let panes = st.panes.lock().unwrap();
             match (*b.last.lock().unwrap()).filter(|id| panes.contains_key(id)) {
@@ -851,6 +888,7 @@ fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64) {
                 audit(st, pane, text);
                 *b.last.lock().unwrap() = Some(id);
                 *pane.tg_ask.lock().unwrap() = Some(msg);
+                *pane.tg_text.lock().unwrap() = Some(text.to_string());
                 return b.react(msg, "👀");
             }
             Err(_) => "no_pane",
@@ -1090,7 +1128,12 @@ mod tests {
         assert_eq!(parse(&msg(42, 7, "/kirim omp-2", n), Some(&l), n), In::Help);
         let mut r = msg(42, 7, "bikin changelog", n);
         r["message"]["reply_to_message"] = json!({"message_id": 77});
-        assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77)), text: "bikin changelog".into(), msg: 5 });
+        assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, String::new())), text: "bikin changelog".into(), msg: 5 });
+        // a reply after a daemon restart still finds the pane from the quoted message's first line
+        r["message"]["reply_to_message"]["text"] = json!("claude-1 · gembala kelar\n✳ Permintaan jawaban singkat");
+        assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, "claude-1".into())), text: "bikin changelog".into(), msg: 5 });
+        r["message"]["reply_to_message"]["text"] = json!("Ke pane mana?");
+        assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, String::new())), text: "bikin changelog".into(), msg: 5 });
         // plain text = active pane, no command needed
         assert_eq!(parse(&msg(42, 7, "lanjut bikin test", n), Some(&l), n), In::Type { to: None, text: "lanjut bikin test".into(), msg: 5 });
         assert_eq!(parse(&msg(42, 7, "/ke claude-2", n), Some(&l), n), In::Use("claude-2".into()));
@@ -1134,7 +1177,7 @@ mod tests {
         let mut d = msg(42, 7, "", n);
         d["message"]["document"] = json!({"file_id": "f", "file_name": "log../../x.T!XT", "file_size": 5});
         d["message"]["reply_to_message"] = json!({"message_id": 77});
-        assert_eq!(parse(&d, Some(&l), n), In::Media { to: Some(To::Reply(77)), caption: String::new(), file: "f".into(), ext: "bin".into(), msg: 5 });
+        assert_eq!(parse(&d, Some(&l), n), In::Media { to: Some(To::Reply(77, String::new())), caption: String::new(), file: "f".into(), ext: "bin".into(), msg: 5 });
         d["message"]["document"]["file_size"] = json!(21 << 20);
         assert_eq!(parse(&d, Some(&l), n), In::Help);
         let mut pdf = msg(42, 7, "", n);
@@ -1148,8 +1191,20 @@ mod tests {
         assert_eq!(above_input(&rows), 3);
         assert_eq!(above_input(&["$ ls", "a b"]), 2);
         let convo = [" ▐▛███▜▌ Claude Code v2.1", "❯ halo", "● Halo.", "❯ jawab pake 1 kata", "● Oke."];
-        assert_eq!(last_turn(&convo), 3);
-        assert_eq!(last_turn(&["tanpa prompt"]), 0);
+        assert_eq!(turn_start(&convo, None), 3);
+        assert_eq!(turn_start(&convo, Some("halo")), 1);
+        assert_eq!(turn_start(&["tanpa prompt"], None), 0);
+        // omp: banner, older prompt, the phone's prompt, answer, stats row, input box
+        let omp = ["   v18.16.0", " Connected to MCP servers.", " Yang senin 1 doang?", " 2026-11-08 23:20:01  ⤵ 900", "",
+            " jawab satu kata saja: halo", "", " halo", " 2026-11-08 23:25:26  ⤵ 928  ⤴ 3", "", "╭── ⬢ DeepSeek ──╮", "╰─        ─╯"];
+        let cut = above_input(&omp);
+        assert_eq!(cut, 9);
+        assert_eq!(turn_start(&omp[..cut], Some("jawab satu kata saja: halo\nbaris kedua")), 5);
+        assert_eq!(turn_start(&omp[..cut], None), 4);
+        assert!(stats_row(" 2026-11-08 23:25:26  ⤵ 928"));
+        assert!(!stats_row("2026-11-08 tanpa jam"));
+        assert_eq!(label("π > Check tasks", "omp").as_deref(), Some("Check tasks"));
+        assert_eq!(label("✳ Claude Code", "claude"), None);
     }
 
     #[test]
