@@ -65,6 +65,7 @@ export type Config = {
     limits: { max_panes: number };
     notify: { on_blocked: boolean; on_done: boolean; long_command_secs: number; sound: boolean };
     toolbar: { left: string[]; right: string[] };
+    telegram?: { away_idle_mins: number; snippet: boolean; snippet_off: string[]; lines: number }; // FR-80
     keys: Record<string, string>;
     profiles: Profile[];
     accounts?: Account[];

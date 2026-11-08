@@ -107,6 +107,8 @@
   let zoom = $state(0); // FR-34 ⌘=/⌘- temporary on top of the config size; ponytail: per-pane zoom comes later
   let cfg = $state<Config | null>(null);
   let settingsOpen = $state(false);
+  let settingsSec = $state("umum"); // section Settings opens on (the phone icon opens Telegram)
+  let tg = $state<any>({ state: "off" }); // FR-80: Telegram bot status from the daemon
   let cfgSeen = $state(""); // config errors already dismissed (FR-42 card)
   let picker = $state<{ items: (Profile & { missing: boolean; key: string; label: string; account?: string })[]; sel: number } | null>(null);
   let sidebar = $state(true);
@@ -2038,7 +2040,10 @@
       if (payload.event === "msg.event") refreshMsgs();
       if (payload.event === "harness.state") onRun(payload.params);
       if (payload.event === "harness.notice") runNotice(payload.params);
+      if (payload.event === "telegram.changed") tg = payload.params ?? { state: "off" };
     });
+    // an older daemon has no telegram.* (unknown_method): stays off
+    call("telegram.status").then((r) => (tg = r ?? { state: "off" })).catch(() => {});
     const timer = setInterval(poll, 2000);
     // FR-15: dragging a file onto the window = quoted path pasted into the focused pane (bracketed paste, no Enter)
     const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
@@ -2100,7 +2105,8 @@
     {:else if name === "fork"}<circle cx="4.5" cy="3.5" r="1.3" /><circle cx="11.5" cy="3.5" r="1.3" /><circle cx="8" cy="12.5" r="1.3" /><path d="M4.5 5c0 3 3.5 3 3.5 6M11.5 5c0 3-3.5 3-3.5 6" />
     {:else if name === "sliders"}<path d="M2 5h7M12 5h2M2 11h2M7 11h7" /><circle cx="10.5" cy="5" r="1.5" /><circle cx="5.5" cy="11" r="1.5" />
     {:else if name === "gear"}<circle cx="8" cy="8" r="2" /><path d="M12.7 6.2L14.5 6.7L14.5 9.3L12.7 9.8L12.6 10.1L13.5 11.6L11.6 13.5L10.1 12.6L9.8 12.7L9.3 14.5L6.7 14.5L6.2 12.7L5.9 12.6L4.4 13.5L2.5 11.6L3.4 10.1L3.3 9.8L1.5 9.3L1.5 6.7L3.3 6.2L3.4 5.9L2.5 4.4L4.4 2.5L5.9 3.4L6.2 3.3L6.7 1.5L9.3 1.5L9.8 3.3L10.1 3.4L11.6 2.5L13.5 4.4L12.6 5.9z" />
-    {:else if name === "bell"}<path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3" />{/if}
+    {:else if name === "bell"}<path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3" />
+    {:else if name === "phone"}<rect x="4.5" y="1.5" width="7" height="13" rx="1.5" /><path d="M7 12h2" />{/if}
   </svg>
 {/snippet}
 
@@ -2218,6 +2224,11 @@
       <button class="footbtn" title={tt("side.settingsTip")} aria-label={tt("set.title")} onclick={() => (settingsOpen = true)}>{@render icon("gear")}</button>
       <button class="footbtn bellbtn" class:on={bell} title={tt("bell.title")} aria-label={unseen ? tt("bell.ariaUnseen", { n: unseen }) : tt("bell.title")} aria-expanded={bell}
         onclick={() => (bell = !bell)}>{@render icon("bell")}{#if unseen}<span class="badge">{unseen}</span>{/if}</button>
+      <!-- FR-80 (pen 40): Telegram bot bound; green = connected, amber = offline or stopped -->
+      {#if tg?.name && tg.state !== "off"}
+        {@const tip = tg.state === "on" ? tt("side.tgOn", { bot: tg.bot || "bot" }) : tt("side.tgOff")}
+        <button class="footbtn tgbtn" class:warn={tg.state !== "on"} title={tip} aria-label={tip} onclick={() => ((settingsSec = "telegram"), (settingsOpen = true))}>{@render icon("phone")}</button>
+      {/if}
     </div>
   </aside>
   {#if bell}
@@ -2837,7 +2848,7 @@
     </div>
   {/if}
   {#if settingsOpen && cfg}
-    <Settings {cfg} {meta} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => (settingsOpen = false)} onquitall={askQuitAll} onlogin={loginAccount} />
+    <Settings {cfg} {meta} {tg} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"))} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />
@@ -3268,6 +3279,12 @@
   .footbtn.on {
     background: var(--line);
     color: var(--fg);
+  }
+  .footbtn.tgbtn {
+    color: var(--green, #16a34a);
+  }
+  .footbtn.tgbtn.warn {
+    color: var(--amber, #d97706);
   }
   .badge {
     position: absolute;

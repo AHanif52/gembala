@@ -16,9 +16,13 @@
     onquitall,
     onlogin,
     workspaces = [],
+    tg = { state: "off" },
+    start = "umum",
   }: {
     cfg: Config;
     workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
+    tg?: any; // FR-80: `telegram.status` / `telegram.changed` from the daemon
+    start?: string; // section to open on (the sidebar phone icon opens Telegram)
     meta: Record<number, { name: string; agent: string; profile: string; status?: string }>;
     onclose: () => void;
     onquitall: () => void;
@@ -195,7 +199,7 @@
     await invoke("quit");
   }
 
-  const SECTIONS = ["umum", "tampilan", "agent", "pintasan", "toolbar", "keamanan", "proses", "diagnostik"] as const;
+  const SECTIONS = ["umum", "tampilan", "agent", "pintasan", "toolbar", "telegram", "keamanan", "proses", "diagnostik"] as const;
   // FR-60: Gembala-owned processes, refreshed every 2 seconds while this section is open
   type Proc = { pid: number; ppid: number; rss_kb: number; cpu: number; role: string; name: string };
   // label: set.proc.role.<role>, keterangan: set.proc.role.<role>Sub
@@ -236,7 +240,7 @@
     }).sort((a, b) => +a.idle - +b.idle || b.rss - a.rss);
   });
   let openGroups = $state<string[]>([]);
-  let sec = $state<(typeof SECTIONS)[number]>("umum");
+  let sec = $state<(typeof SECTIONS)[number]>(SECTIONS.find((s) => s === start) ?? "umum");
   let failed = $state("");
   let keys = $state<[string, string, string][]>([]);
   let keyErrors = $state<string[]>([]);
@@ -384,6 +388,35 @@
     if (r.error) failed = errText(r.error, r.args);
   }
   const setNotify = (key: string, value: boolean | number) => set(key as keyof Ui, value as never, "notify");
+
+  // FR-80 (Gembala.pen 39/40): the user's own bot. Pairing answers at once; the result arrives as `telegram.changed` (tg)
+  let tgToken = $state("");
+  let tgBusy = $state(false);
+  let tgErr = $state("");
+  let tgDrop = $state(false); // "Lepas" clicked once, the next click unpairs
+  const tgLinked = $derived(!!tg?.name && tg.state !== "off");
+  $effect(() => {
+    void tg;
+    tgBusy = false;
+  });
+  async function tgPair() {
+    [tgErr, tgBusy] = ["", true];
+    const r = await call("telegram.pair", { token: tgToken }).catch((e) => ({ error: String(e) }));
+    if (r?.error) [tgErr, tgBusy] = [errText(r.error), false];
+    else tgToken = "";
+  }
+  async function tgUnpair() {
+    if (!tgDrop) return (tgDrop = true);
+    tgDrop = false;
+    await call("telegram.unpair", {}).catch(() => {});
+  }
+  const setTg = (key: string, value: unknown) => set(key as keyof Ui, value as never, "telegram");
+  const tgSkipped = (w: string) => (cfg.values.telegram?.snippet_off ?? []).includes(w);
+  const tgSkip = (w: string) => {
+    const cur = cfg.values.telegram?.snippet_off ?? [];
+    setTg("snippet_off", tgSkipped(w) ? cur.filter((x) => x !== w) : [...cur, w]);
+  };
+  const TG_CMDS = ["plain", "reply", "photo", "to", "status", "look"] as const;
 
 </script>
 
@@ -942,6 +975,82 @@
             </div>
           {/if}
         </section>
+      {:else if sec === "telegram"}
+        <!-- Gembala.pen 39/40, FR-80: own bot, no server in between; token in telegram.json (SEC-36), snippets SEC-37 -->
+        {#if tgLinked}
+          <section>
+            <div class="row">
+              <span>{t("set.tg.on", { bot: tg.bot || "bot" })}<small>{tg.state === "on" ? t("set.tg.bound", { name: tg.name }) : errText(tg.error || "offline")}</small></span>
+              <button class="mini danger" onclick={tgUnpair}>{tgDrop ? t("set.tg.unpairSure") : t("set.tg.unpair")}</button>
+            </div>
+          </section>
+          <h4>{t("set.tg.when")}</h4>
+          <section>
+            <div class="row">
+              <span>{t("set.tg.away")}<small>{t("set.tg.awaySub")}</small></span>
+              <select aria-label={t("set.tg.away")} value={cfg.values.telegram?.away_idle_mins ?? 5} onchange={(e) => setTg("away_idle_mins", +e.currentTarget.value)}>
+                {#each [1, 5, 10, 30] as n}<option value={n}>{t("set.tg.mins", { n })}</option>{/each}
+              </select>
+            </div>
+            <div class="row">
+              <span>{t("set.tg.kinds")}<small>{t("set.tg.kindsSub")}</small></span>
+              <button class="mini" onclick={() => (sec = "umum")}>{t("set.tg.kindsBtn")}</button>
+            </div>
+          </section>
+          <h4>{t("set.tg.snip")}<span class="hint">{t("set.tg.snipHint")}</span></h4>
+          <section>
+            <div class="row">
+              <span>{t("set.tg.snipOn")}<small>{t("set.tg.snipOnSub")}</small></span>
+              <input type="checkbox" role="switch" aria-label={t("set.tg.snipOn")} checked={cfg.values.telegram?.snippet ?? true} onchange={(e) => setTg("snippet", e.currentTarget.checked)} />
+            </div>
+            {#if workspaces.length}
+              <div class="row">
+                <span>{t("set.tg.skip")}<small>{t("set.tg.skipSub")}</small></span>
+                <span class="seg wrap" role="group" aria-label={t("set.tg.skip")}>
+                  {#each workspaces as w (w.id)}<button class:on={tgSkipped(w.name)} aria-pressed={tgSkipped(w.name)} onclick={() => tgSkip(w.name)}>{w.name}</button>{/each}
+                </span>
+              </div>
+            {/if}
+          </section>
+          <h4>{t("set.tg.cmds")}</h4>
+          <section>
+            {#each TG_CMDS as k}
+              <div class="row"><span class="m nowrap">{t(`set.tg.cmd.${k}`)}</span><span class="state">{t(`set.tg.cmd.${k}Sub`)}</span></div>
+            {/each}
+          </section>
+          <p class="note">{t("set.tg.cant")}</p>
+          <p class="warnbox">⚠ {t("set.tg.riskOn")}</p>
+        {:else}
+          <p class="note">{t("set.tg.intro")}</p>
+          <section>
+            <div class="row">
+              <span>1 · {t("set.tg.s1")}<small>{t("set.tg.s1Sub")}</small></span>
+              <button class="mini" onclick={() => invoke("open_url", { url: "https://t.me/BotFather" })}>{t("set.tg.botfather")}</button>
+            </div>
+            <div class="row col">
+              <span>2 · {t("set.tg.s2")}<small>{t("set.tg.s2Sub")}</small></span>
+              <div class="tgrow">
+                <input class="tin mono" type="password" bind:value={tgToken} placeholder="8123456789:AA…" spellcheck="false" autocomplete="off" aria-label={t("set.tg.s2")} />
+                <button class="mini pri" disabled={!tgToken.trim() || tgBusy} onclick={tgPair}>{tgBusy ? t("set.tg.checking") : t("set.tg.check")}</button>
+              </div>
+            </div>
+            <div class="row col">
+              <span>3 · {t("set.tg.s3")}<small>{tg.state === "pairing" && tg.link ? t("set.tg.s3Sub", { bot: tg.bot }) : t("set.tg.s3Wait")}</small></span>
+              {#if tg.state === "pairing" && tg.link}
+                <div class="tgrow">
+                  <span class="m tgcode">/start {tg.code}</span>
+                  <button class="mini" onclick={() => invoke("copy_text", { text: `/start ${tg.code}` })}>{t("set.tg.copy")}</button>
+                  <button class="mini pri" onclick={() => invoke("open_url", { url: tg.link })}>{t("set.tg.open")}</button>
+                </div>
+                <small class="m">{t("set.tg.waiting", { n: Math.ceil((tg.code_secs ?? 600) / 60) })}</small>
+              {:else if tg.state === "pairing"}
+                <small class="m">{t("set.tg.expired")}</small>
+              {/if}
+            </div>
+          </section>
+          {#if tgErr || tg.error}<span class="m err" role="alert">{tgErr || errText(tg.error)}</span>{/if}
+          <p class="warnbox">⚠ {t("set.tg.risk")}</p>
+        {/if}
       {:else if sec === "keamanan"}
         <!-- Gembala.pen 36: values come from the daemon's rules, not retyped; cross-workspace exception
              belum ada di daemon (msg.rs same_workspace), jadi tombol "+ Pengecualian" tidak dibuat -->
@@ -989,7 +1098,7 @@
           <div class="row"><span>{t("set.sec.buttons")}<small>{t("set.sec.buttonsSub")}</small></span><span class="m">{t("set.sec.locked")}</span></div>
           <div class="row"><span>{t("set.sec.newTerm")}<small>{t("set.sec.newTermSub")}</small></span><span class="m">{t("set.sec.clean")}</span></div>
           <div class="row"><span>{t("set.sec.links")}<small>{t("set.sec.linksSub")}</small></span><span class="m">{t("set.sec.askFirst")}</span></div>
-          <div class="row"><span>{t("set.sec.net")}<small>{t("set.sec.netSub")}</small></span><span class="m">{t("set.sec.off")}</span></div>
+          <div class="row"><span>{t("set.sec.net")}<small>{t("set.sec.netSub")}</small></span><span class="m">{tg?.state === "on" ? "Telegram" : t("set.sec.off")}</span></div>
         </section>
       {:else}
         <section>
@@ -1493,6 +1602,30 @@
   }
   .errs b {
     font: 600 13px system-ui, -apple-system, sans-serif;
+  }
+  /* FR-80: token field / pairing code with buttons at their own width; unpair; workspace toggles that wrap */
+  .tgrow {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .tgrow .tin {
+    flex: 1;
+  }
+  .tgrow .mini,
+  .row > .mini {
+    white-space: nowrap;
+  }
+  .tgcode {
+    margin-right: auto;
+    font-size: 13px;
+  }
+  .mini.danger {
+    color: var(--tx-red, #ef4444);
+  }
+  .seg.wrap {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
   /* Gembala.pen 32: trusted-folder note at the end of the add-on page; switch label inside the MCP editor */
   .warnbox {

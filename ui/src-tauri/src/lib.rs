@@ -14,7 +14,8 @@ const ALLOWED: &[&str] =
       "account.list", "account.create", "account.remove", "account.update", "git.worktree_add", "git.worktree_remove", "git.turns", "git.turn_diff", "git.turn_preview", "git.turn_restore", "git.file_preview", "git.file_restore", "git.file_commit", "ctx.compose", "msg.list", "msg.approve", "msg.reject", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace",
       "addon.plugin", "addon.mcp.get", "addon.mcp.set", "addon.status",
       "recipe.list", "recipe.get", "recipe.approve", "recipe.delete", "recipe.validate",
-      "harness.preflight", "harness.start", "harness.state", "harness.stop", "harness.gate", "harness.takeover", "harness.release"];
+      "harness.preflight", "harness.start", "harness.state", "harness.stop", "harness.gate", "harness.takeover", "harness.release",
+      "telegram.status", "telegram.pair", "telegram.unpair"];
 
 /// Pane shortcuts (FR-37, 38, 39, 50), Warp-style defaults. Id = action the webview runs; labels in i18n.rs.
 const PANE_KEYS: &[(&str, &str)] = &[
