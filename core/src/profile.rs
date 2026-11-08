@@ -415,9 +415,11 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
 /// Rewritten by the daemon each time config loads, so a new account works in panes opened after that.
 pub fn zsh_accounts(accounts: &[crate::account::Account]) -> String {
     let mut s = String::from("# made by Gembala (FR-61): one command per agent account\n");
-    // a Utama session resumed from a shell on another account (resume command `claude-utama --resume <id>`)
+    // a Utama session resumed from a shell on another account (resume command `claude-utama --resume <id>`).
+    // local + unset, not a subshell: in `( … )` the pane's foreground process is that zsh, so the daemon
+    // doesn't see `claude` (no toolbar, no status)
     if accounts.iter().any(|a| a.agent == "claude") {
-        s += "function claude-utama { (unset CLAUDE_CONFIG_DIR; claude \"$@\") }\n";
+        s += "function claude-utama { local CLAUDE_CONFIG_DIR; unset CLAUDE_CONFIG_DIR; claude \"$@\" }\n";
     }
     for a in accounts.iter().filter(|a| a.agent == "claude") {
         let (k, v) = crate::account::env(a);
@@ -1009,10 +1011,11 @@ mod tests {
         let script = format!("function claude {{ print -r -- \"$*\" }}\n{}claude-kantor --resume x", zsh_accounts(&[k]));
         let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "--model opus --effort high --resume x");
-        // Utama session from a Kantor account shell: `claude-utama` drops the account folder for that command only
-        let script = format!("export CLAUDE_CONFIG_DIR=/k\nfunction claude {{ print -r -- \"${{CLAUDE_CONFIG_DIR:-utama}} $*\" }}\n{}claude-utama --resume x; print -r -- $CLAUDE_CONFIG_DIR", zsh_accounts(&[a("kantor", "claude", "~/.claude-kantor")]));
+        // Utama session from a Kantor account shell: `claude-utama` drops the account folder for that command only,
+        // without a subshell (subshell depth 0) so `claude` is the pane's foreground process
+        let script = format!("export CLAUDE_CONFIG_DIR=/k\nfunction claude {{ print -r -- \"${{CLAUDE_CONFIG_DIR:-utama}} $ZSH_SUBSHELL $*\" }}\n{}claude-utama --resume x; print -r -- $CLAUDE_CONFIG_DIR", zsh_accounts(&[a("kantor", "claude", "~/.claude-kantor")]));
         let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "utama --resume x\n/k");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "utama 0 --resume x\n/k");
         assert!(!zsh_accounts(&[]).contains("claude-utama"));
     }
 
