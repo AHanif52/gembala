@@ -1801,7 +1801,9 @@
             const id = next--;
             t.tree = replace(t.tree, p, id);
             if (t.focus === p) t.focus = id;
-            meta[id] = { ...(oldMeta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" }), from: { boot: saved.boot, pane: p } };
+            // a pane still dead in the saved layout (negative id) never ran in saved.boot: its history stays where `from` points
+            const from = p < 0 && oldMeta[p]?.from ? oldMeta[p].from : { boot: saved.boot, pane: p };
+            meta[id] = { ...(oldMeta[p] ?? { profile: "shell", cwd: null, agent: "", name: "" }), from };
             dead[id] = true;
           }
       wss = restored;

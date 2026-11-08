@@ -12,15 +12,15 @@ dst=/Applications/Gembala.app
 tmp=/Applications/.Gembala-baru.app
 rm -rf "$tmp"
 ditto "$new" "$tmp"
-# Any `.app` left on disk (Trash, build output) stays registered under dev.gembala.app and notifications may take
-# its old icon: the old bundle is parked without the .app extension, the build output is removed.
+# The old bundle stays a registered .app: a still-open old UI relaunches its own helper daemon through `open`
+# (unregistered or renamed, LaunchServices starts the new helper instead and the handover fails).
+# Notifications take the icon of any bundle registered as dev.gembala.app, so the build output is removed.
 # ponytail: parked copies are never cleaned; delete ~/Library/Caches/dev.gembala.app/old by hand when it grows
 ls=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 if [ -d "$dst" ]; then
   old="$HOME/Library/Caches/dev.gembala.app/old"
   mkdir -p "$old"
-  "$ls" -u "$dst"
-  mv "$dst" "$old/Gembala-$(date +%Y%m%d-%H%M%S)"
+  mv "$dst" "$old/Gembala-$(date +%Y%m%d-%H%M%S).app"
 fi
 mv "$tmp" "$dst"
 "$ls" -u "$new" 2>/dev/null || true # fails (-10814) when the build output was never registered
