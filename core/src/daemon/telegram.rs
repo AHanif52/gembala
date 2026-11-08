@@ -54,17 +54,31 @@ pub struct Bot {
     last: Mutex<Option<u64>>,
     /// plain text waiting for the user to pick a pane (text, message id)
     pending: Mutex<Option<(String, i64)>>,
+    /// when each pane's current turn started (status went to working)
+    started: Mutex<HashMap<u64, Instant>>,
+    /// last turn durations per agent kind (secs, max `TURNS_KEPT`): the estimate shown while a phone prompt runs
+    turns: Mutex<HashMap<String, VecDeque<u64>>>,
+    /// per pane: "⏳ working" message for a phone prompt (message id once sent, last edit), deleted when done
+    progress: Mutex<HashMap<u64, (Option<i64>, Instant)>>,
+    /// picker message already answered: a second tap (before its buttons are gone) must not edit it again (Telegram 400)
+    picked: Mutex<Option<i64>>,
 }
+
+const TURNS_KEPT: usize = 10;
+const PROGRESS_EVERY: Duration = Duration::from_secs(30);
 
 enum Out {
     Api(&'static str, Value),
     Notice(u64, Kind, Instant),
+    /// progress message; its id goes into `Bot.progress` for later edits
+    Progress(u64, Value),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
     Blocked(u64),
-    Done,
+    /// how long the turn took, 0 = unknown
+    Done(u64),
     Password,
     Long(u64),
 }
@@ -214,7 +228,7 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
     let msg = m["message_id"].as_i64().unwrap_or_default();
     let quoted = &m["reply_to_message"];
     let first = quoted["text"].as_str().or(quoted["caption"].as_str()).and_then(|t| t.lines().next()).unwrap_or_default();
-    let name = first.split(" · ").next().filter(|n| *n != first).unwrap_or_default().trim().to_string();
+    let name = first.split(" · ").next().filter(|n| *n != first).unwrap_or_default().trim_start_matches("⏳").trim().to_string();
     let reply = quoted["message_id"].as_i64().map(|r| To::Reply(r, name));
     // largest photo size, or a document; Telegram's public API serves files up to 20 MB
     let media = match (m["photo"].as_array().and_then(|p| p.last()), m.get("document")) {
@@ -304,6 +318,7 @@ fn now() -> i64 {
 fn dur(secs: u64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
+        s if s < 3600 && s % 60 == 0 => format!("{}m", s / 60),
         s if s < 3600 => format!("{}m {}s", s / 60, s % 60),
         s => format!("{}j {}m", s / 3600, s % 3600 / 60),
     }
@@ -345,6 +360,12 @@ fn t(id: bool, k: &str) -> &'static str {
         "old_reply" => ("Pane pesan itu udah nggak ada. Ketik biasa buat ke pane aktif, atau /ke <pane>.", "That message's pane is gone. Type plainly for the active pane, or /to <pane>."),
         "snip_off" => ("Potongan layar dimatiin buat workspace ini.", "Screen snippets are off for this workspace."),
         "pick" => ("Ke pane mana?", "Which pane?"),
+        "p_now" => ("lagi ngerjain", "is working"),
+        "p_ran" => ("udah jalan", "running"),
+        "p_eta" => ("biasanya kelar", "usually done in"),
+        "p_late" => ("lebih lama dari biasanya", "longer than usual"),
+        "p_none" => ("belum ada perkiraan, ini giliran pertamanya", "no estimate yet, first turn"),
+        "p_queued" => ("Pesan lu antre di belakang giliran yang lagi jalan.", "Your message is queued behind the turn in progress."),
         "no_agent" => ("Belum ada pane agent.", "No agent pane yet."),
         "now_to" => ("Sekarang ngetik ke", "Now typing into"),
         "dl_fail" => ("Gagal ngunduh filenya (maks 20 MB).", "Couldn't download the file (20 MB max)."),
@@ -380,6 +401,8 @@ fn api(token: &str, method: &str, body: &Value, secs: u64) -> Result<Value, (i64
     if v["ok"] == true {
         Ok(v["result"].clone())
     } else {
+        // Telegram's own reason (e.g. "message is not modified"); never the token, it's only in the URL
+        log(format_args!("{method} failed {}: {}", v["error_code"], v["description"].as_str().unwrap_or_default()));
         Err((v["error_code"].as_i64().unwrap_or_default(), v["parameters"]["retry_after"].as_u64()))
     }
 }
@@ -499,6 +522,10 @@ fn spawn(st: &Arc<State>, token: String, bot: String, link: Option<Link>) -> Arc
         id_lang: lang_id(&values(st)),
         last: Mutex::new(None),
         pending: Mutex::new(None),
+        started: Mutex::default(),
+        turns: Mutex::default(),
+        progress: Mutex::default(),
+        picked: Mutex::new(None),
     });
     if let Some(old) = st.tg.lock().unwrap().replace(b.clone()) {
         old.stop.store(true, Ordering::Relaxed);
@@ -602,8 +629,13 @@ fn poll(st: Arc<State>, b: Arc<Bot>) {
 fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
     while !b.stop.load(Ordering::Relaxed) {
         let Ok(o) = rx.recv_timeout(Duration::from_secs(10)) else { continue };
+        let mut progress = None;
         let (method, body, pane) = match o {
             Out::Api(m, body) => (m, body, None),
+            Out::Progress(id, body) => {
+                progress = Some(id);
+                ("sendMessage", body, None)
+            }
             Out::Notice(id, kind, at) => {
                 thread::sleep(SETTLE.saturating_sub(at.elapsed()));
                 match notice(&st, &b, id, kind) {
@@ -620,6 +652,17 @@ fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
         for _ in 0..3 {
             match api(&b.token, method, &body, 15) {
                 Ok(r) => {
+                    if let (Some(p), Some(mid)) = (progress, r["message_id"].as_i64()) {
+                        // pane finished before this was sent: the progress message has nothing left to say
+                        // a reply to "⏳ …" goes to that pane, like a reply to any of its messages
+                        b.remember(mid, p);
+                        match b.progress.lock().unwrap().get_mut(&p) {
+                            Some(slot) => slot.0 = Some(mid),
+                            None => {
+                                let _ = b.out.try_send(Out::Api("deleteMessage", json!({"chat_id": b.chat(), "message_id": mid})));
+                            }
+                        }
+                    }
                     if let (Some(p), Some(mid)) = (pane, r["message_id"].as_i64()) {
                         b.remember(mid, p);
                         // the pane that just spoke becomes the active one: plain text answers it
@@ -631,10 +674,7 @@ fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
                     break;
                 }
                 Err((429, Some(s))) => thread::sleep(Duration::from_secs(s.min(60))),
-                Err((code, _)) => {
-                    log(format_args!("{method} failed {code}"));
-                    break;
-                }
+                Err(_) => break,
             }
         }
         thread::sleep(Duration::from_millis(1100));
@@ -666,8 +706,28 @@ fn watch(st: Arc<State>, b: Arc<Bot>) {
                 flush(&st, &b);
             }
             b.away.store(away, Ordering::Relaxed);
+            tick_progress(&st, &b);
         }
         thread::sleep(Duration::from_secs(10));
+    }
+}
+
+/// every `PROGRESS_EVERY`: running time and estimate in each "⏳" message; a closed pane's message is deleted
+fn tick_progress(st: &State, b: &Bot) {
+    let due: Vec<(u64, i64)> =
+        b.progress.lock().unwrap().iter().filter(|(_, (m, at))| m.is_some() && at.elapsed() >= PROGRESS_EVERY).map(|(id, (m, _))| (*id, m.unwrap_or_default())).collect();
+    for (id, m) in due {
+        let pane = st.panes.lock().unwrap().get(&id).cloned();
+        let Some(pane) = pane else {
+            b.progress.lock().unwrap().remove(&id);
+            let _ = b.out.try_send(Out::Api("deleteMessage", json!({"chat_id": b.chat(), "message_id": m})));
+            continue;
+        };
+        if let Some(slot) = b.progress.lock().unwrap().get_mut(&id) {
+            slot.1 = Instant::now();
+        }
+        let text = progress_of(b, id, &pane, false);
+        let _ = b.out.try_send(Out::Api("editMessageText", json!({"chat_id": b.chat(), "message_id": m, "text": text, "parse_mode": "HTML"})));
     }
 }
 
@@ -692,9 +752,25 @@ fn live(st: &State) -> Option<Arc<Bot>> {
 /// from the phone is always answered, away or not, like Hermes: 👀 on the user's message while it works, 👍 + result when done.
 pub fn on_status(st: &State, id: u64, pane: &Pane, status: &str) {
     let Some(b) = live(st) else { return };
-    if pane.agent_name().is_none() {
-        return;
-    }
+    let Some(agent) = pane.agent_name() else { return };
+    // turn timing for the estimate: working = start, done/idle = end
+    let took = match status {
+        "working" => {
+            b.started.lock().unwrap().entry(id).or_insert_with(Instant::now);
+            0
+        }
+        "done" | "idle" => b.started.lock().unwrap().remove(&id).map_or(0, |t0| {
+            let secs = t0.elapsed().as_secs();
+            let mut turns = b.turns.lock().unwrap();
+            let q = turns.entry(agent.clone()).or_default();
+            q.push_back(secs);
+            if q.len() > TURNS_KEPT {
+                q.pop_front();
+            }
+            secs
+        }),
+        _ => 0,
+    };
     let asked = !pane.tg_ask.lock().unwrap().is_empty();
     if !b.away.load(Ordering::Relaxed) && !asked {
         return;
@@ -703,13 +779,17 @@ pub fn on_status(st: &State, id: u64, pane: &Pane, status: &str) {
     let on = |k: &str| asked || values(st)["notify"][k].as_bool().unwrap_or(true);
     let kind = match status {
         "blocked" if on("on_blocked") => Kind::Blocked(seq),
-        "done" if on("on_done") => Kind::Done,
+        "done" if on("on_done") => Kind::Done(took),
         _ => return,
     };
-    if kind == Kind::Done {
+    if let Kind::Done(_) = kind {
         // every message typed while the agent worked (a photo, then a follow-up) gets its 👍, not only the last
         for m in pane.tg_ask.lock().unwrap().drain(..) {
             b.react(m, "👍");
+        }
+        // the result says how long it took; the "⏳ working" message goes away
+        if let Some((Some(m), _)) = b.progress.lock().unwrap().remove(&id) {
+            let _ = b.out.try_send(Out::Api("deleteMessage", json!({"chat_id": b.chat(), "message_id": m})));
         }
     }
     if b.first(id, seq) {
@@ -818,7 +898,8 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
             }
             t(id_l, "blocked").to_string()
         }
-        Kind::Done => t(id_l, "done").to_string(),
+        Kind::Done(0) => t(id_l, "done").to_string(),
+        Kind::Done(secs) => format!("{} ({})", t(id_l, "done"), dur(secs)),
         Kind::Password => t(id_l, "password").to_string(),
         Kind::Long(secs) => format!("{} ({})", t(id_l, "long"), dur(secs)),
     };
@@ -879,7 +960,35 @@ fn picker(st: &State, b: &Bot) {
     let _ = b.out.try_send(Out::Api("sendMessage", json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML", "reply_markup": {"inline_keyboard": rows}})));
 }
 
-/// type into the pane (SEC-36 checks), then 👀 on the user's message until the pane is done (`on_status`)
+/// median of the last turns (secs), the estimate for the next one
+fn median(q: Option<&VecDeque<u64>>) -> Option<u64> {
+    let mut v: Vec<u64> = q?.iter().copied().collect();
+    v.sort_unstable();
+    v.get(v.len() / 2).copied()
+}
+
+/// "⏳ claude-1 · running 1m 30s · usually ±1m 40s": an estimate from past turns of that agent kind, never a promise
+fn progress_text(id_l: bool, name: &str, ran: u64, eta: Option<u64>, queued: bool) -> String {
+    let mut s = format!("⏳ {}", esc(name));
+    s += &if ran < 5 { format!(" {}", t(id_l, "p_now")) } else { format!(" · {} {}", t(id_l, "p_ran"), dur(ran)) };
+    s += &match eta {
+        Some(e) if ran > e + 30 => format!(" · {} (±{})", t(id_l, "p_late"), dur(e)),
+        Some(e) => format!(" · {} ±{}", t(id_l, "p_eta"), dur(e)),
+        None => format!(" · {}", t(id_l, "p_none")),
+    };
+    if queued {
+        s += &format!("\n{}", t(id_l, "p_queued"));
+    }
+    s
+}
+
+fn progress_of(b: &Bot, id: u64, pane: &Pane, queued: bool) -> String {
+    let ran = b.started.lock().unwrap().get(&id).map_or(0, |t0| t0.elapsed().as_secs());
+    let eta = median(b.turns.lock().unwrap().get(&pane.agent_name().unwrap_or_default()));
+    progress_text(b.id_lang, &pane.name.lock().unwrap(), ran, eta, queued)
+}
+
+/// type into the pane (SEC-36 checks), then 👀 + a "⏳ working, usually ±…" message until the pane is done (`on_status`)
 fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64) {
     let status = *pane.status.lock().unwrap();
     let pw = pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master);
@@ -890,7 +999,17 @@ fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64) {
                 *b.last.lock().unwrap() = Some(id);
                 pane.tg_ask.lock().unwrap().push(msg);
                 *pane.tg_text.lock().unwrap() = Some(text.to_string());
-                return b.react(msg, "👀");
+                b.react(msg, "👀");
+                // one progress message per pane; a follow-up while it works keeps the same one
+                let fresh = {
+                    let mut p = b.progress.lock().unwrap();
+                    !p.contains_key(&id) && p.insert(id, (None, Instant::now())).is_none()
+                };
+                if fresh {
+                    let body = progress_of(b, id, pane, status == "working");
+                    let _ = b.out.try_send(Out::Progress(id, json!({"chat_id": b.chat(), "text": body, "parse_mode": "HTML", "reply_parameters": {"message_id": msg}})));
+                }
+                return;
             }
             Err(_) => "no_pane",
         },
@@ -979,6 +1098,10 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             let name = pane.as_ref().map(|p| p.name.lock().unwrap().clone());
             let word = name.as_ref().map_or_else(|| t(id_l, "no_pane").to_string(), |n| format!("→ {n}"));
             let _ = b.out.try_send(Out::Api("answerCallbackQuery", json!({"callback_query_id": cb, "text": word})));
+            // double tap (8 Nov log: two callbacks for one picker): answered above, nothing else
+            if b.picked.lock().unwrap().replace(msg) == Some(msg) {
+                return;
+            }
             let _ = b.out.try_send(Out::Api("editMessageReplyMarkup", json!({"chat_id": b.chat(), "message_id": msg, "reply_markup": {"inline_keyboard": []}})));
             if let Some(p) = pane {
                 *b.last.lock().unwrap() = Some(id);
@@ -1133,6 +1256,8 @@ mod tests {
         // a reply after a daemon restart still finds the pane from the quoted message's first line
         r["message"]["reply_to_message"]["text"] = json!("claude-1 · gembala kelar\n✳ Permintaan jawaban singkat");
         assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, "claude-1".into())), text: "bikin changelog".into(), msg: 5 });
+        r["message"]["reply_to_message"]["text"] = json!("⏳ omp-1 · udah jalan 1m 30s · biasanya kelar ±2m");
+        assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, "omp-1".into())), text: "bikin changelog".into(), msg: 5 });
         r["message"]["reply_to_message"]["text"] = json!("Ke pane mana?");
         assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, String::new())), text: "bikin changelog".into(), msg: 5 });
         // plain text = active pane, no command needed
@@ -1206,6 +1331,18 @@ mod tests {
         assert!(!stats_row("2026-11-08 tanpa jam"));
         assert_eq!(label("π > Check tasks", "omp").as_deref(), Some("Check tasks"));
         assert_eq!(label("✳ Claude Code", "claude"), None);
+    }
+
+    #[test]
+    fn perkiraan_waktu_dari_giliran_sebelumnya() {
+        let q: VecDeque<u64> = [40, 100, 70].into();
+        assert_eq!(median(Some(&q)), Some(70));
+        assert_eq!(median(None), None);
+        assert_eq!(median(Some(&VecDeque::new())), None);
+        assert_eq!(progress_text(true, "omp-1", 0, Some(70), false), "⏳ omp-1 lagi ngerjain · biasanya kelar ±1m 10s");
+        assert_eq!(progress_text(true, "omp-1", 90, Some(70), false), "⏳ omp-1 · udah jalan 1m 30s · biasanya kelar ±1m 10s");
+        assert_eq!(progress_text(true, "omp-1", 120, Some(70), false), "⏳ omp-1 · udah jalan 2m · lebih lama dari biasanya (±1m 10s)");
+        assert_eq!(progress_text(false, "a<b", 0, None, true), "⏳ a&lt;b is working · no estimate yet, first turn\nYour message is queued behind the turn in progress.");
     }
 
     #[test]
