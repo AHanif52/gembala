@@ -40,7 +40,12 @@ pub fn sanitize(body: &str) -> Result<String, &'static str> {
 pub fn wrap(from: &str, id: &str, clean_body: &str) -> Vec<u8> {
     // empty id = sent by the user: no id so the agent answers on screen, not with `reply` (not in the message engine)
     let id = if id.is_empty() { String::new() } else { format!(" · {id}") };
-    format!("\x1b[200~[Gembala · from {from}{id}]\n{clean_body}\x1b[201~\r").into_bytes()
+    paste(&format!("[Gembala · from {from}{id}]\n{clean_body}"))
+}
+
+/// Bracketed paste then exactly one Enter, as if typed at the keyboard (FR-80 types without a label)
+pub fn paste(clean: &str) -> Vec<u8> {
+    format!("\x1b[200~{clean}\x1b[201~\r").into_bytes()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -18,6 +18,8 @@ enum Kind {
     Str(&'static str),
     /// List of ids from the fixed choices, order = display (default)
     List(&'static [&'static str], &'static [&'static str]),
+    /// Free list of names (e.g. workspaces), default empty
+    Names,
 }
 
 use Kind::*;
@@ -51,7 +53,9 @@ const LIMITS: &[(&str, Kind)] = &[("max_panes", Int(1, 256, 32))];
 /// FR-40: banner macOS + badge Dock + Dock melompat
 const NOTIFY: &[(&str, Kind)] =
     &[("on_blocked", Bool(true)), ("on_done", Bool(true)), ("long_command_secs", Int(5, 3600, 30)), ("sound", Bool(true))];
-const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY), ("toolbar", TOOLBAR)];
+/// FR-80: Telegram bot; token and bound chat live in telegram.json, not here (SEC-36)
+const TELEGRAM: &[(&str, Kind)] = &[("away_idle_mins", Int(1, 120, 5)), ("snippet", Bool(true)), ("snippet_off", Names), ("lines", Int(1, 30, 30))];
+const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY), ("toolbar", TOOLBAR), ("telegram", TELEGRAM)];
 
 pub struct Config {
     /// Built-in profiles + `[[profile]]` entries that pass validation (FR-29). Secret references come along, values don't.
@@ -87,6 +91,7 @@ fn default(kind: &Kind) -> Value {
         Bool(d) => json!(d),
         Enum(_, d) | Str(d) => json!(d),
         List(_, d) => json!(d),
+        Names => json!([]),
     }
 }
 
@@ -101,6 +106,11 @@ fn check(kind: &Kind, v: &Value) -> Result<Value, Diag> {
             .filter(|a| a.len() <= opts.len() && a.iter().all(|x| x.as_str().is_some_and(|s| opts.contains(&s))))
             .map(|a| Value::Array(a.clone()))
             .ok_or_else(|| Diag::new("list_of").arg("opts", opts.join(", "))),
+        Names => v
+            .as_array()
+            .filter(|a| a.len() <= 64 && a.iter().all(|x| x.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 64 && !s.chars().any(char::is_control))))
+            .map(|a| Value::Array(a.clone()))
+            .ok_or("names".into()),
         Str(_) => v
             .as_str()
             .filter(|s| !s.is_empty() && s.len() <= 200 && !s.chars().any(char::is_control))

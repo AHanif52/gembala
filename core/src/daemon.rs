@@ -106,6 +106,13 @@ struct Pane {
     workspace: Mutex<String>,
     policy: Mutex<msg::Policy>,
     status_at: Mutex<std::time::Instant>,
+    /// FR-80: bumped on every status change; a Telegram permission button only works for the same dialog (SEC-28 pattern)
+    status_seq: AtomicU64,
+    /// FR-80: terminal was waiting for a password at the last check, a shell command that ran long has just finished (secs)
+    asked_pw: std::sync::atomic::AtomicBool,
+    long_done: Mutex<Option<u64>>,
+    /// FR-80: Telegram message typed into this pane, answered with the result when the pane is done
+    tg_ask: Mutex<Option<i64>>,
     readable: std::sync::atomic::AtomicBool,
     typed_at: Mutex<Option<std::time::Instant>>,
     /// SEC-3 fallback: 128-bit token for processes detached from the pane session (e.g. a tmux server, profile `token = true`)
@@ -166,6 +173,8 @@ struct State {
     audit: Option<bus::Audit>,
     /// FR-16/17: active harness runs, panes they hold, sender ids (runner.rs)
     harness: Mutex<runner::Registry>,
+    /// FR-80: the user's Telegram bot, when on (telegram.rs)
+    tg: telegram::Slot,
 }
 
 struct UiClient(Arc<State>, u64);
@@ -178,6 +187,7 @@ impl Drop for UiClient {
 }
 
 mod runner;
+mod telegram;
 
 type Res = Result<Value, &'static str>;
 /// FR-62: (running block + its start time, manual agent block waiting for its resume command)
@@ -219,11 +229,13 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         pane_subs: Mutex::default(),
         audit: bus::Audit::open(config::path().with_file_name("audit")).ok(),
         harness: Mutex::default(),
+        tg: Mutex::default(),
     });
     let st7 = st.clone();
     thread::spawn(move || deliver_loop(st7));
     write_hook_files(&st.hooks);
     reload_config(&st);
+    telegram::start_saved(&st);
     on_ready();
     let st3 = st.clone();
     thread::spawn(move || idle_exit(st3));
@@ -863,12 +875,12 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         "pane.write" => {
             let pane = st.pane(p)?;
             let data = p["data"].as_str().and_then(|d| B64.decode(d).ok()).ok_or("bad_params")?;
-            (&pane.master).write_all(&data).map_err(|_| "io")?;
-            *pane.typed_at.lock().unwrap() = Some(std::time::Instant::now());
-            // a "done" result counts as read once the user types in that pane (BRD section 8)
-            set_status(st, p["pane"].as_u64().unwrap_or_default(), &pane, "idle", Some("done"));
+            type_into(st, p["pane"].as_u64().unwrap_or_default(), &pane, &data)?;
             Ok(json!({}))
         }
+        "telegram.status" => Ok(telegram::status(st)),
+        "telegram.pair" => telegram::pair(st, p["token"].as_str().unwrap_or_default()),
+        "telegram.unpair" => Ok(telegram::unpair(st)),
         "pane.resize" => {
             let pane = st.pane(p)?;
             let (rows, cols) = (dim(&p["rows"], 0), dim(&p["cols"], 0));
@@ -1131,6 +1143,10 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
             msg::effective_policy(msg::Policy::parse(&x.policy).unwrap_or(msg::Policy::Auto), &[x.args.clone(), profile::permission_flags(&x.agent, &x.permission)].concat())
         })),
         status_at: Mutex::new(std::time::Instant::now()),
+        status_seq: AtomicU64::new(0),
+        asked_pw: std::sync::atomic::AtomicBool::new(false),
+        long_done: Mutex::new(None),
+        tg_ask: Mutex::new(None),
         readable: std::sync::atomic::AtomicBool::new(false),
         typed_at: Mutex::new(None),
         token: Mutex::new(token),
@@ -1509,6 +1525,7 @@ fn screen_watch(st: Arc<State>) {
         thread::sleep(Duration::from_secs(1));
         let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.clone())).collect();
         for (id, pane) in panes {
+            telegram::tick(&st, id, &pane);
             let fg = (pane.agent == "shell").then(|| pty::busy(&pane.master, pane.sid)).flatten();
             let found = fg.and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?))).filter(|(_, n)| AGENTS.contains(&n.as_str()));
             // FR-56: manual agent starts = record the session log. Exit is usually handled by `pump` as soon as the shell writes its prompt;
@@ -1569,6 +1586,14 @@ fn screen_watch(st: Arc<State>) {
     }
 }
 
+/// The user typing into a pane (UI keyboard, Telegram FR-80): a "done" result counts as read (BRD section 8)
+fn type_into(st: &State, id: u64, pane: &Pane, data: &[u8]) -> Result<(), &'static str> {
+    (&pane.master).write_all(data).map_err(|_| "io")?;
+    *pane.typed_at.lock().unwrap() = Some(std::time::Instant::now());
+    set_status(st, id, pane, "idle", Some("done"));
+    Ok(())
+}
+
 /// Change a pane's status and tell every UI (`pane.status`). `only_from` = change only when the current status is that.
 fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from: Option<&str>) {
     let mut cur = pane.status.lock().unwrap();
@@ -1613,6 +1638,8 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
 
 /// Tell the UI and pane channel subscribers (FR-8). A subscriber only gets panes it may read (SEC-21).
 fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
+    pane.status_seq.fetch_add(1, Ordering::Relaxed);
+    telegram::on_status(st, id, pane, status);
     let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": status}}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
     let ws = pane.workspace.lock().unwrap().clone();
@@ -1879,6 +1906,7 @@ fn on_block(pane: &Pane, m: history::Mark) {
             if pane.manual.lock().unwrap().is_some() {
                 b.1 = Some(blk);
             } else {
+                *pane.long_done.lock().unwrap() = Some(blk.secs); // FR-80: telegram::tick judges "long"
                 history::append(&pane.hist, &blk);
             }
         }
