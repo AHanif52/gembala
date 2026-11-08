@@ -875,8 +875,20 @@ pub fn tick(st: &State, id: u64, pane: &Pane) {
     }
 }
 
-fn snippet_on(v: &Value, ws: &str) -> bool {
-    v["telegram"]["snippet"].as_bool().unwrap_or(true) && !v["telegram"]["snippet_off"].as_array().into_iter().flatten().any(|w| w.as_str() == Some(ws))
+/// `snippet_off` holds workspace names (Settings writes names); the id is checked too for hand-edited config
+fn snippet_on(v: &Value, ws: &[&str]) -> bool {
+    v["telegram"]["snippet"].as_bool().unwrap_or(true) && !v["telegram"]["snippet_off"].as_array().into_iter().flatten().any(|w| w.as_str().is_some_and(|w| ws.contains(&w)))
+}
+
+/// workspace id → name from the layout the UI saved (`pane.workspace` holds the id; real app 9 Nov: /status showed `ap2mf4uo`)
+// ponytail: layout.json read per message; cache it if /status gets slow
+fn ws_names() -> HashMap<String, String> {
+    let v: Value = fs::read_to_string(config::layout_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    v["workspaces"].as_array().into_iter().flatten().filter_map(|w| Some((w["id"].as_str()?.to_string(), w["name"].as_str()?.to_string()))).collect()
+}
+
+fn ws_name(id: &str) -> String {
+    ws_names().remove(id).unwrap_or_else(|| id.to_string())
 }
 
 /// first line only name · workspace + status (what the lock screen shows, SEC-37)
@@ -887,7 +899,8 @@ fn head(name: &str, ws: &str, status: &str) -> String {
 /// message body built when it is sent (after SETTLE), from the pane as it is now; `None` = no longer relevant
 fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     let pane = st.panes.lock().unwrap().get(&id).cloned()?;
-    let (name, ws) = (pane.name.lock().unwrap().clone(), pane.workspace.lock().unwrap().clone());
+    let (name, ws_id) = (pane.name.lock().unwrap().clone(), pane.workspace.lock().unwrap().clone());
+    let ws = ws_name(&ws_id);
     let agent = pane.agent_name().unwrap_or_default();
     let v = values(st);
     let id_l = b.id_lang;
@@ -904,7 +917,7 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
         Kind::Long(secs) => format!("{} ({})", t(id_l, "long"), dur(secs)),
     };
     let mut text = head(&name, &ws, &status);
-    if kind != Kind::Password && snippet_on(&v, &ws) {
+    if kind != Kind::Password && snippet_on(&v, &[&ws, &ws_id]) {
         if let Some(l) = label(&pane.title.lock().unwrap(), &agent) {
             text += &format!("\n{}", esc(&l));
         }
@@ -927,11 +940,16 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
 fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'static str> {
     let id = match to {
         Some(To::Name(n)) => return st.by_name(&n).ok_or("no_pane"),
-        Some(To::Reply(r, name)) => match b.sent.lock().unwrap().iter().find(|(m, _)| *m == r).map(|(_, p)| *p) {
-            Some(id) => id,
-            // not in RAM (daemon restarted): the pane named on the message's first line
-            None => return st.by_name(&name).filter(|_| !name.is_empty()).ok_or("old_reply"),
-        },
+        Some(To::Reply(r, name)) => {
+            let known = b.sent.lock().unwrap().iter().find(|(m, _)| *m == r).map(|(_, p)| *p);
+            match known {
+                Some(id) => id,
+                // not in RAM (daemon restarted): the pane named on the message's first line
+                None if !name.is_empty() => return st.by_name(&name).ok_or("old_reply"),
+                // reply to a message that isn't a pane's (the user's own photo, help, picker): like plain text
+                None => return target(st, b, None),
+            }
+        }
         None => {
             let panes = st.panes.lock().unwrap();
             match (*b.last.lock().unwrap()).filter(|id| panes.contains_key(id)) {
@@ -1066,10 +1084,11 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
         In::Look(name) => match st.by_name(&name) {
             None => b.tell(t(id_l, "no_pane")),
             Some((_, pane)) => {
-                let (n, ws) = (pane.name.lock().unwrap().clone(), pane.workspace.lock().unwrap().clone());
+                let (n, ws_id) = (pane.name.lock().unwrap().clone(), pane.workspace.lock().unwrap().clone());
+                let ws = ws_name(&ws_id);
                 let st_txt = state_word(&pane, id_l);
                 let v = values(st);
-                if !snippet_on(&v, &ws) {
+                if !snippet_on(&v, &[&ws, &ws_id]) {
                     return b.say(&format!("{}\n{}", head(&n, &ws, &st_txt), esc(t(id_l, "snip_off"))));
                 }
                 let lines = v["telegram"]["lines"].as_u64().unwrap_or(30).min(30) as usize;
@@ -1162,33 +1181,49 @@ fn state_word(pane: &Pane, id_l: bool) -> String {
 }
 
 /// `/status`: per workspace, panes needing permission first (FR-65 order), the active pane marked, no screen content
+/// (workspace name, agent pane rows: needs permission first, plain shell panes counted). Real app 9 Nov: 25 panes,
+/// mostly idle shells, made /status a wall of "shell".
+type WsRows = (String, Vec<AgentRow>, usize);
+/// (not blocked, pane name, status word)
+type AgentRow = (bool, String, String);
+
 fn status_text(st: &State, id_l: bool, active: Option<u64>) -> String {
-    let mut rows: Vec<(String, bool, String, String)> = st
-        .panes
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(id, p)| {
-            let blocked = *p.status.lock().unwrap() == "blocked";
-            let mut word = state_word(p, id_l);
-            if active == Some(*id) {
-                word += if id_l { " ← aktif" } else { " ← active" };
-            }
-            (p.workspace.lock().unwrap().clone(), !blocked, p.name.lock().unwrap().clone(), word)
-        })
-        .collect();
+    let names = ws_names();
+    let mut by_ws: HashMap<String, (Vec<AgentRow>, usize)> = HashMap::new();
+    for (id, p) in st.panes.lock().unwrap().iter() {
+        let ws_id = p.workspace.lock().unwrap().clone();
+        let e = by_ws.entry(names.get(&ws_id).cloned().unwrap_or(ws_id)).or_default();
+        if p.agent_name().is_none() {
+            e.1 += 1;
+            continue;
+        }
+        let mut word = state_word(p, id_l);
+        if active == Some(*id) {
+            word += if id_l { " ← aktif" } else { " ← active" };
+        }
+        e.0.push((*p.status.lock().unwrap() != "blocked", p.name.lock().unwrap().clone(), word));
+    }
+    let rows: Vec<WsRows> = by_ws.into_iter().map(|(ws, (agents, shells))| (ws, agents, shells)).collect();
+    status_body(rows, id_l)
+}
+
+fn status_body(mut rows: Vec<WsRows>, id_l: bool) -> String {
     if rows.is_empty() {
         return t(id_l, "none").to_string();
     }
-    rows.sort();
+    // workspaces with agents first, then by name
+    rows.sort_by(|a, b| a.1.is_empty().cmp(&b.1.is_empty()).then_with(|| a.0.cmp(&b.0)));
     let mut out = String::new();
-    let mut ws_seen: Option<&str> = None;
-    for (ws, _, name, word) in &rows {
-        if ws_seen != Some(ws.as_str()) {
-            out += &format!("{}<b>{}</b>\n", if ws_seen.is_some() { "\n" } else { "" }, esc(if ws.is_empty() { "-" } else { ws }));
-            ws_seen = Some(ws);
+    for (ws, mut agents, shells) in rows {
+        agents.sort();
+        out += &format!("<b>{}</b>\n", esc(if ws.is_empty() { "-" } else { &ws }));
+        for (_, name, word) in agents {
+            out += &format!("{} — {}\n", esc(&name), esc(&word));
         }
-        out += &format!("{} — {}\n", esc(name), esc(word));
+        if shells > 0 {
+            out += &format!("{shells} shell\n");
+        }
+        out += "\n";
     }
     out.trim_end().to_string()
 }
@@ -1334,6 +1369,16 @@ mod tests {
     }
 
     #[test]
+    fn status_ringkas_nama_workspace() {
+        let rows = vec![
+            ("Issue Prod".to_string(), vec![], 3),
+            ("gembala".to_string(), vec![(true, "shell-25".to_string(), "idle ← active".to_string()), (false, "omp-1".to_string(), "needs permission (1m 5s)".to_string())], 4),
+        ];
+        assert_eq!(status_body(rows, false), "<b>gembala</b>\nomp-1 — needs permission (1m 5s)\nshell-25 — idle ← active\n4 shell\n\n<b>Issue Prod</b>\n3 shell");
+        assert_eq!(status_body(vec![], true), "Belum ada pane.");
+    }
+
+    #[test]
     fn perkiraan_waktu_dari_giliran_sebelumnya() {
         let q: VecDeque<u64> = [40, 100, 70].into();
         assert_eq!(median(Some(&q)), Some(70));
@@ -1358,9 +1403,10 @@ mod tests {
         assert_eq!(head("shell-6", "gembala", "butuh izin"), "<b>shell-6 · gembala</b> butuh izin");
         assert_eq!(head("a<b", "", "kelar"), "<b>a&lt;b</b> kelar");
         let v = json!({"telegram": {"snippet": true, "snippet_off": ["E2E Phase 1"]}});
-        assert!(snippet_on(&v, "gembala"));
-        assert!(!snippet_on(&v, "E2E Phase 1"));
-        assert!(!snippet_on(&json!({"telegram": {"snippet": false}}), "gembala"));
+        assert!(snippet_on(&v, &["gembala", "ap2mf4uo"]));
+        assert!(!snippet_on(&v, &["E2E Phase 1", "q4xovss2"]));
+        assert!(!snippet_on(&json!({"telegram": {"snippet_off": ["q4xovss2"]}}), &["E2E Phase 1", "q4xovss2"]));
+        assert!(!snippet_on(&json!({"telegram": {"snippet": false}}), &["gembala"]));
         assert_eq!(dur(130), "2m 10s");
     }
 }

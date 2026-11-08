@@ -1004,11 +1004,11 @@
               <input type="checkbox" role="switch" aria-label={t("set.tg.snipOn")} checked={cfg.values.telegram?.snippet ?? true} onchange={(e) => setTg("snippet", e.currentTarget.checked)} />
             </div>
             {#if workspaces.length}
-              <div class="row">
+              <div class="row col">
                 <span>{t("set.tg.skip")}<small>{t("set.tg.skipSub")}</small></span>
-                <span class="seg wrap" role="group" aria-label={t("set.tg.skip")}>
-                  {#each workspaces as w (w.id)}<button class:on={tgSkipped(w.name)} aria-pressed={tgSkipped(w.name)} onclick={() => tgSkip(w.name)}>{w.name}</button>{/each}
-                </span>
+                <div class="tgws" role="group" aria-label={t("set.tg.skip")}>
+                  {#each workspaces as w (w.id)}<button class="mini" class:on={tgSkipped(w.name)} aria-pressed={tgSkipped(w.name)} onclick={() => tgSkip(w.name)}>{w.name}</button>{/each}
+                </div>
               </div>
             {/if}
           </section>
@@ -1623,9 +1623,15 @@
   .mini.danger {
     color: var(--tx-red, #ef4444);
   }
-  .seg.wrap {
+  /* many workspaces (real app: 7+): toggles go under the label and wrap instead of pushing the modal sideways */
+  .tgws {
+    display: flex;
     flex-wrap: wrap;
-    justify-content: flex-end;
+    gap: 6px;
+  }
+  .tgws .mini.on {
+    border-color: var(--blue, #3b82f6);
+    color: var(--blue, #3b82f6);
   }
   /* Gembala.pen 32: trusted-folder note at the end of the add-on page; switch label inside the MCP editor */
   .warnbox {
