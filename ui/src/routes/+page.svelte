@@ -2794,7 +2794,8 @@
   <!-- with the Start panel showing, the card sits above it inside the pane (pen 01) -->
   {#if welcome && startHere === null}{@render welcomeCard("confirm")}{/if}
   {#if quitAsk}
-    <div class="confirm ask" role="alertdialog" aria-label={tt("quit.aria")}>
+    <!-- also opened from Settings > General (z-index 10): sits above it (9 Nov: covered, Esc first to see it) -->
+    <div class="confirm ask over" role="alertdialog" aria-label={tt("quit.aria")}>
       <b class="ctitle">{tt("quit.title")}</b>
       <span>{ttn("quit.busy", quitAsk)}</span>
       <span class="acts">
@@ -4721,6 +4722,9 @@
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
     z-index: 8; /* dialogs and palette above the pane dividers (4) and side panels (5) */
+  }
+  .confirm.over {
+    z-index: 11;
   }
   /* pen 13: confirmation card = bold title, body, Batal · Esc / main action */
   .confirm.ask {
