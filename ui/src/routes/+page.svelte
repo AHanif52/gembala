@@ -23,6 +23,7 @@
     type Arrow, type Dir, type Divider, type Node,
   } from "$lib/layout";
   import { safeResume } from "$lib/resume";
+  import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
   import { resolveLang } from "$lib/i18n";
   import { errText, i18n, loc, t as tt, tn as ttn, tOr } from "$lib/i18n/state.svelte";
@@ -109,6 +110,26 @@
   let settingsOpen = $state(false);
   let settingsSec = $state("umum"); // section Settings opens on (the phone icon opens Telegram)
   let tg = $state<any>({ state: "off" }); // FR-80: Telegram bot status from the daemon
+  // FR-82: newer release on GitHub (daemon checks); "Lewatin versi ini" remembers one version on this Mac
+  let upd = $state<Upd | null>(null);
+  let appVer = $state("");
+  let updOpen = $state(false);
+  const SKIP = "gembala.update.lewati";
+  let skipped = $state((() => {
+    try {
+      return localStorage.getItem(SKIP) ?? "";
+    } catch {
+      return "";
+    }
+  })());
+  const updNew = $derived(!!upd?.latest && newer(upd.latest, appVer) && upd.latest !== skipped);
+  function skipUpdate() {
+    skipped = upd?.latest ?? "";
+    updOpen = false;
+    try {
+      localStorage.setItem(SKIP, skipped);
+    } catch {}
+  }
   let cfgSeen = $state(""); // config errors already dismissed (FR-42 card)
   let picker = $state<{ items: (Profile & { missing: boolean; key: string; label: string; account?: string })[]; sel: number } | null>(null);
   let sidebar = $state(true);
@@ -1945,6 +1966,12 @@
   });
   const noteTime = (at: number) => (now - at < 3600_000 ? ago(now - at) : new Date(at).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" }));
   $effect(() => {
+    if (!updOpen) return;
+    const off = (e: PointerEvent) => !(e.target as Element).closest?.(".updcard, .updbtn") && (updOpen = false);
+    window.addEventListener("pointerdown", off);
+    return () => window.removeEventListener("pointerdown", off);
+  });
+  $effect(() => {
     if (!bell) return;
     const off = (e: PointerEvent) => !(e.target as Element).closest?.(".notes, .bellbtn") && (bell = false);
     window.addEventListener("pointerdown", off);
@@ -2060,9 +2087,13 @@
       if (payload.event === "harness.state") onRun(payload.params);
       if (payload.event === "harness.notice") runNotice(payload.params);
       if (payload.event === "telegram.changed") tg = payload.params ?? { state: "off" };
+      if (payload.event === "update.changed") upd = payload.params;
     });
     // an older daemon has no telegram.* (unknown_method): stays off
     call("telegram.status").then((r) => (tg = r ?? { state: "off" })).catch(() => {});
+    // an older daemon has no update.* either: no update badge
+    call("update.status").then((r) => (upd = r)).catch(() => {});
+    getVersion().then((v) => (appVer = v)).catch(() => {});
     const timer = setInterval(poll, 2000);
     // FR-15: dragging a file onto the window = quoted path pasted into the focused pane (bracketed paste, no Enter)
     const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
@@ -2248,8 +2279,28 @@
         {@const tip = tg.state === "on" ? tt("side.tgOn", { bot: tg.bot || "bot" }) : tt("side.tgOff")}
         <button class="footbtn tgbtn" class:warn={tg.state !== "on"} title={tip} aria-label={tip} onclick={() => ((settingsSec = "telegram"), (settingsOpen = true))}>{@render icon("phone")}</button>
       {/if}
+      <!-- FR-82 (mockup-update A): newer release, green until updated or skipped -->
+      {#if updNew}
+        <button class="updbtn" aria-expanded={updOpen} onclick={() => (updOpen = !updOpen)}><i aria-hidden="true"></i>{tt("upd.pill", { v: upd?.latest ?? "" })}</button>
+      {/if}
     </div>
   </aside>
+  {#if updOpen && updNew && upd}
+    {@const lines = noteLines(upd.notes)}
+    <div class="updcard" role="dialog" aria-label={tt("upd.title", { v: upd.latest ?? "" })}>
+      <b>{tt("upd.title", { v: upd.latest ?? "" })}</b>
+      <small>{tt("upd.sub", { cur: appVer })}{upd.published ? ` · ${new Date(upd.published).toLocaleDateString(loc(), { day: "numeric", month: "short" })}` : ""}</small>
+      <!-- release notes come from the network: text only, never HTML -->
+      {#if lines.length}<ul>{#each lines as l, i (i)}<li>{l}</li>{/each}</ul>{/if}
+      <code class="updcmd">{upgradeCmd(upd)}</code>
+      <small>{tt("upd.before")}</small>
+      <span class="acts">
+        <button class="mini" onclick={skipUpdate}>{tt("upd.skip")}</button>
+        <button class="mini" onclick={() => invoke("open_url", { url: upd?.url ?? "https://github.com/AHanif52/gembala/releases" }).catch(() => {})}>{tt("upd.notes")}</button>
+        <button class="mini pri" onclick={() => copy(upgradeCmd(upd))}>{tt("upd.copy")}</button>
+      </span>
+    </div>
+  {/if}
   {#if bell}
     <!-- FR-76: event history from every workspace; click = jump to the pane -->
     <div class="notes" role="dialog" aria-label={tt("bell.title")}>
@@ -2881,7 +2932,7 @@
     </div>
   {/if}
   {#if settingsOpen && cfg}
-    <Settings {cfg} {meta} {tg} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"))} onquitall={askQuitAll} onlogin={loginAccount} />
+    <Settings {cfg} {meta} {tg} {upd} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"))} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />
@@ -3312,6 +3363,61 @@
   .footbtn.on {
     background: var(--line);
     color: var(--fg);
+  }
+  /* FR-82: pushed to the right end of the foot */
+  .updbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    padding: 2px 8px;
+    border: 1px solid #14532d;
+    border-radius: 999px;
+    background: #052e16;
+    color: #86efac;
+    font: 11px system-ui, -apple-system, sans-serif;
+    white-space: nowrap;
+  }
+  .updbtn i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #22c55e;
+  }
+  .updcard {
+    position: fixed;
+    left: 8px;
+    bottom: 40px;
+    z-index: 7;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 340px;
+    max-width: calc(100vw - 16px);
+    padding: 12px 14px;
+    border: 1px solid #14532d;
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--fg);
+    font: 13px system-ui, -apple-system, sans-serif;
+    box-shadow: 0 8px 24px #0008;
+  }
+  .updcard small {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .updcard ul {
+    margin: 4px 0;
+    padding-left: 16px;
+    font-size: 12px;
+  }
+  .updcmd {
+    margin: 4px 0;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    font: 12px "SF Mono", Menlo, monospace;
   }
   .footbtn.tgbtn {
     color: var(--green, #16a34a);

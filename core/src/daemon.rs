@@ -185,6 +185,8 @@ struct State {
     harness: Mutex<runner::Registry>,
     /// FR-80: the user's Telegram bot, when on (telegram.rs)
     tg: telegram::Slot,
+    /// FR-82: last answer of the GitHub release check (update.rs)
+    update: Mutex<Value>,
 }
 
 struct UiClient(Arc<State>, u64);
@@ -198,6 +200,7 @@ impl Drop for UiClient {
 
 mod runner;
 mod telegram;
+mod update;
 
 type Res = Result<Value, &'static str>;
 /// FR-62: (running block + its start time, manual agent block waiting for its resume command)
@@ -240,12 +243,14 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         audit: bus::Audit::open(config::path().with_file_name("audit")).ok(),
         harness: Mutex::default(),
         tg: Mutex::default(),
+        update: Mutex::default(),
     });
     let st7 = st.clone();
     thread::spawn(move || deliver_loop(st7));
     write_hook_files(&st.hooks);
     reload_config(&st);
     telegram::start_saved(&st);
+    update::start(&st);
     on_ready();
     let st3 = st.clone();
     thread::spawn(move || idle_exit(st3));
@@ -931,6 +936,12 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         "telegram.status" => Ok(telegram::status(st)),
+        // FR-82: version check; "check" answers at once, the result comes as `update.changed`
+        "update.status" => Ok(update::status(st)),
+        "update.check" => {
+            update::check_now(st);
+            Ok(update::status(st))
+        }
         "telegram.pair" => telegram::pair(st, p["token"].as_str().unwrap_or_default()),
         "telegram.unpair" => Ok(telegram::unpair(st)),
         "pane.resize" => {

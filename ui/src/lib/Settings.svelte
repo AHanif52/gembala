@@ -7,6 +7,7 @@
   import { call } from "./daemon";
   import { envRows, envPatch, type EnvRow } from "./env";
   import { pretty, type Account, type Agent, type Config, type Profile, type Ui } from "./config";
+  import { newer, type Upd } from "./update";
   import { errText, loc, t, tn, tOr } from "./i18n/state.svelte";
 
   let {
@@ -17,11 +18,13 @@
     onlogin,
     workspaces = [],
     tg = { state: "off" },
+    upd = null,
     start = "umum",
   }: {
     cfg: Config;
     workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
     tg?: any; // FR-80: `telegram.status` / `telegram.changed` from the daemon
+    upd?: Upd | null; // FR-82: `update.status` / `update.changed`
     start?: string; // section to open on (the sidebar phone icon opens Telegram)
     meta: Record<number, { name: string; agent: string; profile: string; status?: string }>;
     onclose: () => void;
@@ -388,6 +391,13 @@
     if (r.error) failed = errText(r.error, r.args);
   }
   const setNotify = (key: string, value: boolean | number) => set(key as keyof Ui, value as never, "notify");
+  // FR-82: "0.1.1 udah keluar · dicek 10 Nov 09.12" / "Udah versi terbaru · …" / never checked
+  const updLine = $derived.by(() => {
+    const at = upd?.at ?? upd?.failed_at;
+    const when = at ? ` · ${t("set.upd.checked", { at: new Date(at * 1000).toLocaleString(loc(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) })}` : "";
+    if (!upd?.latest) return (upd?.failed_at ? t("set.upd.failed") : t("set.upd.never")) + when;
+    return (newer(upd.latest, version) ? t("set.upd.new", { v: upd.latest }) : t("set.upd.latest")) + when;
+  });
 
   // FR-80 (Gembala.pen 39/40): the user's own bot. Pairing answers at once; the result arrives as `telegram.changed` (tg)
   let tgToken = $state("");
@@ -1098,14 +1108,23 @@
           <div class="row"><span>{t("set.sec.buttons")}<small>{t("set.sec.buttonsSub")}</small></span><span class="m">{t("set.sec.locked")}</span></div>
           <div class="row"><span>{t("set.sec.newTerm")}<small>{t("set.sec.newTermSub")}</small></span><span class="m">{t("set.sec.clean")}</span></div>
           <div class="row"><span>{t("set.sec.links")}<small>{t("set.sec.linksSub")}</small></span><span class="m">{t("set.sec.askFirst")}</span></div>
-          <div class="row"><span>{t("set.sec.net")}<small>{t("set.sec.netSub")}</small></span><span class="m">{tg?.state === "on" ? "Telegram" : t("set.sec.off")}</span></div>
+          <div class="row"><span>{t("set.sec.net")}<small>{t("set.sec.netSub")}</small></span><span class="m">{[tg?.state === "on" ? "Telegram" : "", cfg.values.update?.check !== false ? "GitHub" : ""].filter(Boolean).join(" · ") || t("set.sec.off")}</span></div>
         </section>
       {:else}
         <section>
           <div class="row"><span>{t("set.diag.versions")}</span><span class="m">{version} · {daemon?.daemon ?? "?"} · {daemon?.proto ?? "?"}</span></div>
+          <div class="row"><span>{t("set.upd.via")}</span><span class="m">{upd?.brew ? "Homebrew" : t("set.upd.source")}</span></div>
+          <!-- FR-82 (mockup-update B): status, check now, release page -->
           <div class="row">
-            <span>{t("set.diag.release")}<small>{t("set.diag.releaseSub")}</small></span>
-            <button class="mini" onclick={() => invoke("open_url", { url: "https://github.com/AHanif52/gembala/releases" })}>{t("set.diag.releaseBtn")}</button>
+            <span>{t("set.diag.release")}<small>{updLine}</small></span>
+            <span class="acts">
+              <button class="mini" onclick={() => call("update.check").catch(() => {})}>{t("set.upd.check")}</button>
+              <button class="mini" onclick={() => invoke("open_url", { url: "https://github.com/AHanif52/gembala/releases" })}>{t("set.diag.releaseBtn")}</button>
+            </span>
+          </div>
+          <div class="row">
+            <span>{t("set.upd.auto")}<small>{t("set.upd.autoSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.upd.auto")} checked={cfg.values.update?.check !== false} onchange={(e) => set("check" as keyof Ui, e.currentTarget.checked as never, "update")} />
           </div>
           <div class="row"><span>{t("set.diag.cfgFile")}</span><span class="m">{cfg.path}</span></div>
           <div class="row"><span>{t("set.diag.cfgState")}</span><span class="m">{cfg.errors.length ? tn("set.diag.problems", cfg.errors.length) : t("set.sec.clean")}</span></div>

@@ -55,7 +55,9 @@ const NOTIFY: &[(&str, Kind)] =
     &[("on_blocked", Bool(true)), ("on_done", Bool(true)), ("long_command_secs", Int(5, 3600, 30)), ("sound", Bool(true))];
 /// FR-80: Telegram bot; token and bound chat live in telegram.json, not here (SEC-36)
 const TELEGRAM: &[(&str, Kind)] = &[("away_idle_mins", Int(1, 120, 5)), ("snippet", Bool(true)), ("snippet_off", Names), ("lines", Int(1, 30, 30))];
-const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY), ("toolbar", TOOLBAR), ("telegram", TELEGRAM)];
+/// FR-82: check GitHub for a newer release (the only network use besides the Telegram bot)
+const UPDATE: &[(&str, Kind)] = &[("check", Bool(true))];
+const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY), ("toolbar", TOOLBAR), ("telegram", TELEGRAM), ("update", UPDATE)];
 
 pub struct Config {
     /// Built-in profiles + `[[profile]]` entries that pass validation (FR-29). Secret references come along, values don't.
