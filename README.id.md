@@ -115,8 +115,7 @@ Nemu celah keamanan? Jangan buka issue publik, kirim lewat
 
 | Butuh | Catatan |
 |---|---|
-| **macOS** | Diuji di Apple Silicon. |
-| **Rust dan Node** | Untuk build dari source: `brew install rustup node`. |
+| **macOS** | Apple Silicon. |
 | **Minimal satu agent** | Lihat tabel di bawah. |
 
 | Agent | Perintah pasang |
@@ -126,9 +125,19 @@ Nemu celah keamanan? Jangan buka issue publik, kirim lewat
 | [OpenCode](https://opencode.ai) | `brew install anomalyco/tap/opencode` |
 | Oh My Pi | `brew install can1357/tap/omp` |
 
+### Homebrew
+
+```sh
+brew install --cask ahanif52/gembala/gembala
+```
+
+App-nya udah jadi, jadi nggak perlu Rust atau Node. Ditandatangani sertifikat self-signed dan belum dinotarisasi Apple,
+jadi cask-nya ngehapus tanda karantina setelah dipasang; tanpa itu macOS nolak buka. Sebelum `brew upgrade --cask gembala`,
+keluar lewat **Keluar dan Hentikan Semua Agent…**: daemon yang jalan ada di dalam app.
+
 ### Build dari source
 
-Belum ada rilis siap unduh; rilis lewat Homebrew menyusul.
+Butuh Rust dan Node (`brew install rustup node`).
 
 1. Buat sertifikat penanda tangan lokal **Gembala Dev** sekali di mesin lu: langkahnya di
    [CONTRIBUTING.md](CONTRIBUTING.md#set-up-your-machine). Daemon pakai tanda tangan ini buat ngenalin jendela app.

@@ -115,8 +115,7 @@ Found a security hole? Don't open a public issue, send it through
 
 | You need | Notes |
 |---|---|
-| **macOS** | Tested on Apple Silicon. |
-| **Rust and Node** | To build from source: `brew install rustup node`. |
+| **macOS** | Apple Silicon. |
 | **At least one agent** | See the table below. |
 
 | Agent | Install command |
@@ -126,9 +125,19 @@ Found a security hole? Don't open a public issue, send it through
 | [OpenCode](https://opencode.ai) | `brew install anomalyco/tap/opencode` |
 | Oh My Pi | `brew install can1357/tap/omp` |
 
+### Homebrew
+
+```sh
+brew install --cask ahanif52/gembala/gembala
+```
+
+The app comes prebuilt, so you don't need Rust or Node. It's signed with a self-signed certificate and not notarized by
+Apple, so the cask removes the quarantine flag after installing; otherwise macOS refuses to open it.
+Before `brew upgrade --cask gembala`, quit with **Quit and Stop All Agents…**: the running daemon lives inside the app.
+
 ### Build from source
 
-There's no ready-to-download release yet; a Homebrew release is coming.
+Needs Rust and Node (`brew install rustup node`).
 
 1. Create the local signing certificate **Gembala Dev** once on your machine: the steps are in
    [CONTRIBUTING.md](CONTRIBUTING.md#set-up-your-machine). The daemon uses this signature to recognize the app window.
