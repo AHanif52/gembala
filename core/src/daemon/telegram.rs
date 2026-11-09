@@ -93,6 +93,8 @@ enum In {
     Type { to: Option<To>, text: String, msg: i64 },
     /// `/ke <pane>`: switch the active pane
     Use(String),
+    /// `/ke` alone: buttons of agent panes
+    Choose,
     /// pane picked from the buttons offered for plain text without an active pane
     Pick { pane: u64, cb: String, msg: i64 },
     /// `/buka <agent> [pane]`: start an agent from the fixed list in a shell pane idle at its prompt
@@ -294,7 +296,9 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
             return In::Help;
         }
         let caption = m["caption"].as_str().unwrap_or_default().trim().to_string();
-        let (to, caption) = match caption.strip_prefix("/kirim ").or_else(|| caption.strip_prefix("/send ")) {
+        // 9 Nov: a photo captioned `/to shell-25 …` went to the active pane and Claude read `/to` as its own command
+        let prefix = ["/kirim ", "/send ", "/ke ", "/to "].iter().find_map(|p| caption.strip_prefix(p));
+        let (to, caption) = match prefix {
             Some(rest) => match rest.trim().split_once(char::is_whitespace) {
                 Some((n, c)) => (Some(To::Name(n.into())), c.trim().to_string()),
                 None => (Some(To::Name(rest.trim().into())), String::new()),
@@ -311,7 +315,12 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
     match cmd.split('@').next().unwrap_or_default() {
         "/status" => In::Status,
         "/lihat" | "/look" if !rest.is_empty() => In::Look(rest.to_string()),
-        "/ke" | "/to" if !rest.is_empty() => In::Use(rest.to_string()),
+        // `/to <pane> <text>` = send there (the pane becomes the active one); `/to <pane>` = switch; `/to` = buttons
+        "/ke" | "/to" => match rest.split_once(char::is_whitespace) {
+            Some((name, body)) => In::Type { to: Some(To::Name(name.to_string())), text: body.trim().to_string(), msg },
+            None if rest.is_empty() => In::Choose,
+            None => In::Use(rest.to_string()),
+        },
         "/buka" | "/open" if !rest.is_empty() => {
             let mut w = rest.split_whitespace();
             In::Open { agent: w.next().unwrap_or_default().to_string(), pane: w.next().map(String::from) }
@@ -320,7 +329,9 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
             Some((name, body)) if !body.trim().is_empty() => In::Type { to: Some(To::Name(name.to_string())), text: body.trim().to_string(), msg },
             _ => In::Help,
         },
-        _ => In::Help,
+        "/start" | "/help" | "/bantuan" | "/buka" | "/open" | "/lihat" | "/look" => In::Help,
+        // the agent's own commands (`/exit`, `/compact`, `/model`) go to the pane like typed text (9 Nov: `/exit` got the help)
+        _ => In::Type { to: reply, text: text.to_string(), msg },
     }
 }
 
@@ -433,8 +444,8 @@ fn t(id: bool, k: &str) -> &'static str {
         "dl_fail" => ("Gagal ngunduh filenya (maks 20 MB).", "Couldn't download the file (20 MB max)."),
         "none" => ("Belum ada pane.", "No panes yet."),
         _ => (
-            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif.\n/ke <pane> — ganti pane aktif\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
-            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane.\n/to <pane> — switch the active pane\n/open <agent> [pane] — start claude/codex/omp/opencode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
+            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif (caption /ke <pane> buat pane lain).\n/ke <pane> [teks] — ganti pane aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah agent (/exit, /compact, /model) diteruskan ke pane aktif\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
+            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane (caption /to <pane> for another).\n/to <pane> [text] — switch the active pane (and send the text); /to alone = pick from buttons\nAgent commands (/exit, /compact, /model) go to the active pane\n/open <agent> [pane] — start claude/codex/omp/opencode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
         ),
     };
     if id { i } else { e }
@@ -1151,12 +1162,22 @@ fn progress_of(b: &Bot, id: u64, pane: &Pane, queued: bool) -> String {
 }
 
 /// type into the pane (SEC-36 checks), then 👀 + a "⏳ working, usually ±…" message until the pane is done (`on_status`)
-fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64) {
+/// `file`: a photo/file path is in the text. Claude turns a pasted image path into `[Image #N]` while the Enter of the same
+/// paste arrives, so the Enter was lost and the image waited for the next message (9 Nov); Enter goes ~1.5 s later
+fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64, file: bool) {
     let status = *pane.status.lock().unwrap();
     let pw = pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master);
     let why = match typed(pane.agent_name().is_some(), status, pw, text) {
-        Ok(bytes) => match type_into(st, id, pane, &bytes) {
+        Ok(bytes) => match type_into(st, id, pane, &bytes[..bytes.len() - usize::from(file)]) {
             Ok(()) => {
+                // ponytail: sleeps in the poll thread (next update waits 1.5 s); a timer thread if that shows
+                if file {
+                    thread::sleep(Duration::from_millis(1500));
+                    // never an Enter into a dialog that came up meanwhile (it would pick option 1)
+                    if *pane.status.lock().unwrap() != "blocked" {
+                        let _ = type_into(st, id, pane, b"\r");
+                    }
+                }
                 audit(st, pane, text);
                 *b.last.lock().unwrap() = Some(id);
                 pane.tg_ask.lock().unwrap().push(msg);
@@ -1230,6 +1251,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             b.set(st, "on", "");
         }
         In::Help => b.tell(t(id_l, "help")),
+        In::Choose => picker(st, b),
         In::Status => b.say(&status_text(st, id_l, *b.last.lock().unwrap())),
         In::Look(name) => match st.by_name(&name) {
             None => b.tell(t(id_l, "no_pane")),
@@ -1247,7 +1269,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             }
         },
         In::Type { to, text, msg } => match target(st, b, to) {
-            Ok((id, pane)) => deliver(st, b, id, &pane, &text, msg),
+            Ok((id, pane)) => deliver(st, b, id, &pane, &text, msg, false),
             Err("pick") => {
                 *b.pending.lock().unwrap() = Some((text, msg));
                 picker(st, b);
@@ -1276,7 +1298,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                 *b.last.lock().unwrap() = Some(id);
                 let waiting = b.pending.lock().unwrap().take();
                 if let Some((text, m)) = waiting {
-                    deliver(st, b, id, &p, &text, m);
+                    deliver(st, b, id, &p, &text, m, false);
                 }
             }
         }
@@ -1291,7 +1313,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                 Some(path) => {
                     let p = path.to_string_lossy();
                     let text = if caption.is_empty() { p.into_owned() } else { format!("{caption} {p}") };
-                    deliver(st, b, id, &pane, &text, msg);
+                    deliver(st, b, id, &pane, &text, msg, true);
                 }
             },
         },
@@ -1495,7 +1517,12 @@ mod tests {
         // plain text = active pane, no command needed
         assert_eq!(parse(&msg(42, 7, "lanjut bikin test", n), Some(&l), n), In::Type { to: None, text: "lanjut bikin test".into(), msg: 5 });
         assert_eq!(parse(&msg(42, 7, "/ke claude-2", n), Some(&l), n), In::Use("claude-2".into()));
-        assert_eq!(parse(&msg(42, 7, "/to", n), Some(&l), n), In::Help);
+        assert_eq!(parse(&msg(42, 7, "/to", n), Some(&l), n), In::Choose);
+        assert_eq!(parse(&msg(42, 7, "/to shell-25 cek ini", n), Some(&l), n), In::Type { to: Some(To::Name("shell-25".into())), text: "cek ini".into(), msg: 5 });
+        // the agent's own commands go to the active pane; the bot's own without arguments = help
+        assert_eq!(parse(&msg(42, 7, "/exit", n), Some(&l), n), In::Type { to: None, text: "/exit".into(), msg: 5 });
+        assert_eq!(parse(&msg(42, 7, "/help", n), Some(&l), n), In::Help);
+        assert_eq!(parse(&msg(42, 7, "/buka", n), Some(&l), n), In::Help);
     }
 
     #[test]
@@ -1532,6 +1559,8 @@ mod tests {
         assert_eq!(parse(&p, Some(&l), n), In::Media { to: None, caption: String::new(), file: "besar".into(), ext: "jpg".into(), msg: 5 });
         p["message"]["caption"] = json!("/kirim claude-1 cek gambar ini");
         assert_eq!(parse(&p, Some(&l), n), In::Media { to: Some(To::Name("claude-1".into())), caption: "cek gambar ini".into(), file: "besar".into(), ext: "jpg".into(), msg: 5 });
+        p["message"]["caption"] = json!("/to shell-25 ko malah ke 24?");
+        assert_eq!(parse(&p, Some(&l), n), In::Media { to: Some(To::Name("shell-25".into())), caption: "ko malah ke 24?".into(), file: "besar".into(), ext: "jpg".into(), msg: 5 });
         let mut d = msg(42, 7, "", n);
         d["message"]["document"] = json!({"file_id": "f", "file_name": "log../../x.T!XT", "file_size": 5});
         d["message"]["reply_to_message"] = json!({"message_id": 77});
