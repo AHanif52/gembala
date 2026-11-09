@@ -50,7 +50,7 @@ fn check(st: &State) {
         .args(["-4fsSL", "--max-time", "15", "-H", "Accept: application/vnd.github+json", "-H", &format!("User-Agent: gembala/{}", env!("CARGO_PKG_VERSION")), URL])
         .output();
     let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
-    let parsed = out.ok().filter(|o| o.status.success()).and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok()).and_then(|r| release(&r));
+    let parsed = out.ok().filter(|o| o.status.success()).and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok()).and_then(|r| release(&r)).or_else(redirect);
     {
         let mut cur = st.update.lock().unwrap();
         match parsed {
@@ -65,6 +65,16 @@ fn check(st: &State) {
     }
     let ev = line(json!({"event": "update.changed", "params": status(st)}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+}
+
+/// The API allows 60 calls an hour per IP without a token (9 Nov: an office IP ran out, 403): the web page
+/// `releases/latest` redirects to `releases/tag/v<x>` with no such limit. Version only, no notes.
+fn redirect() -> Option<Value> {
+    let out = Command::new("/usr/bin/curl").args(["-4sSI", "--max-time", "15", "https://github.com/AHanif52/gembala/releases/latest"]).output().ok()?;
+    let head = String::from_utf8_lossy(&out.stdout);
+    let url = head.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("location")).map(|(_, v)| v.trim().to_string()))?;
+    let tag = url.rsplit_once("/releases/tag/")?.1;
+    release(&json!({"tag_name": tag, "html_url": url}))
 }
 
 /// GitHub release JSON → what the UI shows. The text comes from the network: version must look like a version, the
@@ -82,6 +92,14 @@ fn release(r: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// network: `cargo test -p gembala redirect_asli -- --ignored`
+    #[test]
+    #[ignore]
+    fn redirect_asli() {
+        let r = redirect().expect("redirect");
+        assert!(r["latest"].as_str().is_some_and(|v| !v.is_empty()), "{r}");
+    }
 
     #[test]
     fn rilis_dari_github() {
