@@ -1182,6 +1182,34 @@ fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
     assert!(r["result"] == "accepted" || r["result"] == "queued", "{r}");
 }
 
+/// FR-77 (H5): Atur pakai AI. The brief reaches the agent pane as the user's own message (no reply id) with the draft
+/// path; the draft is checked like a recipe; "Setujui dan simpan" writes and approves only the reviewed bytes.
+#[test]
+fn h5_draf_resep_pakai_ai() {
+    let d = start("h5");
+    let mut ui = Cli::ui(&d);
+    profiles(&d, &mut ui, &sh_profile("cat", "stty raw -echo; cat -v"), "cat -v");
+    let t = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let r = ui.call("recipe.draft_new", json!({"pane": t, "id": "uji-h5", "ask": "tambah tahap test"}))["result"].clone();
+    let (draft, path) = (r["draft"].as_str().unwrap().to_string(), r["path"].as_str().unwrap().to_string());
+    let shown = ui.attach_until(t, &["tambah tahap test", "draft written"]);
+    assert!(shown.contains("[Gembala · from user]") && shown.contains(&draft), "{shown}");
+    // nothing written yet: the UI keeps waiting
+    assert_eq!(ui.call("recipe.draft_get", json!({"draft": draft, "id": "uji-h5"}))["result"]["exists"], false);
+    // the agent writes the draft
+    std::fs::write(&path, "[[step]]\nid = \"a\"\nagents = [\"claude\"]\n").unwrap();
+    let got = ui.call("recipe.draft_get", json!({"draft": draft, "id": "uji-h5"}))["result"].clone();
+    assert_eq!((got["exists"].clone(), got["errors"].clone(), got["current"].clone()), (json!(true), json!([]), json!("")), "{got}");
+    // a stale hash (the file changed after the review) is refused, the reviewed one is saved and approved
+    assert_eq!(ui.call("recipe.draft_apply", json!({"draft": draft, "id": "uji-h5", "hash": "x"}))["result"]["error"], "recipe_changed");
+    let ok = ui.call("recipe.draft_apply", json!({"draft": draft, "id": "uji-h5", "hash": got["hash"]}));
+    assert_eq!(ok["result"], json!({}), "{ok}");
+    assert_eq!(ui.call("recipe.get", json!({"id": "uji-h5"}))["result"]["status"], "approved");
+    assert!(!std::path::Path::new(&path).exists());
+    // a draft id that walks out of the folder is refused
+    assert_eq!(ui.call("recipe.draft_get", json!({"draft": "../../etc/passwd", "id": "uji-h5"}))["error"]["code"], "bad_params");
+}
+
 /// FR-75: `send` to an agent not open yet = a card on the UI channel; approve = the task reaches the pane the UI opened,
 /// reject = the requester's `wait --reply` gets the refusal. Unknown names stay `no_such_pane`.
 #[test]

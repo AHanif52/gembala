@@ -526,6 +526,35 @@ name = "Ship"
 human = true
 "#;
 
+/// FR-77 Atur pakai AI: the brief Gembala sends to the agent pane. The agent only writes the draft file; the user reviews
+/// the diff and approves in the app. `current` = the recipe's text now (None = a new recipe).
+pub fn brief(ask: &str, id: &str, current: Option<&str>, draft: &Path) -> String {
+    let now = match current {
+        Some(t) => format!("Current recipe `{id}.toml` (change only what the request asks, keep the rest):\n```toml\n{t}\n```"),
+        None => format!("This is a new recipe `{id}.toml`. Start from the shape of the example below."),
+    };
+    format!(
+        "Gembala \"Atur pakai AI\": write a harness recipe (TOML) from the user's request.\n\n\
+Request from the user, as written:\n{ask}\n\n{now}\n\n\
+Write the whole recipe to this file and nothing else: {}\n\
+Do not edit any other file, do not run the recipe, do not approve anything: the user reviews the diff in Gembala and \
+approves it there. When the file is written, say \"draft written\" in one line.\n\n\
+Schema. Top level keys: {}. Step (`[[step]]`) keys: {}.\n\
+- kind: `work` (an agent changes things) or `check` (an agent or the shell checks; a failed check sends the work back)\n\
+- agents: agent kinds in fallback order, from claude, codex, omp, opencode (max {MAX_AGENTS})\n\
+- effort: {}; pass: {}; shell = true runs the workspace test command (no agent)\n\
+- timeout and total: durations like \"15m\", \"2h\"; output/inputs: artifact file names (`{REQUEST_FILE}` is the task)\n\
+- the last step is Ship: `human = true`, always the user's gate; a check needs an agent different from the work it checks\n\
+Hard limits (SEC-30, a recipe cannot raise them): max_rounds <= {MAX_ROUNDS}, total <= 2h, at most {MAX_STEPS} steps.\n\n\
+Example:\n```toml\n{FEATURE}```",
+        draft.display(),
+        RECIPE_KEYS.join(", "),
+        STEP_KEYS.join(", "),
+        EFFORTS.join(", "),
+        PASSES.join(", "),
+    )
+}
+
 /// recipe files + approvals under the Gembala config folder (`recipes/`, `state.json`)
 pub struct Store {
     dir: PathBuf,
@@ -639,6 +668,29 @@ impl Store {
             return Err(Diag::new("recipe_not_approved"));
         }
         parse(&text, id, installed).recipe.ok_or_else(|| Diag::new("recipe_invalid"))
+    }
+
+    /// FR-77 "Setujui dan simpan": the reviewed draft becomes the recipe and is approved in one human step (SEC-27);
+    /// a draft that doesn't parse is never written
+    pub fn save_approved(&self, id: &str, text: &str, installed: Option<&[String]>) -> Result<(), Diag> {
+        let p = self.path(id)?;
+        if text.len() as u64 > MAX_FILE || parse(text, id, installed).recipe.is_none() {
+            return Err(Diag::new("recipe_invalid"));
+        }
+        crate::config::write_atomic(&p, text.as_bytes()).map_err(|e| crate::config::io_err("io_write", e))?;
+        let mut v = self.approvals();
+        v["recipes"][id] = json!(hash(text));
+        self.save_approvals(&v)
+    }
+
+    /// FR-74 Duplikat: same text under a new id, not approved (a copy is a new recipe to review)
+    pub fn duplicate(&self, from: &str, to: &str) -> Result<(), Diag> {
+        let text = self.read(from)?;
+        let p = self.path(to)?;
+        if p.exists() {
+            return Err(Diag::new("recipe_exists"));
+        }
+        crate::config::write_atomic(&p, text.as_bytes()).map_err(|e| crate::config::io_err("io_write", e))
     }
 
     pub fn delete(&self, id: &str) -> Result<(), Diag> {
@@ -784,6 +836,25 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         let s = Store::new(&d);
         (d, s)
+    }
+
+    #[test]
+    fn draft_saved_approved_and_duplicated() {
+        let (d, s) = store();
+        s.ensure_defaults().unwrap();
+        // a draft that doesn't parse never lands
+        assert_eq!(s.save_approved("baru", "[[step]]\nkind = 3\n", None).unwrap_err().code, "recipe_invalid");
+        assert!(!d.join("recipes/baru.toml").exists());
+        s.save_approved("baru", MIN, None).unwrap();
+        assert_eq!(s.get("baru", None).unwrap()["status"], "approved");
+        // a copy is a new recipe to review, and never overwrites
+        s.duplicate("baru", "baru-2").unwrap();
+        assert_eq!(s.get("baru-2", None).unwrap()["status"], "needs_approval");
+        assert_eq!(s.duplicate("baru", "fitur-baru").unwrap_err().code, "recipe_exists");
+        assert_eq!(s.duplicate("baru", "../x").unwrap_err().code, "recipe_id");
+        let b = brief("tambah tahap test", "baru", Some(MIN), Path::new("/tmp/d/x.toml"));
+        assert!(b.contains("tambah tahap test") && b.contains("/tmp/d/x.toml") && b.contains(MIN) && b.contains("max_rounds <= 3"), "{b}");
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

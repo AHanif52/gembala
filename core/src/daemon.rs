@@ -901,7 +901,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         // FR-16, FR-73: harness runs. UI channel only (SEC-20): the pane channel has no harness method.
         "harness.preflight" | "harness.start" | "harness.state" | "harness.stop" | "harness.gate" | "harness.takeover" | "harness.release" => runner::method(st, m, p),
         // FR-74, SEC-27: harness recipes. Approve and delete exist on the UI channel only; the pane channel has no recipe method.
-        "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" => {
+        "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" | "recipe.duplicate" | "recipe.draft_new" | "recipe.draft_get" | "recipe.draft_apply" => {
             let store = recipe::Store::new(config::path().parent().unwrap_or(std::path::Path::new("/")));
             // agent kinds found on this Mac; unknown until detection ran once, then nothing is flagged as missing
             let found = st.agents.lock().unwrap().clone();
@@ -918,6 +918,56 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "recipe.get" => store.get(id()?, inst),
                 "recipe.approve" => store.approve(id()?, p["hash"].as_str().ok_or("bad_params")?, inst).map(|_| json!({})),
                 "recipe.delete" => store.delete(id()?).map(|_| json!({})),
+                "recipe.duplicate" => store.duplicate(id()?, p["to"].as_str().ok_or("bad_params")?).map(|_| json!({})),
+                // FR-77 Atur pakai AI (H5): the brief goes to the agent pane the UI just opened, labeled as the user's own
+                // (the user pressed Rumuskan); the agent writes only the draft file in the run folder
+                "recipe.draft_new" => {
+                    let pane_id = p["pane"].as_u64().ok_or("bad_params")?;
+                    let pane = st.pane(p)?;
+                    if pane.agent_name().is_none() {
+                        return Err("bad_params");
+                    }
+                    let rid = id()?;
+                    let ask = msg::sanitize(p["ask"].as_str().ok_or("bad_params")?)?.chars().take(4000).collect::<String>();
+                    let current = store.get(rid, inst).ok().and_then(|v| v["text"].as_str().map(String::from));
+                    let draft = new_secret().map_err(|_| "io")?[..16].to_string();
+                    let path = drafts_dir(st).join(format!("{draft}.toml"));
+                    fs::create_dir_all(drafts_dir(st)).map_err(|_| "io")?;
+                    let body = recipe::brief(&ask, rid, current.as_deref(), &path);
+                    let m = bus::Msg { id: String::new(), from: pane_id, from_name: "user".into(), to: pane_id, to_name: pane.name.lock().unwrap().clone(), body, reply_to: None, hop: 0, at: std::time::SystemTime::now() };
+                    st.engine.lock().unwrap().queues.entry(pane_id).or_default().push_back(bus::Queued { msg: m, since: std::time::Instant::now(), approved: true });
+                    Ok(json!({"draft": draft, "path": path}))
+                }
+                // what the agent wrote so far + the rules applied to it + the recipe now, for the diff (layar 21)
+                "recipe.draft_get" => {
+                    let path = draft_path(st, p)?;
+                    let text = match fs::symlink_metadata(&path) {
+                        Ok(m) if m.is_file() && m.len() <= 64 * 1024 => fs::read_to_string(&path).ok(),
+                        _ => None,
+                    };
+                    let current = store.get(id()?, inst).ok().and_then(|v| v["text"].as_str().map(String::from)).unwrap_or_default();
+                    Ok(match text {
+                        None => json!({"exists": false, "current": current}),
+                        Some(t) => {
+                            let r = recipe::parse(&t, id()?, inst);
+                            json!({"exists": true, "text": t, "hash": recipe::hash(&t), "current": current, "recipe": r.recipe.as_ref().map(recipe::summary),
+                                   "errors": r.errors.iter().map(crate::diag::Diag::json).collect::<Vec<_>>(), "warnings": r.warnings.iter().map(crate::diag::Diag::json).collect::<Vec<_>>()})
+                        }
+                    })
+                }
+                // "Setujui dan simpan": only the bytes the screen showed (hash), then the draft is gone
+                "recipe.draft_apply" => {
+                    let path = draft_path(st, p)?;
+                    let text = fs::read_to_string(&path).map_err(|_| "no_such_draft")?;
+                    if recipe::hash(&text) != p["hash"].as_str().ok_or("bad_params")? {
+                        return Ok(crate::diag::Diag::new("recipe_changed").reply());
+                    }
+                    let r = store.save_approved(id()?, &text, inst).map(|_| json!({}));
+                    if r.is_ok() {
+                        let _ = fs::remove_file(&path);
+                    }
+                    r
+                }
                 // preview of text not saved yet (Atur pakai AI, H5): same rules, no file touched
                 _ => {
                     let text = p["text"].as_str().ok_or("bad_params")?;
@@ -1268,6 +1318,17 @@ fn reject(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
     json!({"result": "rejected", "reason": reason, "id": m.id})
 }
 
+/// FR-77: drafts from "Atur pakai AI" live in the run folder (0700, gone with the daemon's run), never next to recipes
+fn drafts_dir(st: &State) -> std::path::PathBuf {
+    std::path::Path::new(&st.pane_sock).parent().unwrap_or(std::path::Path::new("/")).join("drafts")
+}
+
+/// draft id from the UI = 16 hex characters, nothing that walks out of the drafts folder
+fn draft_path(st: &State, p: &Value) -> Result<std::path::PathBuf, &'static str> {
+    let d = p["draft"].as_str().filter(|d| d.len() == 16 && d.bytes().all(|b| b.is_ascii_hexdigit())).ok_or("bad_params")?;
+    Ok(drafts_dir(st).join(format!("{d}.toml")))
+}
+
 /// FR-75: card rejected or expired; the requester's `wait --reply` gets the answer instead of waiting it out
 fn open_refused(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
     let mut r = m.clone();
@@ -1482,7 +1543,8 @@ fn deliver_loop(st: Arc<State>) {
             }
             // FR-75: the task for a pane opened from a card waits while its agent starts (status "idle" from launch,
             // trust prompt, hooks not up yet); nothing is written to it before that (SEC-6)
-            let opening = q.approved && to.helper_of.lock().unwrap().is_some();
+            // FR-77: an approved message to a pane opened in the last 2 minutes (Atur pakai AI brief) waits the same way
+            let opening = q.approved && (to.helper_of.lock().unwrap().is_some() || to.started.elapsed() < Duration::from_secs(120));
             if opening && to.started.elapsed() < HELPER_GRACE {
                 requeue(q);
                 continue;
