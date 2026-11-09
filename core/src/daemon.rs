@@ -1679,6 +1679,16 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
     }
 }
 
+/// A typed omp/OpenCode carries Gembala's hooks: omp `--hook=…/omp-gembala.ts`, OpenCode `OPENCODE_CONFIG=…/hooks/opencode.json`
+/// (the zsh functions in hooks/.zshrc). Claude reports itself with SessionStart; Codex only has `notify`, so it stays on the screen.
+fn ours(name: &str, args: &[String], opencode_cfg: Option<&str>) -> bool {
+    match name {
+        "omp" => args.iter().any(|a| a.starts_with("--hook=") && a.ends_with("/omp-gembala.ts")),
+        "opencode" => opencode_cfg.is_some_and(|c| c.ends_with("/hooks/opencode.json")),
+        _ => false,
+    }
+}
+
 /// FR-4 fallback every 1 second: `custom` profiles, and agents typed by hand in a shell pane (no hooks).
 fn screen_watch(st: Arc<State>) {
     const AGENTS: &[&str] = &["claude", "codex", "opencode", "omp"];
@@ -1708,6 +1718,11 @@ fn screen_watch(st: Arc<State>) {
                     // FR-61: a typed `claude-kantor` = account from the agent process's config folder
                     if name == "claude" {
                         *pane.account.lock().unwrap() = acct_of_dir(st.as_ref(), pty::env_of(pid, "CLAUDE_CONFIG_DIR"));
+                    }
+                    // FR-4: started through Gembala's zsh function = our hooks are loaded; status comes from them from the start,
+                    // not a screen guess (9 Nov: a fresh omp/OpenCode showed "working" while it sat at its prompt)
+                    if ours(&name, &args, pty::env_of(pid, "OPENCODE_CONFIG").as_deref()) {
+                        pane.hooked.store(true, Ordering::Relaxed);
                     }
                     *pane.manual.lock().unwrap() = Some((name, profile::shown_args(&args), pty::cwd_of(pid)));
                     *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
@@ -2330,6 +2345,17 @@ pub fn default_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_manual_bawa_hook_gembala() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(ours("omp", &a(&["omp", "--hook=/Users/x/Library/Application Support/Gembala/hooks/omp-gembala.ts"]), None));
+        assert!(!ours("omp", &a(&["omp", "update"]), None));
+        assert!(ours("opencode", &a(&["opencode"]), Some("/Users/x/Library/Application Support/Gembala/hooks/opencode.json")));
+        // the user's own OPENCODE_CONFIG (the zsh function keeps it) = not our hooks
+        assert!(!ours("opencode", &a(&["opencode"]), Some("/Users/x/.config/opencode/custom.json")));
+        assert!(!ours("codex", &a(&["codex"]), None));
+    }
 
     #[test]
     fn judul_terminal() {
