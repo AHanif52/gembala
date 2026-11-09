@@ -13,8 +13,9 @@ cask "gembala" do
 
   # Signed with the self-signed "Gembala Dev" certificate, not notarized: Gatekeeper refuses the downloaded copy
   # while it carries the quarantine flag (Homebrew has no --no-quarantine any more)
-  postflight do
-    system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{appdir}/Gembala.app"]
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Gembala.app"],
+                          writable_paths: ["{{appdir}}/Gembala.app"]
   end
 
   caveats <<~EOS
