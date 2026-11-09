@@ -374,7 +374,6 @@ fn t(id: bool, k: &str) -> &'static str {
         "already_agent" => ("Pane itu udah jalanin agent, ketik aja.", "That pane already runs an agent, just type."),
         "busy_shell" => ("Pane itu lagi jalanin sesuatu. /buka cuma ke shell yang diam di prompt.", "That pane is busy. /open only uses a shell idle at its prompt."),
         "no_idle" => ("Nggak ada pane shell yang lagi kosong.", "No shell pane is idle."),
-        "need_ok" => ("Lagi nunggu izin, pakai tombolnya.", "It's waiting for permission, use the buttons."),
         "pw" => ("Lagi nunggu password, jawab di Mac.", "It's waiting for a password, answer on the Mac."),
         "too_long" => ("Kepanjangan, maks 4.000 karakter.", "Too long, 4,000 characters max."),
         "bad" => ("Teksnya kosong setelah dibersihin.", "Nothing left after cleaning the text."),
@@ -1116,7 +1115,13 @@ fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64) {
             Err(_) => "no_pane",
         },
         Err(Why::Shell) => "shell",
-        Err(Why::Blocked) => "need_ok",
+        // the buttons may never have gone out (Mac not away, prompt not from the phone): send them now (9 Nov: "use the
+        // buttons" with no buttons in the chat)
+        Err(Why::Blocked) => {
+            let seq = pane.status_seq.load(Ordering::Relaxed);
+            let _ = b.out.try_send(Out::Notice(id, Kind::Blocked(seq), Instant::now()));
+            return;
+        }
         Err(Why::Password) => "pw",
         Err(Why::TooLong) => "too_long",
         Err(Why::Bad) => "bad",
