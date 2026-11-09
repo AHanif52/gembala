@@ -579,10 +579,24 @@
 
     // Shift+Enter = ESC CR (same as Claude Code's /terminal-setup in iTerm2): newline in agent TUIs
     term.attachCustomKeyEventHandler((e) => {
-      // FR-57: daftar @ terbuka = Tab/panah/Esc milik daftar
-      if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && !e.shiftKey && onkey(e.key)) {
-        e.preventDefault(); // WebKit's default Tab moves focus out of the terminal; agents hide the cursor when focus is lost
-        return false;
+      // FR-57: daftar @ terbuka = Tab/panah/Esc milik daftar. Pola dicek dari
+      // baris yang dilacak di sini (sinkron): state Svelte (mention) update-nya
+      // async, jadi Tab cepat sesudah "@@" tidak boleh jatuh ke picker milik
+      // agent (mis. daftar file/agent omp) sebelum daftar pane sempat kebuka.
+      if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && !e.shiftKey) {
+        if (onkey(e.key)) {
+          e.preventDefault(); // WebKit's default Tab moves focus out of the terminal; agents hide the cursor when focus is lost
+          return false;
+        }
+        // Race window: "@@" typed but the Svelte mention state hasn't synced yet;
+        // Tab/arrows would fall into the agent's own @ picker (files/agents) instead
+        // of the pane list. Swallow only navigation keys: Enter (send) and Esc
+        // (agent's own cancel) must always pass through, or an empty pane list
+        // would strand the prompt with no way to send it.
+        if (["Tab", "ArrowUp", "ArrowDown"].includes(e.key) && /(?:^|\s)@@([\w.-]*)$/.test(line)) {
+          e.preventDefault();
+          return false;
+        }
       }
       const ku = (kitty.at(-1) ?? 0) & 1 ? encodeKey(e, !!term.options.macOptionIsMeta) : null;
       if (ku) {

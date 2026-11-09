@@ -214,10 +214,38 @@ fn md_html(md: &str, max: usize) -> String {
 /// last `lines` rows, trailing blank rows dropped, at most `MAX_SNIPPET` characters (cut from the top)
 fn snippet(screen: &str, lines: usize) -> String {
     let rows = flat_tables(screen.lines().map(str::trim_end));
-    let end = rows.iter().rposition(|r| !r.is_empty()).map_or(0, |i| i + 1);
-    let text = rows[end.saturating_sub(lines)..end].join("\n");
+    let kept: Vec<String> = rows.into_iter().filter(|r| !chrome_row(r.trim())).collect();
+    let end = kept.iter().rposition(|r| !r.is_empty()).map_or(0, |i| i + 1);
+    let text = kept[end.saturating_sub(lines)..end].join("\n");
     let n = text.chars().count();
     text.chars().skip(n.saturating_sub(MAX_SNIPPET)).collect()
+}
+
+/// agent TUI chrome that must not reach the phone: status/footer rows above the
+/// input box (build status `Build · …`, model line, progress bars, quota and
+/// key-hint footers). Dropped before the line budget, so chrome can't push the
+/// real turn content out of the snippet.
+fn chrome_row(t: &str) -> bool {
+    if t.is_empty() {
+        return false;
+    }
+    if t.contains("Build ·") || t.contains("ctrl+") || t.starts_with("Quota") {
+        return true;
+    }
+    let bars = t.chars().filter(|c| matches!(c, '█' | '▓' | '▒' | '░' | '▄' | '▀' | '■' | '□' | '▪' | '▫')).count();
+    bars >= 8 && bars * 2 >= t.chars().count()
+}
+
+/// baris judul dialog konfirmasi OpenCode 1.19.5 (`△` + judul), bukan baris
+/// opsi prompt utama: gerbang Enter kedua tombol Always. Baris opsi yang
+/// tersorot (`❯ Always allow`) dan baris opsi utama tidak diawali `△`.
+fn is_always_confirm_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with('△') && t.contains("Always allow")
+}
+
+fn always_confirm_on_screen(pane: &Pane) -> bool {
+    pane.view.lock().unwrap().0.text().lines().any(is_always_confirm_line)
 }
 
 /// Box tables (Claude's `┌─┬─┐ │ … │`) read badly on a phone (9 Nov: "susah kebaca"): border rows drop, the lines a
@@ -265,8 +293,16 @@ fn label(title: &str, agent: &str) -> Option<String> {
 }
 
 fn keys(agent: &str) -> &'static [&'static str] {
-    // ponytail: only Claude's numbered dialog is known; Codex/omp/OpenCode get Esc until their keys are checked (TECH 7e)
-    if agent == "claude" { &["1", "2", "3", "esc"] } else { &["esc"] }
+    // FR-80: buttons mirror each agent's own permission dialog (TECH 7e).
+    // OpenCode 1.19.5, verified live 9 Nov 2026 (PTY + pyte, same bytes as the
+    // buttons): initial selected is "once" so Enter approves at once; Right+Enter
+    // moves to "always" and opens the "△ Always allow" confirmation stage whose
+    // Enter confirms; Esc closes the dialog (no reason box in this version).
+    // omp 18.18.3, verified live: dialog is Approve/Deny only (no session
+    // option; Down+Enter would land on Deny), Enter approves, Esc denies.
+    // Codex: Esc only (its yes/no default highlight is unverified).
+    // Claude numbered dialog: digits; Esc cancels.
+    if agent == "claude" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &["esc"] }
 }
 
 fn key_bytes(key: &str) -> &'static [u8] {
@@ -274,6 +310,10 @@ fn key_bytes(key: &str) -> &'static [u8] {
         "1" => b"1",
         "2" => b"2",
         "3" => b"3",
+        "once" => b"\r",
+        // "always" (OpenCode) needs the confirmation gate and is written by the
+        // In::Key arm, not here; falling through to Esc would be a lie, so it
+        // has no byte mapping on purpose (the arm handles it before this).
         _ => b"\x1b",
     }
 }
@@ -288,7 +328,7 @@ fn cb_parse(d: &str) -> Option<(u64, u64, String)> {
         return None;
     }
     let (pane, seq, key) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?);
-    (it.next().is_none() && ["1", "2", "3", "esc"].contains(&key)).then(|| (pane, seq, key.to_string()))
+    (it.next().is_none() && ["1", "2", "3", "once", "always", "esc"].contains(&key)).then(|| (pane, seq, key.to_string()))
 }
 
 /// Update -> what to do. Only the bound private chat counts (SEC-36); while pairing only `/start <code>`.
@@ -1085,7 +1125,7 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     }
     let mut body = json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML"});
     if let Kind::Blocked(seq) = kind {
-        let row: Vec<Value> = keys(&agent).iter().map(|k| json!({"text": if *k == "esc" { "Esc" } else { k }, "callback_data": cb_data(id, seq, k)})).collect();
+        let row: Vec<Value> = keys(&agent).iter().map(|k| json!({"text": match *k { "esc" => "Esc", "once" => "Allow once", "always" => "Always", _ => k }, "callback_data": cb_data(id, seq, k)})).collect();
         body["reply_markup"] = json!({"inline_keyboard": [row]});
     }
     Some(body)
@@ -1459,7 +1499,50 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                 *p.status.lock().unwrap() == "blocked" && p.status_seq.load(Ordering::Relaxed) == seq && keys(&p.agent_name().unwrap_or_default()).contains(&key.as_str())
             });
             let pane = pane.filter(|_| ok);
-            let sent = pane.as_ref().is_some_and(|p| type_into(st, id, p, key_bytes(&key)).is_ok());
+            // OpenCode "Always": Right+Enter moves once→always and submits it,
+            // which opens the "△ Always allow" confirmation stage (no reply is
+            // sent yet). The confirming Enter goes out only after that title is
+            // actually observed on screen; a dialog that resolved meanwhile, a
+            // closed pane, or a timeout sends nothing (retryable: the
+            // same-dialog guard still matches, nothing was approved).
+            let sent = match (pane.as_ref(), key.as_str()) {
+                (Some(p), "always") => {
+                    if type_into(st, id, p, b"\x1b[C\r").is_err() {
+                        false
+                    } else {
+                        let mut confirmed = false;
+                        let mut resolved = false;
+                        for _ in 0..20 {
+                            thread::sleep(Duration::from_millis(100));
+                            match st.panes.lock().unwrap().get(&id).cloned() {
+                                None => break,
+                                Some(q) => {
+                                    if *q.status.lock().unwrap() != "blocked" {
+                                        resolved = true;
+                                        break;
+                                    }
+                                    if always_confirm_on_screen(&q) {
+                                        confirmed = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if resolved {
+                            true
+                        } else if confirmed {
+                            match st.panes.lock().unwrap().get(&id).cloned() {
+                                Some(q) if *q.status.lock().unwrap() == "blocked" => type_into(st, id, &q, b"\r").is_ok(),
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                }
+                (Some(p), _) => type_into(st, id, p, key_bytes(&key)).is_ok(),
+                _ => false,
+            };
             let word = if sent { t(id_l, "sent") } else { t(id_l, "gone") };
             let _ = b.out.try_send(Out::Api("answerCallbackQuery", json!({"callback_query_id": cb, "text": word})));
             let _ = b.out.try_send(Out::Api("editMessageReplyMarkup", json!({"chat_id": b.chat(), "message_id": msg, "reply_markup": {"inline_keyboard": []}})));
@@ -1590,6 +1673,18 @@ mod tests {
     }
 
     #[test]
+    fn chrome_tui_dibuang_dari_potongan() {
+        let screen = "Ringkasan kerja\n▣ Build · Muse Spark 1.3 · 7m 49s\nBuild · Muse Spark OpenCode Go · high\n██████████████████████████████\n/Users/x/gembala 209.9K (20%) · $0.06 ctrl+p commands\nQuota unavailable";
+        assert_eq!(snippet(screen, 30), "Ringkasan kerja");
+        // chrome rows can't eat the line budget: real content above them survives
+        assert_eq!(snippet("ok\n████████", 30), "ok");
+        // ordinary text with these words nowhere near TUI chrome stays
+        assert_eq!(snippet("build ok\nctrl is a key", 30), "build ok\nctrl is a key");
+        // bare quota footers read as TUI chrome and drop (rare prose tradeoff)
+        assert_eq!(snippet("Quota unavailable", 30), "");
+    }
+
+    #[test]
     fn pairing_hanya_start_dari_chat_pribadi() {
         let n = 1000;
         assert_eq!(
@@ -1646,8 +1741,28 @@ mod tests {
         assert_eq!(parse(&q(7, "p|4"), Some(&l), 0), In::Pick { pane: 4, cb: "c1".into(), msg: 9 });
         assert_eq!(parse(&q(8, "p|4"), Some(&l), 0), In::Ignore);
         assert_eq!(cb_parse(&cb_data(12, 4471, "esc")), Some((12, 4471, "esc".into())));
-        assert!(cb_data(u64::MAX, u64::MAX, "esc").len() <= 64);
+        assert_eq!(cb_parse(&cb_data(12, 4471, "once")), Some((12, 4471, "once".into())));
+        assert_eq!(cb_parse(&cb_data(12, 4471, "always")), Some((12, 4471, "always".into())));
+        assert!(cb_data(u64::MAX, u64::MAX, "always").len() <= 64);
+        assert_eq!(keys("opencode"), &["once", "always", "esc"]);
+        assert_eq!(keys("omp"), &["once", "esc"]);
         assert_eq!(keys("codex"), &["esc"]);
+        assert_eq!(keys("claude"), &["1", "2", "3", "esc"]);
+        assert_eq!(keys("shell"), &["esc"]);
+        assert_eq!(key_bytes("once"), b"\r");
+        assert_eq!(key_bytes("esc"), b"\x1b");
+    }
+
+    #[test]
+    fn judul_konfirmasi_always_hanya_garis_judul() {
+        assert!(is_always_confirm_line("△ Always allow"));
+        assert!(is_always_confirm_line("  △ Always allow  "));
+        assert!(!is_always_confirm_line("△ Permission required"));
+        assert!(!is_always_confirm_line("△ Reject permission"));
+        assert!(!is_always_confirm_line("❯ Always allow"));
+        assert!(!is_always_confirm_line("Allow once  Always allow  Reject"));
+        assert!(!is_always_confirm_line("Always allow"));
+        assert!(!is_always_confirm_line(""));
     }
 
     #[test]
