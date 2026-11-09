@@ -1210,6 +1210,36 @@ fn h5_draf_resep_pakai_ai() {
     assert_eq!(ui.call("recipe.draft_get", json!({"draft": "../../etc/passwd", "id": "uji-h5"}))["error"]["code"], "bad_params");
 }
 
+/// FR-77 (H5) targets 2 and 3: config.toml through a draft (guarded parts refused), AGENTS.md brief only (Gembala writes nothing).
+#[test]
+fn h5_config_dan_instruksi_agent() {
+    let d = start("h5c");
+    let mut ui = Cli::ui(&d);
+    profiles(&d, &mut ui, &sh_profile("cat", "stty raw -echo; cat -v"), "cat -v");
+    let t = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let r = ui.call("config.draft_new", json!({"pane": t, "ask": "matiin suara notif", "section": "umum"}))["result"].clone();
+    let (draft, path) = (r["draft"].as_str().unwrap().to_string(), r["path"].as_str().unwrap().to_string());
+    let shown = ui.attach_until(t, &["matiin suara notif", "draft written"]);
+    assert!(shown.contains("[Gembala · from user]") && shown.contains(&draft), "{shown}");
+    let cfg_now = std::fs::read_to_string(d.dir.join("cfg/config.toml")).unwrap();
+    // a draft touching [telegram] is refused, even when the rest is fine
+    std::fs::write(&path, format!("{cfg_now}\n[telegram]\nsnippet = false\n")).unwrap();
+    let got = ui.call("config.draft_get", json!({"draft": draft}))["result"].clone();
+    assert!(got["errors"].to_string().contains("ai_guarded"), "{got}");
+    assert_eq!(ui.call("config.draft_apply", json!({"draft": draft, "hash": got["hash"]}))["result"]["error"], "ai_draft_refused");
+    // an ordinary change goes through and the daemon picks it up
+    std::fs::write(&path, format!("{cfg_now}\n[notify]\nsound = false\n")).unwrap();
+    let got = ui.call("config.draft_get", json!({"draft": draft}))["result"].clone();
+    assert_eq!(got["errors"], json!([]), "{got}");
+    assert_eq!(ui.call("config.draft_apply", json!({"draft": draft, "hash": got["hash"]}))["result"], json!({}));
+    assert!(std::fs::read_to_string(d.dir.join("cfg/config.toml")).unwrap().contains("sound = false"));
+    // AGENTS.md: only the brief, and only for the two known file names
+    assert_eq!(ui.call("agent_file.brief", json!({"pane": t, "file": "AGENTS.md", "ask": "pakai bahasa Indonesia"}))["result"], json!({}));
+    assert_eq!(ui.call("agent_file.brief", json!({"pane": t, "file": "../x.md", "ask": "x"}))["error"]["code"], "bad_params");
+    let mut ui2 = Cli::ui(&d);
+    ui2.attach_until(t, &["`AGENTS.md`", "pakai bahasa Indonesia"]);
+}
+
 /// FR-75: `send` to an agent not open yet = a card on the UI channel; approve = the task reaches the pane the UI opened,
 /// reject = the requester's `wait --reply` gets the refusal. Unknown names stay `no_such_pane`.
 #[test]

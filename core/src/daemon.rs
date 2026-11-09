@@ -933,9 +933,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                     let draft = new_secret().map_err(|_| "io")?[..16].to_string();
                     let path = drafts_dir(st).join(format!("{draft}.toml"));
                     fs::create_dir_all(drafts_dir(st)).map_err(|_| "io")?;
-                    let body = recipe::brief(&ask, rid, current.as_deref(), &path);
-                    let m = bus::Msg { id: String::new(), from: pane_id, from_name: "user".into(), to: pane_id, to_name: pane.name.lock().unwrap().clone(), body, reply_to: None, hop: 0, at: std::time::SystemTime::now() };
-                    st.engine.lock().unwrap().queues.entry(pane_id).or_default().push_back(bus::Queued { msg: m, since: std::time::Instant::now(), approved: true });
+                    queue_user(st, pane_id, &pane, recipe::brief(&ask, rid, current.as_deref(), &path));
                     Ok(json!({"draft": draft, "path": path}))
                 }
                 // what the agent wrote so far + the rules applied to it + the recipe now, for the diff (layar 21)
@@ -977,6 +975,71 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 }
             };
             Ok(r.unwrap_or_else(|d| d.reply()))
+        }
+        // FR-77 target 2 (H5): Gembala's own config.toml through a draft; guarded parts can't change (config::guarded_changes)
+        "config.draft_new" => {
+            let pane_id = p["pane"].as_u64().ok_or("bad_params")?;
+            let pane = st.pane(p)?;
+            if pane.agent_name().is_none() {
+                return Err("bad_params");
+            }
+            let ask = msg::sanitize(p["ask"].as_str().ok_or("bad_params")?)?.chars().take(4000).collect::<String>();
+            let section: String = p["section"].as_str().unwrap_or_default().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(32).collect();
+            let current = fs::read_to_string(config::path()).unwrap_or_default();
+            let draft = new_secret().map_err(|_| "io")?[..16].to_string();
+            let path = drafts_dir(st).join(format!("{draft}.toml"));
+            fs::create_dir_all(drafts_dir(st)).map_err(|_| "io")?;
+            queue_user(st, pane_id, &pane, config::ai_brief(&ask, &section, &current, &path));
+            Ok(json!({"draft": draft, "path": path}))
+        }
+        "config.draft_get" => {
+            let path = draft_path(st, p)?;
+            let current = fs::read_to_string(config::path()).unwrap_or_default();
+            let text = match fs::symlink_metadata(&path) {
+                Ok(m) if m.is_file() && m.len() <= 256 * 1024 => fs::read_to_string(&path).ok(),
+                _ => None,
+            };
+            Ok(match text {
+                None => json!({"exists": false, "current": current}),
+                Some(t) => {
+                    let c = config::load(Some(&t));
+                    let mut errors: Vec<Value> = c.errors.iter().map(crate::diag::Diag::json).collect();
+                    errors.extend(config::guarded_changes(&current, &t).into_iter().map(|k| crate::diag::Diag::new("ai_guarded").arg("key", k).json()));
+                    json!({"exists": true, "text": t, "hash": recipe::hash(&t), "current": current, "broken": c.broken, "errors": errors, "warnings": []})
+                }
+            })
+        }
+        "config.draft_apply" => {
+            let path = draft_path(st, p)?;
+            let text = fs::read_to_string(&path).map_err(|_| "no_such_draft")?;
+            let current = fs::read_to_string(config::path()).unwrap_or_default();
+            if recipe::hash(&text) != p["hash"].as_str().ok_or("bad_params")? {
+                return Ok(crate::diag::Diag::new("recipe_changed").reply());
+            }
+            let c = config::load(Some(&text));
+            if c.broken || !c.errors.is_empty() || !config::guarded_changes(&current, &text).is_empty() {
+                return Ok(crate::diag::Diag::new("ai_draft_refused").reply());
+            }
+            config::write_atomic(&config::path(), text.as_bytes()).map_err(|_| "io")?;
+            let _ = fs::remove_file(&path);
+            Ok(json!({}))
+        }
+        // FR-77 target 3: AGENTS.md / CLAUDE.md belong to the user; Gembala only sends the brief, the agent edits the file
+        // through its own permission dialog and the diff shows in the changes panel (SEC-15: Gembala writes nothing)
+        "agent_file.brief" => {
+            let pane_id = p["pane"].as_u64().ok_or("bad_params")?;
+            let pane = st.pane(p)?;
+            let file = p["file"].as_str().filter(|f| ["AGENTS.md", "CLAUDE.md"].contains(f)).ok_or("bad_params")?;
+            if pane.agent_name().is_none() {
+                return Err("bad_params");
+            }
+            let ask = msg::sanitize(p["ask"].as_str().ok_or("bad_params")?)?.chars().take(4000).collect::<String>();
+            queue_user(st, pane_id, &pane, format!(
+                "Gembala \"Atur pakai AI\": update the agent instructions file `{file}` in this folder (create it if missing) as the user asks.\n\n\
+Request from the user, as written:\n{ask}\n\n\
+Read the file first, change only what the request asks, keep its structure and language. Edit only `{file}`. \
+The user reviews the change in Gembala's changes panel. When done, summarize the change in 1-2 sentences."));
+            Ok(json!({}))
         }
         "pane.create" => create_pane(st, p, &[]),
         "pane.write" => {
@@ -1321,6 +1384,13 @@ fn reject(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
 /// FR-77: drafts from "Atur pakai AI" live in the run folder (0700, gone with the daemon's run), never next to recipes
 fn drafts_dir(st: &State) -> std::path::PathBuf {
     std::path::Path::new(&st.pane_sock).parent().unwrap_or(std::path::Path::new("/")).join("drafts")
+}
+
+/// FR-77: a brief from Atur pakai AI, typed into the agent pane as the user's own message (no reply id); it waits in the
+/// queue while the freshly opened agent starts (`deliver_loop` opening rule)
+fn queue_user(st: &State, pane_id: u64, pane: &Pane, body: String) {
+    let m = bus::Msg { id: String::new(), from: pane_id, from_name: "user".into(), to: pane_id, to_name: pane.name.lock().unwrap().clone(), body, reply_to: None, hop: 0, at: std::time::SystemTime::now() };
+    st.engine.lock().unwrap().queues.entry(pane_id).or_default().push_back(bus::Queued { msg: m, since: std::time::Instant::now(), approved: true });
 }
 
 /// draft id from the UI = 16 hex characters, nothing that walks out of the drafts folder

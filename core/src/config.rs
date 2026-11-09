@@ -500,9 +500,66 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// FR-77 target 2: brief for the agent pane. The agent writes the whole new config.toml to the draft file only.
+pub fn ai_brief(ask: &str, section: &str, current: &str, draft: &Path) -> String {
+    let keys: Vec<String> = SECTIONS.iter().map(|(s, spec)| format!("[{s}] {}", spec.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", "))).collect();
+    let focus = if section.is_empty() { String::new() } else { format!("The user opened this from the `{section}` part of Settings.\n") };
+    format!(
+        "Gembala \"Atur pakai AI\": change Gembala's own settings (config.toml) as the user asks.\n\n\
+Request from the user, as written:\n{ask}\n\n{focus}\
+Current config.toml (keep everything the request doesn't touch, comments included):\n```toml\n{current}\n```\n\n\
+Write the whole new config.toml to this file and nothing else: {}\n\
+Do not edit the real config.toml or any other file: the user reviews the diff in Gembala and approves it there. \
+When the file is written, say \"draft written\" in one line.\n\n\
+Known tables and keys: {}. Also [[profile]] (id, agent, command, args, cwd, ...), [keys] (shortcuts), [[account]], [addon].\n\
+Gembala refuses a draft that changes a profile's policy, permission, token or secret_env, any [[account]], or [telegram]: \
+those stay as they are. Unknown keys and out-of-range values are reported as problems.",
+        draft.display(),
+        keys.join("; "),
+    )
+}
+
+/// FR-77 target 2 (Atur pakai AI on config.toml): the parts an AI draft may not change (BRD: access rules, recipient
+/// policy, credentials). Returns what changed: `profile.<id>` (policy, permission mode, token, secret references),
+/// `account`, `telegram`. A new profile is fine only with safe values; removing one is fine.
+pub fn guarded_changes(before: &str, after: &str) -> Vec<String> {
+    let (a, b) = (load(Some(before)), load(Some(after)));
+    let guard = |p: &crate::profile::Profile| (p.policy.clone(), p.permission.clone(), p.token, p.secret_env.clone());
+    let mut out = Vec::new();
+    for p in &b.profiles {
+        let changed = match a.profiles.iter().find(|x| x.id == p.id) {
+            Some(old) => guard(old) != guard(p),
+            None => p.policy != "auto" || p.permission != "default" || p.token || !p.secret_env.is_empty(),
+        };
+        if changed {
+            out.push(format!("profile.{}", p.id));
+        }
+    }
+    if a.accounts != b.accounts {
+        out.push("account".into());
+    }
+    if a.values["telegram"] != b.values["telegram"] {
+        out.push("telegram".into());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_draft_guarded_keys() {
+        let base = "[ui]\nfont_size = 13\n[[profile]]\nid = \"kerja\"\nagent = \"claude\"\n";
+        // ordinary settings and a new safe profile pass
+        assert!(guarded_changes(base, &format!("{base}[notify]\nsound = false\n[[profile]]\nid = \"baru\"\nagent = \"codex\"\n")).is_empty());
+        assert!(guarded_changes(base, &base.replace("13", "14")).is_empty());
+        // recipient policy, permission mode, token, a new loose profile, telegram: refused
+        assert_eq!(guarded_changes(base, &format!("{base}policy = \"confirm\"\n")), ["profile.kerja"]);
+        assert_eq!(guarded_changes(base, &format!("{base}permission = \"auto\"\n")), ["profile.kerja"]);
+        assert_eq!(guarded_changes(base, &format!("{base}[[profile]]\nid = \"bebas\"\nagent = \"claude\"\ntoken = true\n")), ["profile.bebas"]);
+        assert_eq!(guarded_changes(base, &format!("{base}[telegram]\nsnippet = false\n")), ["telegram"]);
+    }
 
     #[test]
     fn tanpa_file_semua_bawaan() {
