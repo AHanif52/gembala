@@ -64,6 +64,7 @@ struct Pane {
     agent: String,
     /// FR-4: idle | working | blocked | done; empty = not tracked (shell, profile without hooks)
     status: Mutex<&'static str>,
+    claude: Mutex<claude::Cache>,
     /// FR-53, FR-68: agent session id in this pane (validated per agent): from Gembala (Claude profile), the `--session-id`
     /// argument of a manual agent, or a hook (Codex `thread-id`, OpenCode `sessionID`). For exact session resume.
     session: Mutex<Option<String>>,
@@ -200,6 +201,7 @@ impl Drop for UiClient {
 
 mod runner;
 mod telegram;
+mod claude;
 mod update;
 
 type Res = Result<Value, &'static str>;
@@ -392,6 +394,10 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                         }
                         let pane = st.panes.lock().unwrap().get(&me).cloned();
                         if let Some(pane) = pane {
+                            // A short manually launched turn can stop before the process watcher finds its account.
+                            if p["agent"].as_str() == Some("claude") {
+                                *pane.account.lock().unwrap() = acct_of_dir(&st, p["dir"].as_str().map(String::from));
+                            }
                             // FR-68: session id from the agent hook (Codex thread-id, OpenCode sessionID, Claude session_id)
                             if let (Some(agent), Some(id)) = (p["agent"].as_str(), p["session"].as_str())
                                 && profile::valid_session(agent, id)
@@ -415,7 +421,12 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                                 (_, Some(t)) => *pane.last_msg.lock().unwrap() = Some(t.chars().take(4000).collect()),
                                 _ => {}
                             }
-                            if status != "start" {
+                            if matches!(status, "working" | "start") {
+                                pane.claude.lock().unwrap().clear();
+                            }
+                            if matches!(status, "done" | "blocked" | "idle") && p["agent"].as_str() == Some("claude") {
+                                claude::refresh(&st, me, &pane, Some(status));
+                            } else if status != "start" {
                                 set_status(&st, me, &pane, status, None);
                             } else if p["source"].as_str() != Some("compact") {
                                 // SessionStart = agent waiting for a prompt; the screen guess before the first hook (startup spinner
@@ -1090,11 +1101,13 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         "pane.info" => {
             let pane = st.pane(p)?;
             let busy = pty::busy(&pane.master, pane.sid);
+            let (waiting_shell, reason) = { let c = pane.claude.lock().unwrap(); (c.shell, c.reason.clone()) };
             Ok(json!({
                 "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)), "pid": pane.sid, // FR-60
                 "shell": pty::proc_name(pane.sid), // Gembala.pen 02: subjudul tab shell diam (`zsh`)
                 "password": busy.is_some() && pty::wants_password(&pane.master),
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
+                "waiting_shell": waiting_shell, "reason": reason,
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "session": *pane.session.lock().unwrap(), // FR-68: resume card even if the daemon stopped
                 "title": *pane.title.lock().unwrap(), // FR-69: label pane
@@ -1327,6 +1340,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         tg_ask: Mutex::default(),
         tg_text: Mutex::new(None),
         last_msg: Mutex::new(None),
+        claude: Mutex::default(),
         readable: std::sync::atomic::AtomicBool::new(false),
         helper_of: Mutex::new(None),
         typed_at: Mutex::new(None),
@@ -1696,7 +1710,10 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 .iter()
                 .filter(|(id, x)| **id != me && *x.workspace.lock().unwrap() == my_ws)
                 .filter_map(|(_, x)| Some((x, x.agent_name()?)))
-                .map(|(x, agent)| json!({"name": *x.name.lock().unwrap(), "aliases": *x.aliases.lock().unwrap(), "agent": agent, "status": *x.status.lock().unwrap(), "policy": x.policy.lock().unwrap().name()}))
+                .map(|(x, agent)| {
+                    let (shell, reason) = { let c = x.claude.lock().unwrap(); (c.shell, c.reason.clone()) };
+                    json!({"name": *x.name.lock().unwrap(), "aliases": *x.aliases.lock().unwrap(), "agent": agent, "status": *x.status.lock().unwrap(), "shell": shell, "reason": reason, "policy": x.policy.lock().unwrap().name()})
+                })
                 .collect();
             // FR-75: names `send` can open through a card (none for a helper: depth 1)
             let helper = st.panes.lock().unwrap().get(&me).is_some_and(|x| x.helper_of.lock().unwrap().is_some());
@@ -1887,6 +1904,10 @@ fn screen_watch(st: Arc<State>) {
                 }
                 _ => {}
             }
+            claude::refresh(&st, id, &pane, None);
+            if pane.claude.lock().unwrap().overrides() {
+                continue;
+            }
             let cur = *pane.status.lock().unwrap();
             let next = if manual && pane.hooked.load(Ordering::Relaxed) {
                 // a hook (e.g. SessionStart) can arrive before the agent is recognized: initial status = waiting for a task
@@ -1925,7 +1946,7 @@ fn type_into(st: &State, id: u64, pane: &Pane, data: &[u8]) -> Result<(), &'stat
 /// Change a pane's status and tell every UI (`pane.status`). `only_from` = change only when the current status is that.
 fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from: Option<&str>) {
     let mut cur = pane.status.lock().unwrap();
-    if cur.is_empty() || *cur == status || only_from.is_some_and(|f| *cur != f) {
+    if (cur.is_empty() && pane.agent_name().as_deref() != Some("claude")) || *cur == status || only_from.is_some_and(|f| *cur != f) {
         return;
     }
     let prev = std::mem::replace(&mut *cur, status);
@@ -1968,12 +1989,15 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
 fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     pane.status_seq.fetch_add(1, Ordering::Relaxed);
     telegram::on_status(st, id, pane, status);
-    let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": status}}));
+    let cache = pane.claude.lock().unwrap();
+    let (shell, reason) = (cache.shell, cache.reason.clone());
+    drop(cache);
+    let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": status, "shell": shell, "reason": reason}}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
     let ws = pane.workspace.lock().unwrap().clone();
     let visible = pane.agent_name().is_some() || pane.readable.load(Ordering::Relaxed);
     let name = pane.name.lock().unwrap().clone();
-    let ev = line(json!({"event": "pane.status", "params": {"name": name, "status": status}}));
+    let ev = line(json!({"event": "pane.status", "params": {"name": name, "status": status, "shell": shell, "reason": reason}}));
     let subs: Vec<(u64, SyncSender<String>)> = st.pane_subs.lock().unwrap().clone();
     let mut dead = vec![];
     for (who, tx) in &subs {
@@ -2255,6 +2279,7 @@ fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8], code: Option<i
 fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_dir: Option<std::path::PathBuf>, code: &str, prompt: &[u8]) {
     // the next agent typed in this pane (e.g. Codex without full hooks) is judged again
     pane.hooked.store(false, Ordering::Relaxed);
+    *pane.claude.lock().unwrap() = claude::Cache::default();
     let Some((started, log)) = pane.agent_log.lock().unwrap().take() else { return };
     // agent exited = nobody reads messages anymore: status empty, `gembala send` to this pane is rejected
     // (target_unknown) instead of pasting the message into zsh while the sender thinks it arrived

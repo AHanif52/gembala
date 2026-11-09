@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import en from "./en.ts";
 import id from "./id.ts";
-import { errorText, resolveLang, translate, translateN } from "./index.ts";
+import { errorText, resolveLang, translate, translateN, waitingReasonKey } from "./index.ts";
 
 const params = (s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
 const SRC = new URL("../..", import.meta.url).pathname;
@@ -76,4 +76,12 @@ test("no Indonesian UI text left outside id.ts", () => {
     });
   }
   assert.deepEqual(left, []);
+});
+
+test("native waiting reasons are restricted to the fixed dictionary", () => {
+  for (const key of ["reason.permission", "reason.input", "reason.dialog", "reason.trust", "reason.worker", "reason.sandbox"]) {
+    assert.equal(waitingReasonKey(id[key]), key);
+  }
+  assert.equal(waitingReasonKey("private customer data"), undefined);
+  assert.equal(waitingReasonKey(""), undefined);
 });

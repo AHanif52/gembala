@@ -652,7 +652,7 @@ fn status_dari_hook() {
     }
     let pane = ui.call("pane.create", json!({"profile": "claude"}))["result"]["pane"].as_u64().unwrap();
     let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
-    assert_eq!(e["params"], json!({"pane": pane, "status": "working"}), "{e}");
+    assert_eq!(e["params"], json!({"pane": pane, "status": "working", "shell": false, "reason": ""}), "{e}");
     let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
     assert_eq!(e["params"]["status"], "blocked", "{e}");
     assert_eq!(ui.call("pane.info", json!({"pane": pane}))["result"]["status"], "blocked");
@@ -933,7 +933,7 @@ fn agent_manual_berhook_tidak_dibaca_dari_layar() {
     let cmd = format!("'{g}' hook claude start </dev/null; (while :; do echo tik; sleep 2; done) & '{}' watch\r", claude.display());
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode(cmd)}));
     let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
-    assert_eq!(e["params"], json!({"pane": pane, "status": "idle"}), "{e}");
+    assert_eq!(e["params"], json!({"pane": pane, "status": "idle", "shell": false, "reason": ""}), "{e}");
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(6) {
         assert_eq!(ui.call("pane.info", json!({"pane": pane}))["result"]["status"], "idle", "status berubah karena output layar");
@@ -1385,8 +1385,8 @@ fn langganan_status_per_workspace() {
     let w = ui.call("pane.create", json!({"profile": "lihat", "workspace": "w1"}))["result"]["pane"].as_u64().unwrap();
     ui.call("pane.create", json!({"profile": "sini", "workspace": "w1"}));
     ui.call("pane.create", json!({"profile": "sana", "workspace": "w2"}));
-    let out = ui.attach_until(w, &["\"name\":\"sini-1\",\"status\":\"blocked\""]);
-    assert!(out.contains("\"name\":\"sini-1\",\"status\":\"blocked\""), "{out}");
+    let out = ui.attach_until(w, &["\"name\":\"sini-1\",\"reason\":\"\",\"shell\":false,\"status\":\"blocked\""]);
+    assert!(out.contains("\"name\":\"sini-1\",\"reason\":\"\",\"shell\":false,\"status\":\"blocked\""), "{out}");
     std::thread::sleep(Duration::from_secs(1));
     let mut ui2 = Cli::ui(&d);
     let all = ui2.attach_until(w, &["tidak-ada"]);

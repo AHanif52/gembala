@@ -42,3 +42,9 @@ export function errorText(lang: Lang, e: unknown, args?: Record<string, string>)
   const then = args?.then && hasKey(`err.then.${args.then}`) ? `; ${translate(lang, `err.then.${args.then}` as Key, args)}` : "";
   return `${args?.at ? `${args.at}: ` : ""}${text}${then}`;
 }
+
+/// FR-84 / SEC-33: native banners may only show a fixed waiting reason.
+export function waitingReasonKey(reason: string): Key | undefined {
+  const keys: Key[] = ["reason.permission", "reason.input", "reason.dialog", "reason.trust", "reason.worker", "reason.sandbox"];
+  return keys.find((key) => id[key] === reason);
+}

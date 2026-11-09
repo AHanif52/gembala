@@ -25,7 +25,7 @@
   import { safeResume } from "$lib/resume";
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
-  import { resolveLang } from "$lib/i18n";
+  import { resolveLang, waitingReasonKey } from "$lib/i18n";
   import { errText, i18n, loc, t as tt, tn as ttn, tOr } from "$lib/i18n/state.svelte";
   import type { Key } from "$lib/i18n";
 
@@ -40,6 +40,8 @@
     busy?: string | null;
     shell?: string | null; // process name of the pane shell (`zsh`), for the subtitle of an idle shell tab
     status?: string;
+    waitingShell?: boolean;
+    reason?: string;
     session?: string; // FR-53, FR-68: agent session id in the pane (Claude from Gembala; Codex/OpenCode/typed from the daemon)
     git?: any; // FR-55: git summary in the toolbar
     pastes?: string[]; // SEC-34: pasted images, deleted when the pane closes
@@ -89,7 +91,8 @@
   ];
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   /// status shown: a "done" that's already been seen fades (FR-40)
-  const stat = (p: number) => (ack[p] && meta[p]?.status === "done" ? "" : (meta[p]?.status ?? ""));
+  const stat = (p: number) => (ack[p] && meta[p]?.status === "done" && !meta[p]?.waitingShell ? "" : (meta[p]?.status ?? ""));
+  const paneStatusText = (p: number) => meta[p]?.waitingShell ? `⌛ ${tt("status.shell")}` : (meta[p]?.reason ? tOr(waitingReasonKey(meta[p].reason) ?? meta[p].reason, meta[p].reason) : stText(stat(p)));
   const worst = (ps: number[]): string => ps.reduce((a, p) => (rank(stat(p)) > rank(a) ? stat(p) : a), "");
   const tabStatus = (t: Tab) => worst(panes(t.tree));
 
@@ -1951,7 +1954,7 @@
   // FR-40: the done mark goes away once that pane is seen (agent or shell)
   $effect(() => {
     const f = tab?.focus;
-    if (seen && f && meta[f]?.status === "done" && !ack[f]) ack[f] = true;
+    if (seen && f && meta[f]?.status === "done" && !meta[f]?.waitingShell && !ack[f]) ack[f] = true;
   });
 
   // FR-55: the toolbar of the newly focused pane is refreshed (no git polling)
@@ -1971,7 +1974,7 @@
   /// label = alert.* key: the bell renders it in the language of the moment, the banner in the current one
   function alert(pane: number, kind: "blocked" | "done", label: Key) {
     const m = meta[pane];
-    if (m) note(pane, kind, label);
+    if (m) note(pane, kind, kind === "blocked" && m.reason ? waitingReasonKey(m.reason) ?? m.reason : label);
     if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
     if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
     if (kind === "blocked") invoke("attention").catch(() => {}); // the Dock bounces only when action is needed; done just gets the badge
@@ -1980,7 +1983,9 @@
     const t = tabOf(pane);
     const tb = t && { ...t, focus: pane };
     const name = m.name || m.profile;
-    invoke("notify_pane", { body: tb ? tt("alert.bodyTab", { name, tab: title(tb), what: tt(label) }) : tt("alert.body", { name, what: tt(label) }), sound: notify.sound, pane }).catch(() => {});
+    // SEC-33: arbitrary waitingFor text stays in-app; banners use only fixed translations.
+    const what = kind === "blocked" && m.reason ? tt(waitingReasonKey(m.reason) ?? "reason.other") : tt(label);
+    invoke("notify_pane", { body: tb ? tt("alert.bodyTab", { name, tab: title(tb), what }) : tt("alert.body", { name, what }), sound: notify.sound, pane }).catch(() => {});
   }
   // FR-76: bell history; unlike the macOS banner it may carry the task label (FR-69), being in-app only (SEC-33).
   // Newest first, max 100.
@@ -2028,27 +2033,32 @@
     return () => window.removeEventListener("pointerdown", off);
   });
   const attention = $derived(
-    Object.keys(meta).map(Number).filter((p) => (stat(p) === "blocked" && notify.on_blocked) || (stat(p) === "done" && notify.on_done)).length,
+    Object.keys(meta).map(Number).filter((p) => (stat(p) === "blocked" && notify.on_blocked) || (stat(p) === "done" && !meta[p]?.waitingShell && notify.on_done)).length,
   );
   $effect(() => {
     invoke("badge", { count: seen ? 0 : attention }).catch(() => {});
   });
-  function onStatus(pane: number, status: string) {
+  function onStatus(pane: number, status: string, shell = false, reason = "") {
     if (!meta[pane]) return;
-    delete ack[pane];
+    const previous = meta[pane];
+    const changed = previous.status !== status || previous.waitingShell !== shell || (previous.reason ?? "") !== reason;
     meta[pane].status = status;
+    meta[pane].waitingShell = shell;
+    meta[pane].reason = reason;
+    if (!changed) return;
+    delete ack[pane];
     if (status === "done" || status === "idle") {
       refreshGit(pane); // toolbar refreshed per turn (TECH 7a)
       if (changes?.pane === pane) loadChanges(pane); // FR-22: the panel is refreshed too
     }
     if (status === "blocked") alert(pane, "blocked", "alert.blocked");
-    if (status === "done") alert(pane, "done", "alert.done");
+    if (status === "done" && !shell) alert(pane, "done", "alert.done");
   }
 
   // save the layout half a second after the last change (SEC-13: no screen content)
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
-    const body = JSON.stringify({ version: 1, boot, at, side: sideW, panel: panelW, workspaces: wss, panes: meta });
+    const body = JSON.stringify({ version: 1, boot, at, side: sideW, panel: panelW, workspaces: wss, panes: Object.fromEntries(Object.entries(meta).map(([id, { waitingShell, reason, ...pane }]) => [id, pane])) });
     if (!wss.length || !boot) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => call("layout.save", { layout: JSON.parse(body) }).catch(() => {}), 500);
@@ -2073,10 +2083,7 @@
       // exits is used too, so "done" doesn't get stuck after its agent died
       if (AGENTS.includes(m.agent) || m.agent === "custom" || i.status || AGENTS.includes(m.busy ?? "")) {
         // status from the daemon: official hooks, or screen patterns for custom profiles and agents typed by hand (FR-4)
-        if (m.status !== i.status) {
-          delete ack[p];
-          m.status = i.status;
-        }
+        onStatus(p, i.status, i.waiting_shell, i.reason);
       } else {
         // FR-40 for shell panes: a command longer than 30 seconds that finishes = done; waiting for a password = blocked
         if (busy && !m.busy) m.since = Date.now();
@@ -2126,7 +2133,7 @@
     });
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
-      if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status);
+      if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status, payload.params.shell, payload.params.reason);
       // a tab whose xterm is detached has no Tile listening for pane.exit
       if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane);
       if (payload.event === "pane.replace" && meta[payload.params.pane])
@@ -2247,7 +2254,7 @@
           {@const ag = agentOf(q.p) || meta[q.p]?.agent || ""}
           <button class="tab" onclick={() => jumpTo(q.p)}>
             <span class="tt"><span class="dot blocked" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{labels[q.p] || GLYPH[ag] ? ` · ${labels[q.p] || ag}` : ""}</span>
-            <span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
+            <span>{paneStatusText(q.p) || tt("status.blocked")}</span><span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
             <span class="sub">{[title(q.t) !== labels[q.p] ? title(q.t) : "", wss.length > 1 ? q.w.name : ""].filter(Boolean).join(" · ")}</span>
           </button>
         {/each}
@@ -2311,7 +2318,7 @@
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
             {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
             {#if stText(st) || rest}
-              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {stText(stat(p)) || tt('status.idle')}"></span>{/each}{:else if stText(st)}<span class="st {st}">{stText(st)}</span>{rest ? " · " : ""}{/if}{rest}</span>
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {paneStatusText(p) || tt('status.idle')}"></span>{/each}{:else if stText(st)}<span class="st {st}">{paneStatusText(t.focus)}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}
           {/if}
         </button>
@@ -2434,7 +2441,7 @@
               {@const hs = stat(pane)}
               <div class="head" class:on={split && pane === t.focus} onpointerdown={(e) => startPaneDrag(e, t, pane)} role="presentation">
                 <span class="hname">{#if stText(hs)}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
-                {#if stText(hs)}<span class="st {hs}">{stText(hs)}</span>{/if}
+                {#if stText(hs)}<span class="st {hs}">{paneStatusText(pane)}</span>{/if}
                 <!-- FR-27: token saver on for this pane (read, test log, artifacts are reduced) -->
                 {#if meta[pane]?.saver}<span class="hsaver" title={tt("pane.saverTip")}>{tt("pane.saver")}</span>{/if}
                 <!-- FR-78: add-ons of the running agent in this workspace, names in the tooltip -->

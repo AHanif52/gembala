@@ -158,6 +158,38 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// SEC-38: patterns adapted in order from Habblaud shared/activity.ts (MIT; see THIRD_PARTY_NOTICES).
+pub(super) fn mask_secrets(text: &str) -> String {
+    use std::sync::OnceLock;
+    static PATTERNS: OnceLock<Vec<(regex_lite::Regex, &'static str)>> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        [
+            (r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", "[private key]"),
+            (r#"(?i)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|private-token)(\s*:\s*)[^'"\n]+"#, "${1}${2}***"),
+            (r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}", "${1} ***"),
+            (r#"(?i)(\b[a-z][a-z0-9+.-]*://[^\s:@/'"]+:)[^\s@/'"]+@"#, "${1}***@"),
+            (r"(?i)(\bhttps?://hooks\.slack\.com/services/)T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+", "${1}***"),
+            (r"(?i)(\bhttps?://(?:discordapp|discord)\.com/api/webhooks/)\d+/[A-Za-z0-9_-]+", "${1}***"),
+            (r"(?i)(\bhttps?://api\.telegram\.org/bot)\d+:[A-Za-z0-9_-]+", "${1}***"),
+            (r#"((?:^|\s)(?:-u|--user)\s+['"]?[^\s:'"]+:)[^\s'"]+"#, "${1}***"),
+            (r#"(?i)((?:^|\s)--?(?:token|password|passwd|pass|secret|api-key|apikey|access-token|auth-token)(?:\s+|=))(['"]?)[^\s'"]+['"]?"#, "${1}${2}***${2}"),
+            (r#"(?i)\b([A-Za-z0-9_.-]*?(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key|_key|credentials?))(["']?\s*[=:]\s*)(["']?)([^\s"'&;|,}]+)["']?"#, "${1}${2}${3}***${3}"),
+            (r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{8,}", "sk-***"),
+            (r"\bgh[pousr]_[A-Za-z0-9]{16,}", "gh*_***"),
+            (r"\bgithub_pat_[A-Za-z0-9_]{16,}", "github_pat_***"),
+            (r"\bglpat-[A-Za-z0-9_-]{16,}", "glpat-***"),
+            (r"\bxox[abposr]-[A-Za-z0-9-]{8,}", "xox*-***"),
+            (r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", "AKIA***"),
+            (r"\bAIza[0-9A-Za-z_-]{30,}", "AIza***"),
+            (r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}", "sk_***"),
+            (r"\bnpm_[A-Za-z0-9]{30,}", "npm_***"),
+            (r"\bhf_[A-Za-z0-9]{30,}", "hf_***"),
+            (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", "eyJ***"),
+        ].into_iter().map(|(pattern, replacement)| (regex_lite::Regex::new(pattern).unwrap(), replacement)).collect()
+    });
+    patterns.iter().fold(text.to_string(), |s, (pattern, replacement)| pattern.replace_all(&s, *replacement).into_owned())
+}
+
 /// a message whose HTML Telegram refused, as plain text (tags dropped, entities back to characters)
 fn plain(mut body: Value) -> Value {
     let tags = regex_lite::Regex::new(r"<[^>]*>").unwrap();
@@ -213,7 +245,8 @@ fn md_html(md: &str, max: usize) -> String {
 
 /// last `lines` rows, trailing blank rows dropped, at most `MAX_SNIPPET` characters (cut from the top)
 fn snippet(screen: &str, lines: usize) -> String {
-    let rows = flat_tables(screen.lines().map(str::trim_end));
+    let masked = mask_secrets(screen);
+    let rows = flat_tables(masked.lines().map(str::trim_end));
     let kept: Vec<String> = rows.into_iter().filter(|r| !chrome_row(r.trim())).collect();
     let end = kept.iter().rposition(|r| !r.is_empty()).map_or(0, |i| i + 1);
     let text = kept[end.saturating_sub(lines)..end].join("\n");
@@ -289,7 +322,7 @@ fn label(title: &str, agent: &str) -> Option<String> {
     // spinner (braille), Claude's ✳, omp's `π >` prefix
     let t = title.trim_start_matches(|c: char| ('\u{2800}'..='\u{28ff}').contains(&c) || matches!(c, '✳' | '✻' | 'π' | '>') || c.is_whitespace()).trim();
     let generic = t.eq_ignore_ascii_case(agent) || t.eq_ignore_ascii_case("claude code");
-    (!t.is_empty() && !generic).then(|| t.chars().take(120).collect())
+    (!t.is_empty() && !generic).then(|| mask_secrets(t).chars().take(120).collect())
 }
 
 fn keys(agent: &str) -> &'static [&'static str] {
@@ -935,6 +968,9 @@ fn live(st: &State) -> Option<Arc<Bot>> {
 /// `status_changed`: blocked/done of an agent pane while the Mac is away (FR-40 switches in `[notify]`). A prompt typed
 /// from the phone is always answered, away or not, like Hermes: 👀 on the user's message while it works, 👍 + result when done.
 pub fn on_status(st: &State, id: u64, pane: &Pane, status: &str) {
+    if status == "done" && pane.claude.lock().unwrap().shell {
+        return;
+    }
     let Some(b) = live(st) else { return };
     let Some(agent) = pane.agent_name() else { return };
     // turn timing for the estimate: working = start, done/idle = end
@@ -1103,6 +1139,9 @@ fn head(name: &str, ws: &str, status: &str) -> String {
 /// message body built when it is sent (after SETTLE), from the pane as it is now; `None` = no longer relevant
 fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     let pane = st.panes.lock().unwrap().get(&id).cloned()?;
+    if matches!(kind, Kind::Done(_)) && (pane.claude.lock().unwrap().shell || *pane.status.lock().unwrap() != "done") {
+        return None;
+    }
     let (name, ws_id) = (pane.name.lock().unwrap().clone(), pane.workspace.lock().unwrap().clone());
     let ws = ws_name(&ws_id);
     let agent = pane.agent_name().unwrap_or_default();
@@ -1113,7 +1152,8 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
             if *pane.status.lock().unwrap() != "blocked" || pane.status_seq.load(Ordering::Relaxed) != seq {
                 return None;
             }
-            t(id_l, "blocked").to_string()
+            let reason = pane.claude.lock().unwrap().reason.clone();
+            if reason.is_empty() { t(id_l, "blocked").to_string() } else { mask_secrets(&reason) }
         }
         Kind::Done(0) => t(id_l, "done").to_string(),
         Kind::Done(secs) => format!("{} ({})", t(id_l, "done"), dur(secs)),
@@ -1129,7 +1169,7 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
         // OpenCode) — 9 Nov the screen was a `/model` picker or tool-call rows instead of the answer
         let answer = matches!(kind, Kind::Done(_)).then(|| pane.last_msg.lock().unwrap().take()).flatten();
         match answer {
-            Some(a) => text += &format!("\n\n{}", md_html(&a, MAX_ANSWER)),
+            Some(a) => text += &format!("\n\n{}", md_html(&mask_secrets(&a), MAX_ANSWER)),
             None => {
                 let lines = v["telegram"]["lines"].as_u64().unwrap_or(30).min(30) as usize;
                 let snip = screen_snip(&pane, lines);
@@ -1645,6 +1685,52 @@ mod tests {
 
     fn msg(chat: i64, user: i64, text: &str, date: i64) -> Value {
         json!({"message": {"message_id": 5, "date": date, "chat": {"id": chat, "type": "private"}, "from": {"id": user, "first_name": "Raka", "username": "raka"}, "text": text}})
+    }
+
+    #[test]
+    fn secret_patterns_and_near_misses() {
+        let cases = [
+            ("-----BEGIN RSA PRIVATE KEY-----\nsecret\n-----END RSA PRIVATE KEY-----", "[private key]", "-----BEGIN PUBLIC KEY-----abc"),
+            ("Authorization: abcdef", "Authorization: ***", "Authorization pending"),
+            ("Bearer abcdef123", "Bearer ***", "Bearer abc"),
+            ("https://user:password@example.com", "https://user:***@example.com", "https://example.com/a"),
+            ("https://hooks.slack.com/services/T123/B456/secret", "https://hooks.slack.com/services/***", "https://hooks.slack.com/services/help"),
+            ("https://discord.com/api/webhooks/123/secret", "https://discord.com/api/webhooks/***", "https://discord.com/api/webhooks/help"),
+            ("https://api.telegram.org/bot123:secret", "https://api.telegram.org/bot***", "https://api.telegram.org/help"),
+            ("curl -u user:secret", "curl -u user:***", "curl -u user"),
+            ("--token 'secret'", "--token '***'", "--tokens help"),
+            ("GITHUB_TOKEN='secret'", "GITHUB_TOKEN='***'", "GITHUB_TOKEN pending"),
+            ("sk-ant-abcdefghijk", "sk-***", "sk-short"),
+            ("ghp_abcdefghijklmnop", "gh*_***", "ghp_short"),
+            ("github_pat_abcdefghijklmnop", "github_pat_***", "github_pat_short"),
+            ("glpat-abcdefghijklmnop", "glpat-***", "glpat-short"),
+            ("xoxb-abcdefghijk", "xox*-***", "xoxb-short"),
+            ("AKIA1234567890ABCDEF", "AKIA***", "xAKIA1234567890ABCDEF"),
+            ("AIza123456789012345678901234567890", "AIza***", "AIza123"),
+            ("sk_live_abcdefghij", "sk_***", "sk_live_short"),
+            ("npm_123456789012345678901234567890", "npm_***", "npm test"),
+            ("hf_123456789012345678901234567890", "hf_***", "hf"),
+            ("eyJabcdefgh.abcdefgh.abcdefgh", "eyJ***", "eyJabc.a.b"),
+        ];
+        for (raw, masked, safe) in cases {
+            assert_eq!(mask_secrets(raw), masked, "{raw}");
+            assert_eq!(mask_secrets(safe), safe);
+        }
+        assert_eq!(mask_secrets("Basic abcdef"), "Basic ***");
+        assert_eq!(mask_secrets("--password=secret"), "--password=***");
+        assert_eq!(mask_secrets(r#""password": "secret""#), r#""password": "***""#);
+        assert_eq!(mask_secrets("Cookie: session=secret"), "Cookie: ***");
+        assert_eq!(mask_secrets("-----BEGIN PRIVATE KEY-----\nsecret"), "[private key]");
+    }
+
+    #[test]
+    fn snippets_mask_before_cutting_or_html() {
+        let raw = "Bearer abcdef123\nhttps://user:secret@example.com\nGITHUB_TOKEN=secret";
+        assert_eq!(mask_secrets(&snippet(raw, 30)), "Bearer ***\nhttps://user:***@example.com\nGITHUB_TOKEN=***");
+        let long = format!("Bearer {}", "a".repeat(5000));
+        assert_eq!(snippet(&long, 30), "Bearer ***");
+        assert_eq!(label(&long, "claude").unwrap(), "Bearer ***");
+        assert_eq!(md_html(&mask_secrets("Bearer abcdef123"), MAX_ANSWER), "Bearer ***");
     }
 
     #[test]
