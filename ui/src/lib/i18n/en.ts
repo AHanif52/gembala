@@ -1038,6 +1038,8 @@ export default {
   "hn.openPane": "Open pane",
   "hn.shipAsk": "Everything passed. Ship is yours: commit from the changes panel.",
   "hn.shipDone": "I've shipped it",
+  "hn.openChanges": "Open changes",
+  "hn.openChangesTip": "Open the changes panel for this run's work folder: review the diff, commit, discard. Then press I've shipped it.",
   "hn.shipHint": "Gembala never commits, pushes, or opens a PR by itself.",
   "hn.gateAsk": "{name} is done. Continue?",
   "hn.gateGo": "Continue",

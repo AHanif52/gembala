@@ -757,6 +757,13 @@
     loadChanges(pane);
   }
 
+  /// FR-23/FR-26: the Ship card in the flow view asks for the panel, not the toggle (the panel may already be open on
+  /// another pane). Depends on that pane's folder, which is the run folder.
+  function showChanges(pane: number) {
+    if (changes && changes.pane === pane) return void refreshGit(pane);
+    loadChanges(pane);
+  }
+
   /// FR-22: the docked panel follows the focused pane; the old diff stays until the new one arrives
   async function loadChanges(pane: number) {
     const same = changes?.pane === pane;
@@ -2743,7 +2750,7 @@
     <div class="paused" role="status">{tt("main.paused")}</div>
   {/if}
   {#if flow && ws && runs[ws.id]}
-    <HarnessFlow snap={runs[ws.id]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onclose={() => (flow = false)} />
+    <HarnessFlow snap={runs[ws.id]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onchanges={(p: number) => ((flow = false), showChanges(p))} onclose={() => (flow = false)} />
   {/if}
   {#if newTask && ws}
     <NewTask

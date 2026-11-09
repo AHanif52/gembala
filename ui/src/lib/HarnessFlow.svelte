@@ -3,10 +3,13 @@
   // event trail, and the user's buttons: approve the gate (Ship included), stop, take over, give back. All through the
   // UI channel (SEC-20); the daemon decides what each button means in the current state.
   import { call } from "./daemon";
-  import { clock, live, stepView, type Snap } from "./harness";
+  import { clock, live, stagePanes, stepView, type Snap } from "./harness";
   import { errText, t, tOr } from "./i18n/state.svelte";
 
-  let { snap, onchange, onjump, onclose }: { snap: Snap; onchange: (s: Snap) => void; onjump: (pane: number) => void; onclose: () => void } = $props();
+  let { snap, onchange, onjump, onchanges, onclose }: { snap: Snap; onchange: (s: Snap) => void; onjump: (pane: number) => void; onchanges: (pane: number) => void; onclose: () => void } = $props();
+
+  /// FR-23/FR-26: the Ship card opens the changes panel for the run's work pane (all stage panes share the run folder)
+  const lastPane = (s: Snap) => stagePanes(s).at(-1)?.pane ?? null;
 
   let error = $state("");
   const act = (method: string) =>
@@ -44,7 +47,14 @@
     {#if snap.state === "gate"}
       <div class="gate" role="status">
         <span>{snap.steps[snap.gate ?? 0]?.human ? t("hn.shipAsk") : t("hn.gateAsk", { name: stepName(snap.gate) })}</span>
-        <button class="mini go" onclick={() => act("harness.gate")}>{snap.steps[snap.gate ?? 0]?.human ? t("hn.shipDone") : t("hn.gateGo")}</button>
+        <div class="acts">
+          {#if snap.steps[snap.gate ?? 0]?.human}
+            {@const pane = lastPane(snap)}
+            <button class="mini" disabled={pane == null} title={t("hn.openChangesTip")}
+              onclick={() => { if (pane != null) { onchanges(pane); onclose(); } }}>{t("hn.openChanges")}</button>
+          {/if}
+          <button class="mini go" onclick={() => act("harness.gate")}>{snap.steps[snap.gate ?? 0]?.human ? t("hn.shipDone") : t("hn.gateGo")}</button>
+        </div>
       </div>
       {#if snap.steps[snap.gate ?? 0]?.human}<p class="hint">{t("hn.shipHint")}</p>{/if}
     {/if}

@@ -1023,6 +1023,8 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "hn.openPane": "Buka pane",
   "hn.shipAsk": "Semua lulus. Ship urusan lu: commit lewat panel perubahan.",
   "hn.shipDone": "Udah gue ship",
+  "hn.openChanges": "Buka perubahan",
+  "hn.openChangesTip": "Buka panel perubahan untuk folder kerja run ini: cek diff, commit, batal. Setelah itu baru tekan Udah gue ship.",
   "hn.shipHint": "Gembala gak pernah commit, push, atau buka PR sendiri.",
   "hn.gateAsk": "{name} udah beres. Lanjut?",
   "hn.gateGo": "Lanjut",
