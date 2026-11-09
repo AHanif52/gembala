@@ -21,6 +21,8 @@ const MAX_FILE: u64 = 64 * 1024;
 const MAX_TEXT: usize = 4000;
 /// written by "New task" (FR-73) before the first step, so a step may list it as an input
 pub const REQUEST_FILE: &str = "permintaan.md";
+/// written by the runner from the run's trace (FR-26, Laporan step input); available to any step that lists it
+pub const TRAIL_FILE: &str = "jejak.md";
 
 const FALLBACK_ON: &[&str] = &["exit", "timeout", "unknown", "limit"];
 const EFFORTS: &[&str] = &["low", "medium", "high", "max"];
@@ -457,7 +459,7 @@ fn order(steps: &mut Vec<Step>, cx: &mut Ctx) {
             }
         }
     }
-    let mut made: Vec<&str> = vec![REQUEST_FILE];
+    let mut made: Vec<&str> = vec![REQUEST_FILE, TRAIL_FILE];
     for s in steps.iter() {
         for n in &s.inputs {
             if !made.contains(&n.as_str()) {
@@ -526,6 +528,18 @@ timeout = "15m"
 id = "ship"
 name = "Ship"
 human = true
+
+[[step]]
+id = "report"
+name = "Laporan"
+kind = "work"
+agents = ["claude", "omp"]
+model = "haiku"
+effort = "low"
+instruction = "Baca jejak jalan ini, lalu tulis laporan singkat ke laporan.md: tahap yang jalan, agent yang dipakai, putaran perbaikan, cadangan beserta alasannya, durasi, dan hasil akhir. Jangan ubah file lain."
+inputs = ["jejak.md"]
+output = "laporan.md"
+timeout = "5m"
 "#;
 
 const BUGFIX: &str = r#"name = "Perbaiki bug"
@@ -783,11 +797,15 @@ mod tests {
             assert!(p.errors.is_empty() && p.warnings.is_empty(), "{:?} {:?}", p.errors, p.warnings);
         }
         let r = ok(FEATURE);
-        assert_eq!(r.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["plan", "execute", "test", "scan-security", "ship"]);
+        assert_eq!(r.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["plan", "execute", "test", "scan-security", "ship", "report"]);
         let t = &r.steps[2];
         assert!(t.shell && t.pass == "exit0" && t.kind == "check");
         assert_eq!(r.steps[3].pass, "first_line_pass");
         assert_eq!(r.steps[0].pass, "file");
+        // Laporan: after Ship, reads the runner's trail, haiku/low/5m (BRD 8)
+        let rep = &r.steps[5];
+        assert!(rep.kind == "work" && !rep.human && rep.inputs.iter().any(|n| n == TRAIL_FILE) && rep.timeout_secs == 300);
+        assert_eq!((rep.model.as_str(), rep.effort.as_str()), ("haiku", "low"));
     }
 
     #[test]

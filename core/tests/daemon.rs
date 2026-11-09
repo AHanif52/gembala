@@ -1608,6 +1608,10 @@ fn harness_saver_writes_the_reduced_test_log() {
     // the full log is still there: the verdict and a later reader that wants everything are not fooled
     let full = std::fs::read_to_string(cfg.join("harness").join(&run).join("artefak/test.log")).unwrap();
     assert!(full.matches("baris-").count() >= 300, "log utuh hilang");
+    // FR-26/H6: the Laporan input is written from the trace, without an agent
+    let trail = std::fs::read_to_string(cfg.join("harness").join(&run).join("artefak/jejak.md")).unwrap();
+    assert!(trail.starts_with("# Jejak jalan \"t\"") && trail.contains("- plan [plan] agent: omp"), "{trail}");
+    assert!(trail.contains("## Kejadian") && trail.contains("| shell_fail |"), "{trail}");
     ui.call("harness.stop", json!({"run": run}));
 }
 

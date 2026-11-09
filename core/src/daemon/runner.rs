@@ -216,6 +216,76 @@ fn handoff(l: &Live, name: &str) -> PathBuf {
     if l.run.recipe.token_saver && red.is_file() { red } else { art.join(name) }
 }
 
+fn stamp(secs: u64) -> String {
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// FR-26, H6: the run's trail, written to `artefak/jejak.md` and read by the Laporan stage. Deterministic: built from
+/// the recipe and the trace only, never from the clock or the screen.
+pub fn trail(recipe: &recipe::Recipe, state: &Hs, trace: &[harness::Entry], agents: &HashMap<usize, String>, round: u32, elapsed: u64) -> String {
+    let mut out = format!("# Jejak jalan \"{}\"\n\n", recipe.name);
+    let result = match state {
+        Hs::Idle => "belum mulai".to_string(),
+        Hs::Running => "sedang jalan".to_string(),
+        Hs::Gate(i) => format!("menunggu gerbang \"{}\"", recipe.steps.get(*i).map_or("", |s| s.name.as_str())),
+        Hs::TakenOver => "diambil alih pengguna".to_string(),
+        Hs::Done => "selesai".to_string(),
+        Hs::Halted(h) => {
+            let (code, step) = halt_code(h);
+            let at = step.and_then(|i| recipe.steps.get(i)).map(|s| format!(" di tahap \"{}\"", s.name)).unwrap_or_default();
+            format!("berhenti ({code}){at}")
+        }
+    };
+    out += &format!("- Durasi: {}\n- Putaran perbaikan: {} dari {}\n- Hasil: {result}\n\n## Tahap\n", stamp(elapsed), round, recipe.max_rounds);
+    for (i, s) in recipe.steps.iter().enumerate() {
+        let agent = if s.human {
+            "manusia".to_string()
+        } else if s.shell {
+            "shell".to_string()
+        } else {
+            agents.get(&i).cloned().unwrap_or_else(|| "belum jalan".to_string())
+        };
+        let first = trace.iter().find(|e| e.step == Some(i));
+        let last = trace.iter().rev().find(|e| e.step == Some(i) && e.code != "skip_worker");
+        let status = last.map_or("-", |e| e.code);
+        let when = match (first, last) {
+            (Some(a), Some(b)) => format!(" ({}–{})", stamp(a.at), stamp(b.at)),
+            _ => String::new(),
+        };
+        out += &format!("- {} [{}] agent: {agent}; status: {status}{when}\n", s.name, s.id);
+    }
+    let falls: Vec<&harness::Entry> = trace.iter().filter(|e| matches!(e.code, "exit" | "timeout" | "unknown" | "limit")).collect();
+    out += "\n## Cadangan\n";
+    if falls.is_empty() {
+        out += "- tidak ada\n";
+    }
+    for e in falls {
+        let Some(s) = e.step.and_then(|i| recipe.steps.get(i)) else { continue };
+        let from = e.agent.clone().unwrap_or_default();
+        let next = s
+            .agents
+            .iter()
+            .position(|a| *a == from)
+            .and_then(|p| s.agents.get(p + 1))
+            .cloned()
+            .unwrap_or_else(|| "tidak ada lagi (berhenti)".to_string());
+        out += &format!("- {}: {from} pindah karena {}, agent berikutnya: {next}\n", s.name, e.code);
+    }
+    out += "\n## Kejadian\n\n| waktu | kode | tahap | agent |\n| --- | --- | --- | --- |\n";
+    for e in trace {
+        let step = e.step.and_then(|i| recipe.steps.get(i)).map_or(String::new(), |s| s.name.clone());
+        out += &format!("| {} | {} | {step} | {} |\n", stamp(e.at), e.code, e.agent.clone().unwrap_or_default());
+    }
+    out
+}
+
+/// Write (or refresh) `artefak/jejak.md`; the Laporan stage and the user read this file.
+fn write_trail(l: &Live) {
+    let elapsed = l.run.trace.last().map_or(0, |e| e.at);
+    let text = trail(&l.run.recipe, &l.run.state, &l.run.trace, &l.agents, l.run.round, elapsed);
+    let _ = config::write_atomic(&l.dir.join("artefak").join(recipe::TRAIL_FILE), text.as_bytes());
+}
+
 /// the stage message (BRD 8 rule 1): paths of artifacts, never their content, so nothing a stage wrote becomes an instruction
 fn stage_message(l: &Live, step: usize) -> String {
     let s = &l.run.recipe.steps[step];
@@ -464,10 +534,15 @@ fn feed(st: &Arc<State>, l: &mut Live, ev: Event) {
             }
         }
     }
+    let grew = l.trace_saved < l.run.trace.len();
     for e in &l.run.trace[l.trace_saved..] {
         audit(st, l, e.code, e.step, e.agent.as_deref());
     }
     l.trace_saved = l.run.trace.len();
+    if grew {
+        // FR-26/H6: the Laporan stage reads this; the file exists before the next stage's message can be read
+        write_trail(l);
+    }
     if terminal(&l.run.state) {
         close_shell(l);
         l.outbox = None;
@@ -820,5 +895,30 @@ mod tests {
         assert_eq!(reduced_name("test.log"), "test.ringkas.log");
         assert_eq!(reduced_name("plan.md"), "plan.ringkas.md");
         assert_eq!(reduced_name("catatan"), "catatan.ringkas");
+    }
+
+    #[test]
+    fn trail_lists_stages_fallbacks_and_result() {
+        let text = "[[step]]\nid = \"plan\"\nname = \"Plan\"\nagents = [\"claude\", \"omp\"]\noutput = \"plan.md\"\n[[step]]\nid = \"test\"\nname = \"Test\"\nkind = \"check\"\nshell = true\n[[step]]\nid = \"ship\"\nhuman = true\n[[step]]\nid = \"report\"\nname = \"Laporan\"\nkind = \"work\"\nagents = [\"claude\"]\ninputs = [\"jejak.md\"]\noutput = \"laporan.md\"\n";
+        let recipe = crate::recipe::parse(text, "t", None).recipe.unwrap();
+        let trace = vec![
+            harness::Entry { at: 0, code: "start", step: None, agent: None },
+            harness::Entry { at: 2, code: "send", step: Some(0), agent: Some("claude".into()) },
+            harness::Entry { at: 9, code: "exit", step: Some(0), agent: Some("claude".into()) },
+            harness::Entry { at: 9, code: "send", step: Some(0), agent: Some("omp".into()) },
+            harness::Entry { at: 20, code: "pass", step: Some(0), agent: Some("omp".into()) },
+            harness::Entry { at: 20, code: "gate", step: Some(2), agent: None },
+        ];
+        let agents = HashMap::from([(0usize, "omp".to_string())]);
+        let out = trail(&recipe, &Hs::Gate(2), &trace, &agents, 1, 20);
+        assert!(out.starts_with("# Jejak jalan \"t\""), "{out}");
+        assert!(out.contains("- Durasi: 0:20") && out.contains("- Putaran perbaikan: 1 dari 2"), "{out}");
+        assert!(out.contains("menunggu gerbang \"ship\""), "{out}");
+        assert!(out.contains("Plan [plan] agent: omp; status: pass (0:02–0:20)"), "{out}");
+        assert!(out.contains("Laporan [report] agent: belum jalan"), "{out}");
+        assert!(out.contains("Plan: claude pindah karena exit, agent berikutnya: omp"), "{out}");
+        assert!(out.contains("| 0:20 | gate | ship |  |"), "{out}");
+        // same inputs, same text (no clock): the file is stable across a rewrite
+        assert_eq!(out, trail(&recipe, &Hs::Gate(2), &trace, &agents, 1, 20));
     }
 }
