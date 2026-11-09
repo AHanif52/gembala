@@ -333,6 +333,9 @@ export default {
   "chg.copyFailed": "Couldn't copy",
   // Tile (pane terminal)
   "tile.secs": "{n} s",
+  "tile.codex.ctx": "ctx",
+  "tile.codex.5h": "5h",
+  "tile.codex.week": "7d",
   "tile.mins": "{n} min",
   "tile.hours": "{n} h",
   "tile.running": "running",
@@ -429,6 +432,8 @@ export default {
   "set.look.blocks": "Command blocks",
   "set.look.timeline": "Command timeline",
   "set.look.timelineSub": "A dot per command, a folder · duration · exit head, Rerun/Edit/Copy buttons. Off = shell panes are a plain terminal",
+  "set.look.codex": "Codex status like Claude",
+  "set.look.codexSub": "Model, context, and 5-hour/weekly usage as bars at the bottom of Codex panes. Off = your own Codex footer (tui.status_line) is kept. Applies to Codex started after this",
   "set.agent.hook.claude": "official hooks",
   // Settings: agents, accounts, add-ons
   "common.close": "Close",

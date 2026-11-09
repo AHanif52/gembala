@@ -31,7 +31,14 @@ pub struct Mcp {
 pub struct Addons {
     pub plugins: Vec<Plugin>,
     pub mcp: Vec<Mcp>,
+    /// `[ui] codex_status`: Codex footer items the pane header reads (Tile.svelte). Off = the user's own
+    /// `tui.status_line` from ~/.codex stays, since `-c` always wins over it
+    pub codex_status: bool,
 }
+
+/// Codex footer, passed per launch so Gembala never edits ~/.codex/config.toml (SEC-15). Item names checked in the
+/// codex 0.166.0 binary; `codex-status.ts` parses them in this order.
+pub const CODEX_STATUS_LINE: &str = "tui.status_line=[\"model-with-reasoning\",\"context-remaining\",\"context-window-size\",\"five-hour-limit\",\"weekly-limit\",\"used-tokens\",\"current-dir\"]";
 
 const SCOPES: &[&str] = &["off", "all", "workspaces"];
 
@@ -122,7 +129,12 @@ pub fn args(a: &Addons, agent: &str, ws: &str) -> Vec<String> {
         }
         // checked with codex 0.166.0 on 4 Nov 2026: a server given by `-c` is spawned and its tools listed.
         // Codex has no strict flag, so its own servers stay loaded.
-        "codex" => out.extend(mcp.map(|m| codex_mcp(&m.path)).unwrap_or_default()),
+        "codex" => {
+            out.extend(mcp.map(|m| codex_mcp(&m.path)).unwrap_or_default());
+            if a.codex_status {
+                out.extend(["-c".to_string(), CODEX_STATUS_LINE.into()]);
+            }
+        }
         _ => {}
     }
     out
@@ -200,6 +212,13 @@ mod tests {
             ["-c", r#"mcp_servers.probe.command="node""#, "-c", r#"mcp_servers.probe.args=["srv.js","a \"b\""]"#, "-c", r#"mcp_servers.web.url="https://x.test/mcp""#]
         );
         assert!(args(&a, "codex", "ws2").is_empty());
+        // `[ui] codex_status` on: Codex only, after its MCP servers; the shown command hides it like the others
+        let a = Addons { codex_status: true, ..a };
+        assert_eq!(args(&a, "codex", "ws2"), ["-c", CODEX_STATUS_LINE]);
+        assert!(args(&a, "omp", "ws3").is_empty());
+        let typed: Vec<String> = ["codex"].into_iter().map(String::from).chain(args(&a, "codex", "ws1")).chain(["resume".into()]).collect();
+        assert_eq!(crate::profile::shown_args(&typed), "codex resume");
+        let _: toml_edit::DocumentMut = CODEX_STATUS_LINE.parse().unwrap();
         let _ = std::fs::remove_dir_all(base);
     }
 

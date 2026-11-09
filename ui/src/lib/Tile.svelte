@@ -13,6 +13,7 @@
   import { errText, i18n, t } from "./i18n/state.svelte";
   import { safeResume } from "./resume";
   import { encodeKey, onCsi } from "./kitty";
+  import { codexStatus, type CodexStatus } from "./codex-status";
   import type { Ui } from "./config";
 
   let {
@@ -30,6 +31,7 @@
     onfocusin,
     onused,
     onblock,
+    codexPane = false,
   }: {
     pane: number;
     focused: boolean;
@@ -45,6 +47,7 @@
     onfocusin: () => void; // FR-59: the terminal has keyboard focus (the page moves it to the editor when shown)
     onused: () => void; // FR-59: the screen already had text at attach (pane isn't new)
     onblock: (kind: "cmd" | "out" | "reuse" | "copy" | "run" | "output", text: string) => void; // FR-58: block action buttons; FR-56: timeline
+    codexPane?: boolean; // Codex runs in this pane: its footer is drawn as the status overlay
   } = $props();
 
   // ponytail: two fixed palettes; a 16-color palette from config comes later if asked for
@@ -78,6 +81,15 @@
   let input = $state<HTMLInputElement>();
   const FIND_H = 32; // pen 04: find bar height; the terminal moves down below it
   const enc = new TextEncoder();
+  let codex = $state<CodexStatus | null>(null);
+  $effect(() => {
+    void [codexPane, ui.codex_status]; // agent started/exited or the switch flipped: no new output needed to update
+    if (ready) updateCodexStatus();
+  });
+  const meters = (c: CodexStatus) =>
+    ([["tile.codex.ctx", c.context], ["tile.codex.5h", c.fiveHour], ["tile.codex.week", c.weekly]] as const).filter((m): m is [typeof m[0], number] => m[1] !== undefined);
+  let codexRow = $state(-1);
+  let codexKey = "";
 
   $effect(() => {
     if (focused && ready && !finding) term.focus();
@@ -413,6 +425,26 @@
     sticky = !timeline || term.buffer.active.type === "alternate" ? null : (blocks.findLast((b) => b.cmd && b.a.line < top && (!b.d || b.d.line > top)) ?? null);
   }
 
+  /// Codex panes only (a shell printing a footer-like line keeps its text), and only the lowest 3 rows with text (same
+  /// rows as anchor(): a screen that isn't full yet is lifted, not filled): the footer sits under Codex's input box
+  function updateCodexStatus() {
+    const b = term.buffer.active;
+    let status: CodexStatus | null = null;
+    let row = -1;
+    const top = b.viewportY;
+    for (let y = top + term.rows - 1, seen = 0; codexPane && ui.codex_status !== false && y >= top && seen < 3; y--) {
+      const text = b.getLine(y)?.translateToString(true) ?? "";
+      if (!text.trim()) continue;
+      seen++;
+      if ((status = codexStatus(text))) {
+        row = y - top;
+        break;
+      }
+    }
+    const key = status ? `${row}:${JSON.stringify(status)}` : "";
+    if (key !== codexKey) [codexKey, codex, codexRow] = [key, status, row];
+  }
+
   /// FR-58: ⌘↑/⌘↓ jump to the start of the block before/after the top screen row
   export function jump(dir: -1 | 1) {
     const top = term.buffer.active.viewportY;
@@ -465,7 +497,7 @@
     host.addEventListener("mousemove", onHover);
     host.addEventListener("mouseleave", leave);
     term.onScroll(updateSticky);
-    term.onRender(anchor); // every write, resize, and alternate screen switch
+    term.onRender(() => (anchor(), updateCodexStatus())); // every write, resize, and alternate screen switch
     ready = true;
     fit.fit();
 
@@ -650,6 +682,17 @@
 {/snippet}
 
 <div class="term" class:finding bind:this={el} style:--lift="{lift}px"></div>
+{#if codex}
+  <!-- Codex footer drawn like Claude's status: bars = share used, amber from 80%, red from 95% -->
+  <div class="codex-status" style:top="{10 + (finding ? FIND_H : 0) + codexRow * rowHeight() + lift}px" style:--row-height="{rowHeight()}px"
+    aria-label={[`Codex ${codex.model} ${codex.effort}`, ...meters(codex).map(([k, n]) => `${t(k)} ${n}%`)].join("; ")}>
+    <span class="codex-name">◎ {codex.model}</span>{#if codex.effort}<span class="codex-effort">⚡ {codex.effort}</span>{/if}
+    {#each meters(codex) as [k, n] (k)}
+      <span class="codex-metric" class:warn={n >= 80} class:full={n >= 95}>{t(k)}<i><em style:width="{n}%"></em></i>{n}%</span>
+    {/each}
+    {#if codex.window}<span>{codex.window}</span>{/if}{#if codex.tokens}<span>{codex.tokens}</span>{/if}{#if codex.dir}<span class="codex-dir">{codex.dir}</span>{/if}
+  </div>
+{/if}
 {#if sticky}
   <!-- FR-58: sticky block head -->
   <div class="sticky" style:top={finding ? `${FIND_H}px` : null} class:fail={!!sticky.code} class:run={!sticky.d}>
@@ -701,6 +744,19 @@
   .term :global(.xterm) {
     transform: translateY(var(--lift, 0px));
   }
+  .codex-status {
+    position: absolute; z-index: 2; left: 22px; right: 8px; display: flex; align-items: center; gap: 9px;
+    height: var(--row-height, 20px); padding: 0 7px; overflow: hidden; border-radius: 3px; background: var(--bg);
+    color: var(--muted); font: 11px/1 system-ui, -apple-system, sans-serif; pointer-events: none; white-space: nowrap;
+  }
+  .codex-name { color: var(--tx-codex, #10a37f); font-weight: 650; }
+  .codex-effort { color: var(--tx-purple, #a855f7); }
+  .codex-metric { display: inline-flex; align-items: center; gap: 5px; --bar: var(--tx-codex, #10a37f); }
+  .codex-metric.warn { --bar: var(--tx-amber, #fbbf24); }
+  .codex-metric.full { --bar: var(--tx-red, #f87171); }
+  .codex-metric i { width: 36px; height: 4px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 16%, transparent); }
+  .codex-metric i em { display: block; height: 100%; border-radius: inherit; background: var(--bar); }
+  .codex-dir { overflow: hidden; color: var(--tx-purple, #a855f7); text-overflow: ellipsis; }
   /* FR-58: block decorations (created by xterm outside the component, hence :global) */
   .term :global(.blk) {
     box-sizing: border-box;

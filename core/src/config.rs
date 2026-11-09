@@ -43,6 +43,8 @@ const UI: &[(&str, Kind)] = &[
     // FR-58: command block timeline in shell panes (line, dot, block head, Rerun/Edit/Copy buttons);
     // off = plain terminal, OSC 133 markers are still tracked for block jumps
     ("command_timeline", Bool(true)),
+    // Codex footer shown like Claude's status (model, context, 5h/weekly usage); off = the user's own Codex footer
+    ("codex_status", Bool(true)),
     // FR-20: Cmd+Q = app closes, agents keep running (keep) or every pane is stopped (stop)
     ("on_quit", Enum(&["keep", "stop"], "keep")),
 ];
@@ -224,8 +226,9 @@ pub fn load(text: Option<&str>) -> Config {
     }
     values.insert("profiles".into(), profiles.iter().map(crate::profile::to_json).collect());
     values.insert("accounts".into(), accounts.iter().map(crate::account::to_json).collect());
-    let (addons, aerr) = crate::addon::from_config(doc.as_ref(), path().parent().unwrap_or(Path::new("/")));
+    let (mut addons, aerr) = crate::addon::from_config(doc.as_ref(), path().parent().unwrap_or(Path::new("/")));
     errors.extend(aerr);
+    addons.codex_status = values.get("ui").and_then(|u| u["codex_status"].as_bool()).unwrap_or(true);
     values.insert("addons".into(), crate::addon::to_json(&addons));
     Config { values: Value::Object(values), errors, broken: false, profiles, accounts, addons }
 }
@@ -598,6 +601,9 @@ mod tests {
         assert_eq!(load(None).values["ui"]["command_timeline"], true);
         let c = load(Some("[ui]\ncommand_timeline = false\n"));
         assert_eq!(c.values["ui"]["command_timeline"], false);
+        // Codex footer: on by default, off leaves the user's own `tui.status_line` alone
+        assert!(load(None).addons.codex_status && c.addons.codex_status);
+        assert!(!load(Some("[ui]\ncodex_status = false\n")).addons.codex_status);
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         let c = load(Some("[ui]\ncommand_timeline = \"mati\"\n"));
         assert_eq!(c.values["ui"]["command_timeline"], true);

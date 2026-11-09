@@ -13,6 +13,7 @@ export type Ui = {
   screen_reader: boolean;
   input_editor: boolean;
   command_timeline: boolean; // FR-58: command block timeline in shell panes
+  codex_status: boolean; // Codex footer drawn like Claude's status; off = the user's own Codex footer
   on_quit: "keep" | "stop";
 };
 
@@ -91,6 +92,7 @@ export const UI_DEFAULT: Ui = {
   screen_reader: false,
   input_editor: true,
   command_timeline: true,
+  codex_status: true,
   on_quit: "keep",
 };
 

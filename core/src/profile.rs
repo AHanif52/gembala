@@ -286,7 +286,7 @@ Do not look for processes via ps.";
 /// The hint is matched by its opening sentence, not the whole text: the hook file can come from another daemon build.
 /// `--session-id` is added by Gembala's zsh function too; the session card already shows `claude --resume <id>`.
 pub fn shown_args(args: &[String]) -> String {
-    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"") || a.starts_with("mcp_servers.") || a == "--strict-mcp-config";
+    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"") || a.starts_with("mcp_servers.") || a.starts_with("tui.status_line=") || a == "--strict-mcp-config";
     let mut out: Vec<&str> = vec![];
     let mut skip = false;
     for a in args {
