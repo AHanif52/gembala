@@ -275,6 +275,26 @@ fn ctx_compose_file_and_pane() {
     assert_eq!(compose(&mut ui, "biasa aja".into())["body"], "biasa aja");
 }
 
+/// FR-27, SEC-31: the reader's switch decides; a reduced block keeps the label and merges repeated lines.
+#[test]
+fn saver_on_only_when_the_switch_is_on() {
+    let d = start("saver");
+    let mut ui = Cli::ui(&d);
+    let b = ui.call("pane.create", json!({"cmd": "i=0; while [ $i -lt 60 ]; do echo SAMA-BARIS; i=$((i+1)); done; sleep 30"}))["result"].clone();
+    let name = b["name"].as_str().unwrap();
+    ui.attach_until(b["pane"].as_u64().unwrap(), &["SAMA-BARIS"]);
+    let a = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.readable", json!({"pane": b["pane"], "on": true}));
+    let compose = |ui: &mut Cli| ui.call("ctx.compose", json!({"pane": a, "text": format!("cek @pane:{name}")}))["result"]["body"].as_str().unwrap_or_default().to_string();
+
+    let off = compose(&mut ui);
+    assert!(off.matches("SAMA-BARIS").count() > 10, "{off}");
+    ui.call("config.set", json!({"section": "harness", "key": "token_saver", "value": true}));
+    let on = compose(&mut ui);
+    assert!(on.contains("SAMA-BARIS (×"), "{on}");
+    assert_eq!(on.matches("SAMA-BARIS").count(), 1, "{on}");
+}
+
 /// A client that attaches but doesn't read is dropped when its queue fills; the pane keeps running to the end.
 #[test]
 fn klien_lambat_diputus() {

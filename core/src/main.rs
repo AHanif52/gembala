@@ -13,6 +13,7 @@ mod profile;
 mod pty;
 mod recipe;
 mod rundir;
+mod saver;
 mod sign;
 mod snap;
 

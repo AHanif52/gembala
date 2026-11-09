@@ -44,6 +44,12 @@ impl Registry {
     pub fn is_sender(&self, from: u64) -> bool {
         self.from_ws.contains_key(&from)
     }
+
+    /// FR-27: live runs, cloned so the caller can lock one without holding the registry (the ticker locks them the
+    /// other way round).
+    pub fn runs(&self) -> Vec<Arc<Mutex<Live>>> {
+        self.runs.values().cloned().collect()
+    }
 }
 
 struct Outbox {
@@ -83,6 +89,13 @@ pub struct Live {
     released: bool,
     /// what the last published snapshot was built from, so an unchanged tick is not rewritten or broadcast
     sig: (usize, &'static str, usize, usize, bool),
+}
+
+impl Live {
+    /// FR-27: the recipe's token-saver switch for one of this run's stage panes. `None` = not a stage pane.
+    pub fn saver_for(&self, pane: u64) -> Option<bool> {
+        self.panes.values().any(|p| *p == pane).then_some(self.run.recipe.token_saver)
+    }
 }
 
 fn installed(st: &State) -> Vec<String> {
