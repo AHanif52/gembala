@@ -851,6 +851,8 @@ export default {
   "pane.restart": "Restart {name}",
   "pane.addons.one": "{n} add-on",
   "pane.addons.other": "{n} add-ons",
+  "pane.saver": "saver",
+  "pane.saverTip": "Token saver is on for this pane: reads, test logs, and artifacts between stages are reduced. Turn it off in Settings › Harness (FR-27).",
   "pane.login": "Signing in to {name}: follow the login steps in this pane, or type",
   "pane.name": "Pane name",
   "pane.renameTip": "Double-click to rename",

@@ -323,21 +323,28 @@ pub const ROLES: &[(&str, bool, &str)] = &[
 /// FR-4: Claude Code status hooks, same for profiles and a typed `claude`.
 /// PostToolUse: `blocked` goes back to `working` once permission is granted (PreToolUse runs before the permission dialog).
 /// StopFailure: the turn stopped on an API/limit error; without this the pane stays "working".
-fn claude_hooks(exe: &str) -> Value {
+/// FR-27: `rtk hook claude` on Bash only when the saver is on and `rtk` is on PATH (SEC-31; Gembala never reads the agent's
+/// own config, so a user-installed RTK means the user turns this switch off).
+fn claude_hooks(exe: &str, rtk: bool) -> Value {
     let one = |ev: &str| json!([{"hooks": [{"type": "command", "command": format!("{} hook claude {ev}", q(exe))}]}]);
+    let mut pre = Vec::new();
+    if rtk {
+        pre.push(json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]}));
+    }
+    pre.push(json!({"hooks": [{"type": "command", "command": format!("{} hook claude tool", q(exe))}]}));
     json!({"hooks": {
-        "UserPromptSubmit": one("prompt"), "PreToolUse": one("tool"), "PostToolUse": one("tool"), "Stop": one("stop"), "StopFailure": one("stop"),
+        "UserPromptSubmit": one("prompt"), "PreToolUse": pre, "PostToolUse": one("tool"), "Stop": one("stop"), "StopFailure": one("stop"),
         "Notification": one("notify"), "SessionStart": one("start"),
     }})
 }
 
-fn hook_flags(p: &Profile, h: &Hooks) -> (Vec<String>, Vec<(String, String)>) {
+fn hook_flags(p: &Profile, h: &Hooks, saver: bool) -> (Vec<String>, Vec<(String, String)>) {
     let petunjuk = if p.brief.is_empty() { PETUNJUK.to_string() } else { format!("{PETUNJUK}\n\n{}", p.brief) };
     let petunjuk = petunjuk.as_str();
     let file = |name: &str| h.dir.join(name).to_string_lossy().into_owned();
     match p.agent.as_str() {
         "claude" => {
-            let mut f = vec!["--settings".into(), claude_hooks(&h.exe).to_string(), "--append-system-prompt".into(), petunjuk.into()];
+            let mut f = vec!["--settings".into(), claude_hooks(&h.exe, saver && rtk_version().is_some()).to_string(), "--append-system-prompt".into(), petunjuk.into()];
             if p.readonly {
                 f.push("--disallowedTools".into());
                 f.extend(READONLY_TOOLS.iter().map(|t| t.to_string()));
@@ -402,7 +409,7 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     // FR-67: manual omp gets hooks too (status + message tool) and the omp-specific hint
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
     // FR-4, FR-61: typed Claude = same hooks as the profile (status, session id + owning account); the daemon doesn't read its screen
-    let start = q(&claude_hooks(exe).to_string());
+    let start = q(&claude_hooks(exe, false).to_string());
     format!(
         "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
@@ -582,11 +589,11 @@ pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
 /// Text run by `$SHELL -l -c` (TECH section 6). `None` = interactive login shell.
 /// The agent runs in a subshell so secret env doesn't linger in the pane shell after the agent exits;
 /// then `exec $SHELL -l` keeps the pane alive (FR-18). Exit 127 = install message (FR-32).
-pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>) -> Option<String> {
+pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: bool) -> Option<String> {
     if p.command.is_empty() {
         return None;
     }
-    let (mut flags, hook_env) = h.map(|h| hook_flags(p, h)).unwrap_or_default();
+    let (mut flags, hook_env) = h.map(|h| hook_flags(p, h, saver)).unwrap_or_default();
     flags.extend(permission_flags(&p.agent, &p.permission));
     // before the session flags: Codex `resume <id>` is a subcommand, `-c` must come first
     flags.extend(p.addons.iter().cloned());
@@ -699,11 +706,15 @@ pub fn detect() -> Value {
 }
 
 /// FR-78/FR-27: RTK installed (same PATH as the panes)? Gembala only shows it; switching it is Fase 3.
+/// Taken once per daemon: a pane launch (`rtk` hook, FR-27) must not wait on a process every time.
 pub fn rtk_version() -> Option<String> {
-    let path = [user_path(), std::env::var("PATH").ok()].into_iter().flatten().collect::<Vec<_>>().join(":");
-    let mut c = Command::new("rtk");
-    c.arg("--version").env("PATH", path).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-    run_with_timeout(c, Duration::from_secs(3)).and_then(|out| version_of(&out))
+    static RTK: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+        let path = [user_path(), std::env::var("PATH").ok()].into_iter().flatten().collect::<Vec<_>>().join(":");
+        let mut c = Command::new("rtk");
+        c.arg("--version").env("PATH", path).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        run_with_timeout(c, Duration::from_secs(3)).and_then(|out| version_of(&out))
+    });
+    RTK.clone()
 }
 
 fn version_of(raw: &str) -> Option<String> {
@@ -783,17 +794,17 @@ mod tests {
             secret_env: vec![("K".into(), "keychain:svc/me@x".into()), ("O".into(), "op://V/I/f".into())],
             ..builtin()[1].clone()
         };
-        let s = launch(&p, None, None).unwrap();
+        let s = launch(&p, None, None, false).unwrap();
         assert!(s.starts_with("printf '\\033]777;gembala;agent-start\\007'; ( export X='a b'\\''c'; export D=\"$HOME\"/'.claude-kerja'; "), "{s}");
         assert!(s.contains("printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\""), "{s}");
         let quiet = Profile { summarize: false, ..p.clone() };
-        assert!(!launch(&quiet, None, None).unwrap().contains("777"));
+        assert!(!launch(&quiet, None, None, false).unwrap().contains("777"));
         assert!(s.contains("export K=\"$(security find-generic-password -w -s 'svc' -a 'me@x')\"; "), "{s}");
         assert!(s.contains("export O=\"$(op read 'op://V/I/f')\"; "), "{s}");
         assert!(s.contains("'my tool' 'it'\\''s' '$(id)' );"), "{s}");
         assert!(s.ends_with("exec \"$SHELL\" -l"), "{s}");
         assert!(s.contains("brew install --cask claude-code"), "{s}");
-        assert_eq!(launch(&builtin()[0], None, None), None);
+        assert_eq!(launch(&builtin()[0], None, None, false), None);
     }
 
     #[test]
@@ -804,7 +815,7 @@ mod tests {
         assert_eq!(auto("codex"), "--ask-for-approval never --sandbox workspace-write");
         assert!(permission_flags("opencode", "auto").is_empty() && permission_flags("claude", "default").is_empty());
         let p = Profile { permission: "auto".into(), ..builtin()[4].clone() };
-        assert!(launch(&p, None, None).unwrap().contains("'omp' '--approval-mode=yolo' );"));
+        assert!(launch(&p, None, None, false).unwrap().contains("'omp' '--approval-mode=yolo' );"));
         let (ps, errs) = parse("[[profile]]\nid = \"omp\"\npermission = \"yolo\"\n");
         assert!(errs.iter().any(|e| e.contains("opts=default, auto")) && ps.iter().all(|x| x.permission == "default"));
     }
@@ -813,7 +824,7 @@ mod tests {
     fn launch_jalan_dan_pesan_127() {
         // command missing: the install message shows, then a login shell (here `exit` through a fake SHELL env)
         let p = Profile { command: "gembala-tidak-ada-xyz".into(), ..builtin()[1].clone() };
-        let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None, None).unwrap()).output().unwrap();
+        let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None, None, false).unwrap()).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("Claude Code isn't in the login shell PATH") && text.contains("brew install"), "{text}");
     }
@@ -824,7 +835,7 @@ mod tests {
         for (agent, user) in [("claude", vec!["--model", "opus"]), ("codex", vec!["resume", "--last"]), ("omp", vec!["--verbose"])] {
             let p = builtin().into_iter().find(|p| p.id == agent).unwrap();
             let mut args: Vec<String> = vec![agent.into()];
-            args.extend(hook_flags(&p, &h).0);
+            args.extend(hook_flags(&p, &h, false).0);
             args.extend(user.iter().map(|s| s.to_string()));
             assert_eq!(shown_args(&args), format!("{agent} {}", user.join(" ")));
         }
@@ -842,7 +853,7 @@ mod tests {
     fn hook_dipasang_per_agent() {
         let h = Hooks { exe: "/Apps/Gem bala/gembala".into(), dir: "/cfg/hooks".into() };
         let by = |id: &str| builtin().into_iter().find(|p| p.id == id).unwrap();
-        let claude = launch(&by("claude"), Some(&h), None).unwrap();
+        let claude = launch(&by("claude"), Some(&h), None, false).unwrap();
         assert!(claude.contains("'claude' '--settings' '{\"hooks\":"), "{claude}");
         assert!(claude.contains("hook claude stop"), "{claude}");
         // zsh after the agent exits loads the hooks again (input editor + blocks), the user's ZDOTDIR carried along
@@ -852,14 +863,14 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/h /u");
         // `gembala` hint through the official flag; a single quote inside would break the shell quoting
         assert!(!PETUNJUK.contains('\'') && claude.contains(&format!("'--append-system-prompt' '{PETUNJUK}'")), "{claude}");
-        assert!(launch(&by("omp"), Some(&h), None).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK} {OMP_TOOLS}'")));
+        assert!(launch(&by("omp"), Some(&h), None, false).unwrap().contains(&format!("'--append-system-prompt={PETUNJUK} {OMP_TOOLS}'")));
         // FR-13: read-only role locked in Claude, brief goes into the hint
         let ro = Profile { readonly: true, brief: "Your role: reviewer.".into(), ..by("claude") };
-        let l = launch(&ro, Some(&h), None).unwrap();
+        let l = launch(&ro, Some(&h), None, false).unwrap();
         assert!(l.contains("'--disallowedTools' 'Edit' 'Write'") && l.contains("Your role: reviewer."), "{l}");
-        let c = launch(&Profile { readonly: true, brief: "B".into(), ..by("codex") }, Some(&h), None).unwrap();
+        let c = launch(&Profile { readonly: true, brief: "B".into(), ..by("codex") }, Some(&h), None, false).unwrap();
         assert!(!c.contains("disallowedTools") && c.contains("\\n\\nB"), "{c}");
-        let codex = launch(&by("codex"), Some(&h), None).unwrap();
+        let codex = launch(&by("codex"), Some(&h), None, false).unwrap();
         assert!(codex.contains("'-c' 'notify=[\"/Apps/Gem bala/gembala\",\"hook\",\"codex\",\"notify\"]'"), "{codex}");
         assert!(codex.contains(&format!("'-c' 'developer_instructions=\"{PETUNJUK}\"'")), "{codex}");
         let files = hook_files(&h);
@@ -875,14 +886,20 @@ mod tests {
         assert!(ok, "{rc}");
         assert!(rc.contains("--session-id") && rc.contains("hook\",\"codex\",\"notify") && rc.contains("function opencode {"), "{rc}");
         assert!(rc.contains("function claude {") && rc.contains("'/cfg/hooks/gembala.md'"), "{rc}");
-        assert!(launch(&by("opencode"), Some(&h), None).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
-        assert!(launch(&by("omp"), Some(&h), None).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
-        assert_eq!(launch(&by("shell"), Some(&h), None), None);
+        assert!(launch(&by("opencode"), Some(&h), None, false).unwrap().contains("export OPENCODE_CONFIG='/cfg/hooks/opencode.json'"));
+        assert!(launch(&by("omp"), Some(&h), None, false).unwrap().contains("'--hook=/cfg/hooks/omp-gembala.ts'"));
+        assert_eq!(launch(&by("shell"), Some(&h), None, false), None);
         // the Claude hook command runs in a shell: a path with spaces stays one word
-        let settings: serde_json::Value = serde_json::from_str(hook_flags(&by("claude"), &h).0[1].as_str()).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(hook_flags(&by("claude"), &h, false).0[1].as_str()).unwrap();
         assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
         assert_eq!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude tool");
         assert_eq!(settings["hooks"]["StopFailure"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
+        // FR-27: no saver = no RTK entry; saver + rtk found = RTK first, then Gembala's own tool hook
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().map(Vec::len), Some(1), "{settings}");
+        let with = claude_hooks("/x/gembala", true);
+        assert_eq!(with["hooks"]["PreToolUse"][0]["matcher"], "Bash", "{with}");
+        assert_eq!(with["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "rtk hook claude", "{with}");
+        assert_eq!(with["hooks"]["PreToolUse"][1]["hooks"][0]["command"], "'/x/gembala' hook claude tool", "{with}");
         // FR-4: a typed claude carries the same hooks (status from hooks, not the screen)
         assert!(rc.contains(&q(&settings.to_string())), "{rc}");
     }
@@ -893,23 +910,23 @@ mod tests {
         let id = "0b6f2a1e-5c3d-4e7f-8a9b-1c2d3e4f5a6b";
         let new = Session { id: Some(id.into()), resume: false };
         let again = Session { id: Some(id.into()), resume: true };
-        assert!(launch(&by("claude"), None, Some(&new)).unwrap().contains(&format!("'claude' '--session-id' '{id}'")));
-        assert!(launch(&by("claude"), None, Some(&again)).unwrap().contains(&format!("'claude' '--resume' '{id}'")));
+        assert!(launch(&by("claude"), None, Some(&new), false).unwrap().contains(&format!("'claude' '--session-id' '{id}'")));
+        assert!(launch(&by("claude"), None, Some(&again), false).unwrap().contains(&format!("'claude' '--resume' '{id}'")));
         // FR-68: exact id when there is one, "last session in folder" only without an id
-        assert!(launch(&by("codex"), None, Some(&again)).unwrap().contains(&format!("'codex' 'resume' '{id}'")));
-        assert!(launch(&by("opencode"), None, Some(&Session { id: Some("ses_4Ab-9".into()), resume: true })).unwrap().contains("'opencode' '--session' 'ses_4Ab-9'"));
+        assert!(launch(&by("codex"), None, Some(&again), false).unwrap().contains(&format!("'codex' 'resume' '{id}'")));
+        assert!(launch(&by("opencode"), None, Some(&Session { id: Some("ses_4Ab-9".into()), resume: true }), false).unwrap().contains("'opencode' '--session' 'ses_4Ab-9'"));
         // FR-72: the agent's own session picker = picker flag, no new session id
         let mut pick = by("claude");
         pick.args.extend(picker_flags("claude").iter().map(|s| s.to_string()));
-        let l = launch(&pick, None, Some(&Session { id: None, resume: false })).unwrap();
+        let l = launch(&pick, None, Some(&Session { id: None, resume: false }), false).unwrap();
         assert!(l.contains("'claude' '--resume'") && !l.contains("--session-id"), "{l}");
         assert!(picker_flags("opencode").is_empty());
         let none = Session { id: None, resume: true };
-        assert!(launch(&by("codex"), None, Some(&none)).unwrap().contains("'codex' 'resume' '--last'"));
-        assert!(launch(&by("opencode"), None, Some(&none)).unwrap().contains("'opencode' '--continue'"));
+        assert!(launch(&by("codex"), None, Some(&none), false).unwrap().contains("'codex' 'resume' '--last'"));
+        assert!(launch(&by("opencode"), None, Some(&none), false).unwrap().contains("'opencode' '--continue'"));
         assert!(!valid_session("opencode", "a b") && !valid_session("codex", "ses_1") && valid_session("omp", "01a19b03-x"));
         let bad = Session { id: Some("x; rm -rf /".into()), resume: false };
-        assert!(!launch(&by("claude"), None, Some(&bad)).unwrap().contains("rm"));
+        assert!(!launch(&by("claude"), None, Some(&bad), false).unwrap().contains("rm"));
         assert!(valid_uuid(id) && !valid_uuid("0b6f2a1e"));
     }
 

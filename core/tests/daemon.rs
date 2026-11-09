@@ -1562,6 +1562,55 @@ fn harness_runs_a_recipe_with_fallback_and_a_gate() {
     assert_eq!(ui.call("harness.state", json!({"run": run}))["result"]["state"], "done");
 }
 
+/// FR-27, SEC-31, T-17: with the recipe's saver on, a failing Test writes test.ringkas.log with the error line and the
+/// exit code; the stage verdict still comes from the exit code.
+#[test]
+fn harness_saver_writes_the_reduced_test_log() {
+    let d = start("harness3");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(cfg.join("recipes")).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    script(
+        &cfg.join("worker-omp.sh"),
+        &format!(
+            "#!/bin/sh\n'{g}' hook omp end </dev/null\nIFS= read -r l; id=$(printf '%s' \"$l\" | sed -n 's/.*· \\(msg_[a-z0-9]*\\)\\].*/\\1/p')\nout=''\n\
+             while IFS= read -r b; do case \"$b\" in *'Write your result to '*) out=$(printf '%s' \"$b\" | sed -n 's/.*to \"\\(.*\\)\"\\..*/\\1/p');; *'When you are done'*) break;; esac; done\n\
+             '{g}' hook omp start </dev/null\nsleep 1\necho plan > \"$out\"\n'{g}' reply \"$id\" done\n'{g}' hook omp end </dev/null\nsleep 60\n"
+        ),
+    );
+    profiles(&d, &mut ui, &format!("[[profile]]\nid = \"omp\"\ncommand = {}\n", json!(cfg.join("worker-omp.sh"))), "worker-omp");
+    std::fs::write(
+        cfg.join("recipes/t.toml"),
+        "token_saver = true\n[[step]]\nid = \"plan\"\nagents = [\"omp\"]\noutput = \"plan.md\"\ntimeout = \"60s\"\n[[step]]\nid = \"test\"\nkind = \"check\"\nshell = true\n[[step]]\nid = \"ship\"\nhuman = true\n",
+    )
+    .unwrap();
+    let repo = d.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    let h = ui.call("recipe.get", json!({"id": "t"}))["result"]["hash"].as_str().unwrap().to_string();
+    ui.call("recipe.approve", json!({"id": "t", "hash": h}));
+    let test = "i=0; while [ $i -lt 300 ]; do echo baris-$i; i=$((i+1)); done; echo 'FAIL: boom'; exit 3";
+    let s = ui.call("harness.start", json!({"recipe": "t", "request": "x", "cwd": repo, "workspace": "w", "test": test}))["result"].clone();
+    let run = s["run"].as_str().unwrap_or_else(|| panic!("{s}")).to_string();
+    let ringkas = cfg.join("harness").join(&run).join("artefak/test.ringkas.log");
+    let t0 = Instant::now();
+    while !ringkas.exists() {
+        let s = ui.call("harness.state", json!({"run": run}))["result"].clone();
+        assert!(matches!(s["state"].as_str(), Some("running" | "gate" | "taken_over")), "run berhenti sebelum Test: {s}");
+        assert!(t0.elapsed() < Duration::from_secs(60), "test.ringkas.log belum ada: {s}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let text = std::fs::read_to_string(&ringkas).unwrap();
+    assert!(text.contains("FAIL: boom") && text.contains("exit code: 3"), "{text}");
+    assert!(text.contains("lines omitted"), "{text}");
+    // the full log is still there: the verdict and a later reader that wants everything are not fooled
+    let full = std::fs::read_to_string(cfg.join("harness").join(&run).join("artefak/test.log")).unwrap();
+    assert!(full.matches("baris-").count() >= 300, "log utuh hilang");
+    ui.call("harness.stop", json!({"run": run}));
+}
+
 /// SEC-30: Stop ends the run from a gate or while a stage works, and a run left over from an earlier daemon is never resumed.
 #[test]
 fn harness_stop_and_stale_run() {

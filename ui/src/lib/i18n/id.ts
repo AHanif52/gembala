@@ -838,6 +838,8 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "pane.restart": "Jalankan ulang {name}",
   "pane.addons.one": "{n} add-on",
   "pane.addons.other": "{n} add-on",
+  "pane.saver": "hemat",
+  "pane.saverTip": "Hemat token nyala untuk pane ini: hasil baca, log test, dan artefak antar tahap diringkas. Matikan di Pengaturan › Harness (FR-27).",
   "pane.login": "Masuk ke akun {name}: ikuti langkah login di pane ini, atau ketik",
   "pane.name": "Nama pane",
   "pane.renameTip": "Klik dua kali untuk ganti nama",

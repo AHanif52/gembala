@@ -1226,7 +1226,10 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     if pick && prof.as_ref().is_none_or(|x| profile::picker_flags(&x.agent).is_empty()) {
         return Err("no_picker");
     }
-    let launch = picked.as_ref().or(prof.as_ref()).and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session)));
+    let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
+    // FR-27: the harness passes its recipe switch; a pane opened from the UI follows `[harness] token_saver`
+    let saver = p["saver"].as_bool().unwrap_or_else(|| st.config.lock().unwrap()["values"]["harness"]["token_saver"].as_bool().unwrap_or(false)) && agent != "shell";
+    let launch = picked.as_ref().or(prof.as_ref()).and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session), saver));
     let cmd = launch.as_deref().or(p["cmd"].as_str());
     let home = std::env::var("HOME").unwrap_or_default();
     // folder order: explicit `cwd` (rerun a dead pane, FR-45) > profile folder > focused pane
@@ -1241,7 +1244,6 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
             pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid))
         }),
     };
-    let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
     let token = if prof.as_ref().is_some_and(|x| x.token) { Some(new_secret().map_err(|_| "io")?[..32].to_string()) } else { None };
     // FR-9: the `gembala` command can be called straight from a pane (daemon binary folder on PATH;
     // the login shell keeps it through path_helper)
@@ -1360,7 +1362,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     let aliases = pane.aliases.lock().unwrap().clone();
     let st = st.clone();
     thread::spawn(move || pump(st, id, pane, pty));
-    Ok(json!({"pane": id, "name": name, "aliases": aliases, "hist": key}))
+    Ok(json!({"pane": id, "name": name, "aliases": aliases, "hist": key, "saver": saver}))
 }
 
 fn bus_event(st: &State, ev: Value) {

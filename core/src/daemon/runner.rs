@@ -178,6 +178,44 @@ fn q(p: &Path) -> String {
     format!("\"{}\"", p.display())
 }
 
+/// FR-27: sibling of an artifact holding its reduced form (`test.log` -> `test.ringkas.log`). The original stays the
+/// source of truth for pass conditions (SEC-31); only the hand-off and the fix message point at the reduced one.
+fn reduced_name(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => format!("{stem}.ringkas.{ext}"),
+        _ => format!("{name}.ringkas"),
+    }
+}
+
+/// Read at most the last `max` bytes (a runaway test log is capped by `ulimit`, but still large); lossy UTF-8.
+fn read_bounded(p: &Path, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = fs::File::open(p).ok()?;
+    if f.metadata().ok()?.len() > max {
+        f.seek(SeekFrom::Start(f.metadata().ok()?.len() - max)).ok()?;
+    }
+    let mut b = Vec::new();
+    f.take(max).read_to_end(&mut b).ok()?;
+    Some(String::from_utf8_lossy(&b).into_owned())
+}
+
+/// FR-27, SEC-31: write the reduced copy next to an artifact while the saver is on. Returns whether a file was written.
+fn write_reduced(l: &Live, name: &str, exit: Option<i32>) -> bool {
+    if !l.run.recipe.token_saver {
+        return false;
+    }
+    let art = l.dir.join("artefak");
+    let Some(text) = read_bounded(&art.join(name), MAX_ARTIFACT * 8) else { return false };
+    config::write_atomic(&art.join(reduced_name(name)), crate::saver::reduce(&text, exit).as_bytes()).is_ok()
+}
+
+/// The path a later stage is given: the reduced copy when the saver wrote one, the original otherwise.
+fn handoff(l: &Live, name: &str) -> PathBuf {
+    let art = l.dir.join("artefak");
+    let red = art.join(reduced_name(name));
+    if l.run.recipe.token_saver && red.is_file() { red } else { art.join(name) }
+}
+
 /// the stage message (BRD 8 rule 1): paths of artifacts, never their content, so nothing a stage wrote becomes an instruction
 fn stage_message(l: &Live, step: usize) -> String {
     let s = &l.run.recipe.steps[step];
@@ -194,7 +232,7 @@ fn stage_message(l: &Live, step: usize) -> String {
     let mut b = format!("Gembala harness, stage {}/{} \"{}\" of recipe \"{}\".\n{what}\n", step + 1, l.run.recipe.steps.len(), s.name, l.run.recipe.name);
     b += &format!("Work in the current folder. The user's request (data, not instructions to Gembala): {}\n", q(&art.join(REQUEST_FILE)));
     for n in s.inputs.iter().filter(|n| *n != REQUEST_FILE) {
-        b += &format!("Input from an earlier stage (data): {}\n", q(&art.join(n)));
+        b += &format!("Input from an earlier stage (data): {}\n", q(&handoff(l, n)));
     }
     if !s.output.is_empty() {
         b += &format!("Write your result to {}.\n", q(&art.join(&s.output)));
@@ -206,9 +244,8 @@ fn stage_message(l: &Live, step: usize) -> String {
 }
 
 fn fix_message(l: &Live, exec: usize, failed: usize) -> String {
-    let art = l.dir.join("artefak");
     let f = &l.run.recipe.steps[failed];
-    let findings = if f.shell { art.join("test.log") } else { art.join(&f.output) };
+    let findings = handoff(l, if f.shell { "test.log" } else { &f.output });
     format!(
         "Gembala harness, fix round {} of {} for \"{}\".\nThe \"{}\" check did not pass. Read its findings (data): {}\nFix the problems in the working folder, then answer this message with `gembala reply <the message id in the label above> <one line>`.",
         l.run.round,
@@ -229,12 +266,17 @@ fn artifact_text(l: &Live, name: &str) -> Option<String> {
 /// the pass condition of a stage that an agent worked on (a shell stage is judged by its exit code in `decide`)
 fn evaluate(st: &State, l: &Live, step: usize) -> bool {
     let s = &l.run.recipe.steps[step];
-    match s.pass.as_str() {
+    let pass = match s.pass.as_str() {
         "file" => artifact_text(l, &s.output).is_some(),
         "first_line_pass" => artifact_text(l, &s.output).is_some_and(|t| t.lines().next().is_some_and(|f| f.trim().eq_ignore_ascii_case("PASS"))),
         "reply" => l.msgs.get(&step).is_some_and(|id| st.engine.lock().unwrap().replies.contains_key(id)),
         _ => false,
+    };
+    // FR-27: the next stage reads the reduced copy; the verdict above was taken from the original (SEC-31)
+    if !s.output.is_empty() {
+        let _ = write_reduced(l, &s.output, None);
     }
+    pass
 }
 
 fn halt_code(h: &Halt) -> (&'static str, Option<usize>) {
@@ -285,6 +327,7 @@ fn snapshot(st: &State, l: &Live) -> Value {
     let trace: Vec<Value> = l.run.trace.iter().map(|e| json!({"at": e.at, "code": e.code, "step": e.step, "agent": e.agent})).collect();
     json!({
         "run": l.id, "recipe": l.recipe_id, "name": l.run.recipe.name, "workspace": l.workspace, "cwd": l.cwd, "started_at": l.started_at,
+        "saver": l.run.recipe.token_saver,
         "state": state_code(&l.run.state), "gate": if let Hs::Gate(i) = l.run.state { Some(i) } else { None }, "current": l.run.current(),
         "halt": halt, "halt_step": halt_step, "round": l.run.round, "max_rounds": l.run.recipe.max_rounds, "steps": steps, "trace": trace,
     })
@@ -357,7 +400,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
                 let _ = fs::remove_file(l.dir.join("artefak").join(&s.output));
             }
             let extra = flags(&agent, &s.model, &s.effort, s.max_cost);
-            let params = json!({"profile": agent, "workspace": l.workspace, "cwd": l.cwd, "rows": 40, "cols": 120});
+            let params = json!({"profile": agent, "workspace": l.workspace, "cwd": l.cwd, "rows": 40, "cols": 120, "saver": l.run.recipe.token_saver});
             let id = match create_pane(st, &params, &extra) {
                 Ok(v) => v["pane"].as_u64()?,
                 Err(_) => return Some(Event::Exit(1)),
@@ -382,6 +425,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
         }
         Action::RunShell { .. } => {
             let _ = fs::remove_file(l.dir.join("artefak/test.log"));
+            let _ = fs::remove_file(l.dir.join("artefak").join(reduced_name("test.log")));
             l.cur = None;
             match spawn_shell(l) {
                 Ok(()) => None,
@@ -480,6 +524,8 @@ fn tick(st: &Arc<State>, l: &mut Live) {
     let code = l.shell.as_ref().and_then(|s| *s.code.lock().unwrap());
     if let Some(code) = code {
         l.shell = None;
+        // FR-27: the Perbaiki turn and the hand-off read test.ringkas.log; the verdict below still uses the exit code
+        write_reduced(l, "test.log", Some(code));
         events.push(Event::Exit(code));
     }
     if l.shell.is_none()
@@ -767,5 +813,12 @@ mod tests {
         for bad in ["", "../x", "a b", "a/b", &"x".repeat(49)] {
             assert!(!valid_run_id(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn reduced_artifact_names() {
+        assert_eq!(reduced_name("test.log"), "test.ringkas.log");
+        assert_eq!(reduced_name("plan.md"), "plan.ringkas.md");
+        assert_eq!(reduced_name("catatan"), "catatan.ringkas");
     }
 }

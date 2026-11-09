@@ -363,7 +363,7 @@ mod tests {
         // the profile account is used when none is picked while opening the pane
         let mut p = crate::profile::Profile { account: "klien".into(), ..claude() };
         assert_eq!(apply(&mut p, Some(""), &all), Ok("Klien".into()));
-        assert!(crate::profile::launch(&p, None, None).unwrap().contains("export CLAUDE_CONFIG_DIR=\"$HOME\"/'.claude-klien'"));
+        assert!(crate::profile::launch(&p, None, None, false).unwrap().contains("export CLAUDE_CONFIG_DIR=\"$HOME\"/'.claude-klien'"));
         // the choice when opening the pane wins over the profile account; "utama" = no env
         let mut p = crate::profile::Profile { account: "klien".into(), ..claude() };
         assert_eq!(apply(&mut p, Some("kantor"), &all), Ok("Kantor".into()));

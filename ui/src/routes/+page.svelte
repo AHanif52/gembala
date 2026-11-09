@@ -60,6 +60,7 @@
     accountId?: string; // FR-68: id of the running Claude account (`claude-<id>`); empty = Utama
     owner?: { name: string; id: string }; // FR-61: the running Claude session belongs to another account (Resume uses that account)
     login?: string; // FR-61: "log in to account …" card after the Login button
+    saver?: boolean; // FR-27: the token saver is on for this pane (badge in the head)
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: status dot + text label, not color alone (BRD section 11)
@@ -702,7 +703,7 @@
     const r = await call("pane.create", { workspace: ws?.id, ...opts, session, account: acct, brief });
     // FR-13: a read-only role on an agent without tool limits = only a hint, flagged in the pane head
     const roleWarn = ["koordinator", "planner", "reviewer"].includes(opts.role as string) && agent !== "claude";
-    meta[r.pane] = { profile, cwd: null, agent, name: r.name, aliases: r.aliases, session, sig: sig(profile), acct, roleWarn, hist: r.hist };
+    meta[r.pane] = { profile, cwd: null, agent, name: r.name, aliases: r.aliases, session, sig: sig(profile), acct, roleWarn, hist: r.hist, saver: r.saver === true };
     return r.pane;
   }
 
@@ -886,7 +887,7 @@
     for (const sp of stagePanes(snap)) {
       if (placed.has(sp.pane) || dead[sp.pane]) continue;
       const agent = sp.agent || "shell";
-      meta[sp.pane] ??= { profile: agent, cwd: snap.cwd, agent, name: sp.name, status: "idle" };
+      meta[sp.pane] ??= { profile: agent, cwd: snap.cwd, agent, name: sp.name, status: "idle", saver: snap.saver };
       if (!tb) {
         tb = { id: uid(), title: tt("hn.tabTitle", { name: snap.name }), tree: { pane: sp.pane }, focus: sp.pane };
         runTab[snap.run] = tb.id;
@@ -2427,6 +2428,8 @@
               <div class="head" class:on={split && pane === t.focus} onpointerdown={(e) => startPaneDrag(e, t, pane)} role="presentation">
                 <span class="hname">{#if stText(hs)}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
                 {#if stText(hs)}<span class="st {hs}">{stText(hs)}</span>{/if}
+                <!-- FR-27: token saver on for this pane (read, test log, artifacts are reduced) -->
+                {#if meta[pane]?.saver}<span class="hsaver" title={tt("pane.saverTip")}>{tt("pane.saver")}</span>{/if}
                 <!-- FR-78: add-ons of the running agent in this workspace, names in the tooltip -->
                 {#if addonsOf(pane).length}<span class="hadd" title="Add-on: {addonsOf(pane).join(', ')}">{ttn("pane.addons", addonsOf(pane).length)}</span>{/if}
                 <!-- the folder once is enough: the agent toolbar already shows it -->
@@ -4071,6 +4074,15 @@
   .hadd {
     flex: none;
     color: var(--muted);
+  }
+  .hsaver {
+    flex: none;
+    padding: 0 4px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--accent, #3b82f6);
+    font-size: 10px;
+    line-height: 2;
   }
   .hb {
     padding: 0 5px;

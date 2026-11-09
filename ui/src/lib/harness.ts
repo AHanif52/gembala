@@ -5,7 +5,7 @@ export type HStep = {
   pane: number | null; pane_name: string | null; pane_agent: string | null; message: string | null;
 };
 export type Snap = {
-  run: string; recipe: string; name: string; workspace: string; cwd: string; started_at: number;
+  run: string; recipe: string; name: string; workspace: string; cwd: string; started_at: number; saver: boolean;
   state: "idle" | "running" | "gate" | "taken_over" | "done" | "halted";
   gate: number | null; current: number | null; halt: string | null; halt_step: number | null;
   round: number; max_rounds: number; steps: HStep[]; trace: { at: number; code: string; step: number | null; agent: string | null }[];
