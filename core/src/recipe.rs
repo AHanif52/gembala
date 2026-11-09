@@ -107,6 +107,38 @@ fn model_ok(s: &str) -> bool {
 struct Ctx {
     errors: Vec<Diag>,
     warnings: Vec<Diag>,
+    d: Defaults,
+}
+
+/// FR-74 (2): values a recipe leaves out, from `[harness]` in config.toml (Pengaturan › Harness › Bawaan resep baru)
+#[derive(Clone, Debug)]
+pub struct Defaults {
+    pub max_rounds: u32,
+    pub total_secs: u64,
+    pub fallback_on: Vec<String>,
+    /// a `plan` step without `gate` stops for the user's approval of its output
+    pub plan_gate: bool,
+    pub token_saver: bool,
+}
+
+impl Default for Defaults {
+    fn default() -> Self {
+        Defaults { max_rounds: 2, total_secs: MAX_TOTAL_SECS, fallback_on: ["exit", "timeout", "unknown"].map(String::from).to_vec(), plan_gate: false, token_saver: false }
+    }
+}
+
+impl Defaults {
+    /// from the `[harness]` table config::load filled in (already range-checked there)
+    pub fn from_config(h: &Value) -> Defaults {
+        let d = Defaults::default();
+        Defaults {
+            max_rounds: h["max_rounds"].as_u64().map_or(d.max_rounds, |n| n.min(MAX_ROUNDS as u64) as u32),
+            total_secs: h["total_mins"].as_u64().map_or(d.total_secs, |m| (m * 60).min(MAX_TOTAL_SECS)),
+            fallback_on: h["fallback_on"].as_array().map_or(d.fallback_on, |a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
+            plan_gate: h["plan_gate"].as_bool().unwrap_or(d.plan_gate),
+            token_saver: h["token_saver"].as_bool().unwrap_or(d.token_saver),
+        }
+    }
 }
 
 impl Ctx {
@@ -178,8 +210,13 @@ impl Ctx {
 }
 
 /// `installed` = agent kinds found on this Mac; `None` skips the installed check (pure tests, preview before detection)
+#[cfg(test)]
 pub fn parse(text: &str, id: &str, installed: Option<&[String]>) -> Parsed {
-    let mut cx = Ctx { errors: Vec::new(), warnings: Vec::new() };
+    parse_with(text, id, installed, &Defaults::default())
+}
+
+pub fn parse_with(text: &str, id: &str, installed: Option<&[String]>, d: &Defaults) -> Parsed {
+    let mut cx = Ctx { errors: Vec::new(), warnings: Vec::new(), d: d.clone() };
     let recipe = build(text, id, installed, &mut cx);
     Parsed { recipe: recipe.filter(|_| cx.errors.is_empty()), errors: cx.errors, warnings: cx.warnings }
 }
@@ -208,15 +245,15 @@ fn build(text: &str, id: &str, installed: Option<&[String]>, cx: &mut Ctx) -> Op
             }
             v
         }
-        None => ["exit", "timeout", "unknown"].map(String::from).to_vec(),
+        None => cx.d.fallback_on.clone(),
     };
     if fallback_on.iter().any(|s| s == "limit") || on_limit == "wait" {
         cx.warn("limit_inactive", "fallback_on");
     }
-    let token_saver = cx.boolean(root, "token_saver", "token_saver").unwrap_or(false);
+    let token_saver = cx.boolean(root, "token_saver", "token_saver").unwrap_or(cx.d.token_saver);
 
     let rounds = match root.get("max_rounds") {
-        None => 2,
+        None => cx.d.max_rounds as i64,
         Some(i) => match i.as_integer() {
             Some(n) if n < 0 => {
                 cx.err("int_range", "max_rounds");
@@ -234,7 +271,7 @@ fn build(text: &str, id: &str, installed: Option<&[String]>, cx: &mut Ctx) -> Op
         },
     } as u32;
     let total_secs = match cx.string(root, "total", "total") {
-        None => MAX_TOTAL_SECS,
+        None => cx.d.total_secs,
         Some(s) => match duration(&s) {
             Some(n) if n > MAX_TOTAL_SECS => {
                 cx.warn("clamped", "total");
@@ -288,7 +325,7 @@ fn step(t: &dyn TableLike, i: usize, installed: Option<&[String]>, cx: &mut Ctx)
     let effort = if effort.is_none() { String::new() } else { cx.one_of(effort, EFFORTS, "", &format!("{at}.effort")) };
     let output = cx.string(t, "output", &at).unwrap_or_default();
     let inputs = cx.strings(t, "inputs", &at).unwrap_or_default();
-    let gate = cx.boolean(t, "gate", &at).unwrap_or(false);
+    let gate = cx.boolean(t, "gate", &at).unwrap_or(cx.d.plan_gate && id == "plan");
 
     if !model.is_empty() && !model_ok(&model) {
         cx.err("model_bad", &format!("{at}.model"));
@@ -559,11 +596,15 @@ Example:\n```toml\n{FEATURE}```",
 pub struct Store {
     dir: PathBuf,
     state: PathBuf,
+    defaults: Defaults,
 }
 
 impl Store {
     pub fn new(config_dir: &Path) -> Store {
-        Store { dir: config_dir.join("recipes"), state: config_dir.join("state.json") }
+        // `[harness]` of the config.toml next to the recipes: daemon, runner and draft checks use the same defaults
+        let text = fs::read_to_string(config_dir.join("config.toml")).ok();
+        let defaults = Defaults::from_config(&crate::config::load(text.as_deref()).values["harness"]);
+        Store { dir: config_dir.join("recipes"), state: config_dir.join("state.json"), defaults }
     }
 
     /// first start only: the folder does not exist yet. A deleted default stays deleted.
@@ -617,7 +658,7 @@ impl Store {
             Ok(t) => t,
             Err(d) => return json!({"id": id, "status": "broken", "errors": [d.json()], "warnings": []}),
         };
-        let p = parse(&text, id, installed);
+        let p = parse_with(&text, id, installed, &self.defaults);
         let h = hash(&text);
         let known = self.approvals()["recipes"][id].as_str().map(String::from);
         let status = match (&p.recipe, &known) {
@@ -627,7 +668,7 @@ impl Store {
             (_, None) => "needs_approval",
         };
         json!({
-            "id": id, "status": status, "hash": h,
+            "id": id, "status": status, "hash": h, "last_used": self.approvals()["last_used"][id].as_u64(),
             "recipe": p.recipe.as_ref().map(summary),
             "errors": p.errors.iter().map(Diag::json).collect::<Vec<_>>(),
             "warnings": p.warnings.iter().map(Diag::json).collect::<Vec<_>>(),
@@ -652,7 +693,7 @@ impl Store {
         if hash(&text) != hash_seen {
             return Err(Diag::new("recipe_changed"));
         }
-        if parse(&text, id, installed).recipe.is_none() {
+        if parse_with(&text, id, installed, &self.defaults).recipe.is_none() {
             return Err(Diag::new("recipe_invalid"));
         }
         let mut v = self.approvals();
@@ -667,20 +708,33 @@ impl Store {
         if self.approvals()["recipes"][id].as_str() != Some(&hash(&text)) {
             return Err(Diag::new("recipe_not_approved"));
         }
-        parse(&text, id, installed).recipe.ok_or_else(|| Diag::new("recipe_invalid"))
+        parse_with(&text, id, installed, &self.defaults).recipe.ok_or_else(|| Diag::new("recipe_invalid"))
     }
 
     /// FR-77 "Setujui dan simpan": the reviewed draft becomes the recipe and is approved in one human step (SEC-27);
     /// a draft that doesn't parse is never written
     pub fn save_approved(&self, id: &str, text: &str, installed: Option<&[String]>) -> Result<(), Diag> {
         let p = self.path(id)?;
-        if text.len() as u64 > MAX_FILE || parse(text, id, installed).recipe.is_none() {
+        if text.len() as u64 > MAX_FILE || parse_with(text, id, installed, &self.defaults).recipe.is_none() {
             return Err(Diag::new("recipe_invalid"));
         }
         crate::config::write_atomic(&p, text.as_bytes()).map_err(|e| crate::config::io_err("io_write", e))?;
         let mut v = self.approvals();
         v["recipes"][id] = json!(hash(text));
         self.save_approvals(&v)
+    }
+
+    /// FR-74: when a run of this recipe last started (seconds since epoch), shown as "terakhir dipakai"
+    pub fn touch(&self, id: &str) {
+        let mut v = self.approvals();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+        v["last_used"][id] = json!(now);
+        let _ = self.save_approvals(&v);
+    }
+
+    /// draft checks and previews: the same rules and defaults as the recipes on disk
+    pub fn parse(&self, text: &str, id: &str, installed: Option<&[String]>) -> Parsed {
+        parse_with(text, id, installed, &self.defaults)
     }
 
     /// FR-74 Duplikat: same text under a new id, not approved (a copy is a new recipe to review)
@@ -697,8 +751,10 @@ impl Store {
         let p = self.path(id)?;
         fs::remove_file(&p).map_err(|e| crate::config::io_err("io_write", e))?;
         let mut v = self.approvals();
-        if let Some(m) = v["recipes"].as_object_mut() {
-            m.remove(id);
+        for k in ["recipes", "last_used"] {
+            if let Some(m) = v[k].as_object_mut() {
+                m.remove(id);
+            }
         }
         self.save_approvals(&v)
     }
@@ -836,6 +892,20 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         let s = Store::new(&d);
         (d, s)
+    }
+
+    #[test]
+    fn defaults_from_harness_section() {
+        let (d, _) = store();
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("config.toml"), "[harness]\nmax_rounds = 1\ntotal_mins = 30\nplan_gate = true\nfallback_on = [\"exit\"]\n").unwrap();
+        let s = Store::new(&d);
+        let r = s.parse("[[step]]\nid = \"plan\"\nagents = [\"claude\"]\noutput = \"plan.md\"\n", "t", None).recipe.unwrap();
+        assert_eq!((r.max_rounds, r.total_secs, r.fallback_on.clone(), r.steps[0].gate), (1, 1800, vec!["exit".to_string()], true));
+        // what the recipe says wins over the defaults
+        let r = s.parse("max_rounds = 3\n[[step]]\nid = \"plan\"\nagents = [\"claude\"]\noutput = \"plan.md\"\ngate = false\n", "t", None).recipe.unwrap();
+        assert_eq!((r.max_rounds, r.steps[0].gate), (3, false));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

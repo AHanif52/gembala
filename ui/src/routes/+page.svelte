@@ -909,7 +909,11 @@
   }
   /// banner for the moments that need you (a stage waiting on a permission already has one from its pane's status)
   function runNotice(p: { run?: string; workspace: string; notice: string; step: number | null }) {
-    if (seen || p.notice === "blocked") return;
+    // FR-74 (4): switches in Pengaturan › Harness; a stage asking for permission is already the pane's own notice (FR-40),
+    // so it only comes from here when that one is off
+    const h = cfg?.values.harness;
+    const on = p.notice === "gate" ? h?.notify_gate !== false : p.notice === "blocked" ? h?.notify_blocked !== false && cfg?.values.notify.on_blocked === false : h?.notify_done !== false;
+    if (seen || !on) return;
     const snap = runs[p.workspace];
     const ps = snap ? stagePanes(snap) : [];
     const pane = (ps.find((x) => x.step === p.step) ?? ps[ps.length - 1])?.pane;

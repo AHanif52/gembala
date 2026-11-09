@@ -636,6 +636,10 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
     let _ = config::write_atomic(&data_dir().join(".keep"), b"");
     let dir = data_dir().join(&run_id);
     config::write_atomic(&dir.join("artefak").join(REQUEST_FILE), request.as_bytes()).map_err(|_| "io")?;
+    // FR-74: "dipakai 2 jam lalu" in Pengaturan › Harness
+    if let Some(id) = p["recipe"].as_str() {
+        store().touch(id);
+    }
     let run = harness::Run::new(recipe, &installed(st));
     let live = Live {
         id: run_id.clone(),

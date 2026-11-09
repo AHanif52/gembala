@@ -57,7 +57,19 @@ const NOTIFY: &[(&str, Kind)] =
 const TELEGRAM: &[(&str, Kind)] = &[("away_idle_mins", Int(1, 120, 5)), ("snippet", Bool(true)), ("snippet_off", Names), ("lines", Int(1, 30, 30))];
 /// FR-82: check GitHub for a newer release (the only network use besides the Telegram bot)
 const UPDATE: &[(&str, Kind)] = &[("check", Bool(true))];
-const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY), ("toolbar", TOOLBAR), ("telegram", TELEGRAM), ("update", UPDATE)];
+/// FR-74: Pengaturan › Harness. Defaults for recipes that leave a value out (SEC-30 caps still apply) and the harness
+/// notifications (gate waiting, a stage asking for permission, run done or stopped)
+const HARNESS: &[(&str, Kind)] = &[
+    ("max_rounds", Int(0, 3, 2)),
+    ("total_mins", Int(10, 120, 120)),
+    ("fallback_on", List(&["exit", "timeout", "unknown", "limit"], &["exit", "timeout", "unknown"])),
+    ("plan_gate", Bool(false)),
+    ("token_saver", Bool(false)),
+    ("notify_gate", Bool(true)),
+    ("notify_blocked", Bool(true)),
+    ("notify_done", Bool(true)),
+];
+const SECTIONS: &[(&str, &[(&str, Kind)])] = &[("ui", UI), ("limits", LIMITS), ("notify", NOTIFY), ("toolbar", TOOLBAR), ("telegram", TELEGRAM), ("update", UPDATE), ("harness", HARNESS)];
 
 pub struct Config {
     /// Built-in profiles + `[[profile]]` entries that pass validation (FR-29). Secret references come along, values don't.

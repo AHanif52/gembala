@@ -949,7 +949,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                     Ok(match text {
                         None => json!({"exists": false, "current": current}),
                         Some(t) => {
-                            let r = recipe::parse(&t, id()?, inst);
+                            let r = store.parse(&t, id()?, inst);
                             json!({"exists": true, "text": t, "hash": recipe::hash(&t), "current": current, "recipe": r.recipe.as_ref().map(recipe::summary),
                                    "errors": r.errors.iter().map(crate::diag::Diag::json).collect::<Vec<_>>(), "warnings": r.warnings.iter().map(crate::diag::Diag::json).collect::<Vec<_>>()})
                         }
@@ -971,7 +971,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 // preview of text not saved yet (Atur pakai AI, H5): same rules, no file touched
                 _ => {
                     let text = p["text"].as_str().ok_or("bad_params")?;
-                    let r = recipe::parse(text, "preview", inst);
+                    let r = store.parse(text, "preview", inst);
                     Ok(json!({"recipe": r.recipe.as_ref().map(recipe::summary), "errors": r.errors.iter().map(crate::diag::Diag::json).collect::<Vec<_>>(),
                               "warnings": r.warnings.iter().map(crate::diag::Diag::json).collect::<Vec<_>>()}))
                 }

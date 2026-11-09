@@ -403,7 +403,10 @@
   const setNotify = (key: string, value: boolean | number) => set(key as keyof Ui, value as never, "notify");
 
   // FR-74 / FR-77 (H5, pen 35/20/21): recipes, Atur pakai AI, review of a draft or of a file changed outside the app
-  type Rec = { id: string; status: string; hash?: string; recipe?: { name: string; steps: { id: string; name: string }[] } };
+  type Rec = { id: string; status: string; hash?: string; last_used?: number | null; recipe?: { name: string; steps: { id: string; name: string }[] } };
+  const hn = $derived(cfg.values.harness ?? { max_rounds: 2, total_mins: 120, fallback_on: ["exit", "timeout", "unknown"], plan_gate: false, token_saver: false, notify_gate: true, notify_blocked: true, notify_done: true });
+  const setHn = (key: string, value: unknown) => set(key as keyof Ui, value as never, "harness");
+  const usedAt = (s: number) => new Date(s * 1000).toLocaleString(loc(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   let recipes = $state<Rec[]>([]);
   let delAsk = $state("");
   let ai = $state<{ id: string; fresh: string; ask: string; profile: string } | null>(null);
@@ -1065,7 +1068,7 @@
           <section>
             {#each recipes as r (r.id)}
               <div class="row">
-                <span>{r.recipe?.name || r.id} <span class="st {r.status}">{tOr(`hn.set.st.${r.status}`, r.status)}</span><small class="chain">{chain(r)}</small></span>
+                <span>{r.recipe?.name || r.id} <span class="st {r.status}">{tOr(`hn.set.st.${r.status}`, r.status)}</span>{#if r.last_used}<span class="st">· {t("hn.set.used", { at: usedAt(r.last_used) })}</span>{/if}<small class="chain">{chain(r)}</small></span>
                 {#if delAsk === r.id}
                   <span class="acts">{t("hn.set.delAsk")} <button class="mini" onclick={() => (delAsk = "")}>{t("common.cancel")}</button>
                     <button class="mini danger" onclick={() => ((delAsk = ""), recipeAct("recipe.delete", { id: r.id }))}>{t("hn.set.delete")}</button></span>
@@ -1081,6 +1084,35 @@
             {:else}
               <div class="row"><span>{t("common.loading")}</span></div>
             {/each}
+          </section>
+          <!-- pen 35: values a new recipe gets when it leaves them out ([harness] in config.toml) -->
+          <h4>{t("hn.set.defaults")}<span class="hint">{t("hn.set.defaultsSub")}</span></h4>
+          <section>
+            <div class="row"><span>{t("hn.set.rounds")}<small>{t("hn.set.roundsSub")}</small></span>
+              <select aria-label={t("hn.set.rounds")} value={hn.max_rounds} onchange={(e) => setHn("max_rounds", +e.currentTarget.value)}>
+                {#each [0, 1, 2, 3] as n}<option value={n}>{n}</option>{/each}
+              </select></div>
+            <div class="row"><span>{t("hn.set.total")}</span>
+              <select aria-label={t("hn.set.total")} value={hn.total_mins} onchange={(e) => setHn("total_mins", +e.currentTarget.value)}>
+                {#each [30, 60, 90, 120] as m}<option value={m}>{m < 60 ? t("hn.set.mins", { n: m }) : t("hn.set.hours", { n: m / 60 })}</option>{/each}
+              </select></div>
+            <div class="row"><span>{t("hn.set.fallback")}<small>{t("hn.set.fallbackSub")}</small></span>
+              <span class="seg">{#each ["exit", "timeout", "unknown", "limit"] as k}
+                <button class:on={hn.fallback_on.includes(k)} title={k === "limit" ? t("hn.set.limitOff") : ""}
+                  onclick={() => setHn("fallback_on", hn.fallback_on.includes(k) ? hn.fallback_on.filter((x) => x !== k) : [...hn.fallback_on, k])}>{t(`hn.set.fb.${k}` as "hn.set.fb.exit")}</button>{/each}</span></div>
+            <div class="row"><span>{t("hn.set.planGate")}<small>{t("hn.set.planGateSub")}</small></span>
+              <input type="checkbox" role="switch" aria-label={t("hn.set.planGate")} checked={hn.plan_gate} onchange={(e) => setHn("plan_gate", e.currentTarget.checked)} /></div>
+            <div class="row"><span>{t("hn.set.saver")}<small>{t("hn.set.saverSub")}</small></span>
+              <input type="checkbox" role="switch" aria-label={t("hn.set.saver")} checked={hn.token_saver} onchange={(e) => setHn("token_saver", e.currentTarget.checked)} /></div>
+          </section>
+          <h4>{t("hn.set.notify")}</h4>
+          <section>
+            <div class="row"><span>{t("hn.set.nGate")}</span>
+              <input type="checkbox" role="switch" aria-label={t("hn.set.nGate")} checked={hn.notify_gate} onchange={(e) => setHn("notify_gate", e.currentTarget.checked)} /></div>
+            <div class="row"><span>{t("hn.set.nBlocked")}<small>{t("hn.set.nBlockedSub")}</small></span>
+              <input type="checkbox" role="switch" aria-label={t("hn.set.nBlocked")} checked={hn.notify_blocked} onchange={(e) => setHn("notify_blocked", e.currentTarget.checked)} /></div>
+            <div class="row"><span>{t("hn.set.nDone")}</span>
+              <input type="checkbox" role="switch" aria-label={t("hn.set.nDone")} checked={hn.notify_done} onchange={(e) => setHn("notify_done", e.currentTarget.checked)} /></div>
           </section>
           <h4>{t("hn.set.hard")}<span class="hint">{t("hn.set.hardSub")}</span></h4>
           <section><div class="row"><span>{t("hn.set.hardText")}</span></div></section>

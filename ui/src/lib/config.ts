@@ -67,6 +67,7 @@ export type Config = {
     toolbar: { left: string[]; right: string[] };
     telegram?: { away_idle_mins: number; snippet: boolean; snippet_off: string[]; lines: number }; // FR-80
     update?: { check: boolean }; // FR-82
+    harness?: { max_rounds: number; total_mins: number; fallback_on: string[]; plan_gate: boolean; token_saver: boolean; notify_gate: boolean; notify_blocked: boolean; notify_done: boolean }; // FR-74
     keys: Record<string, string>;
     profiles: Profile[];
     accounts?: Account[];
