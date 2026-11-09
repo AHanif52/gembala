@@ -17,6 +17,8 @@ const CODE_TTL: Duration = Duration::from_secs(600);
 const CODE_TRIES: u32 = 5;
 const MAX_TEXT: usize = 4000;
 const MAX_SNIPPET: usize = 3500;
+/// agent answer in a "done" message (Telegram's limit is 4096 characters after the HTML tags are read)
+const MAX_ANSWER: usize = 3500;
 const MAP_MAX: usize = 500;
 /// a hook can say "blocked" a moment before the dialog is drawn: the screen is read this long after the event
 const SETTLE: Duration = Duration::from_secs(1);
@@ -154,6 +156,59 @@ fn curl_quote(s: &str) -> String {
 /// Telegram HTML: text from panes and the screen must not read as markup (T-14 pattern)
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// a message whose HTML Telegram refused, as plain text (tags dropped, entities back to characters)
+fn plain(mut body: Value) -> Value {
+    let tags = regex_lite::Regex::new(r"<[^>]*>").unwrap();
+    let text = tags.replace_all(body["text"].as_str().unwrap_or_default(), "").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+    body["text"] = json!(text);
+    body.as_object_mut().map(|o| o.remove("parse_mode"));
+    body
+}
+
+/// The agent's markdown answer as Telegram HTML (9 Nov: links inside `<pre>` couldn't be tapped, tables unreadable):
+/// `[t](url)` = link, `**b**` = bold, `` `c` `` = code, fences = `<pre>`, `#` headings bold, `- ` = `• `, a table row = cells
+/// joined by ` · ` (the `|---|` row dropped). Plain URLs Telegram links by itself. At most `max` characters of the answer.
+fn md_html(md: &str, max: usize) -> String {
+    let link = regex_lite::Regex::new(r"\[([^\]]+)\]\((https?://[^)\s]+)\)").unwrap();
+    let bold = regex_lite::Regex::new(r"\*\*([^*]+)\*\*").unwrap();
+    let inline = |s: &str| -> String {
+        // odd pieces between backticks are code; links and bold only outside them
+        s.split('`')
+            .enumerate()
+            .map(|(i, p)| if i % 2 == 1 { format!("<code>{}</code>", esc(p)) } else { bold.replace_all(&link.replace_all(&esc(p), "<a href=\"$2\">$1</a>"), "<b>$1</b>").into_owned() })
+            .collect()
+    };
+    let n = md.chars().count();
+    let md: String = if n > max { md.chars().take(max).collect::<String>() + " …" } else { md.to_string() };
+    let (mut out, mut code) = (Vec::new(), None::<Vec<&str>>);
+    for line in md.lines() {
+        let t = line.trim();
+        if t.starts_with("```") {
+            match code.take() {
+                Some(c) => out.push(format!("<pre>{}</pre>", esc(&c.join("\n")))),
+                None => code = Some(Vec::new()),
+            }
+        } else if let Some(c) = code.as_mut() {
+            c.push(line);
+        } else if t.starts_with('|') {
+            if !t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
+                out.push(t.trim_matches('|').split('|').map(|c| inline(c.trim())).filter(|c| !c.is_empty()).collect::<Vec<_>>().join(" · "));
+            }
+        } else if let Some(h) = t.strip_prefix('#') {
+            out.push(format!("<b>{}</b>", inline(h.trim_start_matches('#').trim())));
+        } else if let Some(li) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+            out.push(format!("• {}", inline(li)));
+        } else {
+            out.push(inline(line));
+        }
+    }
+    // an answer cut inside a fence still closes it
+    if let Some(c) = code {
+        out.push(format!("<pre>{}</pre>", esc(&c.join("\n"))));
+    }
+    out.join("\n")
 }
 
 /// last `lines` rows, trailing blank rows dropped, at most `MAX_SNIPPET` characters (cut from the top)
@@ -703,7 +758,7 @@ fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
     while !b.stop.load(Ordering::Relaxed) {
         let Ok(o) = rx.recv_timeout(Duration::from_secs(10)) else { continue };
         let mut progress = None;
-        let (method, body, pane) = match o {
+        let (method, mut body, pane) = match o {
             Out::Api(m, body) => (m, body, None),
             Out::Progress(id, body) => {
                 progress = Some(id);
@@ -747,6 +802,8 @@ fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
                     break;
                 }
                 Err((429, Some(s))) => thread::sleep(Duration::from_secs(s.min(60))),
+                // HTML Telegram can't parse (an agent answer converted from markdown): the same text without tags, not lost
+                Err((400, _)) if body["parse_mode"] == "HTML" => body = plain(body),
                 Err(_) => break,
             }
         }
@@ -1012,10 +1069,18 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
         if let Some(l) = label(&pane.title.lock().unwrap(), &agent) {
             text += &format!("\n{}", esc(&l));
         }
-        let lines = v["telegram"]["lines"].as_u64().unwrap_or(30).min(30) as usize;
-        let snip = screen_snip(&pane, lines);
-        if !snip.is_empty() {
-            text += &format!("\n<pre>{}</pre>", esc(&snip));
+        // "done": the agent's own answer from its stop hook (Claude, Codex); the screen only when there is none (omp,
+        // OpenCode) — 9 Nov the screen was a `/model` picker or tool-call rows instead of the answer
+        let answer = matches!(kind, Kind::Done(_)).then(|| pane.last_msg.lock().unwrap().take()).flatten();
+        match answer {
+            Some(a) => text += &format!("\n\n{}", md_html(&a, MAX_ANSWER)),
+            None => {
+                let lines = v["telegram"]["lines"].as_u64().unwrap_or(30).min(30) as usize;
+                let snip = screen_snip(&pane, lines);
+                if !snip.is_empty() {
+                    text += &format!("\n<pre>{}</pre>", esc(&snip));
+                }
+            }
         }
     }
     let mut body = json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML"});
@@ -1480,6 +1545,20 @@ mod tests {
 
     fn msg(chat: i64, user: i64, text: &str, date: i64) -> Value {
         json!({"message": {"message_id": 5, "date": date, "chat": {"id": chat, "type": "private"}, "from": {"id": user, "first_name": "Raka", "username": "raka"}, "text": text}})
+    }
+
+    #[test]
+    fn jawaban_agent_jadi_html() {
+        let md = "## Hasil\n**7 task** siap, lihat [task 152347](https://collab.x/t?a=1&b=2) dan `uji/laporan.md`.\n\n| Task | MR |\n|---|---|\n| 152347 | !716 |\n- <b>bukan tag</b>\n```\nlet x = 1 < 2;\n```";
+        assert_eq!(
+            md_html(md, 4000),
+            "<b>Hasil</b>\n<b>7 task</b> siap, lihat <a href=\"https://collab.x/t?a=1&amp;b=2\">task 152347</a> dan <code>uji/laporan.md</code>.\n\nTask · MR\n152347 · !716\n• &lt;b&gt;bukan tag&lt;/b&gt;\n<pre>let x = 1 &lt; 2;</pre>"
+        );
+        // cut inside a fence: the <pre> still closes; a link without http stays text
+        assert_eq!(md_html("```\nabcdef", 7), "<pre>abc …</pre>");
+        assert_eq!(md_html("[x](javascript:alert(1))", 99), "[x](javascript:alert(1))");
+        let p = plain(json!({"text": "<b>a</b> &lt;3 &amp; <a href=\"u\">b</a>", "parse_mode": "HTML"}));
+        assert_eq!(p, json!({"text": "a <3 & b"}));
     }
 
     #[test]

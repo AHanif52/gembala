@@ -118,6 +118,9 @@ struct Pane {
     tg_ask: Mutex<Vec<i64>>,
     /// FR-80: last text typed from the phone; the result snippet starts at its echo on screen
     tg_text: Mutex<Option<String>>,
+    /// FR-80: the agent's last answer of this turn from its stop hook (RAM only, SEC-13); the "done" message sends it
+    /// instead of the screen. Cleared when a new turn starts.
+    last_msg: Mutex<Option<String>>,
     readable: std::sync::atomic::AtomicBool,
     /// FR-75: pane opened through an agent's request card = that agent's helper (counts to its limit, can't ask for panes)
     helper_of: Mutex<Option<u64>>,
@@ -400,6 +403,12 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                             }
                             if p["agent"].as_str().is_some_and(|a| a != "codex") {
                                 pane.hooked.store(true, Ordering::Relaxed);
+                            }
+                            // FR-80: set before the status, the "done" notice reads it
+                            match (status, p["last"].as_str()) {
+                                ("working" | "start", _) => *pane.last_msg.lock().unwrap() = None,
+                                (_, Some(t)) => *pane.last_msg.lock().unwrap() = Some(t.chars().take(4000).collect()),
+                                _ => {}
                             }
                             if status != "start" {
                                 set_status(&st, me, &pane, status, None);
@@ -1191,6 +1200,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         long_done: Mutex::new(None),
         tg_ask: Mutex::default(),
         tg_text: Mutex::new(None),
+        last_msg: Mutex::new(None),
         readable: std::sync::atomic::AtomicBool::new(false),
         helper_of: Mutex::new(None),
         typed_at: Mutex::new(None),

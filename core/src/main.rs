@@ -121,6 +121,15 @@ fn hook(args: &[String]) -> ExitCode {
         _ => None,
     };
     let source = json()["source"].as_str().map(String::from);
+    // FR-80: the turn's last answer for the Telegram "done" message, from the hook input (Claude Stop
+    // `last_assistant_message`, Codex notify), never from the transcript file (SEC-15)
+    let last = match agent.as_str() {
+        "claude" => json()["last_assistant_message"].as_str().map(String::from),
+        "codex" => json()["last-assistant-message"].as_str().map(String::from),
+        _ => None,
+    }
+    .map(|m| m.chars().take(4000).collect::<String>())
+    .filter(|m| !m.trim().is_empty());
     let dir = std::env::var("CLAUDE_CONFIG_DIR").ok().filter(|_| agent == "claude");
     let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else { return ExitCode::SUCCESS };
     let send = || -> std::io::Result<()> {
@@ -131,7 +140,7 @@ fn hook(args: &[String]) -> ExitCode {
         let mut l = String::new();
         writeln!(s, "{}", serde_json::json!({"id": 1, "method": "hello", "params": {"proto": daemon::PROTO, "client": "hook"}}))?;
         r.read_line(&mut l)?;
-        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "hook", "params": {"status": status, "reply": reply, "agent": agent, "session": session, "source": source, "dir": dir}}))?;
+        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "hook", "params": {"status": status, "reply": reply, "last": last, "agent": agent, "session": session, "source": source, "dir": dir}}))?;
         r.read_line(&mut l)?;
         Ok(())
     };
