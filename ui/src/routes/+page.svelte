@@ -617,10 +617,14 @@
       // mid-sentence in an agent prompt: `@…` replaced by the full pane name; the agent uses `gembala send` (FR-9 hint)
       // `@@q` → `@name ` (one `@` left); the next pick from the same list = `@name2 ` after it
       const picked = mention.picked ?? [];
-      const text = picked.length ? `@${r.name} ` : "\x7f".repeat(q.length + 1) + r.name + " ";
+      // OpenCode opens its own mention menu on `@` and keeps it open, so the next Enter picks `@general` (9 Nov): both `@`
+      // go and the bare name is written (the hint tells agents `shell-N` names are Gembala panes)
+      const at = (meta[pane]?.busy ?? meta[pane]?.agent) === "opencode" ? "" : "@";
+      const cut = q.length + (at ? 1 : 2);
+      const text = picked.length ? `${at}${r.name} ` : "\x7f".repeat(cut) + r.name + " ";
       call("pane.write", { pane, data: b64(new TextEncoder().encode(text)) });
       // the tracked line changes too, so the next @@ list reads the right text
-      tiles[pane]?.setLine((l) => (picked.length ? l : l.slice(0, -(q.length + 1))) + (picked.length ? text : `${r.name} `));
+      tiles[pane]?.setLine((l) => (picked.length ? l + text : l.slice(0, -cut) + `${r.name} `));
       // the list stays open without the ones already picked: Tab/Enter adds an agent, Esc or keep typing = close
       const next = [...picked, r.name];
       mention = targets.some((t) => !next.includes(t.name)) ? { pane, q: "", sel: 0, inline: true, picked: next } : null;
