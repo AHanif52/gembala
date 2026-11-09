@@ -262,7 +262,8 @@
     const heads: { y: number; fail: boolean; tl: boolean; icon?: string; info?: string; code?: string }[] = [];
     const stops: number[] = []; // "Sesi sebelumnya": the block stops here
     for (let y = 0; y < buf.length; y++) {
-      const t = buf.getLine(y)?.translateToString(true) ?? "";
+      // trimRight only drops empty cells; spaces the log really wrote (a head padded to an old width, 9 Nov) stay and broke `$`
+      const t = (buf.getLine(y)?.translateToString(true) ?? "").trimEnd();
       if (/^\s*(── )?Sesi sebelumnya/.test(t)) stops.push(y);
       const n = head.exec(t);
       if (n) {
