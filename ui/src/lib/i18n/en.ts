@@ -39,7 +39,7 @@ export default {
   "hn.set.planGate": "Gate after Plan",
   "hn.set.planGateSub": "A plan step without gate stops until you approve its output",
   "hn.set.saver": "Token saver",
-  "hn.set.saverSub": "Default for recipes that don't say token_saver",
+  "hn.set.saverSub": "Default for recipes that don't say token_saver; plain panes use it too for reads and @pane attachments",
   "hn.set.notify": "Notifications",
   "hn.set.nGate": "Harness waiting for your approval",
   "hn.set.nBlocked": "Agent in a stage asks for permission",

@@ -1615,6 +1615,49 @@ fn harness_saver_writes_the_reduced_test_log() {
     ui.call("harness.stop", json!({"run": run}));
 }
 
+/// BRD 8: Execute passes only with a reply and a non-empty diff. A dirty file that was already there at run start
+/// doesn't count; the same stage passes once the agent changes the folder.
+#[test]
+fn harness_execute_needs_a_diff() {
+    let d = start("harness4");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(cfg.join("recipes")).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let reply_script = |work: &str| {
+        format!(
+            "#!/bin/sh\n'{g}' hook omp end </dev/null\nIFS= read -r l; id=$(printf '%s' \"$l\" | sed -n 's/.*· \\(msg_[a-z0-9]*\\)\\].*/\\1/p')\n\
+             while IFS= read -r b; do case \"$b\" in *'When you are done'*) break;; esac; done\n'{g}' hook omp start </dev/null\nsleep 1\n{work}'{g}' reply \"$id\" done\n'{g}' hook omp end </dev/null\nsleep 60\n"
+        )
+    };
+    script(&cfg.join("noop.sh"), &reply_script(""));
+    script(&cfg.join("work.sh"), &reply_script("echo kerja > hasil.txt\n"));
+    let toml = format!("[[profile]]\nid = \"omp\"\ncommand = {}\n", json!(cfg.join("noop.sh")));
+    profiles(&d, &mut ui, &toml, "noop");
+    let recipe = "[[step]]\nid = \"execute\"\nagents = [\"omp\"]\ntimeout = \"60s\"\n[[step]]\nid = \"ship\"\nhuman = true\n";
+    std::fs::write(cfg.join("recipes/t.toml"), recipe).unwrap();
+    let repo = d.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    std::fs::write(repo.join("sudah-kotor.txt"), "dari sebelum run\n").unwrap();
+    let h = ui.call("recipe.get", json!({"id": "t"}))["result"]["hash"].as_str().unwrap().to_string();
+    ui.call("recipe.approve", json!({"id": "t", "hash": h}));
+    let params = json!({"recipe": "t", "request": "x", "cwd": repo, "workspace": "w"});
+    let s = ui.call("harness.start", params.clone())["result"].clone();
+    let run = s["run"].as_str().unwrap_or_else(|| panic!("{s}")).to_string();
+    let s = wait_state(&mut ui, &run, &["gate", "halted"]);
+    assert_eq!((s["state"].as_str(), s["halt"].as_str()), (Some("halted"), Some("step_failed")), "{s}");
+
+    // same recipe, an agent that writes something: the stage passes and Ship waits for the user
+    profiles(&d, &mut ui, &format!("[[profile]]\nid = \"omp\"\ncommand = {}\n", json!(cfg.join("work.sh"))), "work");
+    let s = ui.call("harness.start", params)["result"].clone();
+    let run = s["run"].as_str().unwrap_or_else(|| panic!("{s}")).to_string();
+    let s = wait_state(&mut ui, &run, &["gate", "halted"]);
+    assert_eq!((s["state"].as_str(), s["gate"].as_u64()), (Some("gate"), Some(1)), "{s}");
+    ui.call("harness.stop", json!({"run": run}));
+}
+
 /// SEC-30: Stop ends the run from a gate or while a stage works, and a run left over from an earlier daemon is never resumed.
 #[test]
 fn harness_stop_and_stale_run() {

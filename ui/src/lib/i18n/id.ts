@@ -40,7 +40,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "hn.set.planGate": "Gerbang setelah Plan",
   "hn.set.planGateSub": "Tahap plan tanpa gate berhenti dulu sampai lu setujuin hasilnya",
   "hn.set.saver": "Hemat token",
-  "hn.set.saverSub": "Bawaan resep yang nggak nyebut token_saver",
+  "hn.set.saverSub": "Bawaan resep yang nggak nyebut token_saver; pane biasa ikut pakai ini untuk baca dan lampiran @pane",
   "hn.set.notify": "Notifikasi",
   "hn.set.nGate": "Harness nunggu persetujuan lu",
   "hn.set.nBlocked": "Agent di tahap minta izin",

@@ -74,6 +74,8 @@ pub struct Live {
     from: u64,
     t0: Instant,
     started_at: u64,
+    /// FR-16/BRD 8: the workspace as it was when the run started; a `reply` work stage must have changed it
+    start_diff: String,
     /// latest pane per stage; `cur` is the one the engine is waiting on
     panes: HashMap<usize, u64>,
     cur: Option<u64>,
@@ -333,15 +335,27 @@ fn artifact_text(l: &Live, name: &str) -> Option<String> {
     fs::read_to_string(p).ok()
 }
 
+/// BRD 8: "Execute" passes only when the reply arrived and the working folder actually changed. The fingerprint is the
+/// status plus the diff against HEAD, so an already-dirty tree at run start doesn't count as this stage's work.
+fn fingerprint(cwd: &Path) -> String {
+    let status = git::git(cwd, &["status", "--porcelain", "--untracked-files=all"]).unwrap_or_default();
+    let diff = git::git(cwd, &["diff", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).unwrap_or_default();
+    recipe::hash(&format!("{status}\0{diff}"))
+}
+
 /// the pass condition of a stage that an agent worked on (a shell stage is judged by its exit code in `decide`)
 fn evaluate(st: &State, l: &Live, step: usize) -> bool {
     let s = &l.run.recipe.steps[step];
-    let pass = match s.pass.as_str() {
+    let mut pass = match s.pass.as_str() {
         "file" => artifact_text(l, &s.output).is_some(),
         "first_line_pass" => artifact_text(l, &s.output).is_some_and(|t| t.lines().next().is_some_and(|f| f.trim().eq_ignore_ascii_case("PASS"))),
         "reply" => l.msgs.get(&step).is_some_and(|id| st.engine.lock().unwrap().replies.contains_key(id)),
         _ => false,
     };
+    // a work stage is defined by what it changes (BRD 8), so a bare reply is not enough
+    if pass && s.kind == "work" && !s.human && !s.shell && s.pass == "reply" {
+        pass = fingerprint(&l.cwd) != l.start_diff;
+    }
     // FR-27: the next stage reads the reduced copy; the verdict above was taken from the original (SEC-31)
     if !s.output.is_empty() {
         let _ = write_reduced(l, &s.output, None);
@@ -775,6 +789,7 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
         store().touch(id);
     }
     let run = harness::Run::new(recipe, &installed(st));
+    let start_diff = fingerprint(&cwd);
     let live = Live {
         id: run_id.clone(),
         recipe_id: p["recipe"].as_str().unwrap_or_default().to_string(),
@@ -786,6 +801,7 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
         from,
         t0: Instant::now(),
         started_at: history::now(),
+        start_diff,
         panes: HashMap::new(),
         cur: None,
         born: Instant::now(),
