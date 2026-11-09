@@ -96,7 +96,7 @@ fn open_url(url: String) -> Result<(), String> {
 
 /// Folders next to config.toml that may be opened in Finder (Settings > Security > audit log).
 /// `sub` is a folder name from this list, not a path, so the webview can't ask for another folder.
-const REVEAL: &[&str] = &["", "audit", "hooks", "history"];
+const REVEAL: &[&str] = &["", "audit", "hooks", "history", "recipes"];
 
 /// Target of the "Open" button: a folder next to config.toml, only for names in REVEAL.
 fn reveal_target(config: &str, sub: &str) -> Result<std::path::PathBuf, String> {

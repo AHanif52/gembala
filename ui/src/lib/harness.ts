@@ -40,3 +40,6 @@ export const canStart = (items?: { ok: boolean; blocking: boolean }[]) => !!item
 
 /// "m:ss" since the run started, from trace seconds
 export const clock = (secs: number) => `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, "0")}`;
+
+/// FR-77 (H5): an Atur pakai AI draft the page started; `ready` = the agent wrote the file
+export type AiDraft = { draft: string; id: string; ask: string; pane: number; who: string; ready?: boolean };

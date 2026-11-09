@@ -8,6 +8,8 @@
   import { envRows, envPatch, type EnvRow } from "./env";
   import { pretty, type Account, type Agent, type Config, type Profile, type Ui } from "./config";
   import { newer, type Upd } from "./update";
+  import { lineDiff } from "./diff";
+  import type { AiDraft } from "./harness";
   import { errText, loc, t, tn, tOr } from "./i18n/state.svelte";
 
   let {
@@ -19,12 +21,20 @@
     workspaces = [],
     tg = { state: "off" },
     upd = null,
+    drafts = [],
+    onai = () => {},
+    onpane = () => {},
+    ondraft = () => {},
     start = "umum",
   }: {
     cfg: Config;
     workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
     tg?: any; // FR-80: `telegram.status` / `telegram.changed` from the daemon
     upd?: Upd | null; // FR-82: `update.status` / `update.changed`
+    drafts?: AiDraft[]; // FR-77 (H5): Atur pakai AI drafts the page started; `ready` = the agent wrote the file
+    onai?: (r: { id: string; ask: string; profile: string }) => void; // opens the agent tab and sends the brief
+    onpane?: (pane: number) => void;
+    ondraft?: (draft: string) => void; // reviewed (saved or rejected): drop it from the list
     start?: string; // section to open on (the sidebar phone icon opens Telegram)
     meta: Record<number, { name: string; agent: string; profile: string; status?: string }>;
     onclose: () => void;
@@ -202,7 +212,7 @@
     await invoke("quit");
   }
 
-  const SECTIONS = ["umum", "tampilan", "agent", "pintasan", "toolbar", "telegram", "keamanan", "proses", "diagnostik"] as const;
+  const SECTIONS = ["umum", "tampilan", "agent", "pintasan", "toolbar", "harness", "telegram", "keamanan", "proses", "diagnostik"] as const;
   // FR-60: Gembala-owned processes, refreshed every 2 seconds while this section is open
   type Proc = { pid: number; ppid: number; rss_kb: number; cpu: number; role: string; name: string };
   // label: set.proc.role.<role>, keterangan: set.proc.role.<role>Sub
@@ -391,6 +401,61 @@
     if (r.error) failed = errText(r.error, r.args);
   }
   const setNotify = (key: string, value: boolean | number) => set(key as keyof Ui, value as never, "notify");
+
+  // FR-74 / FR-77 (H5, pen 35/20/21): recipes, Atur pakai AI, review of a draft or of a file changed outside the app
+  type Rec = { id: string; status: string; hash?: string; recipe?: { name: string; steps: { id: string; name: string }[] } };
+  let recipes = $state<Rec[]>([]);
+  let delAsk = $state("");
+  let ai = $state<{ id: string; fresh: string; ask: string; profile: string } | null>(null);
+  let review = $state<{ id: string; who?: string; ask?: string; draft?: AiDraft; text: string; current: string; hash: string; errors: any[]; warnings: any[] } | null>(null);
+  const agentProfiles = $derived(cfg.values.profiles.filter((p) => p.agent !== "shell"));
+  const chain = (r: Rec) => (r.recipe?.steps ?? []).map((s) => s.name || s.id).join(" → ");
+  async function loadRecipes() {
+    recipes = (await call("recipe.list").catch(() => [])) as Rec[];
+  }
+  $effect(() => {
+    if (sec === "harness") loadRecipes();
+  });
+  async function recipeAct(method: string, params: Record<string, unknown>) {
+    failed = "";
+    const r = await call(method, params).catch((e) => ({ error: String(e) }));
+    if (r?.error) failed = errText(r.error, r.args);
+    await loadRecipes();
+    return !r?.error;
+  }
+  async function duplicate(id: string) {
+    const taken = new Set(recipes.map((r) => r.id));
+    const to = [`${id}-salinan`, ...[2, 3, 4, 5].map((n) => `${id}-salinan-${n}`)].find((x) => !taken.has(x));
+    if (to) await recipeAct("recipe.duplicate", { id, to });
+  }
+  function openAi(id = "") {
+    ai = { id, fresh: "", ask: "", profile: agentProfiles.find((p) => p.agent === "claude")?.id ?? agentProfiles[0]?.id ?? "" };
+  }
+  function startAi() {
+    if (!ai) return;
+    const id = ai.id || slug(ai.fresh);
+    if (!id || !ai.ask.trim() || !ai.profile) return;
+    onai({ id, ask: ai.ask.trim(), profile: ai.profile });
+    ai = null;
+  }
+  /// a recipe edited outside the app: its text, approved as is (no diff to show)
+  async function reviewFile(id: string) {
+    const r = await call("recipe.get", { id }).catch(() => null);
+    if (r) review = { id, text: r.text, current: r.text, hash: r.hash, errors: r.errors ?? [], warnings: r.warnings ?? [] };
+  }
+  async function reviewDraft(d: AiDraft) {
+    const r = await call("recipe.draft_get", { draft: d.draft, id: d.id }).catch(() => null);
+    if (r?.exists) review = { id: d.id, who: d.who, ask: d.ask, draft: d, text: r.text, current: r.current, hash: r.hash, errors: r.errors ?? [], warnings: r.warnings ?? [] };
+  }
+  async function approveReview() {
+    if (!review) return;
+    const ok = review.draft
+      ? await recipeAct("recipe.draft_apply", { draft: review.draft.draft, id: review.id, hash: review.hash })
+      : await recipeAct("recipe.approve", { id: review.id, hash: review.hash });
+    if (!ok) return;
+    if (review.draft) ondraft(review.draft.draft);
+    review = null;
+  }
   // FR-82: "0.1.1 udah keluar · dicek 10 Nov 09.12" / "Udah versi terbaru · …" / never checked
   const updLine = $derived.by(() => {
     const at = upd?.at ?? upd?.failed_at;
@@ -934,6 +999,93 @@
           {t("set.tb.note")}
           <button class="link" onclick={() => saveTb(TB_DEFAULT)}>{t("set.prof.reset")}</button>
         </p>
+      {:else if sec === "harness"}
+        {#if review}
+          <!-- pen 21: what gets saved is exactly this text (hash), nothing else -->
+          {@const lines = lineDiff(review.current, review.text)}
+          <h4>{t("hn.set.reviewTitle", { id: review.id })}{#if review.who}<span class="hint">{t("hn.set.by", { who: review.who })}</span>{/if}
+            {#if review.draft}<button class="mini" onclick={() => review?.draft && onpane(review.draft.pane)}>{t("hn.set.openPane")}</button>{/if}</h4>
+          {#if review.ask}<p class="note">{t("hn.set.need")}: {review.ask}</p>{/if}
+          <pre class="rdiff">{#each lines as l, i (i)}<span class={l.t === "+" ? "add" : l.t === "-" ? "del" : ""}>{l.t} {l.s}
+</span>{/each}</pre>
+          <section>
+            {#if review.errors.length}
+              {#each review.errors as e}<div class="row"><span class="bad">✕ {errText(e)}</span></div>{/each}
+            {:else}
+              <div class="row"><span class="ok">✓ {t("hn.set.schemaOk")}</span></div>
+            {/if}
+            {#each review.warnings as w}<div class="row"><span>! {errText(w)}</span></div>{/each}
+          </section>
+          <p class="note">{t("hn.set.saveNote")}</p>
+          <div class="acts">
+            {#if review.draft}<button class="mini" onclick={() => review && ((ai = { id: review.id, fresh: "", ask: review.ask ?? "", profile: agentProfiles[0]?.id ?? "" }), (review = null))}>{t("hn.set.editNeed")}</button>{/if}
+            <button class="mini" onclick={() => (review?.draft && ondraft(review.draft.draft), (review = null))}>{review.draft ? t("hn.set.reject") : t("common.cancel")}</button>
+            <button class="mini pri" disabled={review.errors.length > 0} onclick={approveReview}>{review.draft ? t("hn.set.approveSave") : t("hn.set.approve")}</button>
+          </div>
+        {:else if ai}
+          <!-- pen 20: the agent works in a visible tab and only writes the draft file -->
+          <h4>{t("hn.set.aiTitle")}</h4>
+          <section>
+            <div class="row"><span>{t("hn.set.what")}</span>
+              <span class="seg"><button class="on">{t("hn.set.whatRecipe")}</button><button disabled title={t("hn.set.later")}>{t("hn.set.whatCfg")}</button><button disabled title={t("hn.set.later")}>{t("hn.set.whatAgent")}</button></span></div>
+            <div class="row"><span>{t("hn.set.which")}</span>
+              <select aria-label={t("hn.set.which")} bind:value={ai.id}>
+                <option value="">{t("hn.set.newRecipe")}</option>
+                {#each recipes as r (r.id)}<option value={r.id}>{r.recipe?.name || r.id}</option>{/each}
+              </select></div>
+            {#if !ai.id}<div class="row"><span>{t("hn.set.newName")}</span><input class="tin" bind:value={ai.fresh} placeholder="review-pr" aria-label={t("hn.set.newName")} /></div>{/if}
+            <div class="row col"><span>{t("hn.set.need")}</span>
+              <textarea class="tin" rows="4" bind:value={ai.ask} placeholder={t("hn.set.needPh")} aria-label={t("hn.set.need")}></textarea></div>
+            <div class="row"><span>{t("hn.set.with")}</span>
+              <select aria-label={t("hn.set.with")} bind:value={ai.profile}>
+                {#each agentProfiles as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
+              </select></div>
+          </section>
+          <p class="note">{t("hn.set.aiNote")}</p>
+          <div class="acts">
+            <button class="mini" onclick={() => (ai = null)}>{t("common.cancel")}</button>
+            <button class="mini pri" disabled={!ai.ask.trim() || !(ai.id || slug(ai.fresh))} onclick={startAi}>{t("hn.set.go")}</button>
+          </div>
+        {:else}
+          {#if drafts.length}
+            <h4>{t("hn.set.drafts")}</h4>
+            <section>
+              {#each drafts as d (d.draft)}
+                <div class="row">
+                  <span>{d.id}<small>{t("hn.set.by", { who: d.who })} · {d.ready ? t("hn.set.ready") : t("hn.set.waiting")}</small></span>
+                  <span class="acts"><button class="mini" onclick={() => onpane(d.pane)}>{t("hn.set.openPane")}</button>
+                    <button class="mini pri" disabled={!d.ready} onclick={() => reviewDraft(d)}>{t("hn.set.review")}</button></span>
+                </div>
+              {/each}
+            </section>
+          {/if}
+          <h4>{t("hn.set.recipes")}<span class="hint">{t("hn.set.where")}</span>
+            <button class="mini" onclick={() => reveal("recipes")}>{t("hn.set.showFolder")}</button>
+            <button class="mini" onclick={() => openAi()}>{t("hn.set.newAi")}</button></h4>
+          <section>
+            {#each recipes as r (r.id)}
+              <div class="row">
+                <span>{r.recipe?.name || r.id} <span class="st {r.status}">{tOr(`hn.set.st.${r.status}`, r.status)}</span><small class="chain">{chain(r)}</small></span>
+                {#if delAsk === r.id}
+                  <span class="acts">{t("hn.set.delAsk")} <button class="mini" onclick={() => (delAsk = "")}>{t("common.cancel")}</button>
+                    <button class="mini danger" onclick={() => ((delAsk = ""), recipeAct("recipe.delete", { id: r.id }))}>{t("hn.set.delete")}</button></span>
+                {:else}
+                  <span class="acts">
+                    {#if r.status === "changed" || r.status === "needs_approval"}<button class="mini pri" onclick={() => reviewFile(r.id)}>{t("hn.set.review")}…</button>{/if}
+                    <button class="mini" onclick={() => openAi(r.id)}>{t("hn.set.editAi")}</button>
+                    <button class="mini" onclick={() => duplicate(r.id)}>{t("hn.set.dup")}</button>
+                    <button class="mini" onclick={() => (delAsk = r.id)}>{t("hn.set.delete")}</button>
+                  </span>
+                {/if}
+              </div>
+            {:else}
+              <div class="row"><span>{t("common.loading")}</span></div>
+            {/each}
+          </section>
+          <h4>{t("hn.set.hard")}<span class="hint">{t("hn.set.hardSub")}</span></h4>
+          <section><div class="row"><span>{t("hn.set.hardText")}</span></div></section>
+          <p class="note">{t("hn.set.subNote")}</p>
+        {/if}
       {:else if sec === "proses"}
         <p class="note">
           {t("set.proc.note")}
@@ -1570,6 +1722,52 @@
   }
   .pcard .row.foot .link {
     margin-right: auto;
+  }
+  /* FR-77 review (pen 21) and recipe rows (pen 35) */
+  .rdiff {
+    max-height: 320px;
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    font: 12px "SF Mono", Menlo, monospace;
+    white-space: pre-wrap;
+  }
+  .rdiff .add {
+    color: #86efac;
+  }
+  .rdiff .del {
+    color: #fca5a5;
+  }
+  .ok {
+    color: #86efac;
+  }
+  .bad {
+    color: #fca5a5;
+  }
+  .st {
+    margin-left: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .st.approved {
+    color: #86efac;
+  }
+  .st.changed,
+  .st.needs_approval {
+    color: #fbbf24;
+  }
+  .st.broken {
+    color: #fca5a5;
+  }
+  .seg button:disabled {
+    opacity: 0.45;
+  }
+  .chain {
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
   }
   .row.col {
     flex-direction: column;

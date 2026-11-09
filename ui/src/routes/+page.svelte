@@ -8,7 +8,7 @@
   import Messages from "$lib/Messages.svelte";
   import NewTask from "$lib/NewTask.svelte";
   import HarnessFlow from "$lib/HarnessFlow.svelte";
-  import { live as runLive, stagePanes, type Snap } from "$lib/harness";
+  import { live as runLive, stagePanes, type AiDraft, type Snap } from "$lib/harness";
   import ContextMenu, { type MenuAt, type MItem } from "$lib/ContextMenu.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -1891,6 +1891,29 @@
     return s < 60 ? tt("tile.secs", { n: s }) : s < 3600 ? tt("tile.mins", { n: Math.floor(s / 60) }) : tt("tile.hours", { n: Math.floor(s / 3600) });
   };
   /// FR-65: go to that tab and pane (click a queue row, Cmd+Shift+U)
+  // FR-77 (H5, pen 20/21): Atur pakai AI. A visible agent tab gets the brief; the agent writes only the draft file,
+  // checked here every 3 s until it exists; the review and Approve live in Settings › Harness
+  let aiDrafts = $state<AiDraft[]>([]);
+  async function startAi(r: { id: string; ask: string; profile: string }) {
+    settingsOpen = false;
+    const pane = await newTab(r.profile).catch(() => 0);
+    if (!pane) return;
+    const t = wss[at.ws]?.tabs[at.tab];
+    if (t) t.title = tt("hn.aiTab");
+    const d = await call("recipe.draft_new", { pane, id: r.id, ask: r.ask }).catch(() => null);
+    if (d?.draft) aiDrafts.push({ draft: d.draft, id: r.id, ask: r.ask, pane, who: `${cfg?.values.profiles.find((p) => p.id === r.profile)?.name ?? r.profile} · ${meta[pane]?.name ?? ""}` });
+  }
+  $effect(() => {
+    if (!aiDrafts.some((d) => !d.ready)) return;
+    const timer = setInterval(async () => {
+      for (const d of aiDrafts.filter((x) => !x.ready)) {
+        const r = await call("recipe.draft_get", { draft: d.draft, id: d.id }).catch(() => null);
+        if (r?.exists) (d.ready = true), say(tt("hn.draftReady", { id: d.id }));
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  });
+
   function jumpTo(p: number) {
     for (const [wi, w] of wss.entries())
       for (const [ti, t] of w.tabs.entries())
@@ -2937,7 +2960,8 @@
     </div>
   {/if}
   {#if settingsOpen && cfg}
-    <Settings {cfg} {meta} {tg} {upd} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"))} onquitall={askQuitAll} onlogin={loginAccount} />
+    <Settings {cfg} {meta} {tg} {upd} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
+      onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"))} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />
