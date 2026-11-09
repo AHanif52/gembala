@@ -960,6 +960,24 @@ fn ws_names() -> HashMap<String, String> {
     v["workspaces"].as_array().into_iter().flatten().filter_map(|w| Some((w["id"].as_str()?.to_string(), w["name"].as_str()?.to_string()))).collect()
 }
 
+/// pane id → title of the tab holding it, as the sidebar shows it ("Isi DWM"); tabs without a title are left out
+fn tab_titles() -> HashMap<u64, String> {
+    fn walk(n: &Value, title: &str, out: &mut HashMap<u64, String>) {
+        match n["pane"].as_u64() {
+            Some(id) => drop(out.insert(id, title.to_string())),
+            None => ["a", "b"].iter().for_each(|k| walk(&n[k], title, out)),
+        }
+    }
+    let v: Value = fs::read_to_string(config::layout_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut out = HashMap::new();
+    for t in v["workspaces"].as_array().into_iter().flatten().flat_map(|w| w["tabs"].as_array().into_iter().flatten()) {
+        if let Some(title) = t["title"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            walk(&t["tree"], &title.chars().take(40).collect::<String>(), &mut out);
+        }
+    }
+    out
+}
+
 fn ws_name(id: &str) -> String {
     ws_names().remove(id).unwrap_or_else(|| id.to_string())
 }
@@ -1111,10 +1129,13 @@ fn open_picker(st: &State, b: &Bot, agent: &str, only_ws: Option<&str>) {
         ("open_ws", rows.collect())
     } else {
         let home = std::env::var("HOME").unwrap_or_default();
+        let tabs = tab_titles();
         let rows = panes.iter().map(|(w, name, id, sid)| {
             let cwd = pty::cwd_of(*sid).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
             let dir = if cwd == home { "~".to_string() } else { cwd.rsplit('/').next().unwrap_or_default().to_string() };
-            let text = if spaces.len() > 1 { format!("{name} · {} · {dir}", ws_of(w)) } else { format!("{name} · {dir}") };
+            // the tab title the user gave ("Isi DWM") says more than the folder
+            let what = tabs.get(id).cloned().unwrap_or(dir);
+            let text = if spaces.len() > 1 { format!("{what} · {name} · {}", ws_of(w)) } else { format!("{what} · {name}") };
             vec![json!({"text": text, "callback_data": format!("o|{id}|{agent}")})]
         });
         ("open_pick", rows.collect())
@@ -1123,12 +1144,22 @@ fn open_picker(st: &State, b: &Bot, agent: &str, only_ws: Option<&str>) {
     let _ = b.out.try_send(Out::Api("sendMessage", json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML", "reply_markup": {"inline_keyboard": rows}})));
 }
 
-/// buttons to pick the active pane, agent panes only, two per row
+/// buttons to pick the active pane, agent panes only, one per row with its tab title (`Isi DWM · claude-3`)
 fn picker(st: &State, b: &Bot) {
-    let mut panes: Vec<(String, u64)> =
-        st.panes.lock().unwrap().iter().filter(|(_, p)| p.agent_name().is_some()).map(|(id, p)| (p.name.lock().unwrap().clone(), *id)).collect();
+    let tabs = tab_titles();
+    let mut panes: Vec<(String, u64)> = st
+        .panes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, p)| p.agent_name().is_some())
+        .map(|(id, p)| {
+            let name = p.name.lock().unwrap().clone();
+            (tabs.get(id).map_or_else(|| name.clone(), |t| format!("{t} · {name}")), *id)
+        })
+        .collect();
     panes.sort();
-    let rows: Vec<Vec<Value>> = panes.chunks(2).map(|c| c.iter().map(|(n, id)| json!({"text": n, "callback_data": format!("p|{id}")})).collect()).collect();
+    let rows: Vec<Vec<Value>> = panes.iter().map(|(n, id)| vec![json!({"text": n, "callback_data": format!("p|{id}")})]).collect();
     let text = esc(t(b.id_lang, "pick"));
     let _ = b.out.try_send(Out::Api("sendMessage", json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML", "reply_markup": {"inline_keyboard": rows}})));
 }
