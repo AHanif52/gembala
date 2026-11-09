@@ -128,12 +128,12 @@ Found a security hole? Don't open a public issue, send it through
 ### Homebrew
 
 ```sh
-brew install --cask ahanif52/gembala/gembala
+brew install ahanif52/gembala/gembala
 ```
 
 The app comes prebuilt, so you don't need Rust or Node. It's signed with a self-signed certificate and not notarized by
 Apple, so the cask removes the quarantine flag after installing; otherwise macOS refuses to open it.
-Before `brew upgrade --cask gembala`, quit with **Quit and Stop All Agents…**: the running daemon lives inside the app.
+Before `brew upgrade gembala`, quit with **Quit and Stop All Agents…**: the running daemon lives inside the app.
 
 ### Build from source
 

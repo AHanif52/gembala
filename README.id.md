@@ -128,11 +128,11 @@ Nemu celah keamanan? Jangan buka issue publik, kirim lewat
 ### Homebrew
 
 ```sh
-brew install --cask ahanif52/gembala/gembala
+brew install ahanif52/gembala/gembala
 ```
 
 App-nya udah jadi, jadi nggak perlu Rust atau Node. Ditandatangani sertifikat self-signed dan belum dinotarisasi Apple,
-jadi cask-nya ngehapus tanda karantina setelah dipasang; tanpa itu macOS nolak buka. Sebelum `brew upgrade --cask gembala`,
+jadi cask-nya ngehapus tanda karantina setelah dipasang; tanpa itu macOS nolak buka. Sebelum `brew upgrade gembala`,
 keluar lewat **Keluar dan Hentikan Semua Agent…**: daemon yang jalan ada di dalam app.
 
 ### Build dari source

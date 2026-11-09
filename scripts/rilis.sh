@@ -22,7 +22,7 @@ sha=$(shasum -a 256 "$zip" | cut -d' ' -f1)
 echo "$zip $sha"
 [ "$1" = --dry ] && exit 0
 gh release create "v$v" "$zip" -R AHanif52/gembala --target "$(git -C "$root" rev-parse HEAD)" --title "Gembala $v" \
-  --notes "brew install --cask ahanif52/gembala/gembala"
+  --notes "brew install ahanif52/gembala/gembala"
 tap=$(mktemp -d)
 gh repo clone AHanif52/homebrew-gembala "$tap" -- -q
 mkdir -p "$tap/Casks"
@@ -30,4 +30,4 @@ sed -e "s/@VERSION@/$v/" -e "s/@SHA256@/$sha/" "$root/scripts/gembala.rb.in" > "
 git -C "$tap" add Casks/gembala.rb
 git -C "$tap" -c user.email=AHanif52@users.noreply.github.com -c user.name=AHanif52 commit -qm "gembala $v"
 git -C "$tap" push -q
-echo "Rilis v$v: brew install --cask ahanif52/gembala/gembala"
+echo "Rilis v$v: brew install ahanif52/gembala/gembala"

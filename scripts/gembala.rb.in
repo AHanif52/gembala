@@ -19,7 +19,7 @@ cask "gembala" do
   end
 
   caveats <<~EOS
-    Close Gembala with "Quit and Stop All Agents…" before `brew upgrade --cask gembala`:
+    Close Gembala with "Quit and Stop All Agents…" before `brew upgrade gembala`:
     the running daemon lives inside the app bundle.
   EOS
 
