@@ -119,7 +119,13 @@ pub fn signal((pid, group): (i32, bool), sig: libc::c_int) -> bool {
 
 #[cfg(target_os = "macos")]
 pub fn proc_name(pid: i32) -> Option<String> {
-    proc_path(pid)?.file_name()?.to_str().map(str::to_string)
+    proc_path(pid)?.file_name()?.to_str().map(bare)
+}
+
+/// OpenCode from npm (`opencode-ai`) runs as `opencode.exe` on macOS too (9 Nov, another user's Mac: the pane wasn't an
+/// agent, `@@` found nobody); the name without `.exe` is what agent detection and the tab title compare
+fn bare(name: &str) -> String {
+    name.strip_suffix(".exe").unwrap_or(name).to_string()
 }
 
 /// Binary path of a process (secret handover: the other side must be the right Gembala binary).
@@ -223,7 +229,7 @@ pub fn proc_path(pid: i32) -> Option<std::path::PathBuf> {
 
 #[cfg(target_os = "linux")]
 pub fn proc_name(pid: i32) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| bare(s.trim()))
 }
 
 #[cfg(target_os = "linux")]
@@ -252,6 +258,13 @@ pub fn read_to_end(mut r: impl io::Read) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn nama_proses_tanpa_exe() {
+        assert_eq!(bare("opencode.exe"), "opencode");
+        assert_eq!(bare("opencode"), "opencode");
+        assert_eq!(bare("omp"), "omp");
+    }
 
     fn run(mut p: Pty) -> String {
         let out = read_to_end(&p.master).unwrap();
