@@ -398,7 +398,15 @@
   let lift = $state(0);
   function anchor() {
     const b = term.buffer.active;
-    lift = b.type === "normal" && b.baseY === 0 ? Math.max(0, term.rows - 1 - b.cursorY) * rowHeight() : 0;
+    if (b.type !== "normal" || b.baseY !== 0) return void (lift = 0);
+    // the lowest row with text, not only the cursor: omp draws its `/` menu below the input line (9 Nov: hidden under the bar)
+    let last = b.cursorY;
+    for (let y = term.rows - 1; y > last; y--)
+      if (b.getLine(y)?.translateToString(true).trim()) {
+        last = y;
+        break;
+      }
+    lift = Math.max(0, term.rows - 1 - last) * rowHeight();
   }
   function updateSticky() {
     const top = term.buffer.active.viewportY;
