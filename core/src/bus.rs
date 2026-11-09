@@ -36,6 +36,19 @@ pub struct Queued {
     pub approved: bool,
 }
 
+/// FR-75: an agent sent to an agent not open yet; waits for the human's card (open + send, or reject)
+pub struct Open {
+    /// `to` = 0 and `to_name` = the name the agent typed until the pane exists
+    pub msg: Msg,
+    pub profile: String,
+    /// "" = the workspace default account (the UI picks it, like any new pane)
+    pub account: String,
+    /// the requester's folder when it asked
+    pub cwd: String,
+    pub workspace: String,
+    pub since: Instant,
+}
+
 #[derive(Default)]
 pub struct Engine {
     seq: u64,
@@ -48,6 +61,7 @@ pub struct Engine {
     pub muted: HashSet<u64>,
     /// waiting for a human's Approve/Reject (FR-12)
     pub pending: Vec<Msg>,
+    pub opens: Vec<Open>,
     pub history: VecDeque<Value>,
 }
 

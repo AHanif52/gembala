@@ -272,6 +272,8 @@ test result), longer only if the sender asked; label `[Gembala · from user]` = 
 answer on screen. The recipient cannot see your conversation: write every send as a full handover (goal, context and user decisions, \
 files/paths, what was tried or is forbidden, constraints, reply format), never a one-line summary; multi-line is fine. \
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. \
+Need an agent that is not open (or more panes)? `gembala send <name> <task>` with a name from `can_open` in `gembala status` \
+(e.g. `claude-utama`, `omp`) asks the user to open it: result `needs_open`, the task goes once they approve; max 4 per agent. \
 A user prompt naming panes as `@<pane>` = send each of them that full handover yourself with `gembala send`; never the prompt verbatim. \
 Pane names (`shell-N`, `@<pane>`, anything in `gembala status`) are Gembala panes, not sessions of your agent tool: reach them only with `gembala`, \
 never with built-in session messaging (ListAgents, SendMessage, cross-session messages). \

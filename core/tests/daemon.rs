@@ -1182,6 +1182,36 @@ fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
     assert!(r["result"] == "accepted" || r["result"] == "queued", "{r}");
 }
 
+/// FR-75: `send` to an agent not open yet = a card on the UI channel; approve = the task reaches the pane the UI opened,
+/// reject = the requester's `wait --reply` gets the refusal. Unknown names stay `no_such_pane`.
+#[test]
+fn fr75_buka_dan_kirim() {
+    let d = start("fr75");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let minta = format!(
+        "g='{g}'; sleep 1; $g send nggakada-9 x; $g send cat TUGAS-A; r=$($g send cat TUGAS-B); \
+         id=$(printf '%s' \"$r\" | sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p'); echo DIMINTA; $g wait --reply \"$id\"; echo SELESAI-75; sleep 30"
+    );
+    profiles(&d, &mut ui, &(sh_profile("cat", "stty raw -echo; cat -v") + &sh_profile("minta", &minta)), "SELESAI-75");
+    let k = ui.call("pane.create", json!({"profile": "minta", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(k, &["DIMINTA"]);
+    assert!(out.contains("no_such_pane") && out.contains("needs_open"), "{out}");
+    let opens = ui.call("msg.list", json!({}))["result"]["opens"].clone();
+    assert_eq!(opens.as_array().unwrap().len(), 2, "{opens}");
+    assert_eq!((opens[0]["profile"].as_str(), opens[0]["from_pane"].as_u64(), opens[0]["body"].as_str()), (Some("cat"), Some(k), Some("TUGAS-A")), "{opens}");
+    let (a, b) = (opens[0]["id"].as_str().unwrap().to_string(), opens[1]["id"].as_str().unwrap().to_string());
+    let t = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    assert_eq!(ui.call("open.approve", json!({"id": a, "pane": t}))["result"]["result"], "queued");
+    assert_eq!(ui.call("open.reject", json!({"id": b}))["result"]["reason"], "rejected_by_user");
+    assert_eq!(ui.call("msg.list", json!({}))["result"]["opens"], json!([]));
+    let mut ui2 = Cli::ui(&d);
+    let done = ui2.attach_until(k, &["SELESAI-75"]);
+    assert!(done.contains("cat was not opened: rejected_by_user"), "{done}");
+    let mut ui3 = Cli::ui(&d);
+    ui3.attach_until(t, &["TUGAS-A^M"]);
+}
+
 /// Criterion 5: a message with ESC, CR, `\e[201~`, C1, and newlines = exactly one send (one Enter) at the target.
 #[test]
 fn kriteria_5_satu_kiriman() {

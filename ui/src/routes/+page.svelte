@@ -151,6 +151,25 @@
     msgData = await call("msg.list").catch(() => msgData);
   }
   const pendingFor = (pane: number) => (msgData?.pending ?? []).filter((m: any) => m.to === meta[pane]?.name);
+  /// FR-75: agent asked for an agent that isn't open; the card sits in the asking pane
+  const opensFor = (pane: number) => (msgData?.opens ?? []).filter((o: any) => o.from_pane === pane);
+  const openWho = (o: any) => {
+    const p = cfg?.values.profiles.find((x) => x.id === o.profile);
+    const accs = cfg?.values.accounts ?? [];
+    const acct = o.account || wss.find((w) => w.id === o.workspace)?.accounts?.[p?.agent ?? ""] || "";
+    const name = acct && acct !== "utama" ? accs.find((a) => a.id === acct)?.name : accs.some((a) => a.agent === p?.agent) ? tt("acc.main") : "";
+    return [p?.name ?? o.profile, name].filter(Boolean).join(" · ");
+  };
+  /// FR-75: new pane in the asker's tab (its folder, the workspace default account), then the daemon queues the task for it
+  async function approveOpen(o: any) {
+    const t = wss.flatMap((w) => w.tabs).find((x) => panes(x.tree).includes(o.from_pane));
+    if (!t) return;
+    const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd: o.cwd || undefined });
+    const ps = panes(t.tree);
+    t.tree = split(t.tree, ps[ps.length - 1], ps.length % 2 ? "row" : "col", id);
+    await call("open.approve", { id: o.id, pane: id }).catch(() => {});
+    refreshMsgs();
+  }
   const wsIdOf = (pane: number) => wss.find((w) => w.tabs.some((t) => panes(t.tree).includes(pane)))?.id ?? ws?.id;
   /// status panel (FR-10): every pane in the active workspace
   const rows = $derived(
@@ -2568,6 +2587,20 @@
               <span class="acts">
                 <button class="mini" onclick={() => call("msg.reject", { id: m.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
                 <button class="mini" onclick={() => call("msg.approve", { id: m.id }).then(refreshMsgs)}>{tt("msg.approve")}</button>
+              </span>
+            </div>
+          {/each}
+          {#each opensFor(pane).slice(0, 1) as o (o.id)}
+            <!-- FR-75 (pen screen 15): one card at a time, the rest counted; click only, like FR-12 -->
+            {@const n = opensFor(pane).length}
+            <div class="card" role="alertdialog" aria-label={tt("open.title", { who: openWho(o) })}>
+              <b>{tt("open.title", { who: openWho(o) })}{n > 1 ? ` · ${tt("open.more", { n: n - 1 })}` : ""}</b>
+              <span>{tt("open.ask", { from: o.from, who: openWho(o) })}</span>
+              <pre>{o.body}</pre>
+              <span class="sub" title={o.cwd}>{tt("open.where", { cwd: short(o.cwd) })}</span>
+              <span class="acts">
+                <button class="mini" onclick={() => call("open.reject", { id: o.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
+                <button class="mini" onclick={() => approveOpen(o)}>{tt("open.go")}</button>
               </span>
             </div>
           {/each}

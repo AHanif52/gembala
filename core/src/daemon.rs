@@ -43,6 +43,9 @@ const LOG_LINES: usize = 1_000;
 const QUEUE: usize = 256;
 /// FR-79: old names per pane that still work as addresses
 const ALIAS_MAX: usize = 8;
+/// FR-75: helper panes (alive + waiting cards) per requesting agent; a helper's first task waits this long after launch
+const HELPERS_MAX: usize = 4;
+const HELPER_GRACE: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Chan {
@@ -116,6 +119,8 @@ struct Pane {
     /// FR-80: last text typed from the phone; the result snippet starts at its echo on screen
     tg_text: Mutex<Option<String>>,
     readable: std::sync::atomic::AtomicBool,
+    /// FR-75: pane opened through an agent's request card = that agent's helper (counts to its limit, can't ask for panes)
+    helper_of: Mutex<Option<u64>>,
     typed_at: Mutex<Option<std::time::Instant>>,
     /// SEC-3 fallback: 128-bit token for processes detached from the pane session (e.g. a tmux server, profile `token = true`)
     /// or that can't use sockets (FR-66: sandboxed Codex, created through `gembala token`)
@@ -627,6 +632,9 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "muted": eng.muted.iter().filter_map(|id| names.get(id)).collect::<Vec<_>>(),
                 // SEC-12 exception: the confirm card shows exactly what will be sent (what's approved = what arrives)
                 "pending": eng.pending.iter().map(|m| { let mut v = m.summary(); v["body"] = json!(m.body); v }).collect::<Vec<_>>(),
+                // FR-75: same exception, the open card shows the task as it will be sent
+                "opens": eng.opens.iter().map(|o| json!({"id": o.msg.id, "from": o.msg.from_name, "from_pane": o.msg.from, "target": o.msg.to_name, "profile": o.profile,
+                    "account": o.account, "cwd": o.cwd, "workspace": o.workspace, "body": o.msg.body})).collect::<Vec<_>>(),
                 "queued": queues,
                 "history": eng.history,
             }))
@@ -645,6 +653,39 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 reject(st, &held, "rejected_by_user");
                 Ok(json!({"result": "rejected", "reason": "rejected_by_user"}))
             }
+        }
+        "open.approve" | "open.reject" => {
+            // FR-75: only a human opens a pane an agent asked for (SEC-20). Approve = the UI already opened `pane`
+            // in the requester's tab; the task waits in that pane's queue until its agent is up.
+            let id = p["id"].as_str().ok_or("bad_params")?;
+            let ws = st.engine.lock().unwrap().opens.iter().find(|o| o.msg.id == id).map(|o| o.workspace.clone()).ok_or("no_such_msg")?;
+            let target = if m == "open.approve" {
+                let pane = st.pane(p)?;
+                if pane.agent_name().is_none() || *pane.workspace.lock().unwrap() != ws || pane.helper_of.lock().unwrap().is_some() {
+                    return Err("bad_params");
+                }
+                Some(pane)
+            } else {
+                None
+            };
+            let o = {
+                let mut eng = st.engine.lock().unwrap();
+                let i = eng.opens.iter().position(|o| o.msg.id == id).ok_or("no_such_msg")?;
+                eng.opens.remove(i)
+            };
+            let Some(pane) = target else {
+                return Ok(open_refused(st, &o.msg, "rejected_by_user"));
+            };
+            *pane.helper_of.lock().unwrap() = Some(o.msg.from);
+            let mut msg = o.msg;
+            msg.to = p["pane"].as_u64().unwrap_or_default();
+            msg.to_name = pane.name.lock().unwrap().clone();
+            let mut eng = st.engine.lock().unwrap();
+            eng.remember(&msg);
+            eng.queues.entry(msg.to).or_default().push_back(bus::Queued { msg: msg.clone(), since: std::time::Instant::now(), approved: true });
+            drop(eng);
+            record(st, "queued", &msg, None);
+            Ok(json!({"result": "queued", "id": msg.id}))
         }
         "msg.pause" => {
             // SEC-10: stop button; the queue is held, not dropped
@@ -1151,6 +1192,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         tg_ask: Mutex::default(),
         tg_text: Mutex::new(None),
         readable: std::sync::atomic::AtomicBool::new(false),
+        helper_of: Mutex::new(None),
         typed_at: Mutex::new(None),
         token: Mutex::new(token),
         status: Mutex::new(if ["claude", "codex", "opencode", "omp", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
@@ -1203,6 +1245,71 @@ fn record(st: &State, kind: &str, m: &bus::Msg, reason: Option<&str>) {
 fn reject(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
     record(st, "rejected", m, Some(reason));
     json!({"result": "rejected", "reason": reason, "id": m.id})
+}
+
+/// FR-75: card rejected or expired; the requester's `wait --reply` gets the answer instead of waiting it out
+fn open_refused(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
+    let mut r = m.clone();
+    (r.from, r.from_name, r.reply_to) = (0, "gembala".into(), Some(m.id.clone()));
+    r.body = format!("{} was not opened: {reason}", m.to_name);
+    st.engine.lock().unwrap().replies.insert(m.id.clone(), r);
+    reject(st, m, reason)
+}
+
+/// FR-75: what `send` to a name no pane has may open: a profile (id or name), an agent kind, or `<agent>-<account>`
+/// (`claude-utama`, `claude-kantor`, the commands Gembala writes for accounts). (profile id, account; "" = workspace default)
+fn open_target(st: &State, name: &str) -> Option<(String, String)> {
+    let profiles = st.profiles.lock().unwrap();
+    let agent_profile = |agent: &str| profiles.iter().find(|x| x.agent == agent && x.agent != "shell").map(|x| x.id.clone());
+    if let Some(x) = profiles.iter().find(|x| x.agent != "shell" && (x.id == name || x.name.eq_ignore_ascii_case(name))) {
+        return Some((x.id.clone(), x.account.clone()));
+    }
+    let (agent, acct) = name.split_once('-')?;
+    let ok = acct == "utama" || st.accounts.lock().unwrap().iter().any(|a| a.id == acct && a.agent == agent);
+    Some((agent_profile(agent).filter(|_| ok)?, acct.to_string()))
+}
+
+/// FR-75: `send` to an agent not open yet = a card in the requester's pane, not an error. Max `HELPERS_MAX` helpers
+/// (alive + waiting cards) per requester, and a helper can't ask (depth 1). Counts to SEC-9 like a send.
+fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &Value) -> Res {
+    let (profile, account) = open_target(st, target).ok_or("no_such_pane")?;
+    let (helper, alive, cwd) = {
+        let panes = st.panes.lock().unwrap();
+        let alive = panes.values().filter(|x| *x.helper_of.lock().unwrap() == Some(me)).count();
+        let f = panes.get(&me).ok_or("not_a_pane")?;
+        let pid = pty::busy(&f.master, f.sid).map(|(pid, _)| pid).unwrap_or(f.sid);
+        let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid)).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+        (f.helper_of.lock().unwrap().is_some(), alive, cwd)
+    };
+    if helper {
+        return Err("not_allowed");
+    }
+    let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
+    let mut eng = st.engine.lock().unwrap();
+    if alive + eng.opens.iter().filter(|o| o.msg.from == me).count() >= HELPERS_MAX {
+        return Err("helper_limit");
+    }
+    let reply_to = p["reply_to"].as_str().map(String::from);
+    let hop = eng.hop_for(reply_to.as_deref());
+    let id = eng.new_id(&st.boot);
+    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: 0, to_name: target.to_string(), body, reply_to, hop, at: std::time::SystemTime::now() };
+    let why = if hop > msg::HOP_MAX {
+        Some("hop_limit")
+    } else if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
+        Some("rate_limited")
+    } else {
+        None
+    };
+    eng.remember(&m);
+    if let Some(r) = why {
+        drop(eng);
+        return Ok(reject(st, &m, r));
+    }
+    eng.note_sent(me);
+    eng.opens.push(bus::Open { msg: m.clone(), profile, account, cwd, workspace: my_ws.to_string(), since: std::time::Instant::now() });
+    drop(eng);
+    record(st, "confirm", &m, Some("needs_open"));
+    Ok(json!({"result": "queued", "reason": "needs_open", "id": m.id, "to": target}))
 }
 
 /// Decision facts are re-read every time (SEC-28). `counted` = rate already counted on receipt.
@@ -1352,6 +1459,13 @@ fn deliver_loop(st: Arc<State>) {
                 reject(&st, &q.msg, "expired");
                 continue;
             }
+            // FR-75: the task for a pane opened from a card waits while its agent starts (status "idle" from launch,
+            // trust prompt, hooks not up yet); nothing is written to it before that (SEC-6)
+            let opening = q.approved && to.helper_of.lock().unwrap().is_some();
+            if opening && to.started.elapsed() < HELPER_GRACE {
+                requeue(q);
+                continue;
+            }
             let from_ws = st.workspace_of(q.msg.from);
             // queue len 0: this message already holds its place
             let mut f = facts_for(&st, &q.msg, &to, &from_ws, true, q.approved, true);
@@ -1363,10 +1477,21 @@ fn deliver_loop(st: Arc<State>) {
                     st.engine.lock().unwrap().pending.push(q.msg.clone());
                     record(&st, "confirm", &q.msg, None);
                 }
+                msg::Decision::Reject("target_unknown" | "target_blocked") if opening => requeue(q),
                 msg::Decision::Reject(r) => drop(reject(&st, &q.msg, r)),
             }
         }
         st.engine.lock().unwrap().queues.retain(|_, q| !q.is_empty());
+        // FR-75: a card nobody answered expires like a queued message
+        let stale: Vec<bus::Open> = {
+            let mut eng = st.engine.lock().unwrap();
+            let (old, keep) = std::mem::take(&mut eng.opens).into_iter().partition(|o| o.since.elapsed() > msg::QUEUE_TTL);
+            eng.opens = keep;
+            old
+        };
+        for o in stale {
+            open_refused(&st, &o.msg, "expired");
+        }
     }
 }
 
@@ -1404,10 +1529,22 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 .filter_map(|(_, x)| Some((x, x.agent_name()?)))
                 .map(|(x, agent)| json!({"name": *x.name.lock().unwrap(), "aliases": *x.aliases.lock().unwrap(), "agent": agent, "status": *x.status.lock().unwrap(), "policy": x.policy.lock().unwrap().name()}))
                 .collect();
-            Ok(json!({"me": my_name, "panes": list}))
+            // FR-75: names `send` can open through a card (none for a helper: depth 1)
+            let helper = st.panes.lock().unwrap().get(&me).is_some_and(|x| x.helper_of.lock().unwrap().is_some());
+            let mut can_open: Vec<String> = Vec::new();
+            if !helper {
+                can_open.extend(st.profiles.lock().unwrap().iter().filter(|x| x.agent != "shell").map(|x| x.id.clone()));
+                for a in st.accounts.lock().unwrap().iter() {
+                    can_open.extend([format!("{}-utama", a.agent), format!("{}-{}", a.agent, a.id)]);
+                }
+                can_open.sort();
+                can_open.dedup();
+            }
+            Ok(json!({"me": my_name, "panes": list, "can_open": can_open}))
         }
         "send" => {
-            let (to_id, to) = st.by_name(p["to"].as_str().ok_or("bad_params")?).ok_or("no_such_pane")?;
+            let name = p["to"].as_str().ok_or("bad_params")?;
+            let Some((to_id, to)) = st.by_name(name) else { return ask_open(st, me, &my_name, &my_ws, name, p) };
             if to_id == me {
                 return Err("bad_params");
             }
@@ -2059,6 +2196,8 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
     }
     let code = pty.child.wait().ok().and_then(|s| s.code());
     st.panes.lock().unwrap().remove(&id);
+    // FR-75: a closed pane's open requests go with it
+    st.engine.lock().unwrap().opens.retain(|o| o.msg.from != id);
     let ev = line(json!({"event": "pane.exit", "params": {"pane": id, "code": code}}));
     for sub in pane.view.lock().unwrap().1.drain(..) {
         let _ = sub.tx.try_send(ev.clone());
