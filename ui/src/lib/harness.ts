@@ -42,4 +42,6 @@ export const canStart = (items?: { ok: boolean; blocking: boolean }[]) => !!item
 export const clock = (secs: number) => `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, "0")}`;
 
 /// FR-77 (H5): an Atur pakai AI draft the page started; `ready` = the agent wrote the file
-export type AiDraft = { draft: string; id: string; ask: string; pane: number; who: string; ready?: boolean };
+export type AiDraft = { kind: "recipe" | "config"; draft: string; id: string; ask: string; pane: number; who: string; ready?: boolean };
+/// what "Rumuskan" asks the page to start: a recipe or config.toml draft, or an AGENTS.md/CLAUDE.md edit by the agent itself
+export type AiAsk = { target: "recipe" | "config" | "agent"; id: string; ask: string; profile: string; section: string; file: string };

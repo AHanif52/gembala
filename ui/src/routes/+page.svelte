@@ -8,7 +8,7 @@
   import Messages from "$lib/Messages.svelte";
   import NewTask from "$lib/NewTask.svelte";
   import HarnessFlow from "$lib/HarnessFlow.svelte";
-  import { live as runLive, stagePanes, type AiDraft, type Snap } from "$lib/harness";
+  import { live as runLive, stagePanes, type AiAsk, type AiDraft, type Snap } from "$lib/harness";
   import ContextMenu, { type MenuAt, type MItem } from "$lib/ContextMenu.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -1216,6 +1216,8 @@
       { label: tt("act.renameTab"), hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
       { label: tt("act.renameWs"), hint: "", kind: "action", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
       { label: tt("set.title"), hint: "⌘,", kind: "action", go: () => (settingsOpen = true) },
+      // FR-77: Atur pakai AI from the palette (recipe, Gembala settings or agent instructions)
+      { label: `${tt("hn.set.aiTitle")}…`, hint: "", kind: "action", go: () => ((aiOpen = ""), (settingsSec = "harness"), (settingsOpen = true)) },
       { label: tt("act.quitAll"), hint: "", kind: "action", go: askQuitAll },
     ];
     const words = pal.q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -1898,20 +1900,29 @@
   // FR-77 (H5, pen 20/21): Atur pakai AI. A visible agent tab gets the brief; the agent writes only the draft file,
   // checked here every 3 s until it exists; the review and Approve live in Settings › Harness
   let aiDrafts = $state<AiDraft[]>([]);
-  async function startAi(r: { id: string; ask: string; profile: string }) {
+  let aiOpen = $state<string | null>(null); // palette / section header: Settings opens on Atur pakai AI
+  async function startAi(r: AiAsk) {
     settingsOpen = false;
-    const pane = await newTab(r.profile).catch(() => 0);
+    aiOpen = null;
+    // AGENTS.md / CLAUDE.md: the agent works in the workspace folder, where the file lives
+    const pane = await newTab(r.profile, at.ws, undefined, r.target === "agent" ? { cwd: wss[at.ws]?.root } : {}).catch(() => 0);
     if (!pane) return;
     const t = wss[at.ws]?.tabs[at.tab];
     if (t) t.title = tt("hn.aiTab");
-    const d = await call("recipe.draft_new", { pane, id: r.id, ask: r.ask }).catch(() => null);
-    if (d?.draft) aiDrafts.push({ draft: d.draft, id: r.id, ask: r.ask, pane, who: `${cfg?.values.profiles.find((p) => p.id === r.profile)?.name ?? r.profile} · ${meta[pane]?.name ?? ""}` });
+    if (r.target === "agent") {
+      const ok = await call("agent_file.brief", { pane, file: r.file, ask: r.ask }).then((x) => !x?.error, () => false);
+      if (ok) say(tt("hn.agentAsked", { file: r.file }));
+      return;
+    }
+    const kind = r.target === "config" ? "config" : "recipe";
+    const d = await call(`${kind === "config" ? "config" : "recipe"}.draft_new`, { pane, id: r.id, ask: r.ask, section: r.section }).catch(() => null);
+    if (d?.draft) aiDrafts.push({ kind, draft: d.draft, id: r.id, ask: r.ask, pane, who: `${cfg?.values.profiles.find((p) => p.id === r.profile)?.name ?? r.profile} · ${meta[pane]?.name ?? ""}` });
   }
   $effect(() => {
     if (!aiDrafts.some((d) => !d.ready)) return;
     const timer = setInterval(async () => {
       for (const d of aiDrafts.filter((x) => !x.ready)) {
-        const r = await call("recipe.draft_get", { draft: d.draft, id: d.id }).catch(() => null);
+        const r = await call(d.kind === "config" ? "config.draft_get" : "recipe.draft_get", { draft: d.draft, id: d.id }).catch(() => null);
         if (r?.exists) (d.ready = true), say(tt("hn.draftReady", { id: d.id }));
       }
     }, 3000);
@@ -2964,8 +2975,8 @@
     </div>
   {/if}
   {#if settingsOpen && cfg}
-    <Settings {cfg} {meta} {tg} {upd} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
-      onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"))} onquitall={askQuitAll} onlogin={loginAccount} />
+    <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
+      onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} />
   {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />

@@ -9,7 +9,7 @@
   import { pretty, type Account, type Agent, type Config, type Profile, type Ui } from "./config";
   import { newer, type Upd } from "./update";
   import { lineDiff } from "./diff";
-  import type { AiDraft } from "./harness";
+  import type { AiAsk, AiDraft } from "./harness";
   import { errText, loc, t, tn, tOr } from "./i18n/state.svelte";
 
   let {
@@ -23,6 +23,7 @@
     upd = null,
     drafts = [],
     onai = () => {},
+    aiOpen = null,
     onpane = () => {},
     ondraft = () => {},
     start = "umum",
@@ -32,7 +33,8 @@
     tg?: any; // FR-80: `telegram.status` / `telegram.changed` from the daemon
     upd?: Upd | null; // FR-82: `update.status` / `update.changed`
     drafts?: AiDraft[]; // FR-77 (H5): Atur pakai AI drafts the page started; `ready` = the agent wrote the file
-    onai?: (r: { id: string; ask: string; profile: string }) => void; // opens the agent tab and sends the brief
+    onai?: (r: AiAsk) => void; // opens the agent tab and sends the brief
+    aiOpen?: string | null; // palette / section header: open Atur pakai AI right away ("" = recipe, else a settings section)
     onpane?: (pane: number) => void;
     ondraft?: (draft: string) => void; // reviewed (saved or rejected): drop it from the list
     start?: string; // section to open on (the sidebar phone icon opens Telegram)
@@ -409,7 +411,7 @@
   const usedAt = (s: number) => new Date(s * 1000).toLocaleString(loc(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   let recipes = $state<Rec[]>([]);
   let delAsk = $state("");
-  let ai = $state<{ id: string; fresh: string; ask: string; profile: string } | null>(null);
+  let ai = $state<{ target: AiAsk["target"]; id: string; fresh: string; ask: string; profile: string; section: string; file: string } | null>(null);
   let review = $state<{ id: string; who?: string; ask?: string; draft?: AiDraft; text: string; current: string; hash: string; errors: any[]; warnings: any[] } | null>(null);
   const agentProfiles = $derived(cfg.values.profiles.filter((p) => p.agent !== "shell"));
   const chain = (r: Rec) => (r.recipe?.steps ?? []).map((s) => s.name || s.id).join(" → ");
@@ -431,29 +433,35 @@
     const to = [`${id}-salinan`, ...[2, 3, 4, 5].map((n) => `${id}-salinan-${n}`)].find((x) => !taken.has(x));
     if (to) await recipeAct("recipe.duplicate", { id, to });
   }
-  function openAi(id = "") {
-    ai = { id, fresh: "", ask: "", profile: agentProfiles.find((p) => p.agent === "claude")?.id ?? agentProfiles[0]?.id ?? "" };
+  function openAi(id = "", target: AiAsk["target"] = "recipe", section = "") {
+    sec = "harness";
+    review = null;
+    ai = { target, id, fresh: "", ask: "", profile: agentProfiles.find((p) => p.agent === "claude")?.id ?? agentProfiles[0]?.id ?? "", section, file: "AGENTS.md" };
   }
+  const aiReady = $derived(!!ai && !!ai.ask.trim() && !!ai.profile && (ai.target !== "recipe" || !!(ai.id || slug(ai.fresh))));
   function startAi() {
-    if (!ai) return;
-    const id = ai.id || slug(ai.fresh);
-    if (!id || !ai.ask.trim() || !ai.profile) return;
-    onai({ id, ask: ai.ask.trim(), profile: ai.profile });
+    if (!ai || !aiReady) return;
+    const id = ai.target === "recipe" ? ai.id || slug(ai.fresh) : ai.target === "config" ? "config.toml" : ai.file;
+    onai({ target: ai.target, id, ask: ai.ask.trim(), profile: ai.profile, section: ai.section, file: ai.file });
     ai = null;
   }
+  // FR-77: opened from the palette or a section header
+  onMount(() => {
+    if (aiOpen !== null) openAi("", aiOpen ? "config" : "recipe", aiOpen);
+  });
   /// a recipe edited outside the app: its text, approved as is (no diff to show)
   async function reviewFile(id: string) {
     const r = await call("recipe.get", { id }).catch(() => null);
     if (r) review = { id, text: r.text, current: r.text, hash: r.hash, errors: r.errors ?? [], warnings: r.warnings ?? [] };
   }
   async function reviewDraft(d: AiDraft) {
-    const r = await call("recipe.draft_get", { draft: d.draft, id: d.id }).catch(() => null);
+    const r = await call(d.kind === "config" ? "config.draft_get" : "recipe.draft_get", { draft: d.draft, id: d.id }).catch(() => null);
     if (r?.exists) review = { id: d.id, who: d.who, ask: d.ask, draft: d, text: r.text, current: r.current, hash: r.hash, errors: r.errors ?? [], warnings: r.warnings ?? [] };
   }
   async function approveReview() {
     if (!review) return;
     const ok = review.draft
-      ? await recipeAct("recipe.draft_apply", { draft: review.draft.draft, id: review.id, hash: review.hash })
+      ? await recipeAct(review.draft.kind === "config" ? "config.draft_apply" : "recipe.draft_apply", { draft: review.draft.draft, id: review.id, hash: review.hash })
       : await recipeAct("recipe.approve", { id: review.id, hash: review.hash });
     if (!ok) return;
     if (review.draft) ondraft(review.draft.draft);
@@ -600,6 +608,10 @@
         </div>
       {/if}
       {#if failed}<div class="errs" role="alert"><span>{failed}</span></div>{/if}
+      <!-- FR-77: "Atur pakai AI" in the head of each settings part, on its config.toml section -->
+      {#if ["umum", "tampilan", "agent", "pintasan", "toolbar", "telegram"].includes(sec)}
+        <div class="aihead"><button class="mini" onclick={() => openAi("", "config", sec)}>{t("hn.set.aiTitle")}</button></div>
+      {/if}
 
       {#if sec === "umum"}
         <section>
@@ -1006,7 +1018,7 @@
         {#if review}
           <!-- pen 21: what gets saved is exactly this text (hash), nothing else -->
           {@const lines = lineDiff(review.current, review.text)}
-          <h4>{t("hn.set.reviewTitle", { id: review.id })}{#if review.who}<span class="hint">{t("hn.set.by", { who: review.who })}</span>{/if}
+          <h4>{t("hn.set.reviewTitle", { id: review.id.endsWith(".toml") ? review.id : `${review.id}.toml` })}{#if review.who}<span class="hint">{t("hn.set.by", { who: review.who })}</span>{/if}
             {#if review.draft}<button class="mini" onclick={() => review?.draft && onpane(review.draft.pane)}>{t("hn.set.openPane")}</button>{/if}</h4>
           {#if review.ask}<p class="note">{t("hn.set.need")}: {review.ask}</p>{/if}
           <pre class="rdiff">{#each lines as l, i (i)}<span class={l.t === "+" ? "add" : l.t === "-" ? "del" : ""}>{l.t} {l.s}
@@ -1019,9 +1031,9 @@
             {/if}
             {#each review.warnings as w}<div class="row"><span>! {errText(w)}</span></div>{/each}
           </section>
-          <p class="note">{t("hn.set.saveNote")}</p>
+          <p class="note">{review.draft?.kind === "config" ? t("hn.set.saveNoteCfg") : t("hn.set.saveNote")}</p>
           <div class="acts">
-            {#if review.draft}<button class="mini" onclick={() => review && ((ai = { id: review.id, fresh: "", ask: review.ask ?? "", profile: agentProfiles[0]?.id ?? "" }), (review = null))}>{t("hn.set.editNeed")}</button>{/if}
+            {#if review.draft}<button class="mini" onclick={() => review && ((ai = { target: review.draft?.kind ?? "recipe", id: review.draft?.kind === "config" ? "" : review.id, fresh: "", ask: review.ask ?? "", profile: agentProfiles[0]?.id ?? "", section: "", file: "AGENTS.md" }), (review = null))}>{t("hn.set.editNeed")}</button>{/if}
             <button class="mini" onclick={() => (review?.draft && ondraft(review.draft.draft), (review = null))}>{review.draft ? t("hn.set.reject") : t("common.cancel")}</button>
             <button class="mini pri" disabled={review.errors.length > 0} onclick={approveReview}>{review.draft ? t("hn.set.approveSave") : t("hn.set.approve")}</button>
           </div>
@@ -1030,13 +1042,25 @@
           <h4>{t("hn.set.aiTitle")}</h4>
           <section>
             <div class="row"><span>{t("hn.set.what")}</span>
-              <span class="seg"><button class="on">{t("hn.set.whatRecipe")}</button><button disabled title={t("hn.set.later")}>{t("hn.set.whatCfg")}</button><button disabled title={t("hn.set.later")}>{t("hn.set.whatAgent")}</button></span></div>
-            <div class="row"><span>{t("hn.set.which")}</span>
-              <select aria-label={t("hn.set.which")} bind:value={ai.id}>
-                <option value="">{t("hn.set.newRecipe")}</option>
-                {#each recipes as r (r.id)}<option value={r.id}>{r.recipe?.name || r.id}</option>{/each}
-              </select></div>
-            {#if !ai.id}<div class="row"><span>{t("hn.set.newName")}</span><input class="tin" bind:value={ai.fresh} placeholder="review-pr" aria-label={t("hn.set.newName")} /></div>{/if}
+              <span class="seg">{#each [["recipe", "hn.set.whatRecipe"], ["config", "hn.set.whatCfg"], ["agent", "hn.set.whatAgent"]] as [k, l]}
+                <button class:on={ai.target === k} onclick={() => ai && (ai.target = k as AiAsk["target"])}>{t(l as "hn.set.whatRecipe")}</button>{/each}</span></div>
+            {#if ai.target === "recipe"}
+              <div class="row"><span>{t("hn.set.which")}</span>
+                <select aria-label={t("hn.set.which")} bind:value={ai.id}>
+                  <option value="">{t("hn.set.newRecipe")}</option>
+                  {#each recipes as r (r.id)}<option value={r.id}>{r.recipe?.name || r.id}</option>{/each}
+                </select></div>
+              {#if !ai.id}<div class="row"><span>{t("hn.set.newName")}</span><input class="tin" bind:value={ai.fresh} placeholder="review-pr" aria-label={t("hn.set.newName")} /></div>{/if}
+            {:else if ai.target === "config"}
+              <div class="row"><span>{t("hn.set.cfgPart")}<small>{t("hn.set.cfgPartSub")}</small></span>
+                <select aria-label={t("hn.set.cfgPart")} bind:value={ai.section}>
+                  <option value="">{t("hn.set.cfgAny")}</option>
+                  {#each SECTIONS.filter((k) => !["harness", "keamanan", "proses", "diagnostik"].includes(k)) as k}<option value={k}>{t(`set.nav.${k}`)}</option>{/each}
+                </select></div>
+            {:else}
+              <div class="row"><span>{t("hn.set.file")}<small>{t("hn.set.fileSub")}</small></span>
+                <select aria-label={t("hn.set.file")} bind:value={ai.file}><option>AGENTS.md</option><option>CLAUDE.md</option></select></div>
+            {/if}
             <div class="row col"><span>{t("hn.set.need")}</span>
               <textarea class="tin" rows="4" bind:value={ai.ask} placeholder={t("hn.set.needPh")} aria-label={t("hn.set.need")}></textarea></div>
             <div class="row"><span>{t("hn.set.with")}</span>
@@ -1044,10 +1068,10 @@
                 {#each agentProfiles as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
               </select></div>
           </section>
-          <p class="note">{t("hn.set.aiNote")}</p>
+          <p class="note">{ai.target === "agent" ? t("hn.set.aiNoteAgent") : ai.target === "config" ? t("hn.set.aiNoteCfg") : t("hn.set.aiNote")}</p>
           <div class="acts">
             <button class="mini" onclick={() => (ai = null)}>{t("common.cancel")}</button>
-            <button class="mini pri" disabled={!ai.ask.trim() || !(ai.id || slug(ai.fresh))} onclick={startAi}>{t("hn.set.go")}</button>
+            <button class="mini pri" disabled={!aiReady} onclick={startAi}>{t("hn.set.go")}</button>
           </div>
         {:else}
           {#if drafts.length}
@@ -1793,6 +1817,14 @@
   }
   .st.broken {
     color: #fca5a5;
+  }
+  .mini:disabled {
+    opacity: 0.45;
+  }
+  .aihead {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 6px;
   }
   .seg button:disabled {
     opacity: 0.45;
