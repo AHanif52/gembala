@@ -1,6 +1,8 @@
 //! FR-83/84: read only the foreground Claude process's session metadata (SEC-15).
 use super::*;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
+
+const STOP_SETTLE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq)]
 struct Session {
@@ -13,6 +15,7 @@ pub struct Cache {
     path: PathBuf,
     stamp: Option<(SystemTime, u64)>,
     data: Option<Session>,
+    pending_done: Option<Instant>,
     pub shell: bool,
     pub reason: String,
 }
@@ -22,7 +25,9 @@ impl Cache {
     pub fn clear(&mut self) {
         self.shell = false;
         self.reason.clear();
-        self.data = None;
+        // Busy does not override hooks, but Stop needs it even when the file has not changed.
+        self.data = self.data.take().filter(|d| d.status == "busy");
+        self.pending_done = None;
     }
 
     fn apply(&mut self, status: &'static str) -> (&'static str, bool) {
@@ -39,13 +44,32 @@ impl Cache {
         (next, release)
     }
 
+    fn next(&mut self, hook: Option<&'static str>, current: &'static str, now: Instant) -> Option<(&'static str, bool)> {
+        if hook == Some("done") && !self.shell && self.data.as_ref().is_some_and(|d| d.status == "busy") {
+            // Stop precedes Claude's session-file update; don't publish an early done notice.
+            self.pending_done.get_or_insert(now);
+        } else if hook.is_some() {
+            self.pending_done = None;
+        }
+        let status = if let Some(start) = self.pending_done {
+            if now.duration_since(start) < STOP_SETTLE && self.data.as_ref().is_some_and(|d| d.status == "busy") {
+                return None;
+            }
+            self.pending_done = None;
+            "done"
+        } else {
+            hook.unwrap_or(current)
+        };
+        Some(self.apply(status))
+    }
+
     pub fn overrides(&self) -> bool {
-        self.shell || self.data.as_ref().is_some_and(|d| d.status == "waiting")
+        self.pending_done.is_some() || self.shell || self.data.as_ref().is_some_and(|d| d.status == "waiting")
     }
 
     fn read(&mut self, path: PathBuf, pid: i32) {
         if self.path != path {
-            *self = Self { path, ..Self::default() };
+            *self = Self { path, pending_done: self.pending_done, ..Self::default() };
         }
         let Ok(meta) = fs::symlink_metadata(&self.path) else {
             self.data = None;
@@ -114,7 +138,8 @@ pub fn refresh(st: &State, id: u64, pane: &Pane, hook: Option<&'static str>) {
         return;
     }
     let Some((pid, _)) = pty::busy(&pane.master, pane.sid) else {
-        if let Some(status) = hook { set_status(st, id, pane, status, None); }
+        let pending = pane.claude.lock().unwrap().pending_done.take().is_some();
+        if let Some(status) = hook.or(pending.then_some("done")) { set_status(st, id, pane, status, None); }
         return;
     };
     let dir = {
@@ -125,7 +150,7 @@ pub fn refresh(st: &State, id: u64, pane: &Pane, hook: Option<&'static str>) {
     let old = (cache.shell, cache.reason.clone());
     cache.read(dir.join("sessions").join(format!("{pid}.json")), pid);
     let current = *pane.status.lock().unwrap();
-    let (next, release) = cache.apply(hook.unwrap_or(current));
+    let Some((next, release)) = cache.next(hook, current, Instant::now()) else { return };
     let changed = old != (cache.shell, cache.reason.clone());
     drop(cache);
     if hook.is_some() || next != current {
@@ -177,6 +202,53 @@ mod tests {
         cache.data = Some(Session { status: "waiting".into(), reason: "nunggu jawaban".into() });
         assert_eq!(cache.apply("working"), ("blocked", false));
         assert_eq!(cache.reason, "nunggu jawaban");
+    }
+
+    #[test]
+    fn stop_before_shell_file_never_publishes_plain_done() {
+        let dir = std::env::temp_dir().join(format!("gbl-claude-stop-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("42.json");
+        fs::write(&path, br#"{"pid":42,"version":"2.1.311","status":"busy"}"#).unwrap();
+        let mut cache = Cache::default();
+        cache.read(path.clone(), 42);
+        cache.clear(); // a tool hook can supersede a busy observation without changing the file
+        cache.read(path.clone(), 42);
+        let now = Instant::now();
+        assert_eq!(cache.next(Some("done"), "working", now), None);
+        assert!(cache.overrides()); // the screen watcher must not publish its own done guess
+        assert_eq!(cache.next(None, "working", now + Duration::from_millis(500)), None);
+        fs::write(&path, br#"{"pid":42,"version":"2.1.311","status":"shell"}"#).unwrap();
+        cache.read(path.clone(), 42);
+        assert_eq!(cache.next(None, "working", now + Duration::from_secs(1)), Some(("done", false)));
+        assert!(cache.shell); // the first published done event is already marked shell
+        fs::write(&path, br#"{"pid":42,"version":"2.1.311","status":"idle"}"#).unwrap();
+        cache.read(path, 42);
+        assert_eq!(cache.next(None, "done", now + Duration::from_secs(3)), Some(("done", true)));
+        assert!(!cache.shell);
+        assert_eq!(cache.next(None, "done", now + Duration::from_secs(4)), Some(("done", false)));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pending_stop_times_out_falls_back_or_is_superseded() {
+        let now = Instant::now();
+        let mut cache = Cache { data: Some(Session { status: "busy".into(), reason: String::new() }), ..Cache::default() };
+        assert_eq!(cache.next(Some("done"), "working", now), None);
+        assert_eq!(cache.next(None, "working", now + STOP_SETTLE), Some(("done", false)));
+        assert!(cache.pending_done.is_none());
+        assert!(!cache.shell);
+        assert_eq!(cache.next(Some("done"), "working", now), None);
+        cache.data = None; // missing metadata falls back to the Stop hook
+        assert_eq!(cache.next(None, "working", now), Some(("done", false)));
+        assert_eq!(cache.next(Some("done"), "working", now), Some(("done", false)));
+        cache.data = Some(Session { status: "idle".into(), reason: String::new() });
+        assert_eq!(cache.next(Some("done"), "working", now), Some(("done", false)));
+        cache.data.as_mut().unwrap().status = "busy".into();
+        assert_eq!(cache.next(Some("done"), "working", now), None);
+        cache.clear(); // a new working/start hook cancels the pending Stop
+        assert_eq!(cache.next(None, "working", now + STOP_SETTLE), Some(("working", false)));
+        assert!(cache.pending_done.is_none());
     }
 
     #[test]

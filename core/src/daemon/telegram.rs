@@ -179,7 +179,7 @@ pub(super) fn mask_secrets(text: &str) -> String {
             (r"\bgithub_pat_[A-Za-z0-9_]{16,}", "github_pat_***"),
             (r"\bglpat-[A-Za-z0-9_-]{16,}", "glpat-***"),
             (r"\bxox[abposr]-[A-Za-z0-9-]{8,}", "xox*-***"),
-            (r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", "AKIA***"),
+            (r"\b(AKIA|ASIA)[0-9A-Z]{16}\b", "${1}***"),
             (r"\bAIza[0-9A-Za-z_-]{30,}", "AIza***"),
             (r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}", "sk_***"),
             (r"\bnpm_[A-Za-z0-9]{30,}", "npm_***"),
@@ -1715,6 +1715,16 @@ mod tests {
         for (raw, masked, safe) in cases {
             assert_eq!(mask_secrets(raw), masked, "{raw}");
             assert_eq!(mask_secrets(safe), safe);
+        }
+        for (raw, expected) in [
+            ("X-Api-Key: secret", "X-Api-Key: ***"),
+            ("Private-Token: secret", "Private-Token: ***"),
+            ("ASIA1234567890ABCDEF", "ASIA***"),
+            ("gho_abcdefghijklmnop", "gh*_***"),
+            ("NAME_SECRET=secret", "NAME_SECRET=***"),
+            ("NAME_KEY=secret", "NAME_KEY=***"),
+        ] {
+            assert_eq!(mask_secrets(raw), expected);
         }
         assert_eq!(mask_secrets("Basic abcdef"), "Basic ***");
         assert_eq!(mask_secrets("--password=secret"), "--password=***");
