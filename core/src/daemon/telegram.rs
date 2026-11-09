@@ -97,6 +97,8 @@ enum In {
     Pick { pane: u64, cb: String, msg: i64 },
     /// `/buka <agent> [pane]`: start an agent from the fixed list in a shell pane idle at its prompt
     Open { agent: String, pane: Option<String> },
+    /// workspace picked for `/buka <agent>` (many idle shells): its panes next
+    OpenWs { ws: String, agent: String, cb: String, msg: i64 },
     /// shell pane picked for `/buka <agent>`
     OpenPick { pane: u64, agent: String, cb: String, msg: i64 },
     /// photo or file: saved like a pasted image (FR-54, SEC-34), its path typed into the pane after the caption
@@ -154,11 +156,47 @@ fn esc(s: &str) -> String {
 
 /// last `lines` rows, trailing blank rows dropped, at most `MAX_SNIPPET` characters (cut from the top)
 fn snippet(screen: &str, lines: usize) -> String {
-    let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    let rows = flat_tables(screen.lines().map(str::trim_end));
     let end = rows.iter().rposition(|r| !r.is_empty()).map_or(0, |i| i + 1);
     let text = rows[end.saturating_sub(lines)..end].join("\n");
     let n = text.chars().count();
     text.chars().skip(n.saturating_sub(MAX_SNIPPET)).collect()
+}
+
+/// Box tables (Claude's `┌─┬─┐ │ … │`) read badly on a phone (9 Nov: "susah kebaca"): border rows drop, the lines a
+/// row wraps over join cell by cell, one table row = one line with cells joined by ` · `
+fn flat_tables<'a>(rows: impl Iterator<Item = &'a str>) -> Vec<String> {
+    const BAR: [char; 2] = ['│', '┃'];
+    let boxy = |c: char| ('\u{2500}'..='\u{257f}').contains(&c);
+    let flush = |cells: &mut Vec<String>, out: &mut Vec<String>| {
+        if !cells.is_empty() {
+            out.push(cells.iter().filter(|c| !c.is_empty()).cloned().collect::<Vec<_>>().join(" · "));
+            cells.clear();
+        }
+    };
+    let (mut out, mut cells) = (Vec::new(), Vec::<String>::new());
+    for r in rows {
+        let t = r.trim();
+        if !t.is_empty() && t.chars().all(|c| boxy(c) || c == ' ') && t.chars().any(|c| boxy(c) && !BAR.contains(&c)) {
+            flush(&mut cells, &mut out);
+        } else if t.starts_with(BAR) {
+            let parts: Vec<&str> = t.trim_matches(BAR).split(BAR).collect();
+            if cells.len() < parts.len() {
+                cells.resize(parts.len(), String::new());
+            }
+            for (cell, p) in cells.iter_mut().zip(parts).filter(|(_, p)| !p.trim().is_empty()) {
+                if !cell.is_empty() {
+                    cell.push(' ');
+                }
+                cell.push_str(p.trim());
+            }
+        } else {
+            flush(&mut cells, &mut out);
+            out.push(r.to_string());
+        }
+    }
+    flush(&mut cells, &mut out);
+    out
 }
 
 /// FR-69 label without the spinner and generic titles (agent name)
@@ -210,6 +248,9 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
         }
         if let Some((pane, agent)) = data.strip_prefix("o|").and_then(|r| r.split_once('|')).and_then(|(p, a)| Some((p.parse().ok()?, a))) {
             return In::OpenPick { pane, agent: agent.to_string(), cb, msg };
+        }
+        if let Some((ws, agent)) = data.strip_prefix("w|").and_then(|r| r.split_once('|')) {
+            return In::OpenWs { ws: ws.to_string(), agent: agent.to_string(), cb, msg };
         }
         let Some((pane, seq, key)) = cb_parse(data) else { return In::Ignore };
         return In::Key { pane, seq, key, cb, msg };
@@ -369,6 +410,7 @@ fn t(id: bool, k: &str) -> &'static str {
         ),
         "open_which" => ("Yang bisa dibuka:", "You can start:"),
         "open_pick" => ("Pane mana buat", "Which pane for"),
+        "open_ws" => ("Workspace mana buat", "Which workspace for"),
         "opening" => ("Nyalain", "Starting"),
         "opened_hint" => ("Ketik aja prompt-nya begitu siap.", "Type your prompt once it's up."),
         "already_agent" => ("Pane itu udah jalanin agent, ketik aja.", "That pane already runs an agent, just type."),
@@ -1027,27 +1069,46 @@ fn open_in(st: &State, b: &Bot, id: u64, p: &Pane, agent: &str) {
     }
 }
 
-/// `/buka <agent>` without a pane: buttons of idle shell panes, `name · workspace`
-fn open_picker(st: &State, b: &Bot, agent: &str) {
+/// `/buka <agent>` without a pane: idle shell panes, one per row with their folder (`shell-13 · app`). Many panes over
+/// several workspaces = pick the workspace first (9 Nov: 24 `shell-N · workspace` buttons, "susah taunya yang mana")
+fn open_picker(st: &State, b: &Bot, agent: &str, only_ws: Option<&str>) {
     let names = ws_names();
-    let mut panes: Vec<(String, u64)> = st
+    let ws_of = |w: &str| names.get(w).cloned().unwrap_or_else(|| w.to_string());
+    let mut panes: Vec<(String, String, u64, i32)> = st
         .panes
         .lock()
         .unwrap()
         .iter()
         .filter(|(_, p)| idle_shell(p))
-        .map(|(id, p)| {
-            let ws = p.workspace.lock().unwrap().clone();
-            (format!("{} · {}", p.name.lock().unwrap(), names.get(&ws).unwrap_or(&ws)), *id)
-        })
+        .map(|(id, p)| (p.workspace.lock().unwrap().clone(), p.name.lock().unwrap().clone(), *id, p.sid))
+        .filter(|(w, ..)| only_ws.is_none_or(|o| o == w))
         .collect();
     if panes.is_empty() {
         return b.tell(t(b.id_lang, "no_idle"));
     }
-    panes.sort();
-    let rows: Vec<Vec<Value>> =
-        panes.chunks(2).map(|c| c.iter().map(|(n, id)| json!({"text": n, "callback_data": format!("o|{id}|{agent}")})).collect()).collect();
-    let text = esc(&format!("{} {agent}?", t(b.id_lang, "open_pick")));
+    // workspace name, then shell-2 before shell-11
+    panes.sort_by(|a, b| (ws_of(&a.0), a.1.len(), &a.1).cmp(&(ws_of(&b.0), b.1.len(), &b.1)));
+    let mut spaces: Vec<&str> = panes.iter().map(|x| x.0.as_str()).collect();
+    spaces.dedup();
+    // callback data is 64 bytes max: a long workspace id can't go in a button
+    let by_ws = only_ws.is_none() && spaces.len() > 1 && panes.len() > 6 && spaces.iter().all(|w| w.len() + agent.len() <= 60);
+    let (key, rows): (&str, Vec<Vec<Value>>) = if by_ws {
+        let rows = spaces.iter().map(|w| {
+            let n = panes.iter().filter(|x| x.0 == *w).count();
+            vec![json!({"text": format!("{} · {n} shell", ws_of(w)), "callback_data": format!("w|{w}|{agent}")})]
+        });
+        ("open_ws", rows.collect())
+    } else {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let rows = panes.iter().map(|(w, name, id, sid)| {
+            let cwd = pty::cwd_of(*sid).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+            let dir = if cwd == home { "~".to_string() } else { cwd.rsplit('/').next().unwrap_or_default().to_string() };
+            let text = if spaces.len() > 1 { format!("{name} · {} · {dir}", ws_of(w)) } else { format!("{name} · {dir}") };
+            vec![json!({"text": text, "callback_data": format!("o|{id}|{agent}")})]
+        });
+        ("open_pick", rows.collect())
+    };
+    let text = esc(&format!("{} {agent}?", t(b.id_lang, key)));
     let _ = b.out.try_send(Out::Api("sendMessage", json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML", "reply_markup": {"inline_keyboard": rows}})));
 }
 
@@ -1240,11 +1301,24 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                 return b.tell(&format!("{} {}", t(id_l, "open_which"), ok.join(", ")));
             }
             match pane {
-                None => open_picker(st, b, &agent),
+                None => open_picker(st, b, &agent, None),
                 Some(n) => match st.by_name(&n) {
                     Some((id, p)) => open_in(st, b, id, &p, &agent),
                     None => b.tell(t(id_l, "no_pane")),
                 },
+            }
+        }
+        In::OpenWs { ws, agent, cb, msg } => {
+            let _ = b.out.try_send(Out::Api("answerCallbackQuery", json!({"callback_query_id": cb})));
+            if b.picked.lock().unwrap().replace(msg) == Some(msg) {
+                return;
+            }
+            let _ = b.out.try_send(Out::Api("editMessageReplyMarkup", json!({"chat_id": b.chat(), "message_id": msg, "reply_markup": {"inline_keyboard": []}})));
+            // checked again like OpenPick: callback data comes back from Telegram
+            if openable_now(st).contains(&agent) {
+                open_picker(st, b, &agent, Some(&ws));
+            } else {
+                b.tell(t(id_l, "no_pane"));
             }
         }
         In::OpenPick { pane: id, agent, cb, msg } => {
@@ -1353,6 +1427,14 @@ mod tests {
 
     fn msg(chat: i64, user: i64, text: &str, date: i64) -> Value {
         json!({"message": {"message_id": 5, "date": date, "chat": {"id": chat, "type": "private"}, "from": {"id": user, "first_name": "Raka", "username": "raka"}, "text": text}})
+    }
+
+    #[test]
+    fn tabel_kotak_jadi_baris() {
+        let screen = "Ada 2 task:\n  ┌──────────┬─────────────┐\n  │ Task     │ Judul       │\n  ├──────────┼─────────────┤\n  │ 152347   │ [BE] Kolom  │\n  │ (#83)    │ Result      │\n  ├──────────┼─────────────┤\n  │ 152349   │ │\n  └──────────┴─────────────┘\nSelesai.";
+        assert_eq!(snippet(screen, 30), "Ada 2 task:\nTask · Judul\n152347 (#83) · [BE] Kolom Result\n152349\nSelesai.");
+        // plain text and code stay as they are
+        assert_eq!(snippet("a  b\n    if x {\n────\n", 30), "a  b\n    if x {");
     }
 
     #[test]
@@ -1492,6 +1574,8 @@ mod tests {
         assert_eq!(parse(&msg(42, 7, "/buka", n), Some(&l), n), In::Help);
         let q = json!({"callback_query": {"id": "c1", "from": {"id": 7}, "data": "o|11|claude-kantor", "message": {"message_id": 9, "chat": {"id": 42}}}});
         assert_eq!(parse(&q, Some(&l), 0), In::OpenPick { pane: 11, agent: "claude-kantor".into(), cb: "c1".into(), msg: 9 });
+        let q = json!({"callback_query": {"id": "c1", "from": {"id": 7}, "data": "w|ap2mf4uo|claude", "message": {"message_id": 9, "chat": {"id": 42}}}});
+        assert_eq!(parse(&q, Some(&l), 0), In::OpenWs { ws: "ap2mf4uo".into(), agent: "claude".into(), cb: "c1".into(), msg: 9 });
         assert_eq!(openable(&[]), ["claude", "codex", "omp", "opencode"]);
         assert_eq!(openable(&["kantor".into()]), ["claude", "codex", "omp", "opencode", "claude-utama", "claude-kantor"]);
         // free text is never an agent: "rm -rf ~" isn't in the list, so nothing is typed
