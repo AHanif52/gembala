@@ -305,6 +305,20 @@ fn keys(agent: &str) -> &'static [&'static str] {
     if agent == "claude" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &["esc"] }
 }
 
+/// `❯ 2. No` / `  3. No, and tell Claude…` -> the option number of a numbered dialog row
+fn choice(row: &str) -> Option<u8> {
+    let s = row.trim_start_matches(|c: char| c.is_whitespace() || c == '│' || c == '❯');
+    let (d, rest) = s.split_once(". ")?;
+    (d.len() == 1 && !rest.is_empty()).then(|| d.parse().ok()).flatten().filter(|n| (1..=9).contains(n))
+}
+
+/// Claude's dialog has 2 or 3 options: the lowest numbered row on screen is its last option (a numbered list in the
+/// answer above doesn't count); 3 when none is read
+fn claude_keys(screen: &str) -> Vec<&'static str> {
+    let n = screen.lines().rev().find_map(choice).unwrap_or(3).min(3) as usize;
+    ["1", "2", "3"][..n.max(1)].iter().copied().chain(["esc"]).collect()
+}
+
 fn key_bytes(key: &str) -> &'static [u8] {
     match key {
         "1" => b"1",
@@ -1002,7 +1016,9 @@ fn turn_start(rows: &[&str], typed: Option<&str>) -> usize {
     if let Some(i) = (!key.is_empty()).then(|| rows.iter().rposition(|r| r.contains(&key))).flatten() {
         return i;
     }
-    if let Some(i) = rows.iter().rposition(|r| r.trim_start().starts_with('❯')) {
+    // `❯ 1. Yes` is the cursor of a numbered dialog, not a prompt: taking it as the turn start dropped the question
+    // (9 Nov: phone got "❯ 1. Yes / 2. No" with no command)
+    if let Some(i) = rows.iter().rposition(|r| r.trim_start().starts_with('❯') && choice(r).is_none()) {
         return i;
     }
     let stats: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| stats_row(r)).map(|(i, _)| i).collect();
@@ -1125,7 +1141,8 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     }
     let mut body = json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML"});
     if let Kind::Blocked(seq) = kind {
-        let row: Vec<Value> = keys(&agent).iter().map(|k| json!({"text": match *k { "esc" => "Esc", "once" => "Allow once", "always" => "Always", _ => k }, "callback_data": cb_data(id, seq, k)})).collect();
+        let ks = if agent == "claude" { claude_keys(&pane.view.lock().unwrap().0.text()) } else { keys(&agent).to_vec() };
+        let row: Vec<Value> = ks.iter().map(|k| json!({"text": match *k { "esc" => "Esc", "once" => "Allow once", "always" => "Always", _ => k }, "callback_data": cb_data(id, seq, k)})).collect();
         body["reply_markup"] = json!({"inline_keyboard": [row]});
     }
     Some(body)
@@ -1806,6 +1823,16 @@ mod tests {
         assert_eq!(turn_start(&convo, None), 3);
         assert_eq!(turn_start(&convo, Some("halo")), 1);
         assert_eq!(turn_start(&["tanpa prompt"], None), 0);
+        // permission dialog: the question above `❯ 1. Yes` stays in the snippet
+        let ask = ["❯ cek monitoring", "● Bash(curl -s https://x)", "Bash command", "  curl -s https://x", "Do you want to proceed?",
+            "❯ 1. Yes", "  2. No", "", "Esc to cancel · Tab to amend"];
+        assert_eq!(turn_start(&ask, None), 0);
+        assert_eq!(claude_keys(&ask.join("\n")), ["1", "2", "esc"]);
+        assert_eq!(claude_keys("│ ❯ 1. Yes\n│   2. Yes, and don't ask again\n│   3. No, and tell Claude (esc)"), ["1", "2", "3", "esc"]);
+        assert_eq!(claude_keys("no dialog read"), ["1", "2", "3", "esc"]);
+        assert_eq!(claude_keys("1. a\n2. b\n3. c\n4. d\n❯ 1. Yes\n  2. No\nEsc to cancel"), ["1", "2", "esc"]);
+        assert_eq!(choice("❯ halo"), None);
+        assert_eq!(choice("2026. tahun"), None);
         // omp: banner, older prompt, the phone's prompt, answer, stats row, input box
         let omp = ["   v18.16.0", " Connected to MCP servers.", " Yang senin 1 doang?", " 2026-11-08 23:20:01  ⤵ 900", "",
             " jawab satu kata saja: halo", "", " halo", " 2026-11-08 23:25:26  ⤵ 928  ⤴ 3", "", "╭── ⬢ DeepSeek ──╮", "╰─        ─╯"];
