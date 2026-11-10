@@ -82,6 +82,8 @@ pub struct Live {
     born: Instant,
     seen: Option<Status>,
     outbox: Option<Outbox>,
+    /// when the waiting message reached the stage pane (`None` while it is still in `outbox`)
+    sent: Option<Instant>,
     /// message id per stage, for the `reply` pass condition
     msgs: HashMap<usize, String>,
     /// agent actually running each stage (after fallbacks), for the pane's tile in the UI
@@ -502,6 +504,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
             l.cur = Some(id);
             l.born = Instant::now();
             l.seen = None;
+            l.sent = None;
             st.harness.lock().unwrap().locked.insert(id);
             l.outbox = Some(Outbox { step, body: stage_message(l, step), retry_at: Instant::now() });
             None
@@ -510,6 +513,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
             let Some(id) = l.panes.get(&step).copied().filter(|p| st.panes.lock().unwrap().contains_key(p)) else { return Some(Event::Exit(1)) };
             l.cur = Some(id);
             l.seen = None;
+            l.sent = None;
             l.born = Instant::now().checked_sub(GRACE).unwrap_or_else(Instant::now);
             st.harness.lock().unwrap().locked.insert(id);
             l.outbox = Some(Outbox { step, body: fix_message(l, step, failed), retry_at: Instant::now() });
@@ -593,6 +597,17 @@ fn map_status(s: &str) -> Status {
     }
 }
 
+/// FR-16: the status the engine sees for a stage pane. Codex is tracked from the screen, which reads quiet (`done`) in
+/// the seconds between the pasted message and the start of its turn (Codex 0.167), so a check stage was judged before
+/// Codex had read it; once the message is sent, only Codex's own turn-end hook (`notify`) ends its stage.
+fn stage_status(raw: &str, agent: &str, hook_done: Option<Instant>, sent: Option<Instant>) -> Status {
+    let s = map_status(raw);
+    match sent {
+        Some(sent) if s == Status::Idle && agent == "codex" && hook_done.is_none_or(|t| t < sent) => Status::Working,
+        _ => s,
+    }
+}
+
 /// one pass of the runner: deliver the waiting message, then report what changed in the stage's pane or shell
 fn tick(st: &Arc<State>, l: &mut Live) {
     if !matches!(l.run.state, Hs::Running) {
@@ -608,7 +623,10 @@ fn tick(st: &Arc<State>, l: &mut Live) {
             if ready {
                 let (step, body) = (ob.step, ob.body.clone());
                 match send(st, l, id, &p, step, &body) {
-                    Sent::Ok => l.outbox = None,
+                    Sent::Ok => {
+                        l.outbox = None;
+                        l.sent = Some(Instant::now());
+                    }
                     Sent::Later => l.outbox.as_mut().unwrap().retry_at = Instant::now() + RETRY,
                     Sent::Failed => {
                         l.outbox = None;
@@ -640,7 +658,7 @@ fn tick(st: &Arc<State>, l: &mut Live) {
                         events.push(Event::Exit(1));
                     }
                 } else {
-                    let s = map_status(raw);
+                    let s = stage_status(raw, &p.agent, *p.hook_done.lock().unwrap(), l.sent);
                     if l.seen != Some(s) {
                         l.seen = Some(s);
                         events.push(Event::Status(s));
@@ -815,6 +833,7 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
         born: Instant::now(),
         seen: None,
         outbox: None,
+        sent: None,
         msgs: HashMap::new(),
         agents: HashMap::new(),
         shell: None,
@@ -908,6 +927,21 @@ mod tests {
         let r = recipe::parse("[[step]]\nid = \"plan\"\nagents = [\"claude\", \"codex\"]\nmodel = \"opus\"\neffort = \"high\"\n", "t", None).recipe.unwrap();
         assert_eq!(step_flags(&r.steps[0], "claude"), ["--model", "opus", "--effort", "high"]);
         assert_eq!(step_flags(&r.steps[0], "codex"), ["-c", "model_reasoning_effort=\"high\""]);
+    }
+
+    #[test]
+    fn codex_stage_ends_on_its_hook_only() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(5);
+        // quiet screen before the turn starts: still working
+        assert_eq!(stage_status("done", "codex", None, Some(t0)), Status::Working);
+        assert_eq!(stage_status("done", "codex", Some(t0 - Duration::from_secs(1)), Some(t0)), Status::Working);
+        // the turn-end hook after the message ends the stage
+        assert_eq!(stage_status("done", "codex", Some(later), Some(t0)), Status::Idle);
+        // before the message is sent, and for hooked agents, the raw status stands
+        assert_eq!(stage_status("idle", "codex", None, None), Status::Idle);
+        assert_eq!(stage_status("done", "claude", None, Some(t0)), Status::Idle);
+        assert_eq!(stage_status("blocked", "codex", None, Some(t0)), Status::Blocked);
     }
 
     #[test]

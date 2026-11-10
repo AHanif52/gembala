@@ -122,6 +122,8 @@ struct Pane {
     /// FR-80: the agent's last answer of this turn from its stop hook (RAM only, SEC-13); the "done" message sends it
     /// instead of the screen. Cleared when a new turn starts.
     last_msg: Mutex<Option<String>>,
+    /// FR-16: when the agent's own hook last said its turn ended; the harness waits for it on Codex (see `runner::stage_status`)
+    hook_done: Mutex<Option<std::time::Instant>>,
     readable: std::sync::atomic::AtomicBool,
     /// FR-75: pane opened through an agent's request card = that agent's helper (counts to its limit, can't ask for panes)
     helper_of: Mutex<Option<u64>>,
@@ -423,6 +425,9 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                             }
                             if matches!(status, "working" | "start") {
                                 pane.claude.lock().unwrap().clear();
+                            }
+                            if status == "done" {
+                                *pane.hook_done.lock().unwrap() = Some(std::time::Instant::now());
                             }
                             if matches!(status, "done" | "blocked" | "idle") && p["agent"].as_str() == Some("claude") {
                                 claude::refresh(&st, me, &pane, Some(status));
@@ -1340,6 +1345,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         tg_ask: Mutex::default(),
         tg_text: Mutex::new(None),
         last_msg: Mutex::new(None),
+        hook_done: Mutex::new(None),
         claude: Mutex::default(),
         readable: std::sync::atomic::AtomicBool::new(false),
         helper_of: Mutex::new(None),
