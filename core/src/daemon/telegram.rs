@@ -1044,7 +1044,9 @@ fn above_input(rows: &[&str]) -> usize {
     };
     let starts = |r: &str, c: char| r.trim_start().starts_with(c);
     let claude = (1..rows.len()).rev().find(|&i| (starts(rows[i], '❯') || starts(rows[i], '>')) && rule(rows[i - 1])).map(|i| i - 1);
-    let boxed = || (0..rows.len()).rev().find(|&i| starts(rows[i], '╭') && rows[i + 1..].iter().any(|r| starts(r, '╰')));
+    // a box with numbered options in or below it is a permission dialog (10 Nov: Claude's Edit diff box was cut as the
+    // input box, the phone got only the turn above it), not an input box
+    let boxed = || (0..rows.len()).rev().find(|&i| starts(rows[i], '╭') && rows[i + 1..].iter().any(|r| starts(r, '╰')) && !rows[i..].iter().any(|r| choice(r).is_some()));
     let Some(mut j) = claude.or_else(boxed) else { return rows.len() };
     while j > 0 && (rule(rows[j - 1]) || rows[j - 1].trim().is_empty()) {
         j -= 1;
@@ -1944,6 +1946,11 @@ mod tests {
         let rows = ["❯ bikin file", "  Ran 1 shell command", "● Done.", "", "──────────────", "❯ ", "──────────────", "  ◆ Fable 5.1 ⚡high"];
         assert_eq!(above_input(&rows), 3);
         assert_eq!(above_input(&["$ ls", "a b"]), 2);
+        // boxed permission dialog (Edit diff in a box, options inside or below it) stays: it's the question
+        let edit = ["● Update(a.rs)", "1 new message (click) ↓", "╭──────────╮", "│ Edit file │", "│ + x │", "╰──────────╯", "Do you want to make this edit to a.rs?", "❯ 1. Yes", "  2. No"];
+        assert_eq!(above_input(&edit), edit.len());
+        let boxed = ["╭──────────╮", "│ Edit file │", "│ ❯ 1. Yes │", "│   2. No │", "╰──────────╯"];
+        assert_eq!(above_input(&boxed), boxed.len());
         let convo = [" ▐▛███▜▌ Claude Code v2.1", "❯ halo", "● Halo.", "❯ jawab pake 1 kata", "● Oke."];
         assert_eq!(turn_start(&convo, None), 3);
         assert_eq!(turn_start(&convo, Some("halo")), 1);
