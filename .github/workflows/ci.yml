@@ -1,0 +1,43 @@
+# FR-98 stage 1 (TECH 21.5): the core builds, lints and passes its tests on macOS and Linux for every pull request and
+# push to main. Windows joins once the core has its Windows layer (stage 3). No secrets are used here.
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      SHELL: /bin/zsh # the pane hooks under test are zsh (FR-58)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -yq zsh vim netcat-openbsd
+      - run: cargo clippy -q -p gembala --all-targets -- -D warnings
+      - run: cargo test -q -p gembala
+  ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - working-directory: ui
+        run: npm ci --ignore-scripts && npm run check && npm test

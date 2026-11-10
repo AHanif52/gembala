@@ -4,6 +4,7 @@
 //! `identifier "dev.gembala.app" and certificate leaf = <the daemon's own certificate>`. A daemon without a certificate
 //! (dev build, tests) = `None`: secret path only.
 
+#[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 

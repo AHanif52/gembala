@@ -33,6 +33,20 @@ fn start_idle(tag: &str, idle_secs: u64) -> Daemon {
     start_env(tag, idle_secs, &[])
 }
 
+/// Recipes naming `claude`/`omp` are refused when detection doesn't find them; stubs on PATH make that the same on a
+/// bare CI runner as on a Mac with the agents installed.
+fn start_with_agents(tag: &str) -> Daemon {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = std::env::temp_dir().join(format!("gbl-{}-{tag}-bin", std::process::id()));
+    std::fs::create_dir_all(&bin).unwrap();
+    for a in ["claude", "omp"] {
+        std::fs::write(bin.join(a), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join(a), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = PathBuf::from(format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
+    start_env(tag, 3600, &[("PATH", &path)])
+}
+
 fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> Daemon {
     let dir = std::env::temp_dir().join(format!("gbl-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -133,10 +147,13 @@ impl Cli {
                 return s;
             }
             let e = self.recv();
-            if e["event"] == "pane.exit" || e.is_null() {
+            // only this pane's exit ends the wait (another pane closing can arrive before this pane's last output)
+            if (e["event"] == "pane.exit" && e["params"]["pane"] == pane) || e.is_null() {
                 return s;
             }
-            out.extend(B64.decode(e["params"]["data"].as_str().unwrap_or("")).unwrap());
+            if e["params"]["pane"] == pane {
+                out.extend(B64.decode(e["params"]["data"].as_str().unwrap_or("")).unwrap());
+            }
         }
     }
 }
@@ -1206,14 +1223,15 @@ fn blocked_ditolak_dan_konfirmasi_lewat_ui() {
 /// path; the draft is checked like a recipe; "Setujui dan simpan" writes and approves only the reviewed bytes.
 #[test]
 fn h5_draf_resep_pakai_ai() {
-    let d = start("h5");
+    let d = start_with_agents("h5");
     let mut ui = Cli::ui(&d);
     profiles(&d, &mut ui, &sh_profile("cat", "stty raw -echo; cat -v"), "cat -v");
     let t = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let r = ui.call("recipe.draft_new", json!({"pane": t, "id": "uji-h5", "ask": "tambah tahap test"}))["result"].clone();
     let (draft, path) = (r["draft"].as_str().unwrap().to_string(), r["path"].as_str().unwrap().to_string());
     let shown = ui.attach_until(t, &["tambah tahap test", "draft written"]);
-    assert!(shown.contains("[Gembala · from user]") && shown.contains(&draft), "{shown}");
+    // GNU `cat -v` prints the "·" as M-BM-7
+    assert!(shown.contains(" from user]") && shown.contains(&draft), "{shown}");
     // nothing written yet: the UI keeps waiting
     assert_eq!(ui.call("recipe.draft_get", json!({"draft": draft, "id": "uji-h5"}))["result"]["exists"], false);
     // the agent writes the draft
@@ -1240,7 +1258,8 @@ fn h5_config_dan_instruksi_agent() {
     let r = ui.call("config.draft_new", json!({"pane": t, "ask": "matiin suara notif", "section": "umum"}))["result"].clone();
     let (draft, path) = (r["draft"].as_str().unwrap().to_string(), r["path"].as_str().unwrap().to_string());
     let shown = ui.attach_until(t, &["matiin suara notif", "draft written"]);
-    assert!(shown.contains("[Gembala · from user]") && shown.contains(&draft), "{shown}");
+    // GNU `cat -v` prints the "·" as M-BM-7
+    assert!(shown.contains(" from user]") && shown.contains(&draft), "{shown}");
     let cfg_now = std::fs::read_to_string(d.dir.join("cfg/config.toml")).unwrap();
     // a draft touching [telegram] is refused, even when the rest is fine
     std::fs::write(&path, format!("{cfg_now}\n[telegram]\nsnippet = false\n")).unwrap();
@@ -1549,7 +1568,7 @@ fn wait_state(ui: &mut Cli, run: &str, want: &[&str]) -> Value {
 /// the next one, the driven pane refuses other senders, the shell stage judges by exit code, and Ship waits for the user.
 #[test]
 fn harness_runs_a_recipe_with_fallback_and_a_gate() {
-    let d = start("harness1");
+    let d = start_with_agents("harness1");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let cfg = d.dir.join("cfg");
@@ -1635,7 +1654,7 @@ fn gone(ui: &mut Cli, pane: u64) {
 /// exit code; the stage verdict still comes from the exit code.
 #[test]
 fn harness_saver_writes_the_reduced_test_log() {
-    let d = start("harness3");
+    let d = start_with_agents("harness3");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let cfg = d.dir.join("cfg");
@@ -1688,7 +1707,7 @@ fn harness_saver_writes_the_reduced_test_log() {
 /// doesn't count; the same stage passes once the agent changes the folder.
 #[test]
 fn harness_execute_needs_a_diff() {
-    let d = start("harness4");
+    let d = start_with_agents("harness4");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let cfg = d.dir.join("cfg");
@@ -1730,7 +1749,7 @@ fn harness_execute_needs_a_diff() {
 /// SEC-30: Stop ends the run from a gate or while a stage works, and a run left over from an earlier daemon is never resumed.
 #[test]
 fn harness_stop_and_stale_run() {
-    let d = start("harness2");
+    let d = start_with_agents("harness2");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let cfg = d.dir.join("cfg");

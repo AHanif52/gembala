@@ -39,8 +39,16 @@ pub fn scrub_env(c: &mut Command) {
     }
 }
 
+/// `$SHELL`, else the account's shell from the user database (a daemon started without a login env), else `/bin/sh`
+/// (zsh isn't on every Linux)
 pub fn login_shell() -> String {
-    std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into())
+    std::env::var("SHELL").ok().filter(|s| !s.is_empty()).or_else(passwd_shell).unwrap_or_else(|| "/bin/sh".into())
+}
+
+fn passwd_shell() -> Option<String> {
+    let pw = unsafe { libc::getpwuid(libc::getuid()) };
+    let sh = unsafe { pw.as_ref().filter(|p| !p.pw_shell.is_null()).map(|p| std::ffi::CStr::from_ptr(p.pw_shell)) }?;
+    Some(sh.to_str().ok()?.to_owned()).filter(|s| !s.is_empty())
 }
 
 impl Pty {
@@ -48,7 +56,7 @@ impl Pty {
     pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16, env: &[(&str, &str)], cwd: Option<&Path>) -> io::Result<Pty> {
         let (mut m, mut s) = (0, 0);
         let mut ws = winsize(rows, cols);
-        check(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) })?;
+        check(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut ws) })?;
         let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
         // the master must not be inherited by pane processes (an agent must not hold another pane's PTY)
         cloexec(m)?;

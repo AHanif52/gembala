@@ -326,8 +326,7 @@ impl Drop for CloseAfterFlush {
 
 fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     // SEC-2: other OS accounts are rejected before anything else (second layer on top of socket 0600 + folder 0700)
-    let (mut uid, mut gid) = (0, 0);
-    if unsafe { libc::getpeereid(s.as_raw_fd(), &mut uid, &mut gid) } != 0 || uid != unsafe { libc::getuid() } {
+    if peer_uid(&s).ok() != Some(unsafe { libc::getuid() }) {
         return Ok(());
     }
     let peer = peer_pid(&s)?;
@@ -2607,12 +2606,29 @@ pub fn peer_pid(s: &UnixStream) -> io::Result<i32> {
     if rc == -1 { Err(io::Error::last_os_error()) } else { Ok(pid) }
 }
 
+#[cfg(target_os = "macos")]
+fn peer_uid(s: &UnixStream) -> io::Result<libc::uid_t> {
+    let (mut uid, mut gid) = (0, 0);
+    if unsafe { libc::getpeereid(s.as_raw_fd(), &mut uid, &mut gid) } != 0 { Err(io::Error::last_os_error()) } else { Ok(uid) }
+}
+
 #[cfg(target_os = "linux")]
-pub fn peer_pid(s: &UnixStream) -> io::Result<i32> {
+fn peer_cred(s: &UnixStream) -> io::Result<libc::ucred> {
     let mut c: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let rc = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut c).cast(), &mut len) };
-    if rc == -1 { Err(io::Error::last_os_error()) } else { Ok(c.pid) }
+    if rc == -1 { Err(io::Error::last_os_error()) } else { Ok(c) }
+}
+
+#[cfg(target_os = "linux")]
+pub fn peer_pid(s: &UnixStream) -> io::Result<i32> {
+    peer_cred(s).map(|c| c.pid)
+}
+
+/// glibc has no `getpeereid`; SO_PEERCRED carries the uid too
+#[cfg(target_os = "linux")]
+fn peer_uid(s: &UnixStream) -> io::Result<libc::uid_t> {
+    peer_cred(s).map(|c| c.uid)
 }
 
 /// 32 random bytes from the kernel, hex.

@@ -541,7 +541,7 @@ mod tests {
         let mut g = Grid::new(24, 80, 1000);
         g.feed(&out);
         assert!(g.0.screen().alternate_screen(), "vim harus di layar alternatif");
-        assert!(g.text().contains("/bin/zsh"), "{}", g.text());
+        assert!(g.text().contains("/bin/sh"), "{}", g.text());
         assert_roundtrip(&g);
     }
 
