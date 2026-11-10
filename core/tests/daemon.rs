@@ -1504,6 +1504,30 @@ fn resep_disetujui_per_isi() {
     assert!(!file.exists());
 }
 
+/// 3b B1: the builder gets cards and templates, renders a recipe for review without touching the file, and saves only
+/// the render whose hash the review showed.
+#[test]
+fn b1_builder_render_dan_simpan() {
+    let d = start("b1");
+    let mut ui = Cli::ui(&d);
+    let lib = ui.call("recipe.library", json!({}))["result"].clone();
+    assert_eq!(lib["steps"].as_array().map(Vec::len), Some(9), "{lib}");
+    assert_eq!(lib["templates"][2]["id"], "review-pr", "{lib}");
+    assert_eq!(lib["agents"].as_array().unwrap().iter().find(|a| a["agent"] == "omp").unwrap()["flags"]["cost"], true);
+    ui.call("recipe.list", json!({}));
+    let full = ui.call("recipe.get", json!({"id": "perbaiki-bug"}))["result"]["full"].clone();
+    let mut r = full.clone();
+    r["steps"].as_array_mut().unwrap().retain(|s| s["id"] != "test");
+    let v = ui.call("recipe.render", json!({"id": "perbaiki-bug", "recipe": r}))["result"].clone();
+    assert!(v["errors"] == json!([]) && !v["text"].as_str().unwrap().contains("id = \"test\""), "{v}");
+    let file = d.dir.join("cfg/recipes/perbaiki-bug.toml");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("id = \"test\""));
+    assert_eq!(ui.call("recipe.save", json!({"id": "perbaiki-bug", "hash": "00"}))["result"]["error"], "recipe_changed");
+    assert_eq!(ui.call("recipe.save", json!({"id": "perbaiki-bug", "hash": v["hash"]}))["result"], json!({}));
+    let got = ui.call("recipe.get", json!({"id": "perbaiki-bug"}))["result"].clone();
+    assert_eq!((got["status"].clone(), got["text"].clone()), (json!("approved"), v["text"].clone()));
+}
+
 fn script(path: &std::path::Path, body: &str) {
     std::fs::write(path, body).unwrap();
     std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();

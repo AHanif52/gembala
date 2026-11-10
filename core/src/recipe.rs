@@ -5,10 +5,11 @@
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use toml_edit::{DocumentMut, Item, TableLike};
+use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Table, TableLike};
 
 use crate::diag::Diag;
 
@@ -27,7 +28,8 @@ pub const TRAIL_FILE: &str = "jejak.md";
 const FALLBACK_ON: &[&str] = &["exit", "timeout", "unknown", "limit"];
 const EFFORTS: &[&str] = &["low", "medium", "high", "max"];
 const PASSES: &[&str] = &["reply", "file", "first_line_pass", "exit0"];
-const STEP_KEYS: &[&str] = &["id", "kind", "name", "need", "instruction", "agents", "model", "effort", "output", "inputs", "pass", "timeout", "gate", "human", "shell", "max_cost"];
+const STEP_KEYS: &[&str] = &["id", "kind", "name", "need", "instruction", "agents", "model", "models", "effort", "output", "inputs", "pass", "timeout", "gate", "human", "shell", "max_cost"];
+const DEFAULT_TIMEOUT: u64 = 15 * 60;
 const RECIPE_KEYS: &[&str] = &["name", "fallback_on", "token_saver", "max_rounds", "after_max", "on_limit", "total", "step"];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +43,10 @@ pub struct Step {
     pub instruction: String,
     /// agent kinds (claude, codex, omp, opencode); order = fallback order
     pub agents: Vec<String>,
+    /// for the first agent only; a fallback uses its own default unless `models` names it
     pub model: String,
+    /// per-agent model (3b decision 1, 10 Nov 2026): wins over `model`; "" = that agent's own default
+    pub models: BTreeMap<String, String>,
     pub effort: String,
     /// artifact file name inside the run folder
     pub output: String,
@@ -320,14 +325,30 @@ fn step(t: &dyn TableLike, i: usize, installed: Option<&[String]>, cx: &mut Ctx)
     let human = cx.boolean(t, "human", &at).unwrap_or(false);
     let shell = cx.boolean(t, "shell", &at).unwrap_or(false);
     let kind = cx.string(t, "kind", &at);
-    let kind = cx.one_of(kind, &["work", "check"], if shell { "check" } else { "work" }, &format!("{at}.kind"));
+    let kind = cx.one_of(kind, &["work", "check"], default_kind(shell), &format!("{at}.kind"));
     let agents = cx.strings(t, "agents", &at).unwrap_or_default();
     let model = cx.string(t, "model", &at).unwrap_or_default();
     let effort = cx.string(t, "effort", &at);
     let effort = if effort.is_none() { String::new() } else { cx.one_of(effort, EFFORTS, "", &format!("{at}.effort")) };
     let output = cx.string(t, "output", &at).unwrap_or_default();
     let inputs = cx.strings(t, "inputs", &at).unwrap_or_default();
-    let gate = cx.boolean(t, "gate", &at).unwrap_or(cx.d.plan_gate && id == "plan");
+    // Ship is always the human's gate and has no timeout, written or not
+    let gate = human || cx.boolean(t, "gate", &at).unwrap_or(cx.d.plan_gate && id == "plan");
+    let mut models = BTreeMap::new();
+    match t.get("models").map(|i| i.as_table_like()) {
+        None => {}
+        Some(None) => cx.err("bad_type", &format!("{at}.models")),
+        Some(Some(m)) => {
+            for (a, v) in m.iter() {
+                match v.as_str() {
+                    Some(v) if crate::profile::agent_ids().any(|k| k == a) && (v.is_empty() || model_ok(v)) => {
+                        models.insert(a.to_string(), v.to_string());
+                    }
+                    _ => cx.errors.push(Diag::new("model_bad").at(format!("{at}.models")).arg("got", a)),
+                }
+            }
+        }
+    }
 
     if !model.is_empty() && !model_ok(&model) {
         cx.err("model_bad", &format!("{at}.model"));
@@ -366,9 +387,8 @@ fn step(t: &dyn TableLike, i: usize, installed: Option<&[String]>, cx: &mut Ctx)
         cx.warn("agent_missing", &at);
     }
 
-    let default_pass = if shell { "exit0" } else if output.is_empty() { "reply" } else if kind == "check" { "first_line_pass" } else { "file" };
     let pass = cx.string(t, "pass", &at);
-    let pass = cx.one_of(pass, PASSES, default_pass, &format!("{at}.pass"));
+    let pass = cx.one_of(pass, PASSES, default_pass(shell, &output, &kind), &format!("{at}.pass"));
     if matches!(pass.as_str(), "file" | "first_line_pass") && output.is_empty() {
         cx.err("pass_needs_output", &at);
     }
@@ -376,12 +396,13 @@ fn step(t: &dyn TableLike, i: usize, installed: Option<&[String]>, cx: &mut Ctx)
         cx.err("shell_step", &at);
     }
     let timeout_secs = match cx.string(t, "timeout", &at) {
-        None => 15 * 60,
+        _ if human => 0,
+        None => DEFAULT_TIMEOUT,
         Some(s) => match duration(&s) {
             Some(n) if n <= MAX_TOTAL_SECS => n,
             _ => {
                 cx.err("duration", &format!("{at}.timeout"));
-                15 * 60
+                DEFAULT_TIMEOUT
             }
         },
     };
@@ -403,6 +424,7 @@ fn step(t: &dyn TableLike, i: usize, installed: Option<&[String]>, cx: &mut Ctx)
         kind,
         agents,
         model,
+        models,
         effort,
         output,
         inputs,
@@ -413,6 +435,23 @@ fn step(t: &dyn TableLike, i: usize, installed: Option<&[String]>, cx: &mut Ctx)
         shell,
         max_cost,
     })
+}
+
+/// what `step` fills in when a key is left out; `render` writes only what differs from these
+fn default_kind(shell: bool) -> &'static str {
+    if shell { "check" } else { "work" }
+}
+
+fn default_pass(shell: bool, output: &str, kind: &str) -> &'static str {
+    if shell {
+        "exit0"
+    } else if output.is_empty() {
+        "reply"
+    } else if kind == "check" {
+        "first_line_pass"
+    } else {
+        "file"
+    }
 }
 
 /// whole-recipe rules about order (BRD 8): checked after every step parsed, so one report lists all of them
@@ -432,6 +471,7 @@ fn order(steps: &mut Vec<Step>, cx: &mut Ctx) {
             instruction: String::new(),
             agents: Vec::new(),
             model: String::new(),
+            models: BTreeMap::new(),
             effort: String::new(),
             output: String::new(),
             inputs: Vec::new(),
@@ -481,6 +521,331 @@ pub fn summary(r: &Recipe) -> Value {
         "name": r.name, "max_rounds": r.max_rounds, "after_max": r.after_max, "total_secs": r.total_secs,
         "steps": r.steps.iter().map(|s| json!({"id": s.id, "name": s.name, "kind": s.kind, "human": s.human, "shell": s.shell, "agents": s.agents})).collect::<Vec<_>>(),
     })
+}
+
+/// 3b builder (B1): the whole recipe for the card builder. What the UI sends back (`from_json`) is untrusted: it only
+/// ever reaches disk through `render` + `parse`, so the file rules and SEC-30 clamps apply as to a hand-written file.
+pub fn to_json(r: &Recipe) -> Value {
+    json!({
+        "name": r.name, "fallback_on": r.fallback_on, "token_saver": r.token_saver, "max_rounds": r.max_rounds,
+        "after_max": r.after_max, "on_limit": r.on_limit, "total_secs": r.total_secs,
+        "steps": r.steps.iter().map(step_json).collect::<Vec<_>>(),
+    })
+}
+
+pub fn step_json(s: &Step) -> Value {
+    json!({
+        "id": s.id, "kind": s.kind, "name": s.name, "need": s.need, "instruction": s.instruction, "agents": s.agents,
+        "model": s.model, "models": s.models, "effort": s.effort, "output": s.output, "inputs": s.inputs, "pass": s.pass,
+        "timeout_secs": s.timeout_secs, "gate": s.gate, "human": s.human, "shell": s.shell, "max_cost": s.max_cost,
+    })
+}
+
+pub fn from_json(v: &Value) -> Recipe {
+    let s = |v: &Value| v.as_str().unwrap_or_default().to_string();
+    let list = |v: &Value| v.as_array().map_or_else(Vec::new, |a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect());
+    let step = |t: &Value| Step {
+        id: s(&t["id"]),
+        kind: s(&t["kind"]),
+        name: s(&t["name"]),
+        need: s(&t["need"]),
+        instruction: s(&t["instruction"]),
+        agents: list(&t["agents"]),
+        model: s(&t["model"]),
+        models: t["models"].as_object().map_or_else(BTreeMap::new, |m| m.iter().map(|(k, v)| (k.clone(), s(v))).collect()),
+        effort: s(&t["effort"]),
+        output: s(&t["output"]),
+        inputs: list(&t["inputs"]),
+        pass: s(&t["pass"]),
+        timeout_secs: t["timeout_secs"].as_u64().unwrap_or(DEFAULT_TIMEOUT),
+        gate: t["gate"].as_bool().unwrap_or(false),
+        human: t["human"].as_bool().unwrap_or(false),
+        shell: t["shell"].as_bool().unwrap_or(false),
+        max_cost: t["max_cost"].as_f64(),
+    };
+    Recipe {
+        name: s(&v["name"]),
+        fallback_on: list(&v["fallback_on"]),
+        token_saver: v["token_saver"].as_bool().unwrap_or(false),
+        max_rounds: v["max_rounds"].as_u64().map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX)),
+        after_max: s(&v["after_max"]),
+        on_limit: s(&v["on_limit"]),
+        total_secs: v["total_secs"].as_u64().unwrap_or(0),
+        steps: v["steps"].as_array().map_or_else(Vec::new, |a| a.iter().map(step).collect()),
+    }
+}
+
+/// `15m`, `2h`, `90s`: the inverse of `duration`
+fn dur(secs: u64) -> String {
+    match secs {
+        s if s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
+/// Set `k` keeping the old value's spacing and trailing comment. `default` = what `parse` would fill in anyway: not
+/// added to a table that lacks it, but a hand-written one stays (it may pin a value against changed config defaults).
+fn put(t: &mut Table, k: &str, v: impl Into<toml_edit::Value>, default: bool) {
+    let mut v = v.into();
+    match t.get_mut(k) {
+        Some(Item::Value(old)) => {
+            *v.decor_mut() = old.decor().clone();
+            *old = v;
+        }
+        Some(item) => *item = Item::Value(v),
+        None if default => {}
+        None => {
+            t.insert(k, Item::Value(v));
+        }
+    }
+}
+
+/// empty = the key goes away (an empty string or list means the same as no key)
+fn put_str(t: &mut Table, k: &str, v: &str) {
+    if v.is_empty() {
+        t.remove(k);
+    } else {
+        put(t, k, v, false);
+    }
+}
+
+fn put_list(t: &mut Table, k: &str, v: &[String]) {
+    if v.is_empty() {
+        t.remove(k);
+    } else {
+        put(t, k, v.iter().collect::<toml_edit::Array>(), false);
+    }
+}
+
+fn put_bool(t: &mut Table, k: &str, v: bool, default: bool) {
+    put(t, k, v, v == default);
+}
+
+/// FR-24 (B1): the recipe as TOML. `base` = the file's text now (None = a new recipe): its comments, unknown keys and
+/// key order survive, and its `[[step]]` tables are matched by id and put in the new order. Only keys that differ from
+/// what `parse` fills in are written, so `parse(render(r)) == r` under the same defaults.
+pub fn render(base: Option<&str>, r: &Recipe, d: &Defaults) -> String {
+    let mut doc = base.and_then(|t| t.parse::<DocumentMut>().ok()).unwrap_or_default();
+    let root = doc.as_table_mut();
+    put(root, "name", r.name.as_str(), false);
+    put(root, "max_rounds", r.max_rounds as i64, r.max_rounds == d.max_rounds);
+    put(root, "total", dur(r.total_secs), r.total_secs == d.total_secs);
+    put(root, "fallback_on", r.fallback_on.iter().collect::<toml_edit::Array>(), r.fallback_on == d.fallback_on);
+    put_bool(root, "token_saver", r.token_saver, d.token_saver);
+    put(root, "after_max", r.after_max.as_str(), r.after_max == "stop");
+    put(root, "on_limit", r.on_limit.as_str(), r.on_limit == "fallback");
+
+    let mut old: Vec<Table> = match root.remove("step") {
+        Some(Item::ArrayOfTables(a)) => a.into_iter().collect(),
+        _ => Vec::new(),
+    };
+    let mut steps = ArrayOfTables::new();
+    for s in &r.steps {
+        let mut t = match old.iter().position(|t| t.get("id").and_then(Item::as_str) == Some(s.id.as_str())) {
+            Some(i) => old.remove(i),
+            None => Table::new(),
+        };
+        // tables print in document position order: clear it so the new order is the order in the file
+        t.set_position(None);
+        write_step(&mut t, s, d);
+        steps.push(t);
+    }
+    if !steps.is_empty() {
+        root.insert("step", Item::ArrayOfTables(steps));
+    }
+    doc.to_string()
+}
+
+fn write_step(t: &mut Table, s: &Step, d: &Defaults) {
+    put(t, "id", s.id.as_str(), false);
+    put(t, "name", s.name.as_str(), s.name == s.id);
+    put(t, "kind", s.kind.as_str(), s.kind == default_kind(s.shell));
+    put_bool(t, "human", s.human, false);
+    put_bool(t, "shell", s.shell, false);
+    put_list(t, "agents", &s.agents);
+    put_str(t, "model", &s.model);
+    if s.models.is_empty() {
+        t.remove("models");
+    } else {
+        put(t, "models", s.models.iter().map(|(a, m)| (a.as_str(), m.as_str())).collect::<InlineTable>(), false);
+    }
+    put_str(t, "effort", &s.effort);
+    put_str(t, "need", &s.need);
+    put_str(t, "instruction", &s.instruction);
+    put_list(t, "inputs", &s.inputs);
+    put_str(t, "output", &s.output);
+    put(t, "pass", s.pass.as_str(), s.pass == default_pass(s.shell, &s.output, &s.kind));
+    if s.human {
+        // parse fixes both for Ship
+        t.remove("timeout");
+        t.remove("gate");
+    } else {
+        put(t, "timeout", dur(s.timeout_secs), s.timeout_secs == DEFAULT_TIMEOUT);
+        put_bool(t, "gate", s.gate, d.plan_gate && s.id == "plan");
+    }
+    match s.max_cost {
+        Some(c) => put(t, "max_cost", c, false),
+        None => {
+            t.remove("max_cost");
+        }
+    }
+}
+
+/// BRD 8 step library: what a card holds when it is added in the builder (B1). Perbaiki is not here: the runner adds it.
+const LIBRARY: &str = r#"[[step]]
+id = "research"
+name = "Riset"
+agents = ["claude", "codex"]
+model = "sonnet"
+effort = "medium"
+inputs = ["permintaan.md"]
+output = "riset.md"
+timeout = "15m"
+
+[[step]]
+id = "reproduce"
+name = "Reproduksi"
+agents = ["claude", "codex"]
+model = "sonnet"
+effort = "medium"
+inputs = ["permintaan.md"]
+timeout = "15m"
+
+[[step]]
+id = "plan"
+name = "Plan"
+agents = ["claude", "omp", "codex"]
+model = "opus"
+effort = "high"
+inputs = ["permintaan.md"]
+output = "plan.md"
+timeout = "15m"
+gate = true
+
+[[step]]
+id = "execute"
+name = "Execute"
+agents = ["claude", "codex", "omp"]
+model = "sonnet"
+effort = "medium"
+inputs = ["plan.md"]
+timeout = "40m"
+
+[[step]]
+id = "test"
+name = "Test"
+kind = "check"
+shell = true
+timeout = "10m"
+
+[[step]]
+id = "scan-security"
+name = "Scan Security"
+kind = "check"
+agents = ["codex", "omp", "claude"]
+effort = "high"
+output = "security.md"
+timeout = "15m"
+
+[[step]]
+id = "audit"
+name = "Audit Kesesuaian"
+kind = "check"
+agents = ["codex", "omp", "claude"]
+effort = "high"
+inputs = ["plan.md", "permintaan.md"]
+output = "audit.md"
+timeout = "15m"
+
+[[step]]
+id = "report"
+name = "Laporan"
+agents = ["claude", "omp"]
+model = "haiku"
+effort = "low"
+instruction = "Baca jejak jalan ini, lalu tulis laporan singkat ke laporan.md: tahap yang jalan, agent yang dipakai, putaran perbaikan, cadangan beserta alasannya, durasi, dan hasil akhir. Jangan ubah file lain."
+inputs = ["jejak.md"]
+output = "laporan.md"
+timeout = "5m"
+
+[[step]]
+id = "ship"
+name = "Ship"
+human = true
+"#;
+
+/// FR-24 templates: only the builder's starting point, never written as recipe files (3b decision 4)
+const REVIEW_PR: &str = r#"name = "Review PR"
+
+[[step]]
+id = "plan"
+name = "Plan"
+agents = ["claude", "omp", "codex"]
+model = "opus"
+effort = "high"
+inputs = ["permintaan.md"]
+output = "plan.md"
+timeout = "15m"
+gate = true
+
+[[step]]
+id = "audit"
+name = "Audit Kesesuaian"
+kind = "check"
+agents = ["codex", "omp", "claude"]
+effort = "high"
+inputs = ["plan.md", "permintaan.md"]
+output = "audit.md"
+timeout = "15m"
+
+[[step]]
+id = "ship"
+name = "Ship"
+human = true
+"#;
+
+const EMPTY: &str = r#"name = "Resep baru"
+
+[[step]]
+id = "plan"
+name = "Plan"
+agents = ["claude", "omp", "codex"]
+model = "opus"
+effort = "high"
+inputs = ["permintaan.md"]
+output = "plan.md"
+timeout = "15m"
+gate = true
+
+[[step]]
+id = "execute"
+name = "Execute"
+agents = ["claude", "codex", "omp"]
+model = "sonnet"
+effort = "medium"
+inputs = ["plan.md"]
+timeout = "40m"
+
+[[step]]
+id = "ship"
+name = "Ship"
+human = true
+"#;
+
+/// library steps as parsed cards; each one is checked alone (order rules belong to a whole recipe)
+pub fn library() -> Vec<Step> {
+    let doc: DocumentMut = LIBRARY.parse().unwrap_or_default();
+    let mut cx = Ctx { errors: Vec::new(), warnings: Vec::new(), d: Defaults::default() };
+    doc.get("step").and_then(Item::as_array_of_tables).map_or_else(Vec::new, |a| a.iter().enumerate().filter_map(|(i, t)| step(t, i, None, &mut cx)).collect())
+}
+
+/// `(id, recipe)` starting points for "+ Resep baru"
+pub fn templates(d: &Defaults) -> Vec<(&'static str, Recipe)> {
+    [("fitur-baru", FEATURE), ("perbaiki-bug", BUGFIX), ("review-pr", REVIEW_PR), ("kosong", EMPTY)]
+        .into_iter()
+        .filter_map(|(id, t)| Some((id, parse_with(t, id, None, d).recipe?)))
+        .collect()
 }
 
 const FEATURE: &str = r#"name = "Fitur baru"
@@ -697,8 +1062,53 @@ impl Store {
     pub fn get(&self, id: &str, installed: Option<&[String]>) -> Result<Value, Diag> {
         let text = self.read(id)?;
         let mut v = self.row(id, installed);
+        // B1: the whole recipe for the builder (the row only carries the summary)
+        if let Some(r) = parse_with(&text, id, installed, &self.defaults).recipe {
+            v["full"] = to_json(&r);
+        }
         v["text"] = json!(text);
         Ok(v)
+    }
+
+    /// where the last render of `id` waits for `save_rendered`; outside `recipes/` so it is never listed or run
+    fn staged(&self, id: &str) -> Result<PathBuf, Diag> {
+        self.path(id)?;
+        Ok(self.dir.with_file_name(".render").join(format!("{id}.json")))
+    }
+
+    /// B1 tinjau: the builder's recipe rendered over the file as it is now. Nothing in `recipes/` changes; the text is
+    /// kept so `save_rendered` writes exactly what the review screen showed, never text sent again by the UI.
+    pub fn render(&self, id: &str, r: &Recipe, installed: Option<&[String]>) -> Result<Value, Diag> {
+        let staged = self.staged(id)?;
+        let base = self.read(id).ok();
+        let text = render(base.as_deref(), r, &self.defaults);
+        let p = parse_with(&text, id, installed, &self.defaults);
+        let keep = json!({"text": text, "base": base.as_deref().map(hash)});
+        crate::config::write_atomic(&staged, keep.to_string().as_bytes()).map_err(|e| crate::config::io_err("io_write", e))?;
+        Ok(json!({
+            "text": text, "hash": hash(&text), "diff_base": base.unwrap_or_default(),
+            "errors": p.errors.iter().map(Diag::json).collect::<Vec<_>>(),
+            "warnings": p.warnings.iter().map(Diag::json).collect::<Vec<_>>(),
+        }))
+    }
+
+    /// B1 Simpan: write + approve the last render of `id`, only when its hash is the one the user reviewed and the file
+    /// hasn't changed since that render (SEC-27: one human step, the same path as `save_approved`)
+    pub fn save_rendered(&self, id: &str, hash_seen: &str, installed: Option<&[String]>) -> Result<(), Diag> {
+        let staged = self.staged(id)?;
+        let kept: Value = fs::read_to_string(&staged).ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or_else(|| Diag::new("recipe_changed"))?;
+        let text = kept["text"].as_str().unwrap_or_default();
+        let now = self.read(id).ok().map(|t| hash(&t));
+        if hash(text) != hash_seen || now.as_deref() != kept["base"].as_str() {
+            return Err(Diag::new("recipe_changed"));
+        }
+        self.save_approved(id, text, installed)?;
+        let _ = fs::remove_file(&staged);
+        Ok(())
+    }
+
+    pub fn defaults(&self) -> &Defaults {
+        &self.defaults
     }
 
     /// approves only the bytes the user reviewed: `hash` is the one the screen showed, re-checked against the file now
@@ -895,6 +1305,113 @@ mod tests {
         assert!(codes("max_rounds = \"2\"\n[[step]]\nid = \"a\"\nagents = [\"claude\"]\n").contains(&"bad_type@max_rounds".into()));
         assert!(codes("name = \"x\"\n").contains(&"no_steps@step".into()));
         assert!(parse(&format!("oops = 1\n{MIN}"), "t", None).warnings.iter().any(|w| w.code == "unknown_key"));
+    }
+
+    #[test]
+    fn per_agent_models() {
+        let r = ok("[[step]]\nid = \"a\"\nagents = [\"claude\", \"codex\"]\nmodels = { codex = \"gpt-6.1\", claude = \"\" }\n");
+        assert_eq!(r.steps[0].models.get("codex").map(String::as_str), Some("gpt-6.1"));
+        assert_eq!(r.steps[0].models.get("claude").map(String::as_str), Some(""));
+        for bad in ["models = { nano = \"x\" }", "models = { codex = \"--yolo\" }", "models = { codex = 3 }", "models = \"x\""] {
+            assert!(!codes(&format!("[[step]]\nid = \"a\"\nagents = [\"claude\"]\n{bad}\n")).is_empty(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn render_round_trips() {
+        let d = Defaults::default();
+        let back = |r: &Recipe| {
+            let text = render(None, r, &d);
+            let p = parse(&text, "t", None);
+            assert!(p.errors.is_empty() && p.warnings.is_empty(), "{text}\n{:?} {:?}", p.errors, p.warnings);
+            p.recipe.unwrap()
+        };
+        let templates = templates(&d);
+        assert_eq!(templates.iter().map(|t| t.0).collect::<Vec<_>>(), ["fitur-baru", "perbaiki-bug", "review-pr", "kosong"]);
+        for (_, r) in &templates {
+            assert_eq!(&back(r), r);
+            // the UI's copy comes back the same
+            assert_eq!(&from_json(&to_json(r)), r);
+        }
+        // every library card between Execute and Ship (Laporan included), alone in a recipe
+        let lib = library();
+        assert_eq!(lib.len(), 9);
+        let card = |id: &str| lib.iter().find(|s| s.id == id).unwrap().clone();
+        for s in lib.iter().filter(|s| !matches!(s.id.as_str(), "plan" | "execute" | "ship")) {
+            let r = Recipe { steps: vec![card("plan"), card("execute"), s.clone(), card("ship")], ..ok(EMPTY) };
+            assert_eq!(back(&r), r, "{}", s.id);
+        }
+        // a template card is the library card (only inputs depend on what comes before)
+        for (_, r) in &templates {
+            for s in &r.steps {
+                let mut c = card(&s.id);
+                c.inputs = s.inputs.clone();
+                assert_eq!(&c, s, "{}", s.id);
+            }
+        }
+        // values that differ from the defaults are written
+        let mut r = ok(EMPTY);
+        r.max_rounds = 3;
+        r.total_secs = 90 * 60;
+        r.steps[1].timeout_secs = 95;
+        r.steps[1].models.insert("codex".into(), "gpt-6.1".into());
+        r.steps[1].max_cost = Some(2.5);
+        assert_eq!(back(&r), r);
+    }
+
+    #[test]
+    fn render_keeps_hand_written_parts() {
+        let hand = "# resep gw\nname = \"Cepat\"\nmax_rounds = 2 # dipatok\ncustom = 1\n\n# tahap kerja\n[[step]]\nid = \"execute\"\nagents = [\"claude\"]\nnote = \"x\"\n\n# periksa dulu\n[[step]]\nid = \"cek\"\nkind = \"check\"\nagents = [\"codex\"]\n";
+        let mut r = parse(hand, "t", None).recipe.unwrap();
+        // drag: a new research card first, then execute and the check keep their order; effort changed on the check
+        let mut research = library().into_iter().find(|s| s.id == "research").unwrap();
+        research.inputs = vec![REQUEST_FILE.into()];
+        r.steps.insert(0, research);
+        r.steps[2].effort = "high".into();
+        let text = render(Some(hand), &r, &Defaults::default());
+        for keep in ["# resep gw", "# dipatok", "custom = 1", "note = \"x\"", "# tahap kerja", "# periksa dulu", "max_rounds = 2"] {
+            assert!(text.contains(keep), "{keep}\n{text}");
+        }
+        let at = |s: &str| text.find(s).unwrap();
+        assert!(at("id = \"research\"") < at("id = \"execute\"") && at("id = \"execute\"") < at("id = \"cek\"") && at("id = \"cek\"") < at("id = \"ship\""), "{text}");
+        assert_eq!(parse(&text, "t", None).recipe.unwrap(), r);
+        // a removed card is gone with its comment-free table; a cleared key is removed, not written empty
+        r.steps.remove(0);
+        r.steps[0].agents.clear();
+        let text = render(Some(&text), &r, &Defaults::default());
+        assert!(!text.contains("research") && !text.contains("agents = [\"claude\"]"), "{text}");
+    }
+
+    #[test]
+    fn render_save_follows_review() {
+        let (d, s) = store();
+        s.ensure_defaults().unwrap();
+        let mut r = ok(FEATURE);
+        r.steps.retain(|x| x.id != "scan-security");
+        let v = s.render("fitur-baru", &r, None).unwrap();
+        let h = v["hash"].as_str().unwrap().to_string();
+        assert!(v["diff_base"].as_str().unwrap().contains("scan-security") && !v["text"].as_str().unwrap().contains("scan-security"));
+        // the file is untouched until Simpan, and only the reviewed hash saves
+        assert_eq!(s.get("fitur-baru", None).unwrap()["status"], "needs_approval");
+        assert_eq!(s.save_rendered("fitur-baru", "deadbeef", None).unwrap_err().code, "recipe_changed");
+        s.save_rendered("fitur-baru", &h, None).unwrap();
+        let got = s.get("fitur-baru", None).unwrap();
+        assert_eq!(got["status"], "approved");
+        assert!(!got["text"].as_str().unwrap().contains("scan-security") && got["full"]["steps"].as_array().unwrap().len() == 5);
+        // used once
+        assert_eq!(s.save_rendered("fitur-baru", &h, None).unwrap_err().code, "recipe_changed");
+        // file edited between render and save
+        let h = s.render("fitur-baru", &r, None).unwrap()["hash"].as_str().unwrap().to_string();
+        fs::write(d.join("recipes/fitur-baru.toml"), format!("{}\n# edited\n", got["text"].as_str().unwrap())).unwrap();
+        assert_eq!(s.save_rendered("fitur-baru", &h, None).unwrap_err().code, "recipe_changed");
+        // a render with errors can't be saved
+        r.steps.clear();
+        let v = s.render("baru", &r, None).unwrap();
+        assert!(!v["errors"].as_array().unwrap().is_empty());
+        assert_eq!(s.save_rendered("baru", v["hash"].as_str().unwrap(), None).unwrap_err().code, "recipe_invalid");
+        assert!(!d.join("recipes/baru.toml").exists());
+        assert_eq!(s.render("../x", &r, None).unwrap_err().code, "recipe_id");
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

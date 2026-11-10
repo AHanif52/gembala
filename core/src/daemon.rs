@@ -922,7 +922,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         // FR-16, FR-73: harness runs. UI channel only (SEC-20): the pane channel has no harness method.
         "harness.preflight" | "harness.start" | "harness.state" | "harness.stop" | "harness.gate" | "harness.takeover" | "harness.release" | "harness.close_panes" => runner::method(st, m, p),
         // FR-74, SEC-27: harness recipes. Approve and delete exist on the UI channel only; the pane channel has no recipe method.
-        "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" | "recipe.duplicate" | "recipe.draft_new" | "recipe.draft_get" | "recipe.draft_apply" => {
+        "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" | "recipe.duplicate" | "recipe.draft_new" | "recipe.draft_get" | "recipe.draft_apply" | "recipe.library" | "recipe.render" | "recipe.save" => {
             let store = recipe::Store::new(config::path().parent().unwrap_or(std::path::Path::new("/")));
             // agent kinds found on this Mac; unknown until detection ran once, then nothing is flagged as missing
             let found = st.agents.lock().unwrap().clone();
@@ -940,6 +940,20 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "recipe.approve" => store.approve(id()?, p["hash"].as_str().ok_or("bad_params")?, inst).map(|_| json!({})),
                 "recipe.delete" => store.delete(id()?).map(|_| json!({})),
                 "recipe.duplicate" => store.duplicate(id()?, p["to"].as_str().ok_or("bad_params")?).map(|_| json!({})),
+                // 3b builder (B1): cards to add, templates for "+ Resep baru", and which card fields each agent uses
+                "recipe.library" => {
+                    let agents: Vec<Value> = profile::agent_ids()
+                        .map(|a| json!({"agent": a, "installed": inst.is_none_or(|i| i.iter().any(|x| x == a)), "flags": runner::supports(a)}))
+                        .collect();
+                    Ok(json!({
+                        "steps": recipe::library().iter().map(recipe::step_json).collect::<Vec<_>>(),
+                        "templates": recipe::templates(store.defaults()).iter().map(|(id, r)| json!({"id": id, "recipe": recipe::to_json(r)})).collect::<Vec<_>>(),
+                        "agents": agents,
+                    }))
+                }
+                // tinjau: text + rules for what the builder holds; nothing saved until recipe.save with the shown hash
+                "recipe.render" => store.render(id()?, &recipe::from_json(&p["recipe"]), inst),
+                "recipe.save" => store.save_rendered(id()?, p["hash"].as_str().ok_or("bad_params")?, inst).map(|_| json!({})),
                 // FR-77 Atur pakai AI (H5): the brief goes to the agent pane the UI just opened, labeled as the user's own
                 // (the user pressed Rumuskan); the agent writes only the draft file in the run folder
                 "recipe.draft_new" => {

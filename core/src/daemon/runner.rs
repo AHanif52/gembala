@@ -143,8 +143,17 @@ fn valid_run_id(s: &str) -> bool {
 /// starts on its own default model (10 Nov: Plan falling back to Codex ran `codex -m opus`). Effort is the same idea
 /// for every agent and goes to all of them.
 fn step_flags(s: &recipe::Step, agent: &str) -> Vec<String> {
-    let model = if s.agents.first().is_some_and(|a| a == agent) { s.model.as_str() } else { "" };
+    let model = match s.models.get(agent) {
+        Some(m) => m.as_str(),
+        None if s.agents.first().is_some_and(|a| a == agent) => s.model.as_str(),
+        None => "",
+    };
     flags(agent, model, &s.effort, s.max_cost)
+}
+
+/// B1 `recipe.library`: which card fields mean something for an agent (`flags` below sets nothing for the others)
+pub fn supports(agent: &str) -> Value {
+    json!({"model": true, "effort": agent != "opencode", "cost": agent == "omp"})
 }
 
 pub fn flags(agent: &str, model: &str, effort: &str, cost: Option<f64>) -> Vec<String> {
@@ -975,6 +984,11 @@ mod tests {
         // Claude not installed: Codex leads the run but the model was written for Claude, so Codex gets none
         let run = harness::Run::new(r, &["codex".to_string()]);
         assert_eq!(step_flags(&run.recipe.steps[0], "codex"), ["-c", "model_reasoning_effort=\"high\""]);
+        // `models` names a model per agent and wins over `model`; "" keeps that agent on its own default
+        let t = "[[step]]\nid = \"plan\"\nagents = [\"claude\", \"codex\"]\nmodel = \"opus\"\nmodels = { codex = \"gpt-6.1\", claude = \"\" }\n";
+        let r = recipe::parse(t, "t", None).recipe.unwrap();
+        assert_eq!(step_flags(&r.steps[0], "codex"), ["-m", "gpt-6.1"]);
+        assert!(step_flags(&r.steps[0], "claude").is_empty());
     }
 
     #[test]
