@@ -47,6 +47,8 @@ const UI: &[(&str, Kind)] = &[
     ("codex_status", Bool(true)),
     // FR-20: Cmd+Q = app closes, agents keep running (keep) or every pane is stopped (stop)
     ("on_quit", Enum(&["keep", "stop"], "keep")),
+    // FR-86: minutes a helper pane (FR-75) may sit quiet after its first reply before it's closed; 0 = never
+    ("helper_idle_close", Int(0, 240, 15)),
 ];
 const CHIPS: &[&str] = &["attach", "diff", "rich_input", "cwd", "branch", "settings"];
 /// FR-55: content and order of the agent toolbar chips
@@ -612,6 +614,16 @@ mod tests {
         let p = scratch("linimasa");
         set(&p, "ui", "command_timeline", &json!(false)).unwrap();
         assert_eq!(load(Some(&fs::read_to_string(&p).unwrap())).values["ui"]["command_timeline"], false);
+    }
+
+    #[test]
+    fn helper_idle_close() {
+        // FR-86: 15 minutes by default, 0 turns it off, out of range falls back and is flagged
+        assert_eq!(load(None).values["ui"]["helper_idle_close"], 15);
+        assert_eq!(load(Some("[ui]\nhelper_idle_close = 0\n")).values["ui"]["helper_idle_close"], 0);
+        let c = load(Some("[ui]\nhelper_idle_close = 999\n"));
+        assert_eq!(c.values["ui"]["helper_idle_close"], 15);
+        assert!(c.errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("").contains("ui.helper_idle_close"), "{:?}", c.errors);
     }
 
     #[test]

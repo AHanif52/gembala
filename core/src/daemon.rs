@@ -130,6 +130,8 @@ struct Pane {
     readable: std::sync::atomic::AtomicBool,
     /// FR-75: pane opened through an agent's request card = that agent's helper (counts to its limit, can't ask for panes)
     helper_of: Mutex<Option<u64>>,
+    /// FR-86: when this pane last replied or (after that) got a new message; a quiet helper is closed `[ui] helper_idle_close` later
+    replied_at: Mutex<Option<std::time::Instant>>,
     typed_at: Mutex<Option<std::time::Instant>>,
     /// SEC-3 fallback: 128-bit token for processes detached from the pane session (e.g. a tmux server, profile `token = true`)
     /// or that can't use sockets (FR-66: sandboxed Codex, created through `gembala token`)
@@ -389,7 +391,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
                     Ok(json!({}))
                 }
-                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons", Some(me)) => pane_method(&st, me, method, p),
+                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close", Some(me)) => pane_method(&st, me, method, p),
                 // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
@@ -1347,6 +1349,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         claude: Mutex::default(),
         readable: std::sync::atomic::AtomicBool::new(false),
         helper_of: Mutex::new(None),
+        replied_at: Mutex::new(None),
         typed_at: Mutex::new(None),
         token: Mutex::new(token),
         status: Mutex::new(if ["claude", "codex", "opencode", "omp", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
@@ -1546,7 +1549,7 @@ fn spool(st: Arc<State>, dir: std::path::PathBuf) {
                 let method = v["method"].as_str().unwrap_or_default();
                 let r = match v["token"].as_str().and_then(|t| st.pane_of_token(t)) {
                     None => Err("unauthorized"),
-                    Some(me) if ["send", "reply", "wait", "read", "status", "token"].contains(&method) => pane_method(&st, me, method, &v["params"]),
+                    Some(me) if ["send", "reply", "wait", "read", "status", "token", "close"].contains(&method) => pane_method(&st, me, method, &v["params"]),
                     Some(_) => Err("not_allowed"),
                 };
                 let body = match r {
@@ -1680,6 +1683,13 @@ fn close_pane(pane: &Pane) {
     }
 }
 
+/// FR-86: a helper is done with when it replied at least `mins` ago and has been idle/done (or its agent gone, "") that
+/// long; 0 = never
+fn helper_quiet(status: &str, replied: Option<Duration>, status_for: Duration, mins: u64) -> bool {
+    let quiet = Duration::from_secs(mins * 60);
+    mins > 0 && !matches!(status, "working" | "blocked") && replied.is_some_and(|r| r >= quiet) && status_for >= quiet
+}
+
 /// FR-27, SEC-31: should output handed to this reader be reduced? A harness stage follows its recipe's `token_saver`;
 /// everything else follows `[harness] token_saver` (there is no per-profile switch yet, TECH 13). The registry is
 /// released before any run is locked: the ticker locks them the other way round.
@@ -1761,7 +1771,25 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             // FR-79: the current name goes in the answer, so a sender using an old name switches over
             let mut r = try_send(st, m, p["queue"].as_bool() == Some(true), false);
             r["to"] = json!(to_name);
+            // FR-86: a new message restarts the quiet count of a helper that already replied
+            let mut at = to.replied_at.lock().unwrap();
+            if at.is_some() && r["result"] != "rejected" {
+                *at = Some(std::time::Instant::now());
+            }
             Ok(r)
+        }
+        "close" => {
+            // FR-86: only a helper opened through my own card (FR-75), and not while it works or asks; same as the user's ×
+            let (_, pane) = st.by_name(p["target"].as_str().ok_or("bad_params")?).ok_or("no_such_pane")?;
+            if *pane.helper_of.lock().unwrap() != Some(me) {
+                return Err("not_allowed");
+            }
+            if matches!(*pane.status.lock().unwrap(), "working" | "blocked") {
+                return Err("target_busy");
+            }
+            close_pane(&pane);
+            let name = pane.name.lock().unwrap().clone();
+            Ok(json!({"result": "closed", "target": name}))
         }
         "reply" => {
             // FR-19: only the message's recipient can reply to it; the sender picks the reply up with `wait --reply`
@@ -1791,6 +1819,9 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             eng.replies.insert(orig.id.clone(), r.clone());
             drop(eng);
             record(st, "reply", &r, None);
+            if let Some(pane) = st.panes.lock().unwrap().get(&me) {
+                *pane.replied_at.lock().unwrap() = Some(std::time::Instant::now());
+            }
             Ok(json!({"result": "accepted", "id": r.id}))
         }
         "read" => {
@@ -1880,8 +1911,15 @@ fn screen_watch(st: Arc<State>) {
     loop {
         thread::sleep(Duration::from_secs(1));
         let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.clone())).collect();
+        let idle_mins = st.config.lock().unwrap()["values"]["ui"]["helper_idle_close"].as_u64().unwrap_or(15);
         for (id, pane) in panes {
             telegram::tick(&st, id, &pane);
+            // FR-86: a helper quiet since its reply (and since its last status change) is closed like the user's ×
+            let replied = pane.replied_at.lock().unwrap().map(|t| t.elapsed());
+            if pane.helper_of.lock().unwrap().is_some() && helper_quiet(*pane.status.lock().unwrap(), replied, pane.status_at.lock().unwrap().elapsed(), idle_mins) {
+                *pane.replied_at.lock().unwrap() = None;
+                close_pane(&pane);
+            }
             let fg = (pane.agent == "shell").then(|| pty::busy(&pane.master, pane.sid)).flatten();
             let found = fg.and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?))).filter(|(_, n)| AGENTS.contains(&n.as_str()));
             // FR-56: manual agent starts = record the session log. Exit is usually handled by `pump` as soon as the shell writes its prompt;
@@ -2577,6 +2615,19 @@ pub fn default_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_quiet_after_reply() {
+        let m = |n: u64| Duration::from_secs(n * 60);
+        assert!(helper_quiet("idle", Some(m(15)), m(15), 15));
+        assert!(helper_quiet("", Some(m(20)), m(16), 15), "agent gone counts as quiet");
+        assert!(!helper_quiet("idle", None, m(60), 15), "no reply yet");
+        assert!(!helper_quiet("done", Some(m(14)), m(60), 15), "new message restarted the count");
+        assert!(!helper_quiet("idle", Some(m(60)), m(3), 15), "worked recently");
+        assert!(!helper_quiet("working", Some(m(60)), m(60), 15));
+        assert!(!helper_quiet("blocked", Some(m(60)), m(60), 15));
+        assert!(!helper_quiet("idle", Some(m(60)), m(60), 0), "0 = off");
+    }
 
     #[test]
     fn trust_dialog_status_follows_the_screen() {

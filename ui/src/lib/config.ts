@@ -15,6 +15,7 @@ export type Ui = {
   command_timeline: boolean; // FR-58: command block timeline in shell panes
   codex_status: boolean; // Codex footer drawn like Claude's status; off = the user's own Codex footer
   on_quit: "keep" | "stop";
+  helper_idle_close: number; // FR-86: minutes a replied helper may sit quiet before it's closed; 0 = never
 };
 
 export type Profile = {
@@ -94,6 +95,7 @@ export const UI_DEFAULT: Ui = {
   command_timeline: true,
   codex_status: true,
   on_quit: "keep",
+  helper_idle_close: 15,
 };
 
 // show shortcuts with Mac symbols (`Cmd+Shift+[` → ⌘⇧[); config keys may be lowercase (`cmd+e` → ⌘E)

@@ -1290,6 +1290,37 @@ fn fr75_buka_dan_kirim() {
     ui3.attach_until(t, &["TUGAS-A^M"]);
 }
 
+/// FR-86: `gembala close` closes only a helper opened through the caller's own card; any other pane is `not_allowed`.
+#[test]
+fn fr86_tutup_pembantu() {
+    let d = start("fr86");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let go = d.dir.join("go");
+    let minta = format!(
+        "g='{g}'; sleep 1; $g send cat TUGAS; echo DIMINTA; while [ ! -e '{}' ]; do sleep 0.1; done; \
+         $g close nggakada-9; $g close cat-2; $g close cat-1; echo SELESAI-86; sleep 30",
+        go.display()
+    );
+    profiles(&d, &mut ui, &(sh_profile("cat", "stty raw -echo; cat -v") + &sh_profile("minta", &minta)), "SELESAI-86");
+    let k = ui.call("pane.create", json!({"profile": "minta", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    ui.attach_until(k, &["DIMINTA"]);
+    let id = ui.call("msg.list", json!({}))["result"]["opens"][0]["id"].as_str().unwrap().to_string();
+    let helper = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let other = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    assert_eq!(ui.call("open.approve", json!({"id": id, "pane": helper}))["result"]["result"], "queued");
+    std::fs::write(&go, "").unwrap();
+    let mut ui2 = Cli::ui(&d);
+    let out = ui2.attach_until(k, &["SELESAI-86"]);
+    assert!(out.contains("no_such_pane") && out.contains("not_allowed") && out.contains("\"closed\""), "{out}");
+    let t0 = Instant::now();
+    while ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(helper)) {
+        assert!(t0.elapsed() < Duration::from_secs(5), "helper still open");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(other)));
+}
+
 /// Criterion 5: a message with ESC, CR, `\e[201~`, C1, and newlines = exactly one send (one Enter) at the target.
 #[test]
 fn kriteria_5_satu_kiriman() {

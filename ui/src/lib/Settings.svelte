@@ -624,6 +624,14 @@
             </select>
           </div>
           <div class="row"><span>{t("set.general.daemon")}<small>{t("set.general.daemonSub")}</small></span><span class="m">{t("set.general.daemonState")}</span></div>
+          <!-- FR-86: helpers an agent opened (FR-75) close after sitting quiet this long past their first reply -->
+          <div class="row">
+            <span>{t("set.general.helperIdle")}<small>{t("set.general.helperIdleSub")}</small></span>
+            <select aria-label={t("set.general.helperIdle")} value={ui.helper_idle_close} onchange={(e) => set("helper_idle_close", +e.currentTarget.value)}>
+              {#each [5, 15, 30, 60] as n}<option value={n}>{t("set.general.mins", { n })}</option>{/each}
+              <option value={0}>{t("set.general.never")}</option>
+            </select>
+          </div>
         </section>
         <h4>{t("set.general.notify")}</h4>
         <section>

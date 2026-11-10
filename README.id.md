@@ -185,6 +185,7 @@ Semua pintasan bisa diganti di Pengaturan > Pintasan atau bagian `[keys]` di con
 | `gembala wait [<pane>]` | Tunggu balasan, pola layar, atau timeout |
 | `gembala read <pane> [-n <baris>]` | Baca isi layar pane, rahasia disamarkan |
 | `gembala reply <msg_id> <teks…>` | Balas pesan yang masuk |
+| `gembala close <pane>` | Tutup pane pembantu yang lu buka (nggak bisa pas dia lagi kerja atau minta izin) |
 | `gembala watch` | Pantau perubahan status, satu baris JSON per event |
 
 Keluarannya satu baris JSON. Kode keluar 0 = diterima, 1 = ditolak/timeout, 2 = salah pakai.

@@ -284,6 +284,7 @@ files/paths, what was tried or is forbidden, constraints, reply format), never a
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. \
 Need an agent that is not open (or more panes)? `gembala send <name> <task>` with a name from `can_open` in `gembala status` \
 (e.g. `claude-utama`, `omp`) asks the user to open it: result `needs_open`, the task goes once they approve; max 4 per agent. \
+Done with a helper you opened? `gembala close <pane>`. \
 A user prompt naming panes as `@<pane>` = send each of them that full handover yourself with `gembala send`; never the prompt verbatim. \
 Pane names (`shell-N`, `@<pane>`, anything in `gembala status`) are Gembala panes, not sessions of your agent tool: reach them only with `gembala`, \
 never with built-in session messaging (ListAgents, SendMessage, cross-session messages). \

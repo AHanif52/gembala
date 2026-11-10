@@ -27,6 +27,7 @@ const USAGE: &str = "usage: gembala daemon [--secret-fd N | --secret-sock <path>
        gembala wait [<pane>] [--reply <msg_id>] [--pattern <regex>] [--timeout <seconds>]
        gembala read <pane> [-n <lines>]
        gembala reply <msg_id> <text…>
+       gembala close <pane>
        gembala status
        gembala watch";
 
@@ -46,7 +47,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // FR-78: `addons <agent>` is called by the zsh `claude`/`codex` functions (internal, not in USAGE)
-        cmd @ ("send" | "wait" | "read" | "reply" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
+        cmd @ ("send" | "wait" | "read" | "reply" | "close" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -170,6 +171,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     let params = match cmd {
         "send" if rest.len() >= 2 => json!({"to": rest[0], "body": text(1), "queue": opt.get("queue"), "reply_to": opt.get("reply-to")}),
         "reply" if rest.len() >= 2 => json!({"msg_id": rest[0], "body": text(1)}),
+        "close" if rest.len() == 1 => json!({"target": rest[0]}),
         "read" if rest.len() == 1 => json!({"target": rest[0], "lines": opt.get("n").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok())}),
         "wait" if rest.len() <= 1 => json!({
             "target": rest.first(), "reply": opt.get("reply"), "pattern": opt.get("pattern"),
