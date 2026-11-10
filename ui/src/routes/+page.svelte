@@ -2247,7 +2247,10 @@
   <aside class="side" aria-label={tt("menu.tab")} style:width="{sideW}px" class:dragging={!!dragging} class:full={fullscreen}>
     <!-- transparent title bar: window button area + window drag -->
     <div class="drag" data-tauri-drag-region></div>
-    <button class="add find" onclick={openPalette}>{tt("side.find")} <span class="n">⌘P</span></button>
+    <button class="add find" onclick={openPalette}>
+      <span class="fl"><svg class="pfind" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>{tt("side.find")}</span>
+      <span class="n">⌘P</span>
+    </button>
     <button class="add" onclick={() => (newTask = true)}>{tt("hn.newTask")}</button>
     {#if ws && runs[ws.id]}
       <button class="add" onclick={() => ((drawer = false), (flow = !flow))}>
@@ -3808,6 +3811,16 @@
   .add.find,
   .add.wsnew {
     border: 1px solid var(--line);
+  }
+  /* a search icon + border lighting up on hover, so the box reads as a button that opens the palette */
+  .add.find .fl {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .add.find:hover,
+  .add.wsnew:hover {
+    border-color: var(--muted);
   }
   .body {
     position: absolute;
