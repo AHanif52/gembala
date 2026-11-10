@@ -942,9 +942,16 @@
   const absPath = (p: string) => (p.startsWith("~") ? homePath + p.slice(1) : p);
 
   /// FR-38: confirm when there's a process other than an idle shell
+  /// pane the daemon no longer has (e.g. lost across a restart): null, so closing just drops it from its tab
+  const paneInfo = (pane: number) =>
+    call("pane.info", { pane }).catch((e) => {
+      if (String(e).includes("no_such_pane")) return null;
+      throw e;
+    });
   async function askClose(pane: number) {
     if (dead[pane]) return onexit(pane);
-    const info = await call("pane.info", { pane });
+    const info = await paneInfo(pane);
+    if (!info) return onexit(pane);
     if (info.busy) confirm = { pane, name: info.name ?? "proses", close: [pane], what: "pane" };
     else await call("pane.close", { pane });
   }
@@ -952,9 +959,10 @@
   /// FR-38: closing a tab = closing all its panes, one confirmation listing the processes still running
   async function closeTabs(wi: number, ts: Tab[]) {
     const ps = ts.flatMap((t) => panes(t.tree));
-    const live = ps.filter((p) => !dead[p]);
-    ps.filter((p) => dead[p]).forEach(onexit);
-    const infos = await Promise.all(live.map((p) => call("pane.info", { pane: p }).then((i) => ({ p, i }))));
+    const known = await Promise.all(ps.filter((p) => !dead[p]).map((p) => paneInfo(p).then((i) => ({ p, i }))));
+    ps.filter((p) => dead[p]).concat(known.filter((x) => !x.i).map((x) => x.p)).forEach(onexit);
+    const infos = known.filter((x) => x.i);
+    const live = infos.map((x) => x.p);
     const busy = infos.filter((x) => x.i.busy);
     if (!busy.length) return live.forEach((p) => call("pane.close", { pane: p }).catch(() => {}));
     const t = ts.find((t) => panes(t.tree).includes(busy[0].p))!;
