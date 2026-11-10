@@ -27,6 +27,8 @@
     onpane = () => {},
     ondraft = () => {},
     start = "umum",
+    oninstall = () => {},
+    onguide,
   }: {
     cfg: Config;
     workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
@@ -42,6 +44,8 @@
     onclose: () => void;
     onquitall: () => void;
     onlogin: (id: string, name: string) => void; // FR-61: open a pane on that account to log in
+    oninstall?: (a: { agent: string; name: string; install: string }) => void; // FR-99 P1: install command typed into a new terminal tab
+    onguide?: (agent: string) => (() => void) | undefined; // FR-99 P1: the agent's official guide, when there is one
   } = $props();
 
   // FR-61: Claude Code accounts (own config folder through CLAUDE_CONFIG_DIR); Utama is always there
@@ -917,11 +921,18 @@
                   >{a.name}<small
                     >{a.installed
                       ? `${a.version ?? t("set.agent.noVersion")} · ${a.tested ? t("set.agent.tested") : t("set.agent.untested")}${HOOK[a.agent] ? ` · ${tOr(HOOK[a.agent], HOOK[a.agent])}` : ""}`
-                      : t("set.agent.notFound", { install: a.install })}</small
+                      : ui.mode === "simple" ? t("set.agent.notYet") : t("set.agent.notFound", { install: a.install })}</small
                   ></span
                 >
                 <span class="acts">
                   {#if a.agent === "claude" && a.installed}<button class="mini" onclick={() => (agentPage = "akun")}>{t("set.agent.accounts", { n: accRows.length })}</button>{/if}
+                  {#if !a.installed && a.install}
+                    <!-- FR-99 P1: a way forward instead of a bare command line -->
+                    <button class="mini" onclick={() => oninstall(a)}>{t("wel.install")}</button>
+                    <button class="mini" onclick={() => navigator.clipboard?.writeText(a.install).catch(() => {})}>{t("wel.copy")}</button>
+                    {@const guide = onguide?.(a.agent)}
+                    {#if guide}<button class="mini" onclick={guide}>{t("wel.guide")} ↗</button>{/if}
+                  {/if}
                   <span class="state" class:warn={a.installed && !a.tested}>{a.installed ? (a.tested ? `✓ ${t("set.agent.installed")}` : `! ${t("set.agent.notTried")}`) : `✗ ${t("set.agent.missing")}`}</span>
                 </span>
               </div>

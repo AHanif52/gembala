@@ -374,7 +374,7 @@
     zoomed = false;
   }
   /// the shell pane is replaced by a profile pane in the same spot (agent runs with official hooks, FR-4)
-  async function swapToProfile(old: number, profile: string, account?: string, pick = false) {
+  async function swapToProfile(old: number, profile: string, account?: string, pick = false): Promise<number | undefined> {
     const m = meta[old];
     if (!m) return;
     const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account, pick });
@@ -386,6 +386,27 @@
         }
     delete meta[old];
     call("pane.close", { pane: old }).catch(() => {}); // its pane.exit doesn't find the tab anymore: ignored
+    return id;
+  }
+
+  /// FR-99 P1: a sentence typed into the terminal by mistake. zsh answers 127 (command not found); three words or more,
+  /// so a mistyped short command (`gti status`) doesn't get the offer. Shown in Simple and Full (user decision 10 Nov 2026).
+  let offer = $state<Record<number, string>>({});
+  const askOffer = (cmd: string, code: number) => code === 127 && cmd.trim().split(/\s+/).length >= 3;
+  /// ponytail: the first installed agent is offered; remember the last one used per workspace when people ask for it
+  const offerAgent = $derived((cfg?.values.profiles ?? []).find((p) => p.agent !== "shell" && installed.includes(p.agent)));
+  /// "Kirim": this terminal pane becomes the agent and the sentence is its first message (same wait as a manual task)
+  async function sendOffer(pane: number) {
+    const text = offer[pane];
+    delete offer[pane];
+    if (!offerAgent) return void (welcome = await call("agents.detect", {}).catch(() => []));
+    const id = await swapToProfile(pane, offerAgent.id);
+    if (id !== undefined) await firstMessage(id, text);
+  }
+  async function firstMessage(id: number, task: string) {
+    await new Promise((r) => setTimeout(r, 4000));
+    const sent = await call("msg.send", { to: id, body: task }).then((r) => !r?.error, () => false);
+    if (!sent) rich = { pane: id, text: task };
   }
   async function startInFolder(pane: number) {
     const path = await invoke<string | null>("pick_folder").catch(() => null);
@@ -414,7 +435,7 @@
   }
   /// FR-99 P1: a terminal tab "Pasang <agent>" with the install command typed but not run: the user reads it and presses Enter.
   /// Detection runs again every 5 s while the welcome card waits (ponytail: polling; hook it to the block's exit if it gets in the way).
-  async function installInTerminal(a: Agent) {
+  async function installInTerminal(a: Pick<Agent, "name" | "install">) {
     const id = await newTab();
     const t = ws?.tabs.find((x) => panes(x.tree).includes(id));
     if (t) t.title = tt("wel.installTab", { name: a.name });
@@ -978,9 +999,7 @@
   async function startManual(o: { agent: string; task: string; cwd: string }) {
     newTask = false;
     const id = await newTab(o.agent, at.ws, undefined, { cwd: o.cwd });
-    await new Promise((r) => setTimeout(r, 4000));
-    const sent = await call("msg.send", { to: id, body: o.task }).then((r) => !r?.error, () => false);
-    if (!sent) rich = { pane: id, text: o.task };
+    await firstMessage(id, o.task);
   }
   const absPath = (p: string) => (p.startsWith("~") ? homePath + p.slice(1) : p);
 
@@ -2524,6 +2543,7 @@
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
                 onused={() => (ran[pane] = true)}
+                ondone={(cmd: string, code: number) => (offer[pane] = askOffer(cmd, code) ? cmd.trim() : "")}
                 onblock={(kind: string, text: string) => {
                   if (kind === "output") return void (outputOf = pane);
                   // last session of an agent pane from a profile: rerun its pane (official hooks), not typed into the shell
@@ -2752,9 +2772,19 @@
               </div>
             {/if}
           {/if}
-          {#if pendingFor(pane).length || opensFor(pane).length}
+          {#if pendingFor(pane).length || opensFor(pane).length || offer[pane]}
           <!-- FR-98 bug: the cards stack in one column instead of sitting on top of each other -->
           <div class="cards">
+          {#if offer[pane]}
+            <!-- FR-99 P1: the sentence went to zsh; offer it to an agent instead -->
+            <div class="card offer" role="alert">
+              <span>{offerAgent ? tt("offer.ask", { name: offerAgent.name }) : tt("offer.noAgent")}</span>
+              <span class="acts">
+                <button class="mini" onclick={() => delete offer[pane]}>{offerAgent ? tt("offer.no") : tt("common.close")}</button>
+                <button class="mini pri" onclick={() => sendOffer(pane)}>{offerAgent ? tt("offer.send") : tt("offer.install")}</button>
+              </span>
+            </div>
+          {/if}
           {#each pendingFor(pane) as m (m.id)}
             <!-- FR-12: card near the target pane; click only (Enter doesn't approve by accident) -->
             <div class="card" role="alertdialog" aria-label={tt("msg.pending")}>
@@ -3102,7 +3132,8 @@
   {/if}
   {#if settingsOpen && cfg}
     <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
-      onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} />
+      onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount}
+      oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)} />
   {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />
@@ -4503,6 +4534,9 @@
     background: var(--card);
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
+  }
+  .card.offer {
+    border-color: var(--blue, #3b82f6);
   }
   .card pre {
     margin: 0;

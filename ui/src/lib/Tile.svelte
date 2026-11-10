@@ -31,6 +31,7 @@
     onfocusin,
     onused,
     onblock,
+    ondone = () => {},
     codexPane = false,
   }: {
     pane: number;
@@ -47,6 +48,7 @@
     onfocusin: () => void; // FR-59: the terminal has keyboard focus (the page moves it to the editor when shown)
     onused: () => void; // FR-59: the screen already had text at attach (pane isn't new)
     onblock: (kind: "cmd" | "out" | "reuse" | "copy" | "run" | "output", text: string) => void; // FR-58: block action buttons; FR-56: timeline
+    ondone?: (cmd: string, code: number) => void; // FR-99 P1: a shell command finished (OSC 133 D) with its exit code
     codexPane?: boolean; // Codex runs in this pane: its footer is drawn as the status overlay
   } = $props();
 
@@ -223,6 +225,7 @@
       if (last.t0) last.ms = Date.now() - last.t0;
       last.live?.dispose();
       last.live = timeline ? decorate(last) : undefined; // finished decorations are tracked too so they can be removed when the switch is turned off
+      ondone(last.cmd, last.code);
     }
     return true; // the marker draws nothing
   }
