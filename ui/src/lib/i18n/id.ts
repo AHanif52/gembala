@@ -273,6 +273,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "msg.mute": "mute",
   "msg.noPanes": "Belum ada pane",
   "msg.pending": "Menunggu persetujuan",
+  "msg.opens": "Minta dibukain agent",
   "msg.reject": "Tolak",
   "msg.approve": "Setujui",
   "msg.queue": "Antrean",

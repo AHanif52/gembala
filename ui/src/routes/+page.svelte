@@ -2701,6 +2701,9 @@
               </div>
             {/if}
           {/if}
+          {#if pendingFor(pane).length || opensFor(pane).length}
+          <!-- FR-98 bug: the cards stack in one column instead of sitting on top of each other -->
+          <div class="cards">
           {#each pendingFor(pane) as m (m.id)}
             <!-- FR-12: card near the target pane; click only (Enter doesn't approve by accident) -->
             <div class="card" role="alertdialog" aria-label={tt("msg.pending")}>
@@ -2726,6 +2729,8 @@
               </span>
             </div>
           {/each}
+          </div>
+          {/if}
           {#if confirm?.pane === pane}
             <div class="confirm ask" role="alertdialog" aria-label={tt("close.aria")}>
               <b class="ctitle">{tt("close.title", { name: confirm.what === "pane" ? meta[pane]?.name || "pane" : confirm.what })}</b>
@@ -2788,7 +2793,7 @@
     />
   {/if}
   {#if drawer}
-    <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} />
+    <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho} />
   {/if}
   {#if compose}
     <div class="confirm compose" role="dialog" aria-label={tt("cmp.title")}>
@@ -4377,10 +4382,18 @@
   .mini:hover {
     background: var(--line);
   }
-  .card {
+  .cards {
     position: absolute;
     inset: auto 12px 34px 12px;
     z-index: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: calc(100% - 46px);
+    overflow: auto;
+  }
+  .card {
+    flex: none;
     display: flex;
     flex-direction: column;
     gap: 6px;

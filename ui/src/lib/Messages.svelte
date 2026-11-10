@@ -10,7 +10,9 @@
     rows,
     onchange,
     onclose,
-  }: { data: any; rows: Row[]; onchange: () => void; onclose: () => void } = $props();
+    onopen,
+    who,
+  }: { data: any; rows: Row[]; onchange: () => void; onclose: () => void; onopen: (o: any) => void; who: (o: any) => string } = $props();
 
 
   const act = (method: string, params: object) => call(method, params).then(onchange, onchange);
@@ -63,6 +65,23 @@
             <span class="acts">
               <button class="mini" onclick={() => act("msg.reject", { id: m.id })}>{t("msg.reject")}</button>
               <button class="mini" onclick={() => act("msg.approve", { id: m.id })}>{t("msg.approve")}</button>
+            </span>
+          </div>
+        {/each}
+      </section>
+    {/if}
+
+    <!-- FR-98 bug: the drawer covers the "Buka dan kirim" card of a pane on the right, so the same request is answerable here -->
+    {#if data?.opens?.length}
+      <h4>{t("msg.opens")}</h4>
+      <section>
+        {#each data.opens as o (o.id)}
+          <div class="msg">
+            <span>{t("open.ask", { from: o.from, who: who(o) })}</span>
+            <pre>{o.body}</pre>
+            <span class="acts">
+              <button class="mini" onclick={() => act("open.reject", { id: o.id })}>{t("msg.reject")}</button>
+              <button class="mini" onclick={() => onopen(o)}>{t("open.go")}</button>
             </span>
           </div>
         {/each}

@@ -278,6 +278,7 @@ export default {
   "msg.mute": "mute",
   "msg.noPanes": "No panes yet",
   "msg.pending": "Waiting for approval",
+  "msg.opens": "Asking to open an agent",
   "msg.reject": "Reject",
   "msg.approve": "Approve",
   "msg.queue": "Queue",
