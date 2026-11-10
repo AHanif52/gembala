@@ -130,6 +130,14 @@ fn valid_run_id(s: &str) -> bool {
 }
 
 /// model and effort as the agent's own launch flags (TECH 12 table); a level the agent lacks maps to the nearest one
+/// A step's model name belongs to its first agent: "opus" or "sonnet" means nothing to Codex or omp, so a fallback
+/// starts on its own default model (10 Nov: Plan falling back to Codex ran `codex -m opus`). Effort is the same idea
+/// for every agent and goes to all of them.
+fn step_flags(s: &recipe::Step, agent: &str) -> Vec<String> {
+    let model = if s.agents.first().is_some_and(|a| a == agent) { s.model.as_str() } else { "" };
+    flags(agent, model, &s.effort, s.max_cost)
+}
+
 pub fn flags(agent: &str, model: &str, effort: &str, cost: Option<f64>) -> Vec<String> {
     let mut v = Vec::new();
     let mut add = |a: String| v.push(a);
@@ -483,7 +491,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
                 // a result left by an earlier attempt must not pass for this one
                 let _ = fs::remove_file(l.dir.join("artefak").join(&s.output));
             }
-            let extra = flags(&agent, &s.model, &s.effort, s.max_cost);
+            let extra = step_flags(&s, &agent);
             let params = json!({"profile": agent, "workspace": l.workspace, "cwd": l.cwd, "rows": 40, "cols": 120, "saver": l.run.recipe.token_saver});
             let id = match create_pane(st, &params, &extra) {
                 Ok(v) => v["pane"].as_u64()?,
@@ -896,6 +904,10 @@ mod tests {
         assert_eq!(flags("omp", "x", "low", Some(2.5)), ["--model=x", "--thinking=low", "--max-cost=2.5", "--warn-cost=2"]);
         assert_eq!(flags("opencode", "p/m", "high", None), ["-m", "p/m"]);
         assert!(flags("shell", "x", "y", None).is_empty());
+        // the step's model only reaches its first agent; a fallback keeps the effort and its own default model
+        let r = recipe::parse("[[step]]\nid = \"plan\"\nagents = [\"claude\", \"codex\"]\nmodel = \"opus\"\neffort = \"high\"\n", "t", None).recipe.unwrap();
+        assert_eq!(step_flags(&r.steps[0], "claude"), ["--model", "opus", "--effort", "high"]);
+        assert_eq!(step_flags(&r.steps[0], "codex"), ["-c", "model_reasoning_effort=\"high\""]);
     }
 
     #[test]
