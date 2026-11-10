@@ -598,6 +598,7 @@ fn t(id: bool, k: &str) -> &'static str {
         "sent" => ("terkirim", "sent"),
         "answered" => ("dijawab", "answered"),
         "no_pane" => ("Pane itu nggak ada.", "No such pane."),
+        "exited" => ("agent-nya udah keluar, pane balik jadi shell. Nyalain lagi: /buka <agent>", "the agent exited, the pane is a shell now. Start one again: /open <agent>"),
         "shell" => (
             "Pane shell nggak nerima ketikan dari HP. Nyalain agent di situ: /buka claude <pane>.",
             "Shell panes don't take typing from the phone. Start an agent there: /open claude <pane>.",
@@ -1128,6 +1129,19 @@ pub fn tick(st: &State, id: u64, pane: &Pane) {
         pane.asked_pw.store(false, Ordering::Relaxed);
         return;
     };
+    // a message from the phone went to an agent that has exited since (`/exit`, a crash): no "done" will ever come
+    // (agent_done clears the status without a status event), so say so instead of leaving "⏳ working" up (10 Nov)
+    let gone = pane.agent_name().is_none() || pane.status.lock().unwrap().is_empty();
+    if gone && !pane.tg_ask.lock().unwrap().is_empty() {
+        for m in pane.tg_ask.lock().unwrap().drain(..) {
+            b.react(m, "👍");
+        }
+        b.started.lock().unwrap().remove(&id);
+        if let Some((Some(m), _)) = b.progress.lock().unwrap().remove(&id) {
+            let _ = b.out.try_send(Out::Api("deleteMessage", json!({"chat_id": b.chat(), "message_id": m})));
+        }
+        b.tell(&format!("{}: {}", pane.name.lock().unwrap(), t(b.id_lang, "exited")));
+    }
     let pw = pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master);
     let was = pane.asked_pw.swap(pw, Ordering::Relaxed);
     if !b.away.load(Ordering::Relaxed) {
