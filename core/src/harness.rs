@@ -29,6 +29,9 @@ pub enum Event {
     Exit(i32),
     /// result of `Action::Evaluate`: did the stage meet its pass condition
     Verdict(bool),
+    /// the stage message reached the pane: the agent's turn starts here, not at the launch (B2: a folder-trust dialog
+    /// can hold the message back)
+    Delivered,
     /// timer; the runner sends it about once a second
     Tick,
     /// a hook reported a usage limit for the stage's agent (fed once the per-agent patterns are proven, TECH 12)
@@ -272,6 +275,14 @@ impl Run {
         }
         match ev {
             Event::Status(s) => self.status(&task, s),
+            Event::Delivered => {
+                // a dialog shown before the message (folder trust) was not part of the turn
+                if self.phase == Phase::Blocked {
+                    self.since = Some(self.now);
+                }
+                self.phase = Phase::Working { seen: false };
+                Vec::new()
+            }
             Event::Exit(_) => self.trigger("exit"),
             Event::Limit if self.recipe.fallback_on.iter().any(|t| t == "limit") => self.trigger("limit"),
             Event::CostLimit => self.halt(Halt::Cost),
@@ -638,6 +649,19 @@ human = true
         assert_eq!(r.decide(1029, Event::Tick), vec![]);
         assert_eq!(r.decide(1030, Event::Tick), vec![send(1, "codex")]);
         assert!(r.trace.iter().any(|e| e.code == "timeout"));
+    }
+
+    #[test]
+    fn a_dialog_before_the_message_is_delivered_is_not_the_turn() {
+        // B2: the agent's folder-trust dialog shows before the stage message can go in
+        let mut r = feature("");
+        at_execute(&mut r);
+        assert_eq!(r.decide(105, Event::Status(Status::Blocked)), vec![Notify(Notice::Blocked(1))]);
+        assert_eq!(r.decide(105 + 3600, Event::Tick), vec![]); // an hour at the dialog: no timeout
+        assert_eq!(r.decide(3705, Event::Delivered), vec![]);
+        // still idle right after delivery, before the agent picks the message up: not a finished turn
+        assert_eq!(r.decide(3706, Event::Status(Status::Idle)), vec![]);
+        assert_eq!(turn(&mut r, 3710), vec![Evaluate { step: 1 }]);
     }
 
     #[test]

@@ -56,6 +56,8 @@ struct Outbox {
     step: usize,
     body: String,
     retry_at: Instant,
+    /// first message to a freshly launched agent (not a Perbaiki turn): the one a folder-trust dialog can swallow
+    first: bool,
 }
 
 struct Shell {
@@ -506,7 +508,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
             l.seen = None;
             l.sent = None;
             st.harness.lock().unwrap().locked.insert(id);
-            l.outbox = Some(Outbox { step, body: stage_message(l, step), retry_at: Instant::now() });
+            l.outbox = Some(Outbox { step, body: stage_message(l, step), retry_at: Instant::now(), first: true });
             None
         }
         Action::SendFix { step, failed, .. } => {
@@ -516,7 +518,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
             l.sent = None;
             l.born = Instant::now().checked_sub(GRACE).unwrap_or_else(Instant::now);
             st.harness.lock().unwrap().locked.insert(id);
-            l.outbox = Some(Outbox { step, body: fix_message(l, step, failed), retry_at: Instant::now() });
+            l.outbox = Some(Outbox { step, body: fix_message(l, step, failed), retry_at: Instant::now(), first: false });
             None
         }
         Action::RunShell { .. } => {
@@ -608,6 +610,12 @@ fn stage_status(raw: &str, agent: &str, hook_done: Option<Instant>, sent: Option
     }
 }
 
+/// B2: the folder-trust dialog Claude Code ("Yes, I trust this folder") and Codex ("Trust this folder?") show when
+/// launched in a folder they don't know yet. Gembala never reads or writes their trust records (SEC-15).
+fn trust_prompt(screen: &str) -> bool {
+    screen.to_lowercase().contains("trust this folder")
+}
+
 /// one pass of the runner: deliver the waiting message, then report what changed in the stage's pane or shell
 fn tick(st: &Arc<State>, l: &mut Live) {
     if !matches!(l.run.state, Hs::Running) {
@@ -619,13 +627,23 @@ fn tick(st: &Arc<State>, l: &mut Live) {
     {
         let pane = l.cur.and_then(|id| st.panes.lock().unwrap().get(&id).cloned().map(|p| (id, p)));
         if let Some((id, p)) = pane {
-            let ready = l.born.elapsed() >= GRACE && matches!(*p.status.lock().unwrap(), "idle" | "done");
-            if ready {
+            let first = ob.first;
+            // B2: the agent's own folder-trust dialog reads as idle and would take the message (Claude's default is
+            // "No, exit", Codex spends the Enter on "Trust and continue"). Answering it is the user's call (C-4,
+            // FR-64): hold the message and report a dialog; once it is gone the agent gets a fresh grace period.
+            if first && trust_prompt(&p.view.lock().unwrap().0.tail(20)) {
+                l.born = Instant::now();
+                if l.seen != Some(Status::Blocked) {
+                    l.seen = Some(Status::Blocked);
+                    events.push(Event::Status(Status::Blocked));
+                }
+            } else if l.born.elapsed() >= GRACE && matches!(*p.status.lock().unwrap(), "idle" | "done") {
                 let (step, body) = (ob.step, ob.body.clone());
                 match send(st, l, id, &p, step, &body) {
                     Sent::Ok => {
                         l.outbox = None;
                         l.sent = Some(Instant::now());
+                        events.push(Event::Delivered);
                     }
                     Sent::Later => l.outbox.as_mut().unwrap().retry_at = Instant::now() + RETRY,
                     Sent::Failed => {
@@ -657,7 +675,8 @@ fn tick(st: &Arc<State>, l: &mut Live) {
                         l.seen = Some(Status::Unknown);
                         events.push(Event::Exit(1));
                     }
-                } else {
+                } else if l.outbox.is_none() {
+                    // before the message is in, the pane's status is not the stage's turn (only an exit counts)
                     let s = stage_status(raw, &p.agent, *p.hook_done.lock().unwrap(), l.sent);
                     if l.seen != Some(s) {
                         l.seen = Some(s);
@@ -945,6 +964,15 @@ mod tests {
         assert_eq!(stage_status("idle", "codex", None, None), Status::Idle);
         assert_eq!(stage_status("done", "claude", None, Some(t0)), Status::Idle);
         assert_eq!(stage_status("blocked", "codex", None, Some(t0)), Status::Blocked);
+    }
+
+    #[test]
+    fn folder_trust_dialogs_are_recognised() {
+        // screens as Claude Code 2.1.311 and Codex 0.167 draw them (10 Nov 2026)
+        assert!(trust_prompt(" Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel"));
+        assert!(trust_prompt("  Folder access\n  Trust this folder? Codex can read, edit, and run files here\n› 1. Trust and continue\n  2. Back to Agent Command Center"));
+        assert!(!trust_prompt("❯ Try \"fix lint errors\"\n  ⏵⏵ auto mode on (shift+tab to cycle)"));
+        assert!(!trust_prompt("› Ask Codex to do anything\n  GPT-6-Luna low · Context 100% left"));
     }
 
     #[test]
