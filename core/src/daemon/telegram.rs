@@ -1055,9 +1055,11 @@ fn above_input(rows: &[&str]) -> usize {
     };
     let starts = |r: &str, c: char| r.trim_start().starts_with(c);
     let claude = (1..rows.len()).rev().find(|&i| (starts(rows[i], '❯') || starts(rows[i], '>')) && rule(rows[i - 1])).map(|i| i - 1);
-    // a box with numbered options in or below it is a permission dialog (10 Nov: Claude's Edit diff box was cut as the
-    // input box, the phone got only the turn above it), not an input box
-    let boxed = || (0..rows.len()).rev().find(|&i| starts(rows[i], '╭') && rows[i + 1..].iter().any(|r| starts(r, '╰')) && !rows[i..].iter().any(|r| choice(r).is_some()));
+    // a box with a dialog cursor (`❯ 1.`, `› 1.`) in or below it is a permission dialog (10 Nov: Claude's Edit diff box
+    // was cut as the input box, the phone got only the turn above it), not an input box; a numbered list typed in omp's
+    // box has no cursor and stays the input box
+    let cursor = |r: &str| matches!(r.trim_start_matches(|c: char| c.is_whitespace() || c == '│').chars().next(), Some('❯' | '›')) && choice(r).is_some();
+    let boxed = || (0..rows.len()).rev().find(|&i| starts(rows[i], '╭') && rows[i + 1..].iter().any(|r| starts(r, '╰')) && !rows[i..].iter().any(|r| cursor(r)));
     let Some(mut j) = claude.or_else(boxed) else { return rows.len() };
     while j > 0 && (rule(rows[j - 1]) || rows[j - 1].trim().is_empty()) {
         j -= 1;
@@ -1968,6 +1970,9 @@ mod tests {
         assert_eq!(above_input(&edit), edit.len());
         let boxed = ["╭──────────╮", "│ Edit file │", "│ ❯ 1. Yes │", "│   2. No │", "╰──────────╯"];
         assert_eq!(above_input(&boxed), boxed.len());
+        // a numbered list typed in omp's input box is still the input box: the draft stays off the phone
+        let draft = ["● Oke.", "", "╭── ⬢ DeepSeek ──╮", "│ 1. perbaiki A │", "│ 2. perbaiki B │", "╰─        ─╯"];
+        assert_eq!(above_input(&draft), 1);
         let convo = [" ▐▛███▜▌ Claude Code v2.1", "❯ halo", "● Halo.", "❯ jawab pake 1 kata", "● Oke."];
         assert_eq!(turn_start(&convo, None), 3);
         assert_eq!(turn_start(&convo, Some("halo")), 1);
