@@ -1177,7 +1177,8 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             Ok(json!({}))
         }
         "pane.close" => {
-            close_pane(&st.pane(p)?);
+            let pane = st.pane(p)?;
+            close_pane(&pane);
             Ok(json!({}))
         }
         _ => Err("unknown_method"),
