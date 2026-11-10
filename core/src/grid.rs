@@ -537,7 +537,8 @@ mod tests {
 
     #[test]
     fn tui_nyata_vim() {
-        let out = capture("vim -u NONE -N -c 'set number' /etc/shells", 24, 80, Duration::from_millis(800));
+        // 800 ms was sometimes too short for login shell + vim on a CI runner
+        let out = capture("vim -u NONE -N -c 'set number' /etc/shells", 24, 80, Duration::from_secs(3));
         let mut g = Grid::new(24, 80, 1000);
         g.feed(&out);
         assert!(g.0.screen().alternate_screen(), "vim harus di layar alternatif");
