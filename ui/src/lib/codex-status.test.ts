@@ -16,6 +16,12 @@ test("tanpa jatah 5 jam (API key / belum kebaca) tetap tampil", () => {
   assert.equal(codexStatus("gpt-6.1-sol · Context 10% used")?.context, 10);
 });
 
+test("nama model berspasi (GPT-6.1 Terra) tetap kebaca", () => {
+  assert.deepEqual(codexStatus("GPT-6.1 Terra medium · Context 100% left · 5h 100% left · weekly 94% left · ~/Programming/E2E Phase 1/P…"), {
+    model: "GPT-6.1 Terra", effort: "medium", context: 0, fiveHour: 0, weekly: 6, dir: "~/Programming/E2E Phase 1/P…",
+  });
+});
+
 test("bukan footer Codex diabaikan", () => {
   for (const line of ["Context 94% left · weekly 100% left", "ls -la · Context 5% left", "gpt-6 · 258K window", "gpt-6 high · Context 140% left", ""]) {
     assert.equal(codexStatus(line), null, line);

@@ -16,8 +16,11 @@ const pct = (n: string) => (Number(n) <= 100 ? Number(n) : undefined);
 
 export function codexStatus(line: string): CodexStatus | null {
   const parts = line.trim().split(/\s+·\s+/);
-  const [model, effort = ""] = parts[0].split(/\s+/);
-  if (!/^[\w.:/@-]+$/.test(model) || (effort && !EFFORT.test(effort)) || parts[0].split(/\s+/).length > 2) return null;
+  // Display names can have spaces ("GPT-6.1 Terra medium"): more than one word only with an effort at the end
+  const words = parts[0].split(/\s+/);
+  const effort = words.length > 1 ? words.pop()! : "";
+  const model = words.join(" ");
+  if (!words.every((w) => /^[\w.:/@-]+$/.test(w)) || (effort && !EFFORT.test(effort)) || words.length > 3) return null;
   const s: CodexStatus = { model, effort, context: -1 };
   for (const p of parts.slice(1)) {
     let m: RegExpMatchArray | null;
