@@ -1589,8 +1589,22 @@ fn harness_runs_a_recipe_with_fallback_and_a_gate() {
     let s = wait_state(&mut ui, &run, &["done"]);
     assert_eq!(s["state"], "done");
     assert_ne!(ui.call("msg.send", json!({"to": pane, "body": "hi", "force": true}))["error"]["code"], "driver_locked");
+    // FR-86: a run that went all the way closes its stage panes, the dead claude pane the fallback replaced too
+    let opened: Vec<u64> = s["panes"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
+    assert!(opened.len() == 2 && opened.contains(&pane), "{s}");
+    for p in opened {
+        gone(&mut ui, p);
+    }
     // a finished run can be read again from its saved row
     assert_eq!(ui.call("harness.state", json!({"run": run}))["result"]["state"], "done");
+}
+
+fn gone(ui: &mut Cli, pane: u64) {
+    let t0 = Instant::now();
+    while ui.call("pane.info", json!({"pane": pane}))["error"]["code"] != "no_such_pane" {
+        assert!(t0.elapsed() < Duration::from_secs(10), "pane {pane} is still open");
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// FR-27, SEC-31, T-17: with the recipe's saver on, a failing Test writes test.ringkas.log with the error line and the
@@ -1708,11 +1722,18 @@ fn harness_stop_and_stale_run() {
     ui.call("recipe.approve", json!({"id": "t", "hash": h}));
     let s = ui.call("harness.start", json!({"recipe": "t", "request": "x", "cwd": repo, "workspace": "w"}))["result"].clone();
     let run = s["run"].as_str().unwrap_or_else(|| panic!("{s}")).to_string();
+    let pane = s["panes"][0].as_u64().unwrap_or_else(|| panic!("{s}"));
+    assert_eq!(ui.call("harness.close_panes", json!({"run": run}))["error"]["code"], "run_active");
     let s = ui.call("harness.stop", json!({"run": run}))["result"].clone();
     assert_eq!((s["state"].as_str(), s["halt"].as_str()), (Some("halted"), Some("stopped")), "{s}");
     // after Stop the workspace is free for the next run, and the stopped row stays readable
     assert_eq!(ui.call("harness.state", json!({"run": run}))["result"]["halt"], "stopped");
     assert_eq!(ui.call("harness.gate", json!({"run": run}))["error"]["code"], "no_such_run");
+    // FR-86: a stopped run leaves its panes for a look; the user's button closes them
+    assert!(ui.call("pane.info", json!({"pane": pane}))["result"].is_object());
+    assert_eq!(ui.call("harness.close_panes", json!({"run": run}))["result"]["closed"], 1);
+    gone(&mut ui, pane);
+    assert_eq!(ui.call("harness.close_panes", json!({"run": run}))["error"]["code"], "no_such_run");
 
     // a row left "running" by a daemon that died is reported as halted, not resumed
     let stale = cfg.join("harness/run-1-1");

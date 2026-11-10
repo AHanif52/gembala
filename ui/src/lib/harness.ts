@@ -9,6 +9,8 @@ export type Snap = {
   state: "idle" | "running" | "gate" | "taken_over" | "done" | "halted";
   gate: number | null; current: number | null; halt: string | null; halt_step: number | null;
   round: number; max_rounds: number; steps: HStep[]; trace: { at: number; code: string; step: number | null; agent: string | null }[];
+  /// every pane the run opened, fallbacks' replaced ones too (FR-86)
+  panes?: number[];
 };
 export type View = "done" | "now" | "gate" | "failed" | "todo";
 

@@ -890,7 +890,8 @@
   /// FR-16: the daemon opens the panes of a harness run; each gets a tile in one tab per run, in recipe order
   function adoptRun(snap: Snap, select = false) {
     const wi = wss.findIndex((w) => w.id === snap.workspace);
-    if (wi < 0) return;
+    // FR-86: a finished run's panes are closing; a late snapshot (the gate reply) must not bring them back
+    if (wi < 0 || snap.state === "done") return;
     const w = wss[wi];
     const placed = new Set(wss.flatMap((x) => x.tabs.flatMap((t) => panes(t.tree))));
     let tb = w.tabs.find((t) => t.id === runTab[snap.run]);
@@ -2765,7 +2766,7 @@
     <div class="paused" role="status">{tt("main.paused")}</div>
   {/if}
   {#if flow && ws && runs[ws.id]}
-    <HarnessFlow snap={runs[ws.id]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onchanges={(p: number) => ((flow = false), showChanges(p))} onclose={() => (flow = false)} />
+    <HarnessFlow snap={runs[ws.id]} has={(p: number) => !!meta[p]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onchanges={(p: number) => ((flow = false), showChanges(p))} onclose={() => (flow = false)} />
   {/if}
   {#if newTask && ws}
     <NewTask

@@ -1063,6 +1063,8 @@ export default {
   "hn.release": "Give back to the harness",
   "hn.takeover": "Take over",
   "hn.stop": "Stop",
+  "hn.closePanes": "Close stage panes",
+  "hn.closePanesTip": "The run stopped, so its panes stayed for a look. Done looking? This frees their memory. The trail and artifacts stay.",
   "hn.trail": "What happened",
   "hn.ev.start": "started",
   "hn.ev.send": "sent to",

@@ -6,7 +6,8 @@
   import { clock, live, stagePanes, stepView, type Snap } from "./harness";
   import { errText, t, tOr } from "./i18n/state.svelte";
 
-  let { snap, onchange, onjump, onchanges, onclose }: { snap: Snap; onchange: (s: Snap) => void; onjump: (pane: number) => void; onchanges: (pane: number) => void; onclose: () => void } = $props();
+  // `has`: the pane is still open (FR-86: a finished run's panes close, a stopped one's stay until the user closes them)
+  let { snap, has, onchange, onjump, onchanges, onclose }: { snap: Snap; has: (pane: number) => boolean; onchange: (s: Snap) => void; onjump: (pane: number) => void; onchanges: (pane: number) => void; onclose: () => void } = $props();
 
   /// FR-23/FR-26: the Ship card opens the changes panel for the run's work pane (all stage panes share the run folder)
   const lastPane = (s: Snap) => stagePanes(s).at(-1)?.pane ?? null;
@@ -39,7 +40,7 @@
               {#if s.human}{t("hn.ship")}{:else if s.shell}{t("hn.shellStage")}{:else}{s.pane_agent ?? s.agents.join(" › ")}{/if}{s.gate && !s.human ? ` · ${t("hn.gate")}` : ""}{v === "now" && snap.round ? ` · ${t("hn.round", { n: snap.round, max: snap.max_rounds })}` : ""}
             </small>
           </span>
-          {#if s.pane != null}<button class="mini" onclick={() => onjump(s.pane!)}>{t("hn.openPane")}</button>{/if}
+          {#if s.pane != null && has(s.pane)}<button class="mini" onclick={() => onjump(s.pane!)}>{t("hn.openPane")}</button>{/if}
         </li>
       {/each}
     </ol>
@@ -67,6 +68,11 @@
           <button class="mini" onclick={() => act("harness.takeover")}>{t("hn.takeover")}</button>
         {/if}
         <button class="mini stop" onclick={() => act("harness.stop")}>{t("hn.stop")}</button>
+      </div>
+    {:else if snap.panes?.some(has)}
+      <div class="acts">
+        <button class="mini" title={t("hn.closePanesTip")}
+          onclick={() => call("harness.close_panes", { run: snap.run }).then((r) => r.error && (error = errText(r.error, r.args))).catch((e) => (error = errText(e)))}>{t("hn.closePanes")}</button>
       </div>
     {/if}
     {#if error}<div class="bad" role="alert">{error}</div>{/if}

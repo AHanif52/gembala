@@ -25,6 +25,9 @@ pub struct Registry {
     locked: std::collections::HashSet<u64>,
     /// sender id of each run's messages -> workspace, for the access rules (SEC-4/21)
     from_ws: HashMap<u64, String>,
+    /// FR-86: stage panes of runs that stopped or failed, left open for a look until the user closes them. In memory
+    /// only: pane ids are not reused within a daemon, but are after a restart
+    ended: HashMap<String, Vec<u64>>,
     seq: u64,
 }
 
@@ -80,6 +83,8 @@ pub struct Live {
     start_diff: String,
     /// latest pane per stage; `cur` is the one the engine is waiting on
     panes: HashMap<usize, u64>,
+    /// every pane the run opened, a fallback's replaced one too (FR-86: closed together)
+    opened: Vec<u64>,
     cur: Option<u64>,
     born: Instant,
     seen: Option<Status>,
@@ -426,6 +431,7 @@ fn snapshot(st: &State, l: &Live) -> Value {
         "saver": l.run.recipe.token_saver,
         "state": state_code(&l.run.state), "gate": if let Hs::Gate(i) = l.run.state { Some(i) } else { None }, "current": l.run.current(),
         "halt": halt, "halt_step": halt_step, "round": l.run.round, "max_rounds": l.run.recipe.max_rounds, "steps": steps, "trace": trace,
+        "panes": l.opened,
     })
 }
 
@@ -502,6 +508,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
                 Err(_) => return Some(Event::Exit(1)),
             };
             l.panes.insert(step, id);
+            l.opened.push(id);
             l.agents.insert(step, agent.clone());
             l.cur = Some(id);
             l.born = Instant::now();
@@ -533,7 +540,7 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
         Action::Evaluate { step } => Some(Event::Verdict(evaluate(st, l, step))),
         Action::Unlock => {
             let mut reg = st.harness.lock().unwrap();
-            for p in l.panes.values() {
+            for p in &l.opened {
                 reg.locked.remove(p);
             }
             None
@@ -580,6 +587,9 @@ fn feed(st: &Arc<State>, l: &mut Live, ev: Event) {
             let mut reg = st.harness.lock().unwrap();
             reg.runs.remove(&l.workspace);
             reg.from_ws.remove(&l.from);
+            if !matches!(l.run.state, Hs::Done) {
+                reg.ended.insert(l.id.clone(), l.opened.clone());
+            }
         }
     }
     let sig = (l.run.trace.len(), state_code(&l.run.state), l.panes.len(), l.msgs.len(), l.outbox.is_some());
@@ -588,6 +598,20 @@ fn feed(st: &Arc<State>, l: &mut Live, ev: Event) {
         save(st, l);
         ui_event(st, "harness.state", snapshot(st, l));
     }
+    // FR-86: a run that went all the way frees its agents; after the snapshot, so the UI has the panes before they exit
+    if matches!(l.run.state, Hs::Done) && !l.opened.is_empty() {
+        close_panes(st, &l.opened);
+    }
+}
+
+/// FR-86: same as the user's × on each pane still open (history and the session card stay)
+fn close_panes(st: &State, ids: &[u64]) -> usize {
+    let open: Vec<Arc<Pane>> = {
+        let panes = st.panes.lock().unwrap();
+        ids.iter().filter_map(|id| panes.get(id).cloned()).collect()
+    };
+    open.iter().for_each(|p| close_pane(p));
+    open.len()
 }
 
 fn map_status(s: &str) -> Status {
@@ -796,6 +820,13 @@ pub fn method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         }
         "harness.start" => start(st, p),
         "harness.state" => state(st, p),
+        "harness.close_panes" => {
+            if find(st, p).is_some() {
+                return Err("run_active");
+            }
+            let ids = p["run"].as_str().and_then(|r| st.harness.lock().unwrap().ended.remove(r)).ok_or("no_such_run")?;
+            Ok(json!({"closed": close_panes(st, &ids)}))
+        }
         _ => command(st, m, p),
     }
 }
@@ -842,6 +873,7 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
         started_at: history::now(),
         start_diff,
         panes: HashMap::new(),
+        opened: Vec::new(),
         cur: None,
         born: Instant::now(),
         seen: None,

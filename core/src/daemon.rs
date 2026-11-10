@@ -920,7 +920,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         }
         "addon.status" => Ok(json!({"rtk": profile::rtk_version()})),
         // FR-16, FR-73: harness runs. UI channel only (SEC-20): the pane channel has no harness method.
-        "harness.preflight" | "harness.start" | "harness.state" | "harness.stop" | "harness.gate" | "harness.takeover" | "harness.release" => runner::method(st, m, p),
+        "harness.preflight" | "harness.start" | "harness.state" | "harness.stop" | "harness.gate" | "harness.takeover" | "harness.release" | "harness.close_panes" => runner::method(st, m, p),
         // FR-74, SEC-27: harness recipes. Approve and delete exist on the UI channel only; the pane channel has no recipe method.
         "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" | "recipe.duplicate" | "recipe.draft_new" | "recipe.draft_get" | "recipe.draft_apply" => {
             let store = recipe::Store::new(config::path().parent().unwrap_or(std::path::Path::new("/")));
