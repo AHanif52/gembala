@@ -353,13 +353,24 @@ fn claude_keys(screen: &str) -> Vec<&'static str> {
     ["1", "2", "3"][..n.max(1)].iter().copied().chain(["esc"]).collect()
 }
 
+/// a Codex option row starts at `› ` or two spaces; a wrapped option continues deeper (`     1. arg` is not option 1)
+fn codex_opt(row: &str) -> Option<u8> {
+    let lead = row.chars().take_while(|c| c.is_whitespace() || *c == '›').count();
+    choice(row).filter(|_| lead <= 2)
+}
+
 /// Codex option `n` (may wrap over several rows) -> the shortcut it shows last in parentheses: `(y)` -> y, `(esc)` -> Esc;
-/// none = nothing is sent
+/// none = nothing is sent, also when the options from the last `1.` down aren't numbered 1, 2, 3… (misread dialog)
 fn codex_key(screen: &str, n: u8) -> Option<Vec<u8>> {
     let rows: Vec<&str> = screen.lines().collect();
-    let i = rows.iter().rposition(|r| choice(r) == Some(n))?;
+    let first = rows.iter().rposition(|r| codex_opt(r) == Some(1))?;
+    let opts: Vec<(usize, u8)> = rows.iter().enumerate().skip(first).filter_map(|(i, r)| codex_opt(r).map(|k| (i, k))).collect();
+    if opts.iter().enumerate().any(|(j, &(_, k))| k as usize != j + 1) {
+        return None;
+    }
+    let i = opts.iter().find(|&&(_, k)| k == n)?.0;
     let mut opt = rows[i].trim().to_string();
-    for r in rows[i + 1..].iter().take_while(|r| !r.trim().is_empty() && choice(r).is_none()) {
+    for r in rows[i + 1..].iter().take_while(|r| !r.trim().is_empty() && codex_opt(r).is_none()) {
         opt = format!("{opt} {}", r.trim());
     }
     let s = opt.strip_suffix(')')?;
@@ -1891,6 +1902,12 @@ mod tests {
         assert_eq!(codex_key(codex, 2).as_deref(), Some(&b"p"[..]));
         assert_eq!(codex_key(codex, 3).as_deref(), Some(&b"\x1b"[..]));
         assert_eq!(codex_key("› 1. Yes, proceed", 1), None);
+        // option 2 wraps onto a row that reads like option 1: button 1 must stay `y`, never option 2's `p`
+        let wrap = "› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `bash\n     1. arg` (p)\n  3. No, and tell Codex what to do differently (esc)";
+        assert_eq!(codex_key(wrap, 1).as_deref(), Some(&b"y"[..]));
+        assert_eq!(codex_key(wrap, 2).as_deref(), Some(&b"p"[..]));
+        // numbers out of order = not a dialog read right: nothing is sent
+        assert_eq!(codex_key("› 1. Yes (y)\n  3. No (esc)", 3), None);
         assert_eq!(keys("claude"), &["1", "2", "3", "esc"]);
         assert_eq!(keys("shell"), &["esc"]);
         assert_eq!(key_bytes("once"), b"\r");
