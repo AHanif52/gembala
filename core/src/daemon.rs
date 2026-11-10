@@ -1177,15 +1177,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             Ok(json!({}))
         }
         "pane.close" => {
-            let pane = st.pane(p)?;
-            // like closing a terminal window: SIGHUP to the foreground job and the pane session
-            unsafe {
-                let fg = libc::tcgetpgrp(pane.master.as_raw_fd());
-                if fg > 0 {
-                    libc::killpg(fg, libc::SIGHUP);
-                }
-                libc::killpg(pane.sid, libc::SIGHUP);
-            }
+            close_pane(&st.pane(p)?);
             Ok(json!({}))
         }
         _ => Err("unknown_method"),
@@ -1672,6 +1664,18 @@ fn deliver_loop(st: Arc<State>) {
         for o in stale {
             open_refused(&st, &o.msg, "expired");
         }
+    }
+}
+
+/// like closing a terminal window: SIGHUP to the foreground job and the pane session (FR-38 ×, FR-86); the pane's
+/// pump then sends `pane.exit` and the UI drops it from its tab
+fn close_pane(pane: &Pane) {
+    unsafe {
+        let fg = libc::tcgetpgrp(pane.master.as_raw_fd());
+        if fg > 0 {
+            libc::killpg(fg, libc::SIGHUP);
+        }
+        libc::killpg(pane.sid, libc::SIGHUP);
     }
 }
 
