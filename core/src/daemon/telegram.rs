@@ -346,6 +346,18 @@ fn choice(row: &str) -> Option<u8> {
     (d.len() == 1 && !rest.is_empty()).then(|| d.parse().ok()).flatten().filter(|n| (1..=9).contains(n))
 }
 
+/// FR-84: buttons under a "needs you" message. None for the folder-trust dialog: trusting lets the folder run code, and
+/// Claude's first (unnumbered) option there is "No, exit", so it's answered on the Mac.
+fn blocked_keys(agent: &str, screen: &str, reason: &str) -> Vec<&'static str> {
+    if reason == claude::TRUST {
+        Vec::new()
+    } else if agent == "claude" || agent == "codex" {
+        claude_keys(screen)
+    } else {
+        keys(agent).to_vec()
+    }
+}
+
 /// Claude's dialog has 2 or 3 options: the lowest numbered row on screen is its last option (a numbered list in the
 /// answer above doesn't count); 3 when none is read
 fn claude_keys(screen: &str) -> Vec<&'static str> {
@@ -1214,9 +1226,12 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     }
     let mut body = json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML"});
     if let Kind::Blocked(seq) = kind {
-        let ks = if agent == "claude" || agent == "codex" { claude_keys(&pane.view.lock().unwrap().0.text()) } else { keys(&agent).to_vec() };
+        let reason = pane.claude.lock().unwrap().reason.clone();
+        let ks = blocked_keys(&agent, &pane.view.lock().unwrap().0.text(), &reason);
         let row: Vec<Value> = ks.iter().map(|k| json!({"text": match *k { "esc" => "Esc", "once" => "Allow once", "always" => "Always", _ => k }, "callback_data": cb_data(id, seq, k)})).collect();
-        body["reply_markup"] = json!({"inline_keyboard": [row]});
+        if !row.is_empty() {
+            body["reply_markup"] = json!({"inline_keyboard": [row]});
+        }
     }
     Some(body)
 }
@@ -1985,6 +2000,11 @@ mod tests {
         assert_eq!(claude_keys("│ ❯ 1. Yes\n│   2. Yes, and don't ask again\n│   3. No, and tell Claude (esc)"), ["1", "2", "3", "esc"]);
         assert_eq!(claude_keys("no dialog read"), ["1", "2", "3", "esc"]);
         assert_eq!(claude_keys("1. a\n2. b\n3. c\n4. d\n❯ 1. Yes\n  2. No\nEsc to cancel"), ["1", "2", "esc"]);
+        // FR-84: a folder-trust dialog gets no buttons (answered on the Mac); a permission dialog keeps them
+        let trust = " Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel";
+        assert!(blocked_keys("claude", trust, claude::TRUST).is_empty());
+        assert!(blocked_keys("codex", "› 1. Trust and continue\n  2. Back\n  enter continue · esc back", claude::TRUST).is_empty());
+        assert_eq!(blocked_keys("claude", &ask.join("\n"), "minta izin"), ["1", "2", "esc"]);
         assert_eq!(choice("❯ halo"), None);
         assert_eq!(choice("2026. tahun"), None);
         // omp: banner, older prompt, the phone's prompt, answer, stats row, input box

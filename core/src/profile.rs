@@ -247,6 +247,16 @@ const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you wan
     // Codex dialog footer, always on the bottom line: a long "Reason:" pushes "Would you like to run" out of the 12-line tail
     "press enter to confirm or esc to cancel"];
 
+/// FR-84, B2: the folder-trust dialog Claude Code ("Yes, I trust this folder") and Codex ("Trust this folder?") show when
+/// launched in a folder they don't know yet. Read from the screen: Claude writes no session file during it, Codex has no
+/// hook for it, and Gembala never reads or writes the agents' trust records (SEC-15).
+/// The dialog's own footer must be the last line, so a conversation that quotes the dialog doesn't read as one.
+pub fn trust_prompt(screen: &str) -> bool {
+    let t = screen.to_lowercase();
+    let last = t.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
+    t.contains("trust this folder") && (last.contains("enter to confirm") || last.contains("enter continue"))
+}
+
 /// FR-4 fallback: status from the screen for agents without hooks. `tail` = the bottom few screen rows,
 /// `quiet` = time without output, `prev` = previous status.
 pub fn screen_status(tail: &str, quiet: std::time::Duration, prev: &str) -> &'static str {
@@ -952,6 +962,17 @@ mod tests {
         assert_eq!(hook_status("opencode", "permission", ""), Some("blocked"));
         assert_eq!(hook_status("omp", "end", ""), Some("done"));
         assert_eq!(hook_status("x", "y", ""), None);
+    }
+
+    #[test]
+    fn folder_trust_dialogs_are_recognised() {
+        // screens as Claude Code 2.1.311 and Codex 0.167 draw them (10 Nov 2026)
+        assert!(trust_prompt(" Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel"));
+        assert!(trust_prompt("  Folder access\n  Trust this folder? Codex can read, edit, and run files here\n› 1. Trust and continue\n  2. Back to Agent Command Center\n  enter continue · esc back\n"));
+        assert!(!trust_prompt("❯ Try \"fix lint errors\"\n  ⏵⏵ auto mode on (shift+tab to cycle)"));
+        // an agent quoting the dialog in its answer, with its own prompt and status line below
+        assert!(!trust_prompt("⏺ Claude shows:\n   Yes, I trust this folder\n   Enter to confirm · Esc to cancel\n❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)"));
+        assert!(!trust_prompt("› Ask Codex to do anything\n  GPT-6-Luna low · Context 100% left"));
     }
 
     #[test]

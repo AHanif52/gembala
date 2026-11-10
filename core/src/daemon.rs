@@ -103,6 +103,9 @@ struct Pane {
     /// FR-4: this manual agent sends full hooks (Claude, omp, OpenCode; not Codex, which only has `notify`):
     /// status from hooks only. Without this, Claude's status line redraws read as working then done over and over (notifications pile up)
     hooked: std::sync::atomic::AtomicBool,
+    /// FR-84: the agent's folder-trust dialog was on screen at the last check (`screen_watch`), and when it went away
+    trust: std::sync::atomic::AtomicBool,
+    trust_off: Mutex<Option<std::time::Instant>>,
     screen: bool,
     started: std::time::Instant,
     /// Phase 2: workspace (access rules SEC-4/21), recipient policy (SEC-5), when the status last changed
@@ -1331,6 +1334,8 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         last_out: Mutex::new(std::time::Instant::now()),
         at_prompt: std::sync::atomic::AtomicBool::new(false),
         hooked: std::sync::atomic::AtomicBool::new(false),
+        trust: std::sync::atomic::AtomicBool::new(false),
+        trust_off: Mutex::new(None),
         // FR-68: Codex only has the `notify` hook (done); working and needs-permission come from the screen
         screen: agent == "custom" || agent == "codex",
         started: std::time::Instant::now(),
@@ -1910,6 +1915,11 @@ fn screen_watch(st: Arc<State>) {
                 }
                 _ => {}
             }
+            // FR-84: an agent's folder-trust dialog, for every agent pane (profile, harness stage, typed in a shell pane)
+            let on = (manual || pane.agent != "shell") && profile::trust_prompt(&pane.view.lock().unwrap().0.tail(20));
+            if trust_watch(&st, id, &pane, on) {
+                continue;
+            }
             claude::refresh(&st, id, &pane, None);
             if pane.claude.lock().unwrap().overrides() {
                 continue;
@@ -1931,7 +1941,11 @@ fn screen_watch(st: Arc<State>) {
             };
             // startup output in the first 3 seconds isn't "work" (without this a new agent shows "done" right away),
             // but a permission prompt still applies immediately: criterion 4
-            let startup = pane.started.elapsed() < std::time::Duration::from_secs(3);
+            // FR-84: an agent drawing its start screen after the trust dialog isn't work either (Codex 0.167 drew for ~5 s,
+            // read as working then done = a false "done" notice)
+            // ponytail: fixed 10 s window; key it to the first typed input if an agent draws longer
+            let startup = pane.started.elapsed() < std::time::Duration::from_secs(3)
+                || pane.trust_off.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10));
             if next != cur && (!startup || next == "blocked") {
                 *pane.status.lock().unwrap() = next;
                 *pane.status_at.lock().unwrap() = std::time::Instant::now();
@@ -1939,6 +1953,34 @@ fn screen_watch(st: Arc<State>) {
             }
         }
     }
+}
+
+/// FR-84: status to set for the trust dialog, if any. Follows the screen, never sticky: on while the dialog shows (set
+/// again if a hook overwrote it), off by itself once it's gone, unless the agent left (empty) or moved on.
+fn trust_next(on: bool, was: bool, cur: &str) -> Option<&'static str> {
+    match (on, was) {
+        (true, false) => Some("blocked"),
+        (true, true) => (cur != "blocked").then_some("blocked"),
+        (false, true) => (cur == "blocked").then_some("idle"),
+        (false, false) => None,
+    }
+}
+
+/// FR-84: apply `trust_next` with the "minta percaya folder" reason; true while the dialog shows, so nothing else (hook
+/// file, screen guess) sets this pane's status then. Gembala never answers the dialog (C-4).
+fn trust_watch(st: &State, id: u64, pane: &Pane, on: bool) -> bool {
+    let was = pane.trust.swap(on, Ordering::Relaxed);
+    if was && !on {
+        *pane.trust_off.lock().unwrap() = Some(std::time::Instant::now());
+    }
+    let cur = *pane.status.lock().unwrap();
+    if let Some(next) = trust_next(on, was, cur) {
+        pane.claude.lock().unwrap().reason = if on { claude::TRUST.into() } else { String::new() };
+        *pane.status.lock().unwrap() = next;
+        *pane.status_at.lock().unwrap() = std::time::Instant::now();
+        status_changed(st, id, pane, next);
+    }
+    on
 }
 
 /// The user typing into a pane (UI keyboard, Telegram FR-80): a "done" result counts as read (BRD section 8)
@@ -2530,6 +2572,24 @@ pub fn default_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_dialog_status_follows_the_screen() {
+        // dialog shows: blocked, from any status, including a typed agent's untracked ""
+        assert_eq!(trust_next(true, false, "idle"), Some("blocked"));
+        assert_eq!(trust_next(true, false, ""), Some("blocked"));
+        // already blocked by the screen guess (Codex): same status, the reason still has to go out
+        assert_eq!(trust_next(true, false, "blocked"), Some("blocked"));
+        assert_eq!(trust_next(true, true, "blocked"), None);
+        // a hook overwrote it while the dialog still shows: set it again
+        assert_eq!(trust_next(true, true, "idle"), Some("blocked"));
+        // dialog gone: off by itself, never sticky
+        assert_eq!(trust_next(false, true, "blocked"), Some("idle"));
+        // the agent left (trust refused, agent_done blanked it) or moved on: leave it
+        assert_eq!(trust_next(false, true, ""), None);
+        assert_eq!(trust_next(false, true, "working"), None);
+        assert_eq!(trust_next(false, false, "blocked"), None);
+    }
 
     #[test]
     fn agent_manual_bawa_hook_gembala() {

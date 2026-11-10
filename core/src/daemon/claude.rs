@@ -112,10 +112,13 @@ fn parse(bytes: &[u8], pid: i32) -> Option<Session> {
     Some(Session { status: v["status"].as_str()?.into(), reason: reason(v["waitingFor"].as_str().unwrap_or_default()) })
 }
 
+/// FR-84: the folder-trust reason, from the session file or (`screen_watch`) from the screen
+pub const TRUST: &str = "minta percaya folder";
+
 pub fn reason(raw: &str) -> String {
     let lower = raw.to_lowercase();
     let text = if lower.contains("trust") {
-        "minta percaya folder"
+        TRUST
     } else if lower == "worker request" {
         "worker minta izin"
     } else if lower == "sandbox request" {
@@ -134,7 +137,8 @@ pub fn reason(raw: &str) -> String {
 
 /// Called before a Stop hook is published, and once a second by the screen watcher.
 pub fn refresh(st: &State, id: u64, pane: &Pane, hook: Option<&'static str>) {
-    if pane.agent_name().as_deref() != Some("claude") && hook.is_none() {
+    // FR-84: the trust dialog on screen holds the status until it's gone (`trust_watch`)
+    if pane.trust.load(Ordering::Relaxed) || (pane.agent_name().as_deref() != Some("claude") && hook.is_none()) {
         return;
     }
     let Some((pid, _)) = pty::busy(&pane.master, pane.sid) else {
