@@ -150,6 +150,10 @@ impl Run {
         recipe.max_rounds = recipe.max_rounds.min(MAX_ROUNDS as u32);
         recipe.total_secs = recipe.total_secs.min(MAX_TOTAL_SECS);
         for s in &mut recipe.steps {
+            // the model was written for the recipe's first agent: when that one isn't installed, no agent gets it
+            if s.agents.first().is_some_and(|a| !installed.contains(a)) {
+                s.model.clear();
+            }
             s.agents.retain(|a| installed.contains(a));
             s.agents.truncate(MAX_AGENTS);
         }

@@ -927,6 +927,9 @@ mod tests {
         let r = recipe::parse("[[step]]\nid = \"plan\"\nagents = [\"claude\", \"codex\"]\nmodel = \"opus\"\neffort = \"high\"\n", "t", None).recipe.unwrap();
         assert_eq!(step_flags(&r.steps[0], "claude"), ["--model", "opus", "--effort", "high"]);
         assert_eq!(step_flags(&r.steps[0], "codex"), ["-c", "model_reasoning_effort=\"high\""]);
+        // Claude not installed: Codex leads the run but the model was written for Claude, so Codex gets none
+        let run = harness::Run::new(r, &["codex".to_string()]);
+        assert_eq!(step_flags(&run.recipe.steps[0], "codex"), ["-c", "model_reasoning_effort=\"high\""]);
     }
 
     #[test]
