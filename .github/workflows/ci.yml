@@ -26,7 +26,10 @@ jobs:
           persist-credentials: false
       - name: Test tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -yq zsh vim netcat-openbsd
+        # the runner's zsh completion folders are group-writable: compinit then asks y/n and eats the first keystroke
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq zsh vim netcat-openbsd
+          zsh -c 'autoload -U compaudit; compaudit' | xargs -r sudo chmod go-w
       - run: cargo clippy -q -p gembala --all-targets -- -D warnings
       - run: cargo test -q -p gembala
   ui:
