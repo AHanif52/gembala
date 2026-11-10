@@ -333,14 +333,15 @@ fn keys(agent: &str) -> &'static [&'static str] {
     // Enter confirms; Esc closes the dialog (no reason box in this version).
     // omp 18.18.3, verified live: dialog is Approve/Deny only (no session
     // option; Down+Enter would land on Deny), Enter approves, Esc denies.
-    // Codex: Esc only (its yes/no default highlight is unverified).
+    // Codex 0.167 numbered dialog (10 Nov screen): `› 1. Yes, proceed (y)`; a digit button sends the shortcut that row
+    // shows in parentheses (codex_key), read again when pressed.
     // Claude numbered dialog: digits; Esc cancels.
-    if agent == "claude" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &["esc"] }
+    if agent == "claude" || agent == "codex" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &["esc"] }
 }
 
-/// `❯ 2. No` / `  3. No, and tell Claude…` -> the option number of a numbered dialog row
+/// `❯ 2. No` / `  3. No, and tell Claude…` / Codex `› 1. Yes` -> the option number of a numbered dialog row
 fn choice(row: &str) -> Option<u8> {
-    let s = row.trim_start_matches(|c: char| c.is_whitespace() || c == '│' || c == '❯');
+    let s = row.trim_start_matches(|c: char| c.is_whitespace() || c == '│' || c == '❯' || c == '›');
     let (d, rest) = s.split_once(". ")?;
     (d.len() == 1 && !rest.is_empty()).then(|| d.parse().ok()).flatten().filter(|n| (1..=9).contains(n))
 }
@@ -350,6 +351,23 @@ fn choice(row: &str) -> Option<u8> {
 fn claude_keys(screen: &str) -> Vec<&'static str> {
     let n = screen.lines().rev().find_map(choice).unwrap_or(3).min(3) as usize;
     ["1", "2", "3"][..n.max(1)].iter().copied().chain(["esc"]).collect()
+}
+
+/// Codex option `n` (may wrap over several rows) -> the shortcut it shows last in parentheses: `(y)` -> y, `(esc)` -> Esc;
+/// none = nothing is sent
+fn codex_key(screen: &str, n: u8) -> Option<Vec<u8>> {
+    let rows: Vec<&str> = screen.lines().collect();
+    let i = rows.iter().rposition(|r| choice(r) == Some(n))?;
+    let mut opt = rows[i].trim().to_string();
+    for r in rows[i + 1..].iter().take_while(|r| !r.trim().is_empty() && choice(r).is_none()) {
+        opt = format!("{opt} {}", r.trim());
+    }
+    let s = opt.strip_suffix(')')?;
+    match &s[s.rfind('(')? + 1..] {
+        "esc" => Some(b"\x1b".to_vec()),
+        k if k.len() == 1 && k.bytes().all(|c| c.is_ascii_lowercase()) => Some(k.as_bytes().to_vec()),
+        _ => None,
+    }
 }
 
 fn key_bytes(key: &str) -> &'static [u8] {
@@ -1181,7 +1199,7 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     }
     let mut body = json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML"});
     if let Kind::Blocked(seq) = kind {
-        let ks = if agent == "claude" { claude_keys(&pane.view.lock().unwrap().0.text()) } else { keys(&agent).to_vec() };
+        let ks = if agent == "claude" || agent == "codex" { claude_keys(&pane.view.lock().unwrap().0.text()) } else { keys(&agent).to_vec() };
         let row: Vec<Value> = ks.iter().map(|k| json!({"text": match *k { "esc" => "Esc", "once" => "Allow once", "always" => "Always", _ => k }, "callback_data": cb_data(id, seq, k)})).collect();
         body["reply_markup"] = json!({"inline_keyboard": [row]});
     }
@@ -1597,6 +1615,10 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                         }
                     }
                 }
+                (Some(p), k) if k != "esc" && p.agent_name().as_deref() == Some("codex") => {
+                    let screen = p.view.lock().unwrap().0.text();
+                    k.parse().ok().and_then(|n| codex_key(&screen, n)).is_some_and(|bytes| type_into(st, id, p, &bytes).is_ok())
+                }
                 (Some(p), _) => type_into(st, id, p, key_bytes(&key)).is_ok(),
                 _ => false,
             };
@@ -1859,7 +1881,14 @@ mod tests {
         assert!(cb_data(u64::MAX, u64::MAX, "always").len() <= 64);
         assert_eq!(keys("opencode"), &["once", "always", "esc"]);
         assert_eq!(keys("omp"), &["once", "esc"]);
-        assert_eq!(keys("codex"), &["esc"]);
+        assert_eq!(keys("codex"), &["1", "2", "3", "esc"]);
+        // Codex 0.167 dialog as drawn 10 Nov: option 2 wraps, the shortcut is on its last row
+        let codex = "  $ bash jam-bukti.sh out\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `bash\n     jam-bukti.sh out` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel";
+        assert_eq!(claude_keys(codex), ["1", "2", "3", "esc"]);
+        assert_eq!(codex_key(codex, 1).as_deref(), Some(&b"y"[..]));
+        assert_eq!(codex_key(codex, 2).as_deref(), Some(&b"p"[..]));
+        assert_eq!(codex_key(codex, 3).as_deref(), Some(&b"\x1b"[..]));
+        assert_eq!(codex_key("› 1. Yes, proceed", 1), None);
         assert_eq!(keys("claude"), &["1", "2", "3", "esc"]);
         assert_eq!(keys("shell"), &["esc"]);
         assert_eq!(key_bytes("once"), b"\r");
