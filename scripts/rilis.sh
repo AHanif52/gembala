@@ -25,8 +25,10 @@ ditto -c -k --keepParent "$app" "$zip"
 sha=$(shasum -a 256 "$zip" | cut -d' ' -f1)
 echo "$zip $sha"
 [ "$1" = --dry ] && exit 0
+# release notes = this version's section of CHANGELOG.md (lines after "## $v" up to the next "## "), then the install line
+notes=$(awk -v h="## $v" '$0 == h { on = 1; next } /^## / { on = 0 } on' "$root/CHANGELOG.md" 2>/dev/null)
 gh release create "v$v" "$zip" -R AHanif52/gembala --target "$(git -C "$root" rev-parse HEAD)" --title "Gembala $v" \
-  --notes "brew install ahanif52/gembala/gembala"
+  --notes "$(printf '%s\n\n%s' "$notes" "brew install ahanif52/gembala/gembala")"
 tap=$(mktemp -d)
 gh repo clone AHanif52/homebrew-gembala "$tap" -- -q
 mkdir -p "$tap/Casks"

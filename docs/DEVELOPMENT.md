@@ -84,7 +84,7 @@ Always install npm packages with `--ignore-scripts` (SEC-16).
   a TeamIdentifier are bound to the build's cdhash, so "Always Allow" doesn't survive across builds. That's why the
   daemon recognizes the UI channel from the peer's signature (`core/src/sign.rs`). Test tools use the debug build +
   `GEMBALA_DEV_SECRET`.
-- Releases (FR-63): bump the version, push tag `v<version>`; `.github/workflows/release.yml` imports the same
+- Releases (FR-63): bump the version and add its `## <version>` section to `CHANGELOG.md` (the release page text), push tag `v<version>`; `.github/workflows/release.yml` imports the same
   certificate from repo secrets and runs `scripts/rilis.sh` (secrets listed at the top of the workflow). `rilis.sh` on
   the Mac still works as the fallback. Both refuse a bundle not signed by "Gembala Dev" (the helper falls back to ad hoc).
 - An app opened from inside an agent session inherits that session's env: it's scrubbed in `pty::scrub_env` (SEC-35).

@@ -993,6 +993,7 @@ export default {
   "hn.task": "Task",
   "hn.taskPlaceholder": "What should get done? Write it like you'd tell a teammate.",
   "hn.folder": "Folder",
+  "hn.trustHint": "New folder? The agent asks you to trust it first: its pane shows up under \"Needs you\", answer it there.",
   "hn.pick": "Choose…",
   "hn.how": "How to run it",
   "hn.manual": "Manual",

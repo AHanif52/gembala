@@ -138,6 +138,8 @@
     <input class="grow mono" bind:value={folder} spellcheck="false" />
     <button class="mini" onclick={pickFolder}>{t("hn.pick")}</button>
   </label>
+  <!-- FR-84: whether a folder is trusted lives in the agent's own config (SEC-15), so it's a reminder, not a check -->
+  <p class="hint">{t("hn.trustHint")}</p>
 
   <div class="seg" role="radiogroup" aria-label={t("hn.how")}>
     <button role="radio" aria-checked={mode === "manual"} class:on={mode === "manual"} onclick={() => (mode = "manual")}>{t("hn.manual")}</button>

@@ -978,6 +978,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "hn.task": "Tugas",
   "hn.taskPlaceholder": "Apa yang mau dikerjain? Tulis aja kayak ngomong ke temen kerja.",
   "hn.folder": "Folder",
+  "hn.trustHint": "Folder baru? Agent bakal minta trust dulu: pane-nya nongol di \"Butuh lu\", jawab di situ.",
   "hn.pick": "Pilih…",
   "hn.how": "Cara jalanin",
   "hn.manual": "Manual",
