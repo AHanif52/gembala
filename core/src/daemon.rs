@@ -2415,6 +2415,8 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
     for sub in pane.view.lock().unwrap().1.drain(..) {
         let _ = sub.tx.try_send(ev.clone());
     }
+    // a tab whose xterm is detached (LIVE_TABS) has no subscriber here: without this its tab keeps a pane that's gone
+    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
 }
 
 impl State {
