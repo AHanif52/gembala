@@ -844,8 +844,23 @@ pub fn unpair(st: &State) -> Value {
     status(st)
 }
 
+/// the chat's command menu; sent at pairing and on every start of a paired bot, so commands added or changed in a newer
+/// version reach a chat paired before (10 Nov: the menu still showed the 8 Nov list)
+fn menu(b: &Bot) {
+    let list: [(&str, &str); 4] = if b.id_lang {
+        [("status", "semua pane"), ("ke", "[pane] [teks] — pilih pane aktif, atau kirim teks ke pane itu"), ("buka", "<agent> [pane] — nyalain agent di shell"), ("lihat", "<pane> — layar terbaru")]
+    } else {
+        [("status", "every pane"), ("to", "[pane] [text] — pick the active pane, or send text to it"), ("open", "<agent> [pane] — start an agent in a shell"), ("look", "<pane> — latest screen")]
+    };
+    let cmds: Vec<Value> = list.iter().map(|(c, d)| json!({"command": c, "description": d})).collect();
+    let _ = b.out.try_send(Out::Api("setMyCommands", json!({"commands": cmds})));
+}
+
 fn poll(st: Arc<State>, b: Arc<Bot>) {
     let _ = api(&b.token, "deleteWebhook", &json!({}), 15);
+    if b.linked().is_some() {
+        menu(&b);
+    }
     if b.bot.lock().unwrap().is_empty()
         && let Ok(me) = api(&b.token, "getMe", &json!({}), 15)
     {
@@ -1494,13 +1509,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             }
             *b.stamp.lock().unwrap() = mtime();
             *b.link.lock().unwrap() = Some(link);
-            let list: [(&str, &str); 4] = if id_l {
-                [("status", "semua pane"), ("ke", "<pane> — ganti pane aktif"), ("buka", "<agent> [pane] — nyalain agent di shell"), ("lihat", "<pane> — layar terbaru")]
-            } else {
-                [("status", "every pane"), ("to", "<pane> — switch the active pane"), ("open", "<agent> [pane] — start an agent in a shell"), ("look", "<pane> — latest screen")]
-            };
-            let cmds: Vec<Value> = list.iter().map(|(c, d)| json!({"command": c, "description": d})).collect();
-            let _ = b.out.try_send(Out::Api("setMyCommands", json!({"commands": cmds})));
+            menu(b);
             let host = Command::new("/usr/sbin/scutil").args(["--get", "ComputerName"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
             b.say(&format!("{} {}.\n\n{}", t(id_l, "linked"), esc(&host), esc(t(id_l, "help"))));
             b.set(st, "on", "");
