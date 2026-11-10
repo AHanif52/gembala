@@ -301,6 +301,8 @@ mod tests {
             let a: Vec<String> = a.into_iter().map(String::from).collect();
             assert_eq!(effective_policy(Policy::Auto, &a), Policy::Confirm, "{a:?}");
         }
+        // Codex auto mode (FR-64) is reviewer-gated like Claude's, so it keeps the set policy
+        assert_eq!(effective_policy(Policy::Auto, &["--approve-for-me".to_string()]), Policy::Auto);
     }
 
     #[test]

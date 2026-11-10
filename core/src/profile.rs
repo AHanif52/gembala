@@ -585,12 +585,13 @@ pub fn picker_flags(agent: &str) -> &'static [&'static str] {
 }
 
 /// FR-64: permission mode flags per agent (`--help` 2 Nov 2026). OpenCode has no flag for the TUI (`--auto` is only on `run`): empty.
-/// Codex stays sandboxed `workspace-write`; omp `yolo` still honors the user's `bash.patterns` rules.
+/// Codex `--approve-for-me` stays sandboxed `workspace-write`, escalations go to its auto reviewer (network included, 10 Nov 2026);
+/// omp `yolo` still honors the user's `bash.patterns` rules.
 pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
     let f: &[&str] = match (agent, permission) {
         ("claude", "auto") => &["--permission-mode", "auto"],
         ("omp", "auto") => &["--approval-mode=yolo"],
-        ("codex", "auto") => &["--ask-for-approval", "never", "--sandbox", "workspace-write"],
+        ("codex", "auto") => &["--approve-for-me"],
         _ => &[],
     };
     f.iter().map(|s| s.to_string()).collect()
@@ -822,7 +823,7 @@ mod tests {
         let auto = |a: &str| permission_flags(a, "auto").join(" ");
         assert_eq!(auto("claude"), "--permission-mode auto");
         assert_eq!(auto("omp"), "--approval-mode=yolo");
-        assert_eq!(auto("codex"), "--ask-for-approval never --sandbox workspace-write");
+        assert_eq!(auto("codex"), "--approve-for-me");
         assert!(permission_flags("opencode", "auto").is_empty() && permission_flags("claude", "default").is_empty());
         let p = Profile { permission: "auto".into(), ..builtin()[4].clone() };
         assert!(launch(&p, None, None, false).unwrap().contains("'omp' '--approval-mode=yolo' );"));
