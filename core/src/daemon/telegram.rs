@@ -331,8 +331,9 @@ fn keys(agent: &str) -> &'static [&'static str] {
     // buttons): initial selected is "once" so Enter approves at once; Right+Enter
     // moves to "always" and opens the "△ Always allow" confirmation stage whose
     // Enter confirms; Esc closes the dialog (no reason box in this version).
-    // omp 18.18.3, verified live: dialog is Approve/Deny only (no session
-    // option; Down+Enter would land on Deny), Enter approves, Esc denies.
+    // omp 18.18.3, verified live 10 Nov: bash dialog is Approve/Deny, the write
+    // dialog adds "Approve write for this session" in the middle; Enter approves
+    // once and Esc denies in both, so only those two are buttons (no Down+Enter).
     // Codex 0.167 numbered dialog (10 Nov screen): `› 1. Yes, proceed (y)`; a digit button sends the shortcut that row
     // shows in parentheses (codex_key), read again when pressed.
     // Claude numbered dialog: digits; Esc cancels.
@@ -348,42 +349,88 @@ fn choice(row: &str) -> Option<u8> {
 
 /// FR-84: buttons under a "needs you" message. None for the folder-trust dialog: trusting lets the folder run code, and
 /// Claude's first (unnumbered) option there is "No, exit", so it's answered on the Mac.
-fn blocked_keys(agent: &str, screen: &str, reason: &str) -> Vec<&'static str> {
+fn blocked_keys(agent: &str, screen: &str, reason: &str) -> Vec<(&'static str, String)> {
     if reason == claude::TRUST {
         Vec::new()
     } else if agent == "claude" || agent == "codex" {
         claude_keys(screen)
     } else {
-        keys(agent).to_vec()
+        keys(agent).iter().map(|k| (*k, match *k { "esc" => "Esc", "once" => "Allow once", "always" => "Always", _ => k }.to_string())).collect()
     }
 }
 
-/// Claude's dialog has 2 or 3 options: the lowest numbered row on screen is its last option (a numbered list in the
-/// answer above doesn't count); 3 when none is read
-fn claude_keys(screen: &str) -> Vec<&'static str> {
-    let n = screen.lines().rev().find_map(choice).unwrap_or(3).min(3) as usize;
-    ["1", "2", "3"][..n.max(1)].iter().copied().chain(["esc"]).collect()
+const DIGITS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+
+/// characters in front of a dialog row's text: spaces, the box edge, the cursor
+fn lead(row: &str) -> usize {
+    row.chars().take_while(|c| c.is_whitespace() || matches!(c, '│' | '❯' | '›')).count()
 }
 
-/// a Codex option row starts at `› ` or two spaces; a wrapped option continues deeper (`     1. arg` is not option 1)
-fn codex_opt(row: &str) -> Option<u8> {
-    let lead = row.chars().take_while(|c| c.is_whitespace() || *c == '›').count();
-    choice(row).filter(|_| lead <= 2)
+/// Claude / Codex numbered dialog: the option labels from the last `1.` down, wrapped rows (drawn deeper) joined. None when
+/// the numbers don't run 1, 2, 3… (a list in the answer above, a dialog half drawn): nothing is offered or sent then.
+/// Recorded screens: `core/tests/dialogs/` (TECH 22, agent dialogs of 10 Nov 2026).
+fn dialog_opts(screen: &str) -> Option<Vec<String>> {
+    let rows: Vec<&str> = screen.lines().collect();
+    let first = rows.iter().rposition(|r| choice(r) == Some(1) && lead(r) <= 4)?;
+    let at = lead(rows[first]);
+    let mut opts: Vec<String> = Vec::new();
+    for r in &rows[first..] {
+        if r.trim().is_empty() {
+            break;
+        }
+        match (lead(r), choice(r)) {
+            (l, Some(n)) if l == at => {
+                if n as usize != opts.len() + 1 {
+                    return None;
+                }
+                opts.push(r.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '│' | '❯' | '›')).split_once(". ")?.1.trim().to_string());
+            }
+            (l, _) if l > at && !opts.is_empty() => {
+                let last = opts.last_mut()?;
+                *last = format!("{last} {}", r.trim().trim_end_matches('│').trim());
+            }
+            _ => break,
+        }
+    }
+    (!opts.is_empty()).then_some(opts)
+}
+
+/// options that change how the agent asks from then on: Claude 2.1.311 "Yes, and switch to auto mode" (3 of 4 in a Bash
+/// dialog, so a "3" button used to turn on auto mode), "switch to accept edits"; never a button, answered on the Mac
+fn switches_mode(label: &str) -> bool {
+    let l = label.to_lowercase();
+    ["auto mode", "accept edits", "switch to", "bypass", "yolo", "full access", "dangerously"].iter().any(|w| l.contains(w))
+}
+
+/// FR-80, FR-99 P2: one button per option read on screen, labelled with its own words, except mode switches; plus Esc.
+/// Nothing read = Esc only (rule 9 BRD 11: an unknown dialog is answered on the Mac, never by guessing a number).
+fn claude_keys(screen: &str) -> Vec<(&'static str, String)> {
+    let opts = dialog_opts(screen).unwrap_or_default();
+    let mut v: Vec<(&'static str, String)> = opts
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| *i < DIGITS.len() && !switches_mode(l))
+        .map(|(i, l)| (DIGITS[i], format!("{}. {}", i + 1, short(l, 28))))
+        .collect();
+    v.push(("esc", "Esc".into()));
+    v
+}
+
+/// pressing digit `n` now: still a numbered option on the current screen, and not a mode switch
+fn digit_ok(screen: &str, n: usize) -> bool {
+    dialog_opts(screen).and_then(|o| o.get(n.wrapping_sub(1)).cloned()).is_some_and(|l| !switches_mode(&l))
+}
+
+fn short(s: &str, n: usize) -> String {
+    if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n - 1).collect::<String>()) }
 }
 
 /// Codex option `n` (may wrap over several rows) -> the shortcut it shows last in parentheses: `(y)` -> y, `(esc)` -> Esc;
 /// none = nothing is sent, also when the options from the last `1.` down aren't numbered 1, 2, 3… (misread dialog)
 fn codex_key(screen: &str, n: u8) -> Option<Vec<u8>> {
-    let rows: Vec<&str> = screen.lines().collect();
-    let first = rows.iter().rposition(|r| codex_opt(r) == Some(1))?;
-    let opts: Vec<(usize, u8)> = rows.iter().enumerate().skip(first).filter_map(|(i, r)| codex_opt(r).map(|k| (i, k))).collect();
-    if opts.iter().enumerate().any(|(j, &(_, k))| k as usize != j + 1) {
+    let opt = dialog_opts(screen)?.get((n as usize).checked_sub(1)?)?.clone();
+    if switches_mode(&opt) {
         return None;
-    }
-    let i = opts.iter().find(|&&(_, k)| k == n)?.0;
-    let mut opt = rows[i].trim().to_string();
-    for r in rows[i + 1..].iter().take_while(|r| !r.trim().is_empty() && codex_opt(r).is_none()) {
-        opt = format!("{opt} {}", r.trim());
     }
     let s = opt.strip_suffix(')')?;
     match &s[s.rfind('(')? + 1..] {
@@ -398,6 +445,12 @@ fn key_bytes(key: &str) -> &'static [u8] {
         "1" => b"1",
         "2" => b"2",
         "3" => b"3",
+        "4" => b"4",
+        "5" => b"5",
+        "6" => b"6",
+        "7" => b"7",
+        "8" => b"8",
+        "9" => b"9",
         "once" => b"\r",
         // "always" (OpenCode) needs the confirmation gate and is written by the
         // In::Key arm, not here; falling through to Esc would be a lie, so it
@@ -416,7 +469,7 @@ fn cb_parse(d: &str) -> Option<(u64, u64, String)> {
         return None;
     }
     let (pane, seq, key) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?);
-    (it.next().is_none() && ["1", "2", "3", "once", "always", "esc"].contains(&key)).then(|| (pane, seq, key.to_string()))
+    (it.next().is_none() && (DIGITS.contains(&key) || ["once", "always", "esc"].contains(&key))).then(|| (pane, seq, key.to_string()))
 }
 
 /// Update -> what to do. Only the bound private chat counts (SEC-36); while pairing only `/start <code>`.
@@ -1257,7 +1310,7 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     if let Kind::Blocked(seq) = kind {
         let reason = pane.claude.lock().unwrap().reason.clone();
         let ks = blocked_keys(&agent, &pane.view.lock().unwrap().0.text(), &reason);
-        let row: Vec<Value> = ks.iter().map(|k| json!({"text": match *k { "esc" => "Esc", "once" => "Allow once", "always" => "Always", _ => k }, "callback_data": cb_data(id, seq, k)})).collect();
+        let row: Vec<Value> = ks.iter().map(|(k, label)| json!({"text": label, "callback_data": cb_data(id, seq, k)})).collect();
         if !row.is_empty() {
             body["reply_markup"] = json!({"inline_keyboard": [row]});
         }
@@ -1672,6 +1725,11 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                     let screen = p.view.lock().unwrap().0.text();
                     k.parse().ok().and_then(|n| codex_key(&screen, n)).is_some_and(|bytes| type_into(st, id, p, &bytes).is_ok())
                 }
+                // Claude digit: re-read the dialog now; the option must still be there and not switch the permission mode
+                (Some(p), k) if k != "esc" && p.agent_name().as_deref() == Some("claude") => {
+                    let screen = p.view.lock().unwrap().0.text();
+                    k.parse().is_ok_and(|n| digit_ok(&screen, n)) && type_into(st, id, p, key_bytes(k)).is_ok()
+                }
                 (Some(p), _) => type_into(st, id, p, key_bytes(&key)).is_ok(),
                 _ => false,
             };
@@ -1753,6 +1811,35 @@ fn status_body(mut rows: Vec<WsRows>, id_l: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ks(v: Vec<(&'static str, String)>) -> Vec<&'static str> {
+        v.into_iter().map(|(k, _)| k).collect()
+    }
+
+    /// dialogs recorded from the real agents on 10 Nov 2026 (research/agent-dialogs, home path replaced): the buttons come
+    /// from the options on screen, a mode switch never gets one, and No is always reachable
+    #[test]
+    fn recorded_dialogs() {
+        let dlg = |f: &str| std::fs::read_to_string(format!("{}/tests/dialogs/{f}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        // Claude 2.1.311 Bash: 1 Yes, 2 always allow folder, 3 switch to auto mode, 4 No. "3" used to turn on auto mode.
+        let bash = dlg("claude-2.1.311-bash-k3");
+        let b = claude_keys(&bash);
+        assert_eq!(ks(b.clone()), ["1", "2", "4", "esc"]);
+        assert_eq!(b[2].1, "4. No");
+        assert!(!digit_ok(&bash, 3) && digit_ok(&bash, 4) && digit_ok(&bash, 1));
+        // Write: option 2 switches to accept edits; outside the folder it wraps over two rows
+        assert_eq!(ks(claude_keys(&dlg("claude-2.1.311-write-k1"))), ["1", "3", "esc"]);
+        assert_eq!(ks(claude_keys(&dlg("claude-2.1.311-outside-k1"))), ["1", "3", "esc"]);
+        assert_eq!(ks(claude_keys(&dlg("claude-2.1.311-fetch-esc"))), ["1", "2", "3", "esc"]);
+        // Codex 0.167: the shortcut letters per dialog (p for a command, a for edits)
+        let net = dlg("codex-0.167.0-net-y");
+        assert_eq!(ks(claude_keys(&net)), ["1", "2", "3", "esc"]);
+        assert_eq!((codex_key(&net, 1), codex_key(&net, 2), codex_key(&net, 3)), (Some(b"y".to_vec()), Some(b"p".to_vec()), Some(b"\x1b".to_vec())));
+        assert_eq!(codex_key(&dlg("codex-0.167.0-outside-a"), 2), Some(b"a".to_vec()));
+        // a digit pressed after the dialog is gone sends nothing
+        assert!(!digit_ok("● Done.", 1));
+        assert_eq!(cb_parse(&cb_data(3, 9, "4")), Some((3, 9, "4".into())));
+    }
 
     fn link() -> Link {
         Link { token: "1:x".into(), chat: 42, user: 7, name: "R".into() }
@@ -1937,7 +2024,7 @@ mod tests {
         assert_eq!(keys("codex"), &["1", "2", "3", "esc"]);
         // Codex 0.167 dialog as drawn 10 Nov: option 2 wraps, the shortcut is on its last row
         let codex = "  $ bash jam-bukti.sh out\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `bash\n     jam-bukti.sh out` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel";
-        assert_eq!(claude_keys(codex), ["1", "2", "3", "esc"]);
+        assert_eq!(ks(claude_keys(codex)), ["1", "2", "3", "esc"]);
         assert_eq!(codex_key(codex, 1).as_deref(), Some(&b"y"[..]));
         assert_eq!(codex_key(codex, 2).as_deref(), Some(&b"p"[..]));
         assert_eq!(codex_key(codex, 3).as_deref(), Some(&b"\x1b"[..]));
@@ -2019,15 +2106,16 @@ mod tests {
         let ask = ["❯ cek monitoring", "● Bash(curl -s https://x)", "Bash command", "  curl -s https://x", "Do you want to proceed?",
             "❯ 1. Yes", "  2. No", "", "Esc to cancel · Tab to amend"];
         assert_eq!(turn_start(&ask, None), 0);
-        assert_eq!(claude_keys(&ask.join("\n")), ["1", "2", "esc"]);
-        assert_eq!(claude_keys("│ ❯ 1. Yes\n│   2. Yes, and don't ask again\n│   3. No, and tell Claude (esc)"), ["1", "2", "3", "esc"]);
-        assert_eq!(claude_keys("no dialog read"), ["1", "2", "3", "esc"]);
-        assert_eq!(claude_keys("1. a\n2. b\n3. c\n4. d\n❯ 1. Yes\n  2. No\nEsc to cancel"), ["1", "2", "esc"]);
+        assert_eq!(ks(claude_keys(&ask.join("\n"))), ["1", "2", "esc"]);
+        assert_eq!(ks(claude_keys("│ ❯ 1. Yes\n│   2. Yes, and don't ask again\n│   3. No, and tell Claude (esc)")), ["1", "2", "3", "esc"]);
+        // nothing read = Esc only: never guess a number (rule 9 BRD 11)
+        assert_eq!(ks(claude_keys("no dialog read")), ["esc"]);
+        assert_eq!(ks(claude_keys("1. a\n2. b\n3. c\n4. d\n❯ 1. Yes\n  2. No\nEsc to cancel")), ["1", "2", "esc"]);
         // FR-84: a folder-trust dialog gets no buttons (answered on the Mac); a permission dialog keeps them
         let trust = " Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel";
         assert!(blocked_keys("claude", trust, claude::TRUST).is_empty());
         assert!(blocked_keys("codex", "› 1. Trust and continue\n  2. Back\n  enter continue · esc back", claude::TRUST).is_empty());
-        assert_eq!(blocked_keys("claude", &ask.join("\n"), "minta izin"), ["1", "2", "esc"]);
+        assert_eq!(ks(blocked_keys("claude", &ask.join("\n"), "minta izin")), ["1", "2", "esc"]);
         assert_eq!(choice("❯ halo"), None);
         assert_eq!(choice("2026. tahun"), None);
         // omp: banner, older prompt, the phone's prompt, answer, stats row, input box

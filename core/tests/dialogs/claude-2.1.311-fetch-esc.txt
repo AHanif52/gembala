@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.311
+▝▜██████▀  Opus 5.5 with high effort · Claude Team
+ ▝▝   ▝▝   /private/tmp/gk-dialog/claude/fetch-esc
+
+
+❯ Use the WebFetch tool to fetch https://example.com and tell me its title. Do nothing else.
+
+  Fetch(https://example.com)
+  ⎿  Fetching…
+     (ctrl+b to run in background)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Fetch · from the web-fetch agent
+ Claude wants to fetch content from example.com
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ url: https://example.com/
+ │ prompt: Return the exact text content of the HTML <title> element from the page source. Output only the title text verbatim, nothing
+ │ else.
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to allow Claude to fetch this content?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for example.com
+   3. No, and tell Claude what to do differently (esc)

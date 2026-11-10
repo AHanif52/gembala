@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.311
+▝▜██████▀  Opus 5.5 with high effort · Claude Team
+ ▝▝   ▝▝   /private/tmp/gk-dialog/claude/outside-k1
+
+
+❯ Use the Write tool to create the file /Users/demo/.gk-dialog-test/claude-outside.txt containing the word hi. Do nothing
+  else.
+
+⏺ Write(~/.gk-dialog-test/claude-outside.txt)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Create file
+ ../../../../../Users/demo/.gk-dialog-test/claude-outside.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  1 hi
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to create claude-outside.txt?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session; Yes, and always allow access to
+      /Users/demo/.gk-dialog-test for this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend
