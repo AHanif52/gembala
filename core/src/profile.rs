@@ -45,9 +45,9 @@ pub struct Profile {
 /// Install commands checked against how they were installed on the dev machine 1 Nov 2026; codex not yet (TECH section 7).
 const AGENTS: &[(&str, &str, &str, &str, &str)] = &[
     ("claude", "Claude Code", "claude", "brew install --cask claude-code", "2.1"),
-    ("codex", "Codex", "codex", "npm install -g @openai/codex", "0.166"),
+    ("codex", "Codex", "codex", "npm install -g @openai/codex", "0.167"),
     ("opencode", "OpenCode", "opencode", "brew install anomalyco/tap/opencode", "1.19"),
-    ("omp", "Oh My Pi", "omp", "brew install can1357/tap/omp", "18.16"),
+    ("omp", "Oh My Pi", "omp", "brew install can1357/tap/omp", "18.18"),
 ];
 
 /// agent kinds Gembala knows (recipes name agents by these)
