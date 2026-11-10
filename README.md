@@ -18,6 +18,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="macOS">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Alpha">
+  <img src="https://img.shields.io/badge/written%20in-Rust-dea584?logo=rust&logoColor=white" alt="Written in Rust">
 </p>
 
 ---
