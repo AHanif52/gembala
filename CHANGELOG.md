@@ -2,6 +2,15 @@
 
 `scripts/rilis.sh` puts the section of the version being released on its GitHub release page.
 
+## 0.1.8
+
+- Safety fix for Telegram permission buttons: Claude Code 2.1.311 asks with 4 options in a Bash dialog, and button "3" used to switch the session to auto mode. Buttons now come from the options on screen with their own words ("4. No"); options that change the permission mode never get a button, and an unknown dialog only gets Esc.
+- First start asks "Do you usually use a terminal?" and picks Simple or Full mode (Settings › General). Simple uses everyday words and folds technical details.
+- "+ Ask an agent" (⌘N) at the top of the sidebar. The welcome card opens each agent you have, or helps install one (types the install command into a new terminal tab for you to run).
+- A sentence typed into the terminal by mistake ("command not found") offers to send it to an agent instead.
+- The Ask an agent dialog starts with "I steer" for new users and shows agents by name.
+- Approval cards in a pane stack instead of covering each other; the message drawer can answer "open an agent" requests too.
+
 ## 0.1.7
 
 - Agents can close the helper panes they opened (`gembala close <pane>`), and a helper that sits idle 15 minutes after its reply closes by itself (Settings › General). Fewer idle agents eating RAM.

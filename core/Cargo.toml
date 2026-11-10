@@ -1,6 +1,6 @@
 [package]
 name = "gembala"
-version = "0.1.7"
+version = "0.1.8"
 description = "Daemon PTY + CLI Gembala (satu binary)"
 edition = "2024"
 
