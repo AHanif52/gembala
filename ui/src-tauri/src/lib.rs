@@ -44,6 +44,7 @@ const PANE_KEYS: &[(&str, &str)] = &[
 /// Menu "Tab" (FR-52, FR-39 default Warp).
 const TAB_KEYS: &[(&str, &str)] = &[
     ("tab.new", "Cmd+T"),
+    ("task.new", "Cmd+N"), // FR-73, FR-99 P1: "+ Suruh agent"
     ("tab.prev", "Cmd+Shift+["),
     ("tab.next", "Cmd+Shift+]"),
     ("tab.goto.1", "Cmd+1"),

@@ -596,7 +596,8 @@
 <div class="veil" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>
   <div class="modal" role="dialog" aria-label={t("set.title")}>
     <nav>
-      {#each SECTIONS as k}
+      <!-- FR-97: Simple mode keeps the machine-room pages out of the menu (still reachable by switching to Full) -->
+      {#each SECTIONS.filter((k) => ui.mode !== "simple" || !["proses", "diagnostik"].includes(k)) as k}
         <button class:on={k === sec} onclick={() => ((sec = k), (agentPage = "main"))}>{t(`set.nav.${k}`)}</button>
       {/each}
     </nav>
@@ -615,6 +616,14 @@
 
       {#if sec === "umum"}
         <section>
+          <!-- FR-97: who the screens are written for; only the wording and folding change, never a safeguard -->
+          <div class="row">
+            <span>{t("set.general.mode")}<small>{t("set.general.modeSub")}</small></span>
+            <select aria-label={t("set.general.mode")} value={ui.mode === "simple" ? "simple" : "full"} onchange={(e) => set("mode", e.currentTarget.value as Ui["mode"])}>
+              <option value="simple">{t("set.general.modeSimple")}</option>
+              <option value="full">{t("set.general.modeFull")}</option>
+            </select>
+          </div>
           <div class="row">
             <span>{t("set.general.language")}<small>{t("set.general.languageSub")}</small></span>
             <select aria-label={t("set.general.language")} value={ui.language ?? "system"} onchange={(e) => set("language", e.currentTarget.value as Ui["language"])}>

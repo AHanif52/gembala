@@ -85,6 +85,7 @@ const TEXT: &[(&str, &str, &str)] = &[
     ("pane.proc.kill", "Stop Process", "Hentikan Proses"),
     ("pane.proc.close", "Close Pane", "Tutup Pane"),
     ("tab.new", "New Tab from Profile…", "Tab Baru dari Profil…"),
+    ("task.new", "Ask an Agent…", "Suruh Agent…"),
     ("tab.prev", "Previous Tab", "Tab Sebelumnya"),
     ("tab.next", "Next Tab", "Tab Berikutnya"),
     ("tab.goto.1", "Tab 1", "Tab 1"),

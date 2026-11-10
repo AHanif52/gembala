@@ -28,6 +28,8 @@ use Kind::*;
 const UI: &[(&str, Kind)] = &[
     // BRD 11: system = first of id/en in the macOS language list, else English (TECH 20)
     ("language", Enum(&["system", "id", "en"], "system")),
+    // FR-97: simple = everyday words, technical fields folded; full = everything; ask = not answered yet (asked once)
+    ("mode", Enum(&["ask", "simple", "full"], "ask")),
     ("theme", Enum(&["system", "light", "dark"], "system")),
     ("font_family", Str("Hack")),
     ("font_size", Int(8, 32, 13)),
@@ -586,6 +588,14 @@ mod tests {
         for want in ["ui.font_size", "ui.theme", "ui.warna", "cmd+y"] {
             assert!(all.contains(want), "{want} tidak ditandai: {all}");
         }
+    }
+
+    #[test]
+    fn mode_enum() {
+        // FR-97: not answered = asked once; anything unknown falls back to asking, never to a mode the user didn't pick
+        assert_eq!(load(None).values["ui"]["mode"], "ask");
+        assert_eq!(load(Some("[ui]\nmode = \"simple\"\n")).values["ui"]["mode"], "simple");
+        assert_eq!(load(Some("[ui]\nmode = \"expert\"\n")).values["ui"]["mode"], "ask");
     }
 
     #[test]

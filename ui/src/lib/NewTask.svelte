@@ -13,6 +13,9 @@
     cwd,
     brief,
     agents,
+    simple = false,
+    names = {},
+    ontemplate,
     onclose,
     onstarted,
     onmanual,
@@ -21,6 +24,12 @@
     cwd: string;
     brief?: string;
     agents: string[];
+    /// FR-97: everyday words, folder by name, technical fields folded
+    simple?: boolean;
+    /// agent kind -> shown name with its glyph ("✳ Claude Code"), never the raw id
+    names?: Record<string, string>;
+    /// FR-99 P1 / P4: "Kerja bareng beberapa agent" opens the role template dialog
+    ontemplate?: () => void;
     onclose: () => void;
     onstarted: (snap: any) => void;
     onmanual: (o: { agent: string; task: string; cwd: string }) => void;
@@ -40,7 +49,8 @@
   let task = $state("");
   // svelte-ignore state_referenced_locally
   let folder = $state(cwd);
-  let mode = $state<"manual" | "harness">(saved.mode === "manual" ? "manual" : "harness");
+  // FR-99 P1: a new user starts by hand; the last choice is kept per workspace after that
+  let mode = $state<"manual" | "harness">(saved.mode === "harness" ? "harness" : "manual");
   // svelte-ignore state_referenced_locally
   let agent = $state<string>(agents.includes(saved.agent) ? saved.agent : (agents[0] ?? ""));
   let recipeId = $state<string>(saved.recipe ?? "");
@@ -63,7 +73,7 @@
   });
 
   async function load() {
-    rows = (await call("recipe.list")) as Row[];
+    rows = ((await call("recipe.list")) as Row[] | null) ?? [];
     if (!rows.some((r) => r.id === recipeId)) recipeId = (rows.find((r) => r.status === "approved") ?? rows[0])?.id ?? "";
   }
   load().catch((e) => (error = errText(e)));
@@ -129,31 +139,36 @@
 
 <div class="veil" role="presentation" onmousedown={onclose}></div>
 <div class="card" role="dialog" aria-label={t("hn.title")} aria-modal="true">
-  <div class="head"><b>{t("hn.title")}</b><span class="m">{ws.name}</span></div>
+  <div class="head"><b>{t("hn.title")}</b><span class="m">{simple ? t("hn.inProject", { name: ws.name }) : t("hn.inWs", { name: ws.name })}</span></div>
 
-  <textarea rows="5" bind:value={task} placeholder={t("hn.taskPlaceholder")} aria-label={t("hn.task")}></textarea>
+  <textarea rows="5" bind:value={task} placeholder={simple ? t("hn.taskPlaceholderS") : t("hn.taskPlaceholder")} aria-label={t("hn.task")}></textarea>
 
   <label class="line">
     <span class="lab">{t("hn.folder")}</span>
-    <input class="grow mono" bind:value={folder} spellcheck="false" />
+    {#if simple}
+      <!-- FR-99 P1: the folder by its name; the full path stays in the tooltip -->
+      <span class="grow" title={folder}>{folder.split("/").filter(Boolean).pop() ?? folder}</span>
+    {:else}
+      <input class="grow mono" bind:value={folder} spellcheck="false" />
+    {/if}
     <button class="mini" onclick={pickFolder}>{t("hn.pick")}</button>
   </label>
   <!-- FR-84: whether a folder is trusted lives in the agent's own config (SEC-15), so it's a reminder, not a check -->
-  <p class="hint">{t("hn.trustHint")}</p>
+  <p class="hint">{simple ? t("hn.trustHintS") : t("hn.trustHint")}</p>
 
   <div class="seg" role="radiogroup" aria-label={t("hn.how")}>
-    <button role="radio" aria-checked={mode === "manual"} class:on={mode === "manual"} onclick={() => (mode = "manual")}>{t("hn.manual")}</button>
-    <button role="radio" aria-checked={mode === "harness"} class:on={mode === "harness"} onclick={() => (mode = "harness")}>{t("hn.harness")}</button>
+    <button role="radio" aria-checked={mode === "manual"} class:on={mode === "manual"} onclick={() => (mode = "manual")}>{simple ? t("hn.manualS") : t("hn.manual")}</button>
+    <button role="radio" aria-checked={mode === "harness"} class:on={mode === "harness"} onclick={() => (mode = "harness")}>{simple ? t("hn.harnessS") : t("hn.harness")}</button>
   </div>
 
   {#if mode === "manual"}
     <label class="line">
       <span class="lab">{t("hn.agent")}</span>
       <select bind:value={agent}>
-        {#each agents as a (a)}<option value={a}>{a}</option>{/each}
+        {#each agents as a (a)}<option value={a}>{names[a] ?? a}</option>{/each}
       </select>
     </label>
-    <p class="hint">{t("hn.manualWhen")}</p>
+    <p class="hint">{simple ? t("hn.manualWhenS") : t("hn.manualWhen")}</p>
   {:else}
     <label class="line">
       <span class="lab">{t("hn.recipe")}</span>
@@ -189,9 +204,10 @@
   {/if}
 
   {#if error}<div class="bad" role="alert">{error}</div>{/if}
+  {#if ontemplate}<button class="link" onclick={ontemplate}>{simple ? t("hn.teamS") : t("hn.team")}</button>{/if}
   <div class="acts">
     <button class="mini" onclick={onclose}>{t("hn.cancel")} <span class="k">Esc</span></button>
-    <button class="mini go" disabled={!ready || busy} onclick={go}>{mode === "manual" ? t("hn.startManual") : t("hn.startHarness")} <span class="k">⌘↩</span></button>
+    <button class="mini go" disabled={!ready || busy} onclick={go}>{t("hn.start")} <span class="k">⌘↩</span></button>
   </div>
 
   {#if review}
@@ -208,6 +224,19 @@
 </div>
 
 <style>
+  .link {
+    align-self: flex-start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .link:hover {
+    color: var(--fg);
+  }
   .veil {
     position: absolute;
     inset: 0;

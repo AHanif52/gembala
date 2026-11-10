@@ -153,6 +153,10 @@
   let outputOf = $state<number | null>(null); // FR-56
 
   const ui = $derived(cfg?.values.ui ?? UI_DEFAULT);
+  /// FR-97: everyday words and folded technical fields; the question is asked once while the mode is "ask"
+  const simple = $derived(ui.mode === "simple");
+  const askMode = $derived(!!cfg && ui.mode === "ask");
+  const setMode = (m: "simple" | "full") => call("config.set", { section: "ui", key: "mode", value: m }).catch(() => {});
   const ws = $derived(wss[at.ws]);
   const tab = $derived(ws?.tabs[at.tab]);
   // saves RAM/CPU: xterm only for the active tab + the last 3 opened; other tabs are detached (the daemon keeps the panes),
@@ -386,6 +390,44 @@
   async function startInFolder(pane: number) {
     const path = await invoke<string | null>("pick_folder").catch(() => null);
     if (path) toShell(pane, `cd ${quote(path)}`, true);
+  }
+
+  /// FR-99 P1: "Buka Claude Code" on the welcome card = the Start panel's pane becomes that agent, or a new tab
+  async function openAgent(agent: string) {
+    const p = (cfg?.values.profiles ?? []).find((x) => x.agent === agent);
+    if (!p) return;
+    welcome = null;
+    if (startHere !== null) await swapToProfile(startHere, p.id);
+    else await newTab(p.id);
+  }
+  /// official install guide per agent (opened through the SEC-14 link check like any link)
+  const GUIDE: Record<string, string> = {
+    claude: "https://code.claude.com/docs/en/overview",
+    codex: "https://github.com/openai/codex",
+    omp: "https://github.com/can1357/oh-my-pi",
+    opencode: "https://opencode.ai/docs",
+  };
+  let installing = $state(false);
+  async function redetect() {
+    welcome = await call("agents.detect", {}).catch(() => welcome);
+    if (welcome?.some((a) => a.installed)) installing = false;
+  }
+  /// FR-99 P1: a terminal tab "Pasang <agent>" with the install command typed but not run: the user reads it and presses Enter.
+  /// Detection runs again every 5 s while the welcome card waits (ponytail: polling; hook it to the block's exit if it gets in the way).
+  async function installInTerminal(a: Agent) {
+    const id = await newTab();
+    const t = ws?.tabs.find((x) => panes(x.tree).includes(id));
+    if (t) t.title = tt("wel.installTab", { name: a.name });
+    if (editorShown(id)) draft[id] = a.install;
+    else toShell(id, a.install, false);
+    if (installing) return;
+    installing = true;
+    const until = Date.now() + 10 * 60_000;
+    while (installing && welcome && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 5000));
+      await redetect();
+    }
+    installing = false;
   }
 
   /// FR-59: attachments in the editor = quoted paths inserted into the text (+ button, file drag, ⌘V image)
@@ -1145,6 +1187,7 @@
     }
     // actions without a tab: a workspace may be empty (FR-44)
     if (id === "tab.new") return void openPicker();
+    if (id === "task.new") return void (newTask = true);
     if (id === "tab.sidebar") return void (sidebar = !sidebar);
     if (id === "tab.search") return void openPalette();
     if (id === "tab.prev") return goto((cur + order.length - 1) % order.length);
@@ -1605,7 +1648,12 @@
       if (e.key === "Escape") wsAsk = null;
       return stop(e);
     }
-    if (welcome && (e.key === "Escape" || e.key === "Enter")) {
+    // FR-97: Esc = Full mode, never asked again (user decision 10 Nov 2026); Enter does nothing, a choice is a click
+    if (askMode) {
+      if (e.key === "Escape") setMode("full");
+      return stop(e);
+    }
+    if (welcome && e.key === "Escape") {
       welcome = null;
       return stop(e);
     }
@@ -2251,7 +2299,8 @@
       <span class="fl"><svg class="pfind" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>{tt("side.find")}</span>
       <span class="n">⌘P</span>
     </button>
-    <button class="add" onclick={() => (newTask = true)}>{tt("hn.newTask")}</button>
+    <!-- FR-99 P1: the main door, framed and named after what happens (not a "New task" label that reads like a to-do) -->
+    <button class="add ask" onclick={() => (newTask = true)}><span>+ {tt("hn.newTask")}</span><span class="n">⌘N</span></button>
     {#if ws && runs[ws.id]}
       <button class="add" onclick={() => ((drawer = false), (flow = !flow))}>
         {runLive(runs[ws.id]) ? "● " : ""}{runs[ws.id].name} · {tOr(`hn.state.${runs[ws.id].state}`, runs[ws.id].state)}
@@ -2273,7 +2322,6 @@
         <div class="qhint">{tt("side.nextHint", { key: pretty("Cmd+Shift+U") })}</div>
       </div>
     {/if}
-    <button class="add wsnew" onclick={addWorkspace}>+ Workspace</button>
     {#each wss as w, wi (w.id)}
       <!-- FR-44: click the title = expand/collapse; rename through right click or the palette -->
       {@const liftWs = dragging?.kind === "ws" && dragging.wi === wi}
@@ -2337,6 +2385,8 @@
       {/each}
       </div>
     {/each}
+    <!-- FR-99 P1: used rarely, so it sits quietly under the list -->
+    <button class="add wsnew" onclick={addWorkspace}>+ {simple ? tt("side.addProject") : "Workspace"}</button>
     {#if dragging}<div class="dropline" style:top="{dragging.line.top}px" style:left="{dragging.line.left}px" style:width="{dragging.line.width}px"></div>{/if}
     <!-- pen 02/11: Settings + bell pinned to the sidebar foot -->
     <div class="sidefoot">
@@ -2498,8 +2548,9 @@
             {#if ed && !ran[pane] && !draft[pane]}
               <!-- FR-59: Start panel: gone once a command runs or typing starts -->
               <div class="start" class:withhead={head}>
-                {#if welcome && pane === startHere}{@render welcomeCard("wcard")}{/if}
-                <div class="scol">
+                {#if welcome && !askMode && pane === startHere}{@render welcomeCard("wcard")}{/if}
+                <!-- FR-99 P1: the welcome card already holds the agent buttons and the folder: no second set under it -->
+                <div class="scol" class:gone={welcome && !askMode && pane === startHere}>
                   <span class="wm">{tt("start.title")}</span>
                   {#if startProfiles.length}
                     <div class="starts">
@@ -2782,6 +2833,9 @@
       cwd={absPath(meta[tab?.focus ?? -1]?.cwd ?? ws.root)}
       brief={ws.brief}
       agents={installed}
+      {simple}
+      names={Object.fromEntries((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell").map((p) => [p.agent, `${GLYPH[p.agent] ?? ""} ${p.name}`.trim()]))}
+      ontemplate={() => ((newTask = false), openTemplate())}
       onclose={() => (newTask = false)}
       onstarted={(s: Snap) => {
         newTask = false;
@@ -2852,23 +2906,61 @@
     </div>
   {/if}
   {#snippet welcomeCard(cls: string)}
-    <!-- FR-43 / pen 01: found agents with their version, then the three things people use most -->
+    <!-- FR-43 / FR-99 P1: every agent found is a button that opens it; none found = how to install each (no fake "Start") -->
     {@const found = (welcome ?? []).filter((a) => a.installed)}
     <div class="{cls} welcome" role="dialog" aria-label={tt("wel.aria")}>
-      <b class="wtitle">{tt("wel.title")}</b>
-      <span class="wm">{found.length ? tt("wel.found") : tt("wel.none")}</span>
-      {#each found as a (a.agent)}
-        <span class="wrow"><span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span>{a.name}<span class="wver" class:untested={!a.tested}>{a.version ?? ""}{a.tested ? "" : ` · ${tt("set.agent.notTried")}`}</span></span>
-      {/each}
-      <span class="wm">{tt("wel.three")}</span>
-      <span class="wrow"><kbd class="wkey">⌘P</kbd>{tt("wel.p")}</span>
-      <span class="wrow"><kbd class="wkey">{tt("wel.boxKey")}</kbd>{tt("wel.box")}</span>
-      <span class="wrow"><kbd class="wkey">@@</kbd>{tt("wel.at")}</span>
-      <span class="acts"><button class="mini pri" onclick={() => (welcome = null)}>{tt("wel.start")}</button></span>
+      <span class="whead">
+        <b class="wtitle">{found.length ? (simple ? tt("wel.ask") : tt("wel.found")) : tt("wel.noneTitle")}</b>
+        <button class="mini wx" aria-label={tt("common.close")} onclick={() => (welcome = null)}>×</button>
+      </span>
+      {#if found.length}
+        {#if simple}<span class="wm">{tt("wel.askSub")}</span>{/if}
+        {#each found as a, i (a.agent)}
+          <button class="wopen" class:pri={i === 0} onclick={() => openAgent(a.agent)}
+            ><span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span>{tt("wel.open", { name: a.name })}{#if !simple}<span class="wver" class:untested={!a.tested}
+                >{a.version ?? ""}{a.tested ? "" : ` · ${tt("set.agent.notTried")}`}</span
+              >{/if}</button
+          >
+        {/each}
+        {#if startHere !== null}
+          <!-- FR-99 P1: where the agent will work, instead of the Start panel's folder chip -->
+          {@const dir = meta[startHere]?.cwd ?? ""}
+          <span class="wrow wdir" title={dir}>{tt("wel.folder", { name: dir.split("/").filter(Boolean).pop() ?? "~" })}<button class="mini" onclick={() => startHere !== null && startInFolder(startHere)}>{tt("hn.pick")}</button></span>
+        {/if}
+        {#if !simple}
+          <span class="wrow"><kbd class="wkey">⌘P</kbd>{tt("wel.p")}</span>
+          <span class="wrow"><kbd class="wkey">{tt("wel.boxKey")}</kbd>{tt("wel.box")}</span>
+          <span class="wrow"><kbd class="wkey">@@</kbd>{tt("wel.at")}</span>
+        {/if}
+      {:else}
+        <span class="wm">{tt("wel.noneSub")}</span>
+        {#each welcome ?? [] as a, i (a.agent)}
+          {@render installRow(a, i === 0)}
+        {/each}
+        <span class="acts"><button class="mini" onclick={redetect}>{installing ? tt("wel.checking") : tt("wel.recheck")}</button></span>
+      {/if}
     </div>
   {/snippet}
+  <!-- FR-99 P1: one agent that isn't installed: type its install command into a new terminal tab (the user presses Enter), copy it, or read the official guide -->
+  {#snippet installRow(a: Agent, first: boolean)}
+    <span class="wrow inst">
+      <span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span><span class="grow">{a.name}{#if !simple}<code class="wcmd">{a.install}</code>{/if}</span>
+      <button class="mini" class:pri={first} disabled={!a.install} onclick={() => installInTerminal(a)}>{tt("wel.install")}</button>
+      <button class="mini" disabled={!a.install} onclick={() => navigator.clipboard?.writeText(a.install).catch(() => {})}>{tt("wel.copy")}</button>
+      {#if GUIDE[a.agent]}<button class="mini" onclick={() => (linkAsk = GUIDE[a.agent])}>{tt("wel.guide")} ↗</button>{/if}
+    </span>
+  {/snippet}
+  <!-- FR-97: asked once while ui.mode is "ask"; a click picks, Esc = Full and it isn't asked again -->
+  {#if askMode}
+    <div class="confirm ask modeq" role="dialog" aria-label={tt("mode.ask")}>
+      <b class="wtitle">{tt("mode.ask")}</b>
+      <span class="wm">{tt("mode.askSub")}</span>
+      <button class="wopen" onclick={() => setMode("full")}><b>{tt("mode.full")}</b><small>{tt("mode.fullSub")}</small></button>
+      <button class="wopen" onclick={() => setMode("simple")}><b>{tt("mode.simple")}</b><small>{tt("mode.simpleSub")}</small></button>
+    </div>
+  {/if}
   <!-- with the Start panel showing, the card sits above it inside the pane (pen 01) -->
-  {#if welcome && startHere === null}{@render welcomeCard("confirm")}{/if}
+  {#if welcome && !askMode && startHere === null}{@render welcomeCard("confirm")}{/if}
   {#if quitAsk}
     <!-- also opened from Settings > General (z-index 10): sits above it (9 Nov: covered, Esc first to see it) -->
     <div class="confirm ask over" role="alertdialog" aria-label={tt("quit.aria")}>
@@ -3814,8 +3906,16 @@
   }
   /* door to the ⌘P palette, shaped like a search box so it's easy to find; Gembala.pen 02: "+ Workspace" the same box */
   .add.find,
-  .add.wsnew {
+  .add.ask {
     border: 1px solid var(--line);
+  }
+  .add.ask {
+    display: flex;
+    justify-content: space-between;
+    color: var(--fg);
+  }
+  .add.ask .n {
+    color: var(--muted);
   }
   /* a search icon + border lighting up on hover, so the box reads as a button that opens the palette */
   .add.find .fl {
@@ -3824,7 +3924,7 @@
     gap: 6px;
   }
   .add.find:hover,
-  .add.wsnew:hover {
+  .add.ask:hover {
     border-color: var(--muted);
   }
   .body {
@@ -4761,6 +4861,59 @@
   }
   .wver.untested {
     color: var(--tx-amber, #d97706);
+  }
+  /* FR-99 P1: title + close, agent buttons (first one lit), install rows */
+  .whead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .wopen {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .wopen:hover,
+  .wopen.pri {
+    border-color: var(--blue, #3b82f6);
+  }
+  .wopen small {
+    display: block;
+    color: var(--muted);
+  }
+  .modeq .wopen {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .scol.gone {
+    display: none;
+  }
+  .wdir {
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+  }
+  .wrow.inst {
+    align-items: center;
+    gap: 6px;
+  }
+  .wrow.inst .grow {
+    flex: 1;
+    min-width: 0;
+  }
+  .wcmd {
+    display: block;
+    color: var(--muted);
+    font: 11px "SF Mono", Menlo, monospace;
   }
   .wkey {
     flex: none;

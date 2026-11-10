@@ -2,6 +2,7 @@
 
 export type Ui = {
   language: "system" | "id" | "en";
+  mode: "ask" | "simple" | "full"; // FR-97: ask = not answered yet
   theme: "system" | "light" | "dark";
   font_family: string;
   font_size: number;
@@ -82,6 +83,8 @@ export type Config = {
 // same as the defaults in core/src/config.rs; used until the daemon's first reply arrives
 export const UI_DEFAULT: Ui = {
   language: "system",
+  // FR-97: "full" until the daemon answers, so the first-open question never flashes on a stale default
+  mode: "full",
   theme: "system",
   font_family: "Hack",
   font_size: 13,
