@@ -1,0 +1,60 @@
+# FR-63: a pushed tag v<version> builds, signs ("Gembala Dev", same certificate as local builds) and publishes the
+# release + Homebrew cask through scripts/rilis.sh. Secrets (set by the owner, never printed):
+#   GEMBALA_DEV_P12           base64 of the "Gembala Dev" identity exported from Keychain Access as .p12
+#   GEMBALA_DEV_P12_PASSWORD  the .p12 export password
+#   RELEASE_TOKEN             fine-grained PAT, Contents read/write on AHanif52/gembala and AHanif52/homebrew-gembala
+# Only tags run this: pull requests (forks included) never see the secrets.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency: release
+jobs:
+  release:
+    runs-on: macos-15 # Apple Silicon, the only arch the cask installs
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Tag matches version
+        run: |
+          v=$(python3 -c "import json;print(json.load(open('ui/src-tauri/tauri.conf.json'))['version'])")
+          [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "tag $GITHUB_REF_NAME != v$v in tauri.conf.json"; exit 1; }
+      - name: Signing keychain
+        env:
+          P12: ${{ secrets.GEMBALA_DEV_P12 }}
+          P12_PASSWORD: ${{ secrets.GEMBALA_DEV_P12_PASSWORD }}
+        run: |
+          kc="$RUNNER_TEMP/sign.keychain-db"
+          pw=$(uuidgen)
+          printf %s "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security import "$RUNNER_TEMP/id.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/id.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$kc" > /dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          # self-signed: codesign only takes it once it is trusted for code signing
+          security find-certificate -c "Gembala Dev" -p "$kc" > "$RUNNER_TEMP/id.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/id.pem"
+          security find-identity -v -p codesigning "$kc" | grep -q '"Gembala Dev"'
+      - name: Test
+        run: |
+          cargo test -q -p gembala
+          cd ui && npm ci --ignore-scripts && npm run check && npm test
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          gh auth setup-git
+          sh scripts/rilis.sh
+      - name: Remove keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/sign.keychain-db" || true

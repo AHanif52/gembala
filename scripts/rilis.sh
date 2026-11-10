@@ -14,6 +14,10 @@ cd "$root/ui"
 PATH="/opt/homebrew/opt/rustup/bin:$PATH" npm run tauri build -- --bundles app
 app=$root/target/release/bundle/macos/Gembala.app
 codesign -v --deep --strict "$app"
+# helper/build.sh falls back to an ad-hoc signature without the certificate: never ship that (SEC-20 checks the signer)
+for b in "$app" "$app/Contents/Helpers/Gembala Daemon.app"; do
+  codesign -dvv "$b" 2>&1 | grep -qx "Authority=Gembala Dev" || { echo "$b tidak ditandatangani Gembala Dev."; exit 1; }
+done
 if grep -rlF "$HOME" "$app"; then echo "Path $HOME masih ada di bundle (file di atas)."; exit 1; fi
 zip=$root/target/release/Gembala-$v-arm64.zip
 rm -f "$zip"
