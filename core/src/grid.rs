@@ -526,7 +526,7 @@ mod tests {
 
     /// Run a real TUI in a PTY briefly, then send SIGKILL.
     fn capture(cmd: &str, rows: u16, cols: u16, dur: Duration) -> Vec<u8> {
-        let mut p = Pty::spawn(Some(cmd), rows, cols, &[], None).unwrap();
+        let mut p = Pty::spawn(Some(cmd), rows, cols, &[], None, None).unwrap();
         let r = p.master.try_clone().unwrap();
         let t = std::thread::spawn(move || read_to_end(r).unwrap());
         std::thread::sleep(dur);
@@ -574,7 +574,7 @@ mod tests {
         println!("maxrss naik {:.0} MB untuk 1 grid scrollback 10.000 penuh", rss() - before);
         for cmd in ["head -c 52428800 /dev/zero | tr '\\0' 'a' | fold -w 100 > /dev/null", "head -c 52428800 /dev/zero | tr '\\0' 'a' | fold -w 100", "yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | head -c 52428800"] {
             let t = std::time::Instant::now();
-            let mut p = Pty::spawn(Some(cmd), 40, 120, &[], None).unwrap();
+            let mut p = Pty::spawn(Some(cmd), 40, 120, &[], None, None).unwrap();
             let n = read_to_end(&p.master).unwrap().len();
             p.child.wait().unwrap();
             println!("PTY {:.1} MB dalam {:.2} s: {}", n as f64 / 1e6, t.elapsed().as_secs_f64(), &cmd[cmd.len() - 20..]);

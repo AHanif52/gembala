@@ -8,7 +8,9 @@ mod git;
 mod grid;
 mod harness;
 mod history;
+mod ipc;
 mod msg;
+mod os;
 mod profile;
 mod pty;
 mod recipe;
@@ -369,10 +371,14 @@ fn hand_over(h: Handoff, secret: &str) -> std::io::Result<()> {
         Handoff::Fd(fd) => writeln!(unsafe { File::from_raw_fd(fd) }, "{secret}"), // closed on drop
         Handoff::Sock(p) => {
             let mut s = std::os::unix::net::UnixStream::connect(p)?;
-            // helper `Gembala.app/Contents/Helpers/Gembala Daemon.app/Contents/MacOS/gembala` → `Gembala.app/Contents/MacOS/gembala-ui`
+            // the socket owner must be this install's UI: macOS `Gembala.app/Contents/Helpers/Gembala Daemon.app/Contents/MacOS/gembala`
+            // → `Gembala.app/Contents/MacOS/gembala-ui`; Linux/Windows side by side with the daemon binary
             let me = std::env::current_exe()?.canonicalize()?;
+            #[cfg(target_os = "macos")]
             let ui = me.ancestors().nth(5).map(|c| c.join("MacOS/gembala-ui")).and_then(|p| p.canonicalize().ok());
-            let peer = pty::proc_path(daemon::peer_pid(&s)?).and_then(|p| p.canonicalize().ok());
+            #[cfg(not(target_os = "macos"))]
+            let ui = me.with_file_name("gembala-ui").canonicalize().ok();
+            let peer = pty::proc_path(ipc::peer_pid(&s)?).and_then(|p| p.canonicalize().ok());
             if ui.is_none() || peer != ui {
                 return Err(std::io::Error::other(format!("socket owner isn't this bundle's gembala-ui: {peer:?}")));
             }

@@ -19,7 +19,8 @@ pub struct Profile {
     /// Empty = follow the focused pane (FR-30). `~` becomes `$HOME`.
     pub cwd: String,
     pub env: Vec<(String, String)>,
-    /// References only: `op://…` or `keychain:service/account` (SEC-32).
+    /// References only: `op://…` or `keychain:service/account` (SEC-32; read with `security` on macOS and `secret-tool`
+    /// on Linux, see `os::secret_cmd`).
     pub secret_env: Vec<(String, String)>,
     /// FR-56: summarize output when the agent exits (on by default).
     pub summarize: bool,
@@ -430,8 +431,57 @@ const ZSH_MARKS: &str = r#"__gembala_precmd() {
     [[ $PS1 == *'133;B'* ]] || PS1="$PS1%{"$'\e]133;B\a'"%}"
   fi
 }
-__gembala_preexec() { builtin print -rn -- $'\e]133;C;'"$(builtin print -rn -- "$1" | /usr/bin/base64)"$'\a'; }
+__gembala_preexec() { builtin print -rn -- $'\e]133;C;'"$(builtin print -rn -- "$1" | /usr/bin/base64 | tr -d '\n')"$'\a'; }
 autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hook preexec __gembala_preexec
+"#;
+
+/// FR-58: bash has no `ZDOTDIR`. The daemon runs it with `--rcfile` (interactive) and `BASH_ENV` (a `-c` command, i.e.
+/// an agent launch); both files read the login files themselves, because Debian/Ubuntu `/etc/profile` replaces PATH
+/// wholesale and a login shell would lose the daemon's folder together with `gembala` (FR-9). User files aren't changed.
+fn bash_login(login: &str, extra: &str) -> String {
+    format!(
+        "# made by Gembala (FR-58); your login files are read as is, then the daemon's folder comes back\n\
+         GEMBALA_BIN={bin}\n\
+         [ -r /etc/profile ] && . /etc/profile\n\
+         if [ -r \"$HOME/.bash_profile\" ]; then . \"$HOME/.bash_profile\"\n\
+         elif [ -r \"$HOME/.bash_login\" ]; then . \"$HOME/.bash_login\"\n\
+         elif [ -r \"$HOME/.profile\" ]; then . \"$HOME/.profile\"\n\
+         fi\n\
+         case \":$PATH:\" in *\":$GEMBALA_BIN:\"*) ;; *) PATH=$GEMBALA_BIN:$PATH ;; esac\n\
+         unset GEMBALA_BIN\n\
+         export PATH\n\
+         {extra}",
+        bin = q(login)
+    )
+}
+
+/// Same OSC 133 markers as `ZSH_MARKS`: precmd (`D` + exit code, `A` + folder, `B` in the prompt) and a `C` with the
+/// command text before it runs. Bash 4.4+ has `PS0`, printed after the line is read and before it runs, so compound
+/// commands (`(exit 3)`) are captured too; the command comes from `history 1` (the entry is added when the line is read).
+/// Older bash (3.2 on macOS) has no `PS0`: there a DEBUG trap covers the simple commands. No bold command (readline can't
+/// style it); the block head still comes from the `C` marker.
+const BASH_MARKS: &str = r#"__gembala_precmd() { __gembala_code=$?; }
+__gembala_prompt() {
+  printf '\e]133;D;%s\a\e]133;A;%s\a' "$__gembala_code" "${PWD//[[:cntrl:]]/}"
+  if [ -n "$GEMBALA_EDITOR" ]; then
+    # FR-59: Gembala's editor replaces the prompt; the empty line above the command holds the block head
+    PS1=$'\n\[\e]133;B\a\]'
+  else
+    case $PS1 in *'133;B'*) ;; *) PS1="$PS1\[\e]133;B\a\]" ;; esac
+  fi
+}
+if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))); then
+  PS0='$(__gembala_cmd=$(HISTTIMEFORMAT= history 1); __gembala_cmd=${__gembala_cmd#"${__gembala_cmd%%[! ]*}"}; __gembala_cmd=${__gembala_cmd#${__gembala_cmd%%[!0-9]*}}; __gembala_cmd=${__gembala_cmd#"${__gembala_cmd%%[! ]*}"}; printf "\e]133;C;%s\a" "$(printf %s "$__gembala_cmd" | /usr/bin/base64 | tr -d "\n")")'
+else
+  __gembala_preexec() {
+    if [ -n "$__gembala_arm" ]; then
+      __gembala_arm=
+      printf '\e]133;C;%s\a' "$(printf '%s' "$BASH_COMMAND" | /usr/bin/base64 | tr -d '\n')"
+    fi
+  }
+  trap '__gembala_preexec' DEBUG
+fi
+PROMPT_COMMAND="__gembala_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__gembala_prompt"
 "#;
 
 /// FR-9: agents typed by hand in a pane get the `gembala` hint too (same flags as profiles).
@@ -499,11 +549,16 @@ if [[ $ZDOTDIR == $HOME ]]; then unset ZDOTDIR; else export ZDOTDIR; fi\nunset G
 pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
     let exe = json!(h.exe);
     let plugin = h.dir.join("opencode-gembala.js").to_string_lossy().into_owned();
+    // FR-9: the daemon's own folder = the `gembala` command a pane may call
+    let bin = std::path::Path::new(&h.exe).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
     vec![
         (".zshenv", zsh_file(".zshenv", "")),
         (".zprofile", zsh_file(".zprofile", "")),
         (".zshrc", zsh_file(".zshrc", &format!("{ZSH_MARKS}{}", zsh_agents(&h.dir, &h.exe)))),
         (".zlogin", format!("# made by Gembala (FR-58); your .zlogin is read as is, then ZDOTDIR is restored\n{ZSH_RESTORE}")),
+        // FR-58: bash (Linux default). The `gembala` folder is the daemon's own binary folder, the one on the pane PATH (FR-9)
+        (".bashrc", bash_login(&bin, BASH_MARKS)),
+        (".bash_env", bash_login(&bin, "# BASH_ENV runs for a `-c` command (agent launch) too; it must not reach the pane's own scripts\nunset BASH_ENV\n")),
         (
             "opencode.json",
             json!({"$schema": "https://opencode.ai/config.json", "plugin": [format!("file://{plugin}")],
@@ -669,10 +724,9 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
     flags.extend(session.map(|s| session_flags(&p.agent, s)).unwrap_or_default());
     // FR-56: invisible markers for the daemon (OSC 777), around the agent session output
     let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
-    // interactive PATH (already taken by detect at daemon start), so agents only on the `.zshrc` PATH are found
-    if let Some(path) = USER_PATH.get().cloned().flatten() {
-        s += &format!("export PATH={}:\"$PATH\"; ", q(&path));
-    }
+    // interactive PATH (already taken by detect at daemon start), so agents only on the `.zshrc` PATH are found;
+    // the app's own PATH after it (`/etc/profile` on Debian/Ubuntu resets PATH)
+    s += &format!("export PATH={}; ", pane_path(USER_PATH.get().cloned().flatten().as_deref()));
     for (k, v) in p.env.iter().chain(&hook_env) {
         // `~/…` outside the quotes so it becomes the home folder (e.g. CLAUDE_CONFIG_DIR per account)
         s += &format!("export {k}={}; ", home_q(v));
@@ -680,7 +734,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
     for (k, r) in &p.secret_env {
         // secrets are resolved by the pane shell; their values never pass through the daemon (SEC-32)
         if let Some((svc, acct)) = r.strip_prefix("keychain:").and_then(|x| x.split_once('/')) {
-            s += &format!("export {k}=\"$(security find-generic-password -w -s {} -a {})\"; ", q(svc), q(acct));
+            s += &format!("export {k}=\"$({})\"; ", crate::os::secret_cmd(svc, acct));
         } else {
             s += &format!("export {k}=\"$(op read {})\"; ", q(r));
         }
@@ -703,13 +757,18 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
         s += "printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\"; ";
     }
     s += &format!("[ \"$s\" -eq 127 ] && printf '\\n%s\\n' {}; ", q(&hint));
-    // FR-58/59: the hook `.zlogin` already restored the user's ZDOTDIR, so zsh after the agent exits gets the hook
-    // folder again (same as a shell pane); without this there are no block markers and no input editor
+    // FR-58/59: zsh reads the hook folder again through `.zlogin`/ZDOTDIR; bash has no ZDOTDIR, so the pane shell
+    // is started with the hook `--rcfile` again (same markers and input editor as a new shell pane)
     match h {
-        Some(h) => s += &format!(
-            "case \"$SHELL\" in */zsh) exec env ZDOTDIR={} GEMBALA_USER_ZDOTDIR=\"${{ZDOTDIR:-$HOME}}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac",
-            q(&h.dir.to_string_lossy())
-        ),
+        Some(h) => {
+            let dir = h.dir.to_string_lossy();
+            s += &format!(
+                "case \"$SHELL\" in */zsh) exec env ZDOTDIR={} GEMBALA_USER_ZDOTDIR=\"${{ZDOTDIR:-$HOME}}\" \"$SHELL\" -l ;; \
+                 */bash) exec \"$SHELL\" --rcfile {} -i ;; *) exec \"$SHELL\" -l ;; esac",
+                q(&dir),
+                q(&h.dir.join(".bashrc").to_string_lossy())
+            );
+        }
         None => s += "exec \"$SHELL\" -l",
     }
     Some(s)
@@ -724,6 +783,16 @@ pub fn to_json(p: &Profile) -> Value {
 }
 
 static USER_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// The daemon's own PATH (what the app was started with) after the login shell PATH: Debian/Ubuntu `/etc/profile`
+/// replaces PATH wholesale, so a login shell alone drops folders the app was given.
+fn pane_path(login: Option<&str>) -> String {
+    let own = std::env::var("PATH").unwrap_or_default();
+    match login {
+        Some(p) => format!("{}:{}:\"$PATH\"", q(p), q(&own)),
+        None => format!("{}:\"$PATH\"", q(&own)),
+    }
+}
 
 /// Interactive login shell PATH, like a pane. Many installers only add to PATH in `.zshrc`
 /// (standalone Codex: `~/.local/bin`), which `-l -c` doesn't read. Taken once per daemon.
@@ -746,8 +815,8 @@ fn user_path() -> Option<String> {
 pub fn detect() -> Value {
     let names: Vec<&str> = AGENTS.iter().map(|a| a.0).collect();
     let script = format!(
-        "{}for a in {}; do p=$(command -v \"$a\") && printf '%s\\t%s\\t%s\\n' \"$a\" \"$p\" \"$(\"$a\" --version 2>/dev/null | head -1)\"; done",
-        user_path().map(|p| format!("export PATH={}:\"$PATH\"; ", q(&p))).unwrap_or_default(),
+        "export PATH={}; for a in {}; do p=$(command -v \"$a\") && printf '%s\\t%s\\t%s\\n' \"$a\" \"$p\" \"$(\"$a\" --version 2>/dev/null | head -1)\"; done",
+        pane_path(user_path().as_deref()),
         names.join(" ")
     );
     let mut c = Command::new(crate::pty::login_shell());
@@ -864,11 +933,12 @@ mod tests {
             ..builtin()[1].clone()
         };
         let s = launch(&p, None, None, false).unwrap();
-        assert!(s.starts_with("printf '\\033]777;gembala;agent-start\\007'; ( export X='a b'\\''c'; export D=\"$HOME\"/'.claude-kerja'; "), "{s}");
+        assert!(s.starts_with("printf '\\033]777;gembala;agent-start\\007'; ( export PATH="), "{s}");
+        assert!(s.contains("export X='a b'\\''c'; export D=\"$HOME\"/'.claude-kerja'; "), "{s}");
         assert!(s.contains("printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\""), "{s}");
         let quiet = Profile { summarize: false, ..p.clone() };
         assert!(!launch(&quiet, None, None, false).unwrap().contains("777"));
-        assert!(s.contains("export K=\"$(security find-generic-password -w -s 'svc' -a 'me@x')\"; "), "{s}");
+        assert!(s.contains(&format!("export K=\"$({})\"; ", crate::os::secret_cmd("svc", "me@x"))), "{s}");
         assert!(s.contains("export O=\"$(op read 'op://V/I/f')\"; "), "{s}");
         assert!(s.contains("'my tool' 'it'\\''s' '$(id)' );"), "{s}");
         assert!(s.ends_with("exec \"$SHELL\" -l"), "{s}");
@@ -929,8 +999,9 @@ mod tests {
         let claude = launch(&by("claude"), Some(&h), None, false).unwrap();
         assert!(claude.contains("'claude' '--settings' '{\"hooks\":"), "{claude}");
         assert!(claude.contains("hook claude stop"), "{claude}");
-        // zsh after the agent exits loads the hooks again (input editor + blocks), the user's ZDOTDIR carried along
-        assert!(claude.ends_with("exec env ZDOTDIR='/cfg/hooks' GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac"), "{claude}");
+        // zsh after the agent exits loads the hooks again (input editor + blocks), the user's ZDOTDIR carried along;
+        // bash has no ZDOTDIR, so its pane shell gets the hook `--rcfile` again
+        assert!(claude.contains("*/zsh) exec env ZDOTDIR='/cfg/hooks' GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; */bash) exec \"$SHELL\" --rcfile '/cfg/hooks/.bashrc' -i ;; *) exec \"$SHELL\" -l ;; esac"), "{claude}");
         let tail = "case \"$SHELL\" in */zsh) exec env ZDOTDIR=/h GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac";
         let out = std::process::Command::new("/bin/sh").args(["-c", &tail.replace("\"$SHELL\" -l ;; *)", "sh -c 'echo $ZDOTDIR $GEMBALA_USER_ZDOTDIR' ;; *)")]).env("SHELL", "/bin/zsh").env("ZDOTDIR", "/u").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/h /u");
@@ -977,6 +1048,52 @@ mod tests {
         assert_eq!(with["hooks"]["PreToolUse"][1]["hooks"][0]["command"], "'/x/gembala' hook claude tool", "{with}");
         // FR-4: a typed claude carries the same hooks (status from hooks, not the screen)
         assert!(rc.contains(&q(&settings.to_string())), "{rc}");
+    }
+
+    /// FR-58, FR-9: bash has no ZDOTDIR. The hook files read the login files, then put the daemon's folder back, and
+    /// carry the same OSC 133 markers as zsh (the pane's block timeline and the UI input editor).
+    #[test]
+    fn bash_hook_mengembalikan_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("gembala-bash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("home")).unwrap();
+        std::fs::create_dir_all(d.join("bin")).unwrap();
+        let exe = d.join("bin/gembala");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Debian/Ubuntu /etc/profile replaces PATH wholesale; a login file doing the same must not cost the folder
+        std::fs::write(d.join("home/.bash_profile"), "PATH=/usr/bin:/bin\nexport PATH\n").unwrap();
+        let h = Hooks { exe: exe.to_string_lossy().into_owned(), dir: d.clone() };
+        let files = hook_files(&h);
+        let rc = &files.iter().find(|f| f.0 == ".bashrc").unwrap().1;
+        let env = &files.iter().find(|f| f.0 == ".bash_env").unwrap().1;
+        std::fs::write(d.join(".bashrc"), rc).unwrap();
+        std::fs::write(d.join(".bash_env"), env).unwrap();
+        for name in [".bashrc", ".bash_env"] {
+            let ok = std::process::Command::new("/bin/bash").arg("-n").arg(d.join(name)).status().unwrap().success();
+            assert!(ok, "{name}");
+        }
+        assert!(rc.contains("133;D") && rc.contains("133;C") && rc.contains("133;A") && rc.contains("133;B"), "{rc}");
+        assert!(rc.contains("trap '__gembala_preexec' DEBUG") && rc.contains("PROMPT_COMMAND="), "{rc}");
+        // interactive (`--rcfile`): the folder is back after the login file wiped PATH
+        let out = std::process::Command::new("/bin/bash")
+            .args(["--rcfile", d.join(".bashrc").to_str().unwrap(), "-i", "-c", "command -v gembala"])
+            .env("HOME", d.join("home"))
+            .env_remove("GEMBALA_EDITOR")
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == exe.to_string_lossy()), "{out:?}");
+        // `-c` (agent launch): BASH_ENV reads the login files, and it doesn't leak into the pane's own scripts
+        let out = std::process::Command::new("/bin/bash")
+            .args(["-c", "command -v gembala; echo BASH_ENV=${BASH_ENV:-kosong}"])
+            .env("HOME", d.join("home"))
+            .env("BASH_ENV", d.join(".bash_env"))
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(&exe.to_string_lossy().to_string()) && text.contains("BASH_ENV=kosong"), "{text}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

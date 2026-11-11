@@ -56,7 +56,10 @@ fn passwd_shell() -> Option<String> {
 
 impl Pty {
     /// `$SHELL -l -c <cmd>`, or interactive `$SHELL -l` when `cmd` is empty.
-    pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16, env: &[(&str, &str)], cwd: Option<&Path>) -> io::Result<Pty> {
+    /// `hooks` = Gembala's startup-file folder for bash: `--rcfile` for an interactive shell, `BASH_ENV` for a `-c`
+    /// command (zsh reaches the same folder through `ZDOTDIR`, set by the caller). Debian/Ubuntu `/etc/profile`
+    /// replaces PATH wholesale, so a login bash would lose the daemon's folder and `gembala` with it (FR-9).
+    pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16, env: &[(&str, &str)], cwd: Option<&Path>, hooks: Option<&Path>) -> io::Result<Pty> {
         let (mut m, mut s) = (0, 0);
         let mut ws = winsize(rows, cols);
         check(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut ws) })?;
@@ -65,8 +68,18 @@ impl Pty {
         cloexec(m)?;
         cloexec(s)?;
 
-        let mut c = Command::new(login_shell());
-        c.arg("-l");
+        let shell = login_shell();
+        let mut c = Command::new(&shell);
+        if shell.rsplit('/').next() == Some("bash") && let Some(dir) = hooks {
+            match cmd {
+                // our .bash_env reads the login files, then puts the daemon's folder back; BASH_ENV is unset there so
+                // the pane's own scripts don't read it
+                Some(_) => drop(c.env("BASH_ENV", dir.join(".bash_env"))),
+                None => drop(c.arg("--rcfile").arg(dir.join(".bashrc")).arg("-i")),
+            }
+        } else {
+            c.arg("-l");
+        }
         if let Some(cmd) = cmd {
             c.arg("-c").arg(cmd);
         }
@@ -85,9 +98,14 @@ impl Pty {
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
-        // setsid + make the slave the controlling terminal, so Ctrl+C/job control work
+        // setsid + make the slave the controlling terminal, so Ctrl+C/job control work.
+        // FR-62 blocks SIGTERM in the daemon; a pane gets a clean mask: zsh unblocks it for its children, bash keeps the
+        // block, and then `sleep` survived the FR-50 SIGTERM until the 3-second SIGKILL (tested 11 Nov 2026).
         unsafe {
             c.pre_exec(|| {
+                let mut none: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut none);
+                libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
                 check(libc::setsid())?;
                 check(libc::ioctl(0, libc::TIOCSCTTY as _, 0))
             });
@@ -285,14 +303,14 @@ mod tests {
 
     #[test]
     fn echo_lewat_pty() {
-        let out = run(Pty::spawn(Some("echo gembala-ok"), 24, 80, &[], None).unwrap());
+        let out = run(Pty::spawn(Some("echo gembala-ok"), 24, 80, &[], None, None).unwrap());
         assert!(out.contains("gembala-ok"), "{out:?}");
     }
 
     #[test]
     fn ukuran_awal_dan_resize() {
-        assert!(run(Pty::spawn(Some("stty size"), 30, 100, &[], None).unwrap()).contains("30 100"));
-        let p = Pty::spawn(Some("sleep 0.3; stty size"), 24, 80, &[], None).unwrap();
+        assert!(run(Pty::spawn(Some("stty size"), 30, 100, &[], None, None).unwrap()).contains("30 100"));
+        let p = Pty::spawn(Some("sleep 0.3; stty size"), 24, 80, &[], None, None).unwrap();
         resize(&p.master, 40, 120).unwrap();
         let out = run(p);
         assert!(out.contains("40 120"), "{out:?}");
@@ -300,7 +318,7 @@ mod tests {
 
     #[test]
     fn tulis_ke_pty() {
-        let p = Pty::spawn(Some("read x; echo dapat-$x"), 24, 80, &[], None).unwrap();
+        let p = Pty::spawn(Some("read x; echo dapat-$x"), 24, 80, &[], None, None).unwrap();
         (&p.master).write_all(b"halo\r").unwrap();
         let out = run(p);
         assert!(out.contains("dapat-halo"), "{out:?}");
@@ -319,7 +337,7 @@ mod tests {
     #[test]
     fn punya_tty_pengendali() {
         // /dev/tty can only be opened when setsid + TIOCSCTTY succeeded
-        let out = run(Pty::spawn(Some("tty; echo x > /dev/tty"), 24, 80, &[], None).unwrap());
+        let out = run(Pty::spawn(Some("tty; echo x > /dev/tty"), 24, 80, &[], None, None).unwrap());
         assert!(!out.contains("Device not configured"), "{out:?}");
         assert!(out.contains("/dev/ttys") || out.contains("/dev/pts/"), "{out:?}");
     }

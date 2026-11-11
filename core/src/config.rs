@@ -111,8 +111,7 @@ pub fn path() -> PathBuf {
     if let Some(p) = std::env::var_os("GEMBALA_CONFIG") {
         return p.into();
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into());
-    home.join("Library/Application Support/Gembala/config.toml")
+    crate::os::config_dir().unwrap_or_else(|| PathBuf::from("/")).join("config.toml")
 }
 
 /// Layout (FR-45) next to config: workspace structure, tabs, splits, profiles, folders. No screen content (SEC-13).

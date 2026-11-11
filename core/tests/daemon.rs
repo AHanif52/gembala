@@ -967,9 +967,10 @@ fn sigterm_menyimpan_log_layar() {
     assert!(log.contains("LOG-42"), "log tidak tersimpan: {log:?}");
 }
 
-/// FR-58: zsh panes emit OSC 133 block markers (C + base64 command, D + exit code); the user's ZDOTDIR comes back.
+/// FR-58: shell panes emit OSC 133 block markers (C + base64 command, D + exit code); the user's ZDOTDIR comes back
+/// (zsh; bash has no ZDOTDIR, the hook files are read through `--rcfile`/`BASH_ENV` instead).
 #[test]
-fn penanda_blok_zsh() {
+fn penanda_blok_shell() {
     let d = start("blok");
     let mut ui = Cli::ui(&d);
     let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
@@ -982,8 +983,10 @@ fn penanda_blok_zsh() {
     let out = ui.attach_until(p, &[&format!("ZD-{zd}-2")]);
     assert!(out.contains(&format!("\x1b]133;C;{}\x07", B64.encode("(exit 3)"))), "{out:?}");
     assert!(out.contains("\x1b]133;D;3\x07"), "{out:?}");
-    // FR-59: prompt hidden, the command line written in bold by zle (block head)
-    assert!(out.contains("\x1b[1m"), "perintah tidak tebal: {out:?}");
+    // FR-59: zsh hides the prompt and zle writes the command line in bold (block head); bash's readline can't style it
+    if std::env::var("SHELL").is_ok_and(|s| s.ends_with("/zsh")) {
+        assert!(out.contains("\x1b[1m"), "perintah tidak tebal: {out:?}");
+    }
     // FR-59: the next attach knows the shell is at the prompt (the snapshot holds no markers)
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(Cli::ui(&d).call("pane.attach", json!({"pane": p}))["result"]["prompt"], true);

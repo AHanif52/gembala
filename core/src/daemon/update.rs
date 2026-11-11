@@ -46,7 +46,7 @@ pub fn check_now(st: &Arc<State>) {
 
 fn check(st: &State) {
     // -4: IPv6 to GitHub/Telegram hangs on some networks (FR-80); the URL is fixed, nothing from the user goes in argv
-    let out = Command::new("/usr/bin/curl")
+    let out = Command::new(crate::os::curl())
         .args(["-4fsSL", "--max-time", "15", "-H", "Accept: application/vnd.github+json", "-H", &format!("User-Agent: gembala/{}", env!("CARGO_PKG_VERSION")), URL])
         .output();
     let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
@@ -70,7 +70,7 @@ fn check(st: &State) {
 /// The API allows 60 calls an hour per IP without a token (9 Nov: an office IP ran out, 403): the web page
 /// `releases/latest` redirects to `releases/tag/v<x>` with no such limit. Version only, no notes.
 fn redirect() -> Option<Value> {
-    let out = Command::new("/usr/bin/curl").args(["-4sSI", "--max-time", "15", "https://github.com/AHanif52/gembala/releases/latest"]).output().ok()?;
+    let out = Command::new(crate::os::curl()).args(["-4sSI", "--max-time", "15", "https://github.com/AHanif52/gembala/releases/latest"]).output().ok()?;
     let head = String::from_utf8_lossy(&out.stdout);
     let url = head.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("location")).map(|(_, v)| v.trim().to_string()))?;
     let tag = url.rsplit_once("/releases/tag/")?.1;

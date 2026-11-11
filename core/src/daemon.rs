@@ -14,6 +14,7 @@ use crate::profile;
 use crate::recipe;
 use crate::grid::Grid;
 use crate::history;
+use crate::ipc::{peer_pid, peer_uid};
 use crate::snap;
 use crate::pty::{self, Pty};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
@@ -1478,15 +1479,18 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     let bin = std::path::Path::new(&st.hooks.exe).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
     let path = format!("{bin}:{}", std::env::var("PATH").unwrap_or_default());
     let mut env = vec![("GEMBALA_SOCKET", st.pane_sock.as_str()), ("PATH", path.as_str())];
-    // FR-58: zsh panes read startup files through the hook folder (OSC 133 block markers), then the user's ZDOTDIR comes back
+    // FR-58: zsh panes read startup files through the hook folder (OSC 133 block markers), then the user's ZDOTDIR comes back;
+    // bash has no ZDOTDIR: it is started with the hook `--rcfile`/`BASH_ENV` instead (see `Pty::spawn`)
     let zdot = st.hooks.dir.to_string_lossy().into_owned();
     let user_zdot = std::env::var("ZDOTDIR").or_else(|_| std::env::var("HOME")).unwrap_or_default();
-    if pty::login_shell().ends_with("/zsh") {
+    let shell = pty::login_shell();
+    let bash = shell.ends_with("/bash");
+    if shell.ends_with("/zsh") {
         env.extend([("ZDOTDIR", zdot.as_str()), ("GEMBALA_USER_ZDOTDIR", user_zdot.as_str())]);
+    }
+    if (shell.ends_with("/zsh") || bash) && st.config.lock().unwrap()["values"]["ui"]["input_editor"].as_bool() != Some(false) {
         // FR-59: the UI editor replaces the shell prompt
-        if st.config.lock().unwrap()["values"]["ui"]["input_editor"].as_bool() != Some(false) {
-            env.push(("GEMBALA_EDITOR", "1"));
-        }
+        env.push(("GEMBALA_EDITOR", "1"));
     }
     if let Some(t) = &token {
         env.push(("GEMBALA_TOKEN", t.as_str()));
@@ -1504,7 +1508,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         Some(k) if history::hex16(k) && !held(k) => k.to_string(),
         _ => new_secret().map_err(|_| "io")?[..16].to_string(),
     };
-    let pty = Pty::spawn(cmd, rows, cols, &env, cwd.as_deref()).map_err(|_| "spawn_failed")?;
+    let pty = Pty::spawn(cmd, rows, cols, &env, cwd.as_deref(), bash.then_some(st.hooks.dir.as_path())).map_err(|_| "spawn_failed")?;
     let id = st.next.fetch_add(1, Ordering::Relaxed);
     let pane = Arc::new(Pane {
         master: pty.master.try_clone().map_err(|_| "spawn_failed")?,
@@ -2977,41 +2981,6 @@ impl State {
 
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-#[cfg(target_os = "macos")]
-pub fn peer_pid(s: &UnixStream) -> io::Result<i32> {
-    let mut pid: libc::pid_t = 0;
-    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
-    let rc = unsafe {
-        libc::getsockopt(s.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERPID, (&raw mut pid).cast(), &mut len)
-    };
-    if rc == -1 { Err(io::Error::last_os_error()) } else { Ok(pid) }
-}
-
-#[cfg(target_os = "macos")]
-fn peer_uid(s: &UnixStream) -> io::Result<libc::uid_t> {
-    let (mut uid, mut gid) = (0, 0);
-    if unsafe { libc::getpeereid(s.as_raw_fd(), &mut uid, &mut gid) } != 0 { Err(io::Error::last_os_error()) } else { Ok(uid) }
-}
-
-#[cfg(target_os = "linux")]
-fn peer_cred(s: &UnixStream) -> io::Result<libc::ucred> {
-    let mut c: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let rc = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut c).cast(), &mut len) };
-    if rc == -1 { Err(io::Error::last_os_error()) } else { Ok(c) }
-}
-
-#[cfg(target_os = "linux")]
-pub fn peer_pid(s: &UnixStream) -> io::Result<i32> {
-    peer_cred(s).map(|c| c.pid)
-}
-
-/// glibc has no `getpeereid`; SO_PEERCRED carries the uid too
-#[cfg(target_os = "linux")]
-fn peer_uid(s: &UnixStream) -> io::Result<libc::uid_t> {
-    peer_cred(s).map(|c| c.uid)
 }
 
 /// 32 random bytes from the kernel, hex.
