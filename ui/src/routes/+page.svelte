@@ -1424,7 +1424,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const [, group, arg] = id.split(".");
     const cur = order.findIndex((o) => o.wi === at.ws && o.ti === at.tab);
     if (id === "msg.drawer") return void ((drawer = !drawer), drawer && ((flow = false), refreshMsgs()));
-    if (id === "msg.stop") return void call("msg.pause", { on: !msgData?.paused }).then(refreshMsgs);
+    if (id === "msg.stop")
+      return void call("msg.pause", { on: !msgData?.paused })
+        .then(refreshMsgs)
+        .catch((e) => (error = errText(e)));
     if (id === "msg.compose") {
       compose = { to: targets[0]?.pane ?? null, body: "", force: false, error: "" };
       return;
