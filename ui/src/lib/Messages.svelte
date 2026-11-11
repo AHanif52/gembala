@@ -15,7 +15,25 @@
     models,
     efforts,
     agentOf,
-  }: { data: any; rows: Row[]; onchange: () => void; onclose: () => void; onopen: (o: any) => void; who: (o: any) => string; models: (o: any) => { id: string; label: string }[]; efforts: string[]; agentOf: (o: any) => string | undefined } = $props();
+    person = (n: string) => n,
+    simple = false,
+    width = 360,
+    right = 0,
+  }: {
+    data: any;
+    rows: Row[];
+    onchange: () => void;
+    onclose: () => void;
+    onopen: (o: any) => void;
+    who: (o: any) => string;
+    models: (o: any) => { id: string; label: string }[];
+    efforts: string[];
+    agentOf: (o: any) => string | undefined;
+    person?: (name: string) => string;
+    simple?: boolean;
+    width?: number;
+    right?: number;
+  } = $props();
 
 
   const act = (method: string, params: object) => call(method, params).then(onchange, onchange);
@@ -26,12 +44,9 @@
   );
 </script>
 
-<aside class="drawer" aria-label={t("msg.aria")}>
+<aside class="drawer" style:width="{width}px" style:right="{right}px" aria-label={t("msg.aria")}>
   <header>
     <span>{t("msg.title")}</span>
-    <button class="mini" class:on={data?.paused} onclick={() => act("msg.pause", { on: !data?.paused })}
-      >{data?.paused ? t("msg.resumeAll") : t("msg.pauseAll")} <span class="k">⌘⇧.</span></button
-    >
     <button class="mini" onclick={onclose} aria-label={t("msg.close")}>Esc</button>
   </header>
   <div class="body">
@@ -63,11 +78,12 @@
       <section>
         {#each data.pending as m (m.id)}
           <div class="msg">
-            <span><b>{m.from}</b> → <b>{m.to}</b> <span class="m">{m.id}</span></span>
-            <pre>{m.body}</pre>
+            <!-- FR-99 P2: the same sentence as the pane card, and no message id on screen -->
+            <span>{simple ? tOr("card.msgSimple", "", { from: person(m.from) }) : tOr("card.msgFull", "", { from: m.from, to: m.to })}</span>
+            <blockquote>{m.body}</blockquote>
             <span class="acts">
               <button class="mini" onclick={() => act("msg.reject", { id: m.id })}>{t("msg.reject")}</button>
-              <button class="mini" onclick={() => act("msg.approve", { id: m.id })}>{t("msg.approve")}</button>
+              <button class="mini pri" onclick={() => act("msg.approve", { id: m.id })}>{t("msg.approve")}</button>
             </span>
           </div>
         {/each}
@@ -80,8 +96,8 @@
       <section>
         {#each data.opens as o (o.id)}
           <div class="msg">
-            <span>{t("open.ask", { from: o.from, who: who(o) })}</span>
-            <pre>{o.body}</pre>
+            <span>{simple ? tOr("open.askSimple", "", { from: person(o.from), who: who(o) }) : tOr("open.ask", "", { from: o.from, who: who(o) })}</span>
+            <blockquote>{o.body}</blockquote>
           {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(agentOf(o) ?? "")}
             <div class="sub"><span>{t("open.modelEffort")}</span>
               {#if models(o).length}
@@ -103,7 +119,7 @@
           {/if}
             <span class="acts">
               <button class="mini" onclick={() => act("open.reject", { id: o.id })}>{t("msg.reject")}</button>
-              <button class="mini" onclick={() => onopen(o)}>{t("open.go")}</button>
+              <button class="mini pri" onclick={() => onopen(o)}>{simple ? tOr("open.goSimple", "", {}) : tOr("open.go", "", {})}</button>
             </span>
           </div>
         {/each}
@@ -135,13 +151,20 @@
       {/each}
     </section>
   </div>
+  <!-- FR-99 P2: "hold every message" lives in the footer, away from Close, and says the agents keep working -->
+  <footer>
+    <button class="mini" class:on={data?.paused} onclick={() => act("msg.pause", { on: !data?.paused })}>
+      {data?.paused ? t("msg.resumeAll") : t("msg.holdAll")} <span class="k">⌘⇧.</span>
+    </button>
+    {#if !data?.paused}<small>{t("msg.holdNote")}</small>{/if}
+  </footer>
 </aside>
 
 <style>
   .drawer {
-    position: absolute;
+    /* FR-99 P2: a column at the right edge, next to the changes panel; the grid narrows by it, so no card is covered */
+    position: fixed;
     inset: 0 0 0 auto;
-    width: min(44%, 560px);
     z-index: 5;
     display: flex;
     flex-direction: column;
@@ -164,6 +187,17 @@
   .body {
     overflow: auto;
     padding: 4px 12px 12px;
+  }
+  footer {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    border-top: 1px solid var(--line);
+  }
+  footer small {
+    color: var(--muted);
+    font-size: 11.5px;
   }
   h4 {
     margin: 14px 0 6px;
@@ -206,12 +240,22 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  pre {
+  /* FR-99 P2: the card's own text, quoted like the mockup's message card */
+  blockquote {
     margin: 0;
     max-height: 160px;
     overflow: auto;
+    padding: 6px 9px;
+    border-left: 2px solid var(--line);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 12.5px;
     white-space: pre-wrap;
-    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .mini.pri {
+    border-color: #1d4ed8;
+    background: #1e3a8a;
+    color: #dbeafe;
   }
   .acts {
     display: flex;

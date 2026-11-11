@@ -695,6 +695,10 @@
             <input type="checkbox" role="switch" aria-label={t("set.general.soundDoneAria")} checked={cfg.values.notify.sound_done === true} onchange={(e) => setNotify("sound_done", e.currentTarget.checked)} />
           </div>
           <div class="row">
+            <span>{t("set.general.permissionBar")}<small>{t("set.general.permissionBarSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.permissionBar")} checked={cfg.values.notify.permission_bar !== false} onchange={(e) => setNotify("permission_bar", e.currentTarget.checked)} />
+          </div>
+          <div class="row">
             <span>{t("set.general.long")}<small>{t("set.general.longSub")}</small></span>
             <select aria-label={t("set.general.long")} value={cfg.values.notify.long_command_secs} onchange={(e) => setNotify("long_command_secs", +e.currentTarget.value)}>
               {#each [10, 30, 60, 120, 300] as n}<option value={n}>{t("set.general.secs", { n })}</option>{/each}

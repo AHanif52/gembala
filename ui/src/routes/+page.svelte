@@ -30,6 +30,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
+  import { frontCard, needPanes, needRows, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed } from "$lib/attention";
   import type { UsageRow } from "$lib/usage";
   import { splitRows, subtabRows } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
@@ -542,6 +543,40 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// FR-100: the report dialog (the user's own, or an agent's draft from `gembala report`)
   let reportDraft = $state<{ title: string; body: string; from?: string; id?: string } | null>(null);
   const reportsFor = (pane: number) => (msgData?.reports ?? []).filter((r: any) => r.from_pane === pane);
+  /// FR-99 P2: every card a pane holds, oldest first (frontCard picks the front one). A draft or the command offer has no
+  /// timestamp of its own, so it counts as the oldest: it needs a person too.
+  type Card = { id: string; kind: "message" | "open" | "report" | "offer"; at: number; m?: any; o?: any; r?: any };
+  function cardsFor(pane: number): Card[] {
+    const cards: Card[] = [
+      ...pendingFor(pane).map((m: any) => ({ id: `msg:${m.id}`, kind: "message" as const, at: (m.at ?? 0) * 1000, m })),
+      ...opensFor(pane).map((o: any) => ({ id: `open:${o.id}`, kind: "open" as const, at: (o.at ?? 0) * 1000, o })),
+      ...reportsFor(pane).map((r: any) => ({ id: `rep:${r.id}`, kind: "report" as const, at: 0, r })),
+    ];
+    if (offer[pane]) cards.push({ id: "offer", kind: "offer", at: 0 });
+    return cards;
+  }
+  /// a pane name from the message engine ("shell-11") as a person reads it: "OpenCode · Migrasi API"
+  function whoOf(name: string) {
+    const p = Object.keys(meta).map(Number).find((x) => meta[x]?.name === name);
+    if (p == null) return name;
+    return [agentName(meta[p]?.profile), labels[p]].filter(Boolean).join(" · ") || name;
+  }
+  /// FR-75: an agent that isn't installed is never offered ("Buka dan kirim"), only refused (mockup section 3)
+  const installedAgent = (profile: string) => {
+    const agent = cfg?.values.profiles.find((p) => p.id === profile)?.agent ?? "";
+    return installed.includes(agent);
+  };
+  /// one folded card, in a sentence: who wants what, with the message cut short
+  function peekText(c: Card) {
+    if (c.kind === "message")
+      return simple
+        ? tt("card.peekMsg", { from: whoOf(c.m.from), to: whoOf(c.m.to), text: shortPreview(c.m.preview) })
+        : tt("card.peekMsgFull", { from: c.m.from, to: c.m.to, text: shortPreview(c.m.preview) });
+    if (c.kind === "open") return tt("card.peekOpen", { from: simple ? whoOf(c.o.from) : c.o.from, who: openWho(c.o), text: shortPreview(c.o.body) });
+    if (c.kind === "report") return tt("card.peekReport", { from: c.r.from, title: c.r.title });
+    return tt("offer.peek");
+  }
+  const shortPreview = (s: string) => (s.length > 70 ? `${s.slice(0, 69)}…` : s);
   // a word starting with "-" is a flag: a command that wasn't found (`claude-kantor --permission-mode default`), not a sentence
   const askOffer = (cmd: string, code: number) => code === 127 && cmd.trim().split(/\s+/).length >= 3 && !/(^|\s)-/.test(cmd);
   /// ponytail: the first installed agent is offered; remember the last one used per workspace when people ask for it
@@ -1044,6 +1079,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     loadChanges(c.pane);
   }
   let panelW = $state(460); // FR-22: changes panel width, saved in the layout
+  // FR-99 P2: the message drawer is a column, not a layer over the pane (it used to cover the cards' buttons, A2 no 7).
+  // The grid narrows by its width like it does for the changes panel, so every card stays clickable.
+  const drawerW = 360;
+  const rightPad = $derived((changes ? panelW : 0) + (drawer ? drawerW : 0));
   $effect(() => {
     const f = tab?.focus;
     if (changes && f !== undefined && f !== changes.pane && !dead[f]) loadChanges(f);
@@ -2166,7 +2205,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     welcome = await call("agents.detect", {}).catch(() => []);
   }
 
-  // FR-65: attention queue = every pane needing permission, longest waiting first
+  // FR-65, FR-99 P2: "Butuh lu" = every pane needing permission, the message cards waiting for a human, and a harness run
+  // stopped at a gate. Order and sentences live in lib/attention.ts (tested without the app).
   $effect(() => {
     for (const p of Object.keys(meta).map(Number)) {
       if (meta[p]?.status === "blocked") blockedAt[p] ??= Date.now();
@@ -2175,15 +2215,148 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       else if (approveAt[p]) delete approveAt[p];
     }
   });
-  const queue = $derived(
-    wss
-      .flatMap((w, wi) => w.tabs.flatMap((t, ti) => panes(t.tree).filter((p) => !dead[p] && (stat(p) === "blocked" || stat(p) === "approve")).map((p) => ({ p, wi, ti, t, w }))))
-      .sort((a, b) => (blockedAt[a.p] ?? approveAt[a.p] ?? 0) - (blockedAt[b.p] ?? approveAt[b.p] ?? 0)),
+  /// FR-99 P2: what each blocked pane's dialog asks, one call for all of them (same reader as the Telegram card). Polled
+  /// while anything is blocked so a dialog that got answered on its own screen makes the bar and the strip row disappear.
+  type Dialog = { waiting?: boolean; password?: boolean; ask?: string; why?: string; question?: string; trust?: boolean; seq?: number; options?: { key: string; label: string }[] };
+  let dialogs = $state<Record<number, Dialog>>({});
+  const blockedSig = $derived(
+    Object.keys(meta).map(Number).filter((p) => !dead[p] && meta[p]?.status === "blocked").sort((a, b) => a - b).join(","),
   );
+  $effect(() => {
+    const sig = blockedSig;
+    const lang = i18n.lang; // buttons carry the app's words ("Izinkan"/"Allow")
+    if (!sig) return void (dialogs = {});
+    let stop = false;
+    const read = () =>
+      call("pane.dialogs", { panes: sig.split(",").map(Number), lang })
+        .then((r) => !stop && r?.panes && (dialogs = r.panes))
+        .catch(() => {});
+    read();
+    const timer = setInterval(read, 2000);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+    };
+  });
+  /// blocked pane → the strip's kind: FR-84's reason wins, a plain shell asking for a password is its own kind
+  const paneNeedKind = (p: number): PaneNeed["kind"] => {
+    if (dialogs[p]?.password) return "password";
+    const k = blockedKindOf(p);
+    if (k === "answer") return "answer";
+    return meta[p]?.reason && waitingReasonKey(meta[p].reason) === "reason.trust" ? "trust" : "permission";
+  };
+  const byName = (n: string) => Object.keys(meta).map(Number).find((p) => meta[p]?.name === n);
+  /// first time the UI saw a run at its gate: the strip orders gates by it (the daemon's snapshot has no gate time)
+  let gateSince = $state<Record<string, number>>({});
+  $effect(() => {
+    for (const [id, s] of Object.entries(runs)) if (s.state === "gate") gateSince[id] ??= Date.now();
+  });
+  const needList = $derived.by(() => {
+    const panes: PaneNeed[] = blockedSig
+      ? blockedSig.split(",").map(Number).map((p) => ({ pane: p, kind: paneNeedKind(p), at: blockedAt[p] ?? now, ask: dialogs[p]?.ask, question: dialogs[p]?.question }))
+      : [];
+    const messages: MsgNeed[] = (msgData?.pending ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, from: m.from, to: m.to, pane: byName(m.to) ?? null }));
+    const opens: OpenNeed[] = (msgData?.opens ?? []).map((o: any) => ({ id: o.id, at: (o.at ?? 0) * 1000, from: o.from, to: agentName(o.profile), pane: o.from_pane ?? null }));
+    const gates: GateNeed[] = Object.entries(runs)
+      .filter(([, s]) => s.state === "gate")
+      .map(([id, s]) => ({
+        run: s.run,
+        ws: Math.max(0, wss.findIndex((w) => w.id === id)),
+        at: gateSince[id] ?? now,
+        ship: !!s.steps[s.gate ?? 0]?.human,
+        name: s.name,
+      }));
+    return needRows({ panes, messages, opens, gates, simple });
+  });
+  /// the strip's panes in order: ⌘⇧U and the row click use the same list
+  const queue = $derived(needPanes(needList).map((p) => ({ p })));
   const ago = (ms: number) => {
     const s = Math.max(0, Math.round(ms / 1000));
     return s < 60 ? tt("tile.secs", { n: s }) : s < 3600 ? tt("tile.mins", { n: Math.floor(s / 60) }) : tt("tile.hours", { n: Math.floor(s / 3600) });
   };
+  /// the profile's display name ("Claude Code", "Codex", "Oh My Pi"…), used by the strip and the cards
+  const agentName = (id: string | undefined) => (id ? (cfg?.values.profiles.find((p) => p.id === id)?.name ?? id) : "");
+  /// a blocked pane's agent, for the icon and the sentence
+  function needAgent(r: NeedRow) {
+    return r.pane == null ? "" : agentOf(r.pane) || meta[r.pane]?.agent || "";
+  }
+  /// the icon of a row: the sender's agent for a message row (the receiver's own icon is the pane it lands in)
+  function needIcon(r: NeedRow) {
+    if (r.kind === "message" || r.kind === "open") {
+      const p = byName(r.params.from);
+      return p == null ? "" : agentOf(p) || meta[p]?.agent || "";
+    }
+    return needAgent(r);
+  }
+  /// dot color of a strip row: the same colors as the bell (FR-87), so one kind looks the same everywhere
+  const dotOf = (k: NeedRow["kind"]) => (k === "password" ? "password" : k === "answer" ? "answer" : k === "message" || k === "open" || k === "gate" || k === "ship" ? "approve" : "permission");
+  /// the bold first line: `agent · task` in Sederhana (like the tab), `shell-9 · task` in Lengkap; a gate is the run's name
+  function needTitle(r: NeedRow) {
+    if (r.kind === "message" || r.kind === "open") {
+      if (simple) return whoOf(r.params.from);
+      return r.kind === "message" ? `${r.params.from} → ${r.params.to}` : r.params.from;
+    }
+    if (r.pane == null) return simple ? (r.params.name ?? "") : `Harness · ${r.params.name ?? ""}`;
+    const m = meta[r.pane];
+    const tabT = tabOf(r.pane);
+    // the agent's own task label (FR-69), else a tab name a person gave it
+    const task = labels[r.pane] || tabT?.title || "";
+    if (!simple) return `${m?.name ?? ""}${task || needAgent(r) ? ` · ${task || agentName(m?.profile)}` : ""}`;
+    const who = m?.agent === "shell" ? tt("need.terminal") : agentName(m?.profile) || needAgent(r);
+    return `${who}${task ? ` · ${task}` : ""}`;
+  }
+  /// second line (Lengkap only): which workspace the row lives in, when there's more than one
+  function needSub(r: NeedRow) {
+    if (r.pane == null || simple || wss.length < 2) return "";
+    const t = tabOf(r.pane);
+    return (t && wss.find((w) => w.tabs.includes(t))?.name) || "";
+  }
+  /// row params for the screen: pane names are engine words, so Sederhana gets "OpenCode · Migrasi API" instead
+  function rowParams(r: NeedRow) {
+    if (!simple) return r.params;
+    const p = { ...r.params };
+    if (p.from) p.from = whoOf(p.from);
+    if (p.to) p.to = whoOf(p.to);
+    return p;
+  }
+  /// FR-99 P2 (A1 no 32): rows waiting inside one workspace (a card sits in its pane's workspace, a gate in the run's)
+  function needCountIn(wi: number) {
+    const ids = new Set((wss[wi]?.tabs ?? []).map((t) => t.id));
+    return needList.filter((r) => (r.pane == null ? r.ws === wi : ids.has(tabOf(r.pane)?.id ?? ""))).length;
+  }
+  /// click a strip row: a pane/its card, or the flow view of the run at its gate
+  function goNeed(r: NeedRow) {
+    if (r.pane != null && meta[r.pane] && !dead[r.pane]) return jumpTo(r.pane);
+    if (r.pane == null) {
+      // the gate row has no pane: open that workspace's flow, where the gate card and its button live
+      at = { ws: r.ws, tab: at.ws === r.ws ? at.tab : 0 };
+      flow = true;
+    }
+  }
+  let barError = $state<Record<number, string>>({});
+  let answerText = $state<Record<number, string>>({});
+  let cardPick = $state<Record<number, string>>({});
+  /// FR-99 P2: the bar shows only while the pane waits and its dialog is readable; the switch in Pengaturan turns it off
+  /// without touching the strip, the bell, the banner or Telegram (mockup section 2).
+  const barShown = (p: number) => cfg?.values.notify.permission_bar !== false && !dead[p] && meta[p]?.status === "blocked" && dialogs[p]?.waiting !== false;
+  /// who is asking, in the profile's display name ("Codex", "Oh My Pi"…); a typed agent has no profile of its own
+  function barWho(p: number) {
+    const m = meta[p];
+    const id = agentOf(p) || (AGENTS.includes(m?.busy ?? "") ? m?.busy : "") || m?.profile || "";
+    return agentName(id) || m?.name || "";
+  }
+  /// a button says what it does; the dialog's number stays out of the label (the key hint in Lengkap shows what is typed)
+  const barLabel = (o: { key: string; label: string }) => o.label.replace(/^\d+\.\s*/, "");
+  const keyHint = (k: string) => (k === "once" ? "Enter" : k === "always" ? "→ Enter" : k === "esc" ? "Esc" : k);
+  /// FR-99 P2: answer a dialog from the bar. The daemon re-reads it (same path as the bot); `sent:false` = it's gone.
+  async function answerPane(pane: number, key?: string, text?: string) {
+    const seq = dialogs[pane]?.seq; // SEC-28: the daemon refuses an answer meant for a dialog that is gone
+    const r = await call("pane.answer", text ? { pane, text, seq } : { pane, key, seq }).catch((e) => ({ error: String(e) }));
+    delete dialogs[pane]; // answered or gone: the bar goes away either way, the poll confirms on its next tick
+    if (r?.error) return void (barError[pane] = errText(r.error));
+    delete barError[pane];
+    if (r?.sent && text) delete answerText[pane];
+  }
   /// FR-65: go to that tab and pane (click a queue row, Cmd+Shift+U)
   // FR-77 (H5, pen 20/21): Atur pakai AI. A visible agent tab gets the brief; the agent writes only the draft file,
   // checked here every 3 s until it exists; the review and Approve live in Settings › Harness
@@ -2624,21 +2797,33 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {runLive(runs[ws.id]) ? "● " : ""}{runs[ws.id].name} · {tOr(`hn.state.${runs[ws.id].state}`, runs[ws.id].state)}
       </button>
     {/if}
-    <!-- FR-44: below the search box, always visible even with a long tab list -->
-    {#if queue.length}
-      <!-- FR-65: attention queue; hidden when nothing is waiting -->
-      <div class="queue" role="region" aria-label={tt("status.blocked")}>
-        <div class="qhead">{tt("side.needsYou")} <span>{queue.length}</span></div>
-        {#each queue as q (q.p)}
-          {@const ag = agentOf(q.p) || meta[q.p]?.agent || ""}
-          {@const appr = stat(q.p) === "approve"}
-          <button class="tab" onclick={() => jumpTo(q.p)}>
-            <span class="tt"><span class="dot {appr ? 'approve' : 'blocked'}" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{labels[q.p] || GLYPH[ag] ? ` · ${labels[q.p] || ag}` : ""}</span>
-            <span class="kind" class:appr>{tt(wordKey(appr ? "approve" : blockedKindOf(q.p)))}</span><span class="k">{ago(now - ((appr ? approveAt[q.p] : blockedAt[q.p]) ?? now))}</span>
-            <span class="sub">{[appr ? approvalOf(q.p) : "", title(q.t) !== labels[q.p] ? title(q.t) : "", wss.length > 1 ? q.w.name : ""].filter(Boolean).join(" · ")}</span>
-          </button>
+    <!-- FR-44/FR-65/FR-99 P2: "Butuh lu" — everything waiting for a person, one sentence per row; hidden when nothing waits -->
+    {#if needList.length}
+      <div class="queue" role="region" aria-label={tt("side.needsYou")}>
+        <div class="qhead">{tt("side.needsYou")} <span class="n">{needList.length}</span><small>{tt("need.next", { key: pretty("Cmd+Shift+U") })}</small></div>
+        {#each [1, 2, 3] as g (g)}
+          {@const rows = needList.filter((r) => r.group === g)}
+          {#if rows.length}
+            <!-- the group titles only in Sederhana: they explain why the order isn't "newest first" -->
+            {#if simple}<div class="grp">{tOr(`need.group.${g}`, "")}</div>{/if}
+            {#each rows as r (r.key)}
+              <div class="need {r.kind}">
+                <button class="nrow" onclick={() => goNeed(r)}>
+                  <span class="dot {dotOf(r.kind)}" aria-hidden="true"></span>
+                  <span class="nmain">
+                    <span class="ntitle">
+                      {#if GLYPH[needIcon(r)]}<span class="aico {needIcon(r)}">{GLYPH[needIcon(r)]}</span>{/if}{needTitle(r)}
+                    </span>
+                    <span class="kind">{tt(r.what as Key, rowParams(r))}</span>
+                    {#if needSub(r)}<span class="sub">{needSub(r)}</span>{/if}
+                  </span>
+                  <span class="k">{ago(now - r.at)}</span>
+                </button>
+                <button class="act" onclick={() => goNeed(r)}>{tOr(`need.act.${r.act}`, "")}</button>
+              </div>
+            {/each}
+          {/if}
         {/each}
-        <div class="qhint">{tt("side.nextHint", { key: pretty("Cmd+Shift+U") })}</div>
       </div>
     {/if}
     {#each wss as w, wi (w.id)}
@@ -2658,9 +2843,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           <span class="chev" aria-hidden="true">{w.collapsed ? "▸" : "▾"}</span>
           <span class="wsname" title={w.name}>{w.name}</span>
           {#if w.collapsed}
-            <!-- FR-44: collapsed still shows the tab count and the most severe status -->
+            <!-- FR-44: collapsed still shows the tab count and the most severe status; FR-99 P2: and how many wait inside -->
             {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
-            <span class="wsum">{#if stText(st)}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{stText(st)}</span>{" · "}{/if}{ttn("side.tabs", w.tabs.length)}</span>
+            {@const need = needCountIn(wi)}
+            <span class="wsum">{#if stText(st)}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{stText(st)}</span>{" · "}{/if}{ttn("side.tabs", w.tabs.length)}{#if need}<span class="needsum"> · {tt("need.inWs", { n: need })}</span>{/if}</span>
           {/if}
           <!-- FR-52: new tab in THIS workspace; right click/Option = pick a profile -->
           <button class="wsadd" title={tt("side.newTabTip", { name: w.name })} aria-label={tt("side.newTabAria", { name: w.name })}
@@ -2807,14 +2993,14 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   {@const parent = compareOwner ?? owner}
   {@const helper = compareHelper ?? tab}
   {#if parent && helper}
-    <div class="helper-head" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right={changes ? `${panelW}px` : "0"}>
+    <div class="helper-head" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right="{rightPad}px">
       <button class="mini" onclick={() => openTab(at.ws, parent)}>← {title(parent)}</button>
       <span>› {simple ? tt("helper.simple", { name: title(parent) }) : title(helper)}</span>
       <button class="mini" onclick={toggleCompare}>{compareId ? tt("helper.unsplit") : simple ? tt("helper.compareSimple", { name: title(parent) }) : tt("helper.compare")}</button>
     </div>
   {/if}
 {/if}
-<div class="grid" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? (owner || compareHelper ? "32px" : "0") : (owner || compareHelper ? "60px" : "28px")} style:right={changes ? `${panelW}px` : "0"} bind:this={box}>
+<div class="grid" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? (owner || compareHelper ? "32px" : "0") : (owner || compareHelper ? "60px" : "28px")} style:right="{rightPad}px" bind:this={box}>
   {#if ws && !tab}
     <div class="empty">
       <span>{tt("main.wsEmpty", { name: ws.name })}</span>
@@ -2865,6 +3051,12 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 <!-- the folder once is enough: the agent toolbar already shows it -->
                 {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd" title={home(meta[pane]?.cwd)}>{short(meta[pane]?.cwd)}</span>{/if}
                 <span class="grow"></span>
+                <!-- FR-99 P2: the second door to the message box; the count = cards waiting in this pane -->
+                {#if cardsFor(pane).length}
+                  <button class="hb msgbox" title={tt("msg.title")} onclick={() => ((drawer = !drawer), drawer && refreshMsgs())}>
+                    {tt("msg.open")} <span class="n">{cardsFor(pane).length}</span>
+                  </button>
+                {/if}
                 {#if !compared}
                   <button class="hb" title="{tt('drag.right')} ⌘D" aria-label={tt("drag.right")} onclick={() => splitFocused("row")}>◫</button>
                   <button class="hb" title="{tt('drag.down')} ⌘⇧D" aria-label={tt("drag.down")} onclick={() => splitFocused("col")}>⊟</button>
@@ -2873,7 +3065,61 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               </div>
             {/if}
             {@const ed = editorShown(pane)}
-            <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
+            <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} class:withpbar={barShown(pane)} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
+              <!-- FR-99 P2: the agent's own question, read from its screen; the buttons are the bot's buttons. The original
+                   dialog stays visible in the terminal below. A pane whose bar is off keeps its own dialog as before. -->
+              {#if barShown(pane)}
+                {@const d = dialogs[pane] ?? {}}
+                {@const nk = paneNeedKind(pane)}
+                <div class="pbar {nk}" role="status">
+                  <div class="pq">
+                    {#if nk === "password"}
+                      <b>{tt("bar.password", { name: barWho(pane) })}</b>
+                      <small>{tt("bar.passwordNote")}</small>
+                    {:else if nk === "trust"}
+                      <b>{tt("bar.trust", { name: barWho(pane) })}</b>
+                      <small>{tt("bar.trustNote")}</small>
+                    {:else if nk === "answer"}
+                      <b>{tt("bar.answer", { name: barWho(pane) })}</b>{#if d.question}<span class="qtext">{d.question}</span>{/if}
+                    {:else}
+                      <b>{tt("bar.permission", { name: barWho(pane) })}</b>{#if d.ask}<span class="cmd">{d.ask}</span>{/if}
+                      {#if d.why}<small class="why">{d.why}</small>{/if}
+                    {/if}
+                  </div>
+                  {#if nk === "answer"}
+                    {#if d.options?.length}
+                      <div class="optlist">
+                        {#each d.options as o (o.key)}
+                          <button class="opt" onclick={() => answerPane(pane, o.key)}><span class="num">{o.key}</span>{barLabel(o)}</button>
+                        {/each}
+                      </div>
+                    {/if}
+                    <div class="reply">
+                      <input class="rin" bind:value={answerText[pane]} placeholder={tt("bar.replyPh")} aria-label={tt("bar.replyPh")}
+                        onkeydown={(e) => {
+                          if (e.key === "Enter" && answerText[pane]?.trim()) (e.preventDefault(), answerPane(pane, undefined, answerText[pane]));
+                        }} />
+                      <button class="mini pri" disabled={!answerText[pane]?.trim()} onclick={() => answerPane(pane, undefined, answerText[pane])}>{tt("common.send")}</button>
+                    </div>
+                  {:else if d.options?.length}
+                    <div class="acts">
+                      {#each d.options as o (o.key)}
+                        <button class="mini {o.key === "esc" ? "danger" : o.key === "1" || o.key === "once" ? "pri" : ""}" onclick={() => answerPane(pane, o.key)}>
+                          {barLabel(o)}{#if !simple}<span class="keys">{keyHint(o.key)}</span>{/if}
+                        </button>
+                      {/each}
+                      <small>{tt("bar.alsoType")}</small>
+                    </div>
+                  {:else}
+                    <div class="acts">
+                      {#if nk !== "password"}<button class="mini pri" onclick={() => tiles[pane]?.focus()}>{tt("bar.openAnswer")}</button>{/if}
+                      {#if nk === "permission"}<small>{tt("bar.unknown")}</small>{/if}
+                    </div>
+                  {/if}
+                  {#if barError[pane]}<div class="berr" role="alert">{barError[pane]}</div>{/if}
+                </div>
+              {/if}
+              <div class="tslot" class:withpbar={barShown(pane)}>
               {#if t.parent ? active : liveTabs.includes(t.id) || compared}
               <Tile bind:this={tiles[pane]} {pane} codexPane={agentOf(pane) === "codex"} focused={at.ws === wi && at.tab === ti && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
@@ -2901,6 +3147,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   return true;
                 }} />
               {/if}
+              </div>
             </div>
             {#if ed && !ran[pane] && !draft[pane]}
               <!-- FR-59: Start panel: gone once a command runs or typing starts -->
@@ -3111,89 +3358,101 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               </div>
             {/if}
           {/if}
-          {#if pendingFor(pane).length || opensFor(pane).length || closesFor(pane).length || offer[pane] || reportsFor(pane).length}
-          <!-- FR-98 bug: the cards stack in one column instead of sitting on top of each other -->
+          {#if cardsFor(pane).length || closesFor(pane).length}
+          <!-- FR-98 bug, FR-99 P2: one stack per pane. The front card is whole (the longest waiting, unless "Lihat" picked
+               another); the rest fold to a line with its summary, so two waiting cards never hide each other. -->
+          {@const stack = frontCard(cardsFor(pane), cardPick[pane])}
           <div class="cards">
-          {#each reportsFor(pane) as r (r.id)}
-            <!-- FR-100: an agent drafted a GitHub issue; nothing is sent until the user opens it and presses Submit on GitHub -->
-            <div class="card offer" role="alert">
-              <span>{tt("rep.card", { from: r.from })} <b>{r.title}</b></span>
-              <span class="sub">{tt("rep.cardSub")}</span>
-              <span class="acts">
-                <button class="mini" onclick={() => call("report.discard", { id: r.id }).then(refreshMsgs)}>{tt("rep.discard")}</button>
-                <button class="mini pri" onclick={() => (reportDraft = { title: r.title, body: r.body, from: r.from, id: r.id })}>{tt("rep.review")}</button>
-              </span>
-            </div>
-          {/each}
-          {#if offer[pane]}
-            <!-- FR-99 P1: the sentence went to zsh; offer it to an agent instead -->
-            <div class="card offer" role="alert">
-              <span>{offerAgent ? tt("offer.ask", { name: offerAgent.name }) : tt("offer.noAgent")}</span>
-              <span class="acts">
-                <button class="mini" onclick={() => delete offer[pane]}>{offerAgent ? tt("offer.no") : tt("common.close")}</button>
-                <button class="mini pri" onclick={() => sendOffer(pane)}>{offerAgent ? tt("offer.send") : tt("offer.install")}</button>
-              </span>
-            </div>
-          {/if}
-          {#each pendingFor(pane) as m (m.id)}
-            <!-- FR-12: card near the target pane; click only (Enter doesn't approve by accident) -->
-            <div class="card" role="alertdialog" aria-label={tt("msg.pending")}>
-              <span><b>{m.from}</b> {tt("card.wants")} <span class="keys">{m.id}</span></span>
-              <pre>{m.body}</pre>
-              <span class="acts">
-                <button class="mini" onclick={() => call("msg.reject", { id: m.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
-                <button class="mini" onclick={() => call("msg.approve", { id: m.id }).then(refreshMsgs)}>{tt("msg.approve")}</button>
-              </span>
-            </div>
-          {/each}
-          {#each opensFor(pane).slice(0, 1) as o (o.id)}
-            <!-- FR-75 (pen screen 15): one card at a time, the rest counted; click only, like FR-12 -->
-            {@const n = opensFor(pane).length}
-            {@const openAgent = agentForOpen(o)}
-            <div class="card" role="alertdialog" aria-label={tt("open.title", { who: openWho(o) })}>
-              <b>{tt("open.title", { who: openWho(o) })}{n > 1 ? ` · ${tt("open.more", { n: n - 1 })}` : ""}</b>
-              <span>{tt("open.ask", { from: o.from, who: openWho(o) })}</span>
-              <pre>{o.body}</pre>
-              {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(openAgent ?? "")}
-                <div class="sub"><span>{tt("open.modelEffort")}</span>
-                  {#if modelsForOpen(o).length}
-                    <select aria-label={tt("open.modelEffort")} value={modelsForOpen(o).some((m) => m.id === o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
-                      <option value="">{tt("set.acc.default.opt")}</option>{#each modelsForOpen(o) as model (model.id)}<option value={model.id}>{model.label}</option>{/each}
-                    </select>
-                  {/if}
-                  <input aria-label={tt("set.acc.modelAria", { name: openWho(o) })} value={o.model} placeholder={tt("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
-                  {#if ["claude", "codex", "omp"].includes(openAgent ?? "")}
-                    <select aria-label={tt("open.effort")} bind:value={o.effort}>
-                      <option value="">{tt("set.acc.default.opt")}</option>{#each openEfforts as effort (effort)}<option value={effort}>{effort}</option>{/each}
-                    </select>
-                  {:else}
-                    <span>{tt("open.effortUnsupported", { agent: openAgent ?? o.profile })}</span>
-                  {/if}
-                </div>
-              {:else}
-                <span class="sub">{tt("open.modelUnsupported", { agent: openAgent ?? o.profile })}</span>
-              {/if}
-              <span class="sub" title={o.cwd}>{tt("open.where", { cwd: short(o.cwd) })}</span>
-              <span class="acts">
-                <button class="mini" onclick={() => call("open.reject", { id: o.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
-                <button class="mini" onclick={() => approveOpen(o)}>{tt("open.go")}</button>
-              </span>
-            </div>
-          {/each}
-          {#each closesFor(pane) as c (c.id)}
-            <!-- FR-86: an agent asked to close another pane. Only this card closes it (4 Nov: it used to type "/exit" into it) -->
-            <div class="card" role="alertdialog" aria-label={tt("close.reqTitle", { from: c.from, name: c.target })}>
-              <b>{tt("close.reqTitle", { from: c.from, name: c.target })}</b>
-              <span class="sub">{tt("close.reqAsk")}</span>
-              {#if c.status === "working" || c.status === "blocked"}
-                <span class="sub">{tt(c.status === "working" ? "close.reqBusy" : "close.reqBlocked")}</span>
-              {/if}
-              <span class="acts">
-                <button class="mini" onclick={() => call("close.reject", { id: c.id }).then(refreshMsgs)}>{tt("close.reqStay")}</button>
-                <button class="mini danger" onclick={() => call("close.approve", { id: c.id }).then(refreshMsgs)}>{tt("close.reqGo")}</button>
-              </span>
-            </div>
-          {/each}
+            {#if cardsFor(pane).length > 1}
+              <div class="cnt">{tt("card.count", { n: cardsFor(pane).length })}<small>{tt("card.countHint")}</small></div>
+            {/if}
+            {#if stack.front?.kind === "report" && stack.front.r}
+              {@const r = stack.front.r}
+              <!-- FR-100: an agent drafted a GitHub issue; nothing is sent until the user opens it and presses Submit on GitHub -->
+              <div class="card offer" role="alert">
+                <span>{tt("rep.card", { from: r.from })} <b>{r.title}</b></span>
+                <span class="sub">{tt("rep.cardSub")}</span>
+                <span class="acts">
+                  <button class="mini" onclick={() => call("report.discard", { id: r.id }).then(refreshMsgs)}>{tt("rep.discard")}</button>
+                  <button class="mini pri" onclick={() => (reportDraft = { title: r.title, body: r.body, from: r.from, id: r.id })}>{tt("rep.review")}</button>
+                </span>
+              </div>
+            {:else if stack.front?.kind === "offer"}
+              <!-- FR-99 P1: the sentence went to zsh; offer it to an agent instead -->
+              <div class="card offer" role="alert">
+                <span>{offerAgent ? tt("offer.ask", { name: offerAgent.name }) : tt("offer.noAgent")}</span>
+                <span class="acts">
+                  <button class="mini" onclick={() => delete offer[pane]}>{offerAgent ? tt("offer.no") : tt("common.close")}</button>
+                  <button class="mini pri" onclick={() => sendOffer(pane)}>{offerAgent ? tt("offer.send") : tt("offer.install")}</button>
+                </span>
+              </div>
+            {:else if stack.front?.kind === "message" && stack.front.m}
+              {@const m = stack.front.m}
+              <!-- FR-12: card near the target pane; click only (Enter doesn't approve by accident). No message id on screen. -->
+              <div class="card" role="alertdialog" aria-label={tt("msg.pending")}>
+                <span>{simple ? tt("card.msgSimple", { from: whoOf(m.from), to: whoOf(m.to) }) : tt("card.msgFull", { from: m.from, to: m.to })}</span>
+                <blockquote>{m.body}</blockquote>
+                <span class="acts">
+                  <small>{tt("card.approveNote", { to: simple ? whoOf(m.to) : m.to })}</small>
+                  <button class="mini" onclick={() => call("msg.reject", { id: m.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
+                  <button class="mini pri" onclick={() => call("msg.approve", { id: m.id }).then(refreshMsgs)}>{tt("msg.approve")}</button>
+                </span>
+              </div>
+            {:else if stack.front?.kind === "open" && stack.front.o}
+              {@const o = stack.front.o}
+              {@const openAgent = agentForOpen(o)}
+              <!-- FR-75 (pen screen 15): the same card for every agent; "Buka dan kirim" opens it in this tab -->
+              <div class="card" role="alertdialog" aria-label={tt("open.title", { who: openWho(o) })}>
+                <span>{simple ? tt("open.askSimple", { from: whoOf(o.from), who: openWho(o) }) : tt("open.ask", { from: o.from, who: openWho(o) })}</span>
+                <blockquote>{o.body}</blockquote>
+                {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(openAgent ?? "")}
+                  <div class="sub"><span>{tt("open.modelEffort")}</span>
+                    {#if modelsForOpen(o).length}
+                      <select aria-label={tt("open.modelEffort")} value={modelsForOpen(o).some((m) => m.id === o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
+                        <option value="">{tt("set.acc.default.opt")}</option>{#each modelsForOpen(o) as model (model.id)}<option value={model.id}>{model.label}</option>{/each}
+                      </select>
+                    {/if}
+                    <input aria-label={tt("set.acc.modelAria", { name: openWho(o) })} value={o.model} placeholder={tt("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
+                    {#if ["claude", "codex", "omp"].includes(openAgent ?? "")}
+                      <select aria-label={tt("open.effort")} bind:value={o.effort}>
+                        <option value="">{tt("set.acc.default.opt")}</option>{#each openEfforts as effort (effort)}<option value={effort}>{effort}</option>{/each}
+                      </select>
+                    {:else}
+                      <span>{tt("open.effortUnsupported", { agent: openAgent ?? o.profile })}</span>
+                    {/if}
+                  </div>
+                {:else}
+                  <span class="sub">{tt("open.modelUnsupported", { agent: openAgent ?? o.profile })}</span>
+                {/if}
+                <span class="sub" title={o.cwd}>{simple ? tt("open.whereSimple", { cwd: short(o.cwd) }) : tt("open.where", { cwd: short(o.cwd) })}</span>
+                <span class="acts">
+                  {#if installedAgent(o.profile)}<button class="mini" onclick={() => call("open.reject", { id: o.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
+                  {:else}<span class="sub">{tt("open.notInstalled", { name: openWho(o) })}</span>{/if}
+                  {#if installedAgent(o.profile)}<button class="mini pri" onclick={() => approveOpen(o)}>{simple ? tt("open.goSimple") : tt("open.go")}</button>{/if}
+                </span>
+              </div>
+            {/if}
+            {#each stack.rest as c (c.id)}
+              <div class="peek">
+                <span class="dot {c.kind === "open" || c.kind === "message" ? "approve" : "blocked"}" aria-hidden="true"></span>
+                <span class="psum">{peekText(c)}</span>
+                <button class="mini" onclick={() => (cardPick[pane] = c.id)}>{tt("need.act.see")}</button>
+              </div>
+            {/each}
+            {#each closesFor(pane) as c (c.id)}
+              <!-- FR-86: an agent asked to close another pane. Only this card closes it (4 Nov: it used to type "/exit" into it) -->
+              <div class="card" role="alertdialog" aria-label={tt("close.reqTitle", { from: c.from, name: c.target })}>
+                <b>{tt("close.reqTitle", { from: c.from, name: c.target })}</b>
+                <span class="sub">{tt("close.reqAsk")}</span>
+                {#if c.status === "working" || c.status === "blocked"}
+                  <span class="sub">{tt(c.status === "working" ? "close.reqBusy" : "close.reqBlocked")}</span>
+                {/if}
+                <span class="acts">
+                  <button class="mini" onclick={() => call("close.reject", { id: c.id }).then(refreshMsgs)}>{tt("close.reqStay")}</button>
+                  <button class="mini danger" onclick={() => call("close.approve", { id: c.id }).then(refreshMsgs)}>{tt("close.reqGo")}</button>
+                </span>
+              </div>
+            {/each}
           </div>
           {/if}
           {#if confirm?.pane === pane}
@@ -3267,7 +3526,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       onsent={() => ((reportDraft = null), d.id && call("report.discard", { id: d.id }).then(refreshMsgs))} />
   {/if}
   {#if drawer}
-    <Messages data={msgData} {rows} models={modelsForOpen} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho} />
+    <Messages data={msgData} {rows} models={modelsForOpen} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho}
+      person={whoOf} {simple} width={drawerW} right={changes ? panelW : 0} />
   {/if}
   {#if compose}
     <div class="confirm compose" role="dialog" aria-label={tt("cmp.title")}>
@@ -3985,28 +4245,114 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   .qhead {
     display: flex;
-    justify-content: space-between;
+    gap: 6px;
+    align-items: baseline;
     padding: 2px 8px;
     color: var(--tx-amber, #d97706);
     font-size: 11px;
     font-weight: 600;
-  }
-  .qhint {
-    padding: 2px 8px;
-    color: var(--muted);
-    font-size: 11px;
-  }
-  /* FR-87: the age sits next to the name and the kind word gets its own row, so a long kind
-     word no longer squeezes the name into "s…" or pushes the age onto another line */
-  .queue .tab .k {
-    grid-area: 1 / 2;
     white-space: nowrap;
   }
-  .queue .tab .kind {
-    grid-column: 1 / -1;
+  .qhead small {
+    min-width: 0;
+    margin-left: auto;
     overflow: hidden;
+    color: var(--muted);
+    font-weight: 400;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .qhead .n {
+    padding: 0 6px;
+    border-radius: 999px;
+    background: rgba(217, 119, 6, 0.2);
+    font-size: 10.5px;
+  }
+  /* FR-99 P2: one row per thing waiting; the action button appears on hover, like the mockup's strip */
+  .grp {
+    padding: 5px 8px 1px;
+    color: var(--tx-amber, #b45309);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+  .need {
+    position: relative;
+    display: flex;
+  }
+  .need .nrow {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 7px 1fr auto;
+    gap: 6px;
+    align-items: start;
+    min-width: 0;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .need .nrow:hover {
+    background: rgba(217, 119, 6, 0.12);
+  }
+  .need .nrow .dot {
+    margin-top: 5px;
+  }
+  .need .nmain {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .need .ntitle {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .need .kind,
+  .need .sub {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* the sentence is what the row is for: two lines instead of one cut-off line */
+  .need .kind {
+    display: -webkit-box;
+    white-space: normal;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .need .k {
+    color: var(--muted);
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
+  .need .act {
+    display: none;
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 2px 8px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--card);
+    color: var(--fg);
+    font: 11px system-ui, -apple-system, sans-serif;
+    cursor: pointer;
+  }
+  .need:hover .act,
+  .need .act:focus-visible {
+    display: inline-block;
+  }
+  .wsum.needsum {
+    color: var(--tx-amber, #d97706);
   }
   /* FR-82: update notice remains visible below the sidebar's workspace list. */
   .updbtn {
@@ -4405,6 +4751,118 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     position: absolute;
     inset: 0;
   }
+  /* FR-99 P2: with the permission bar the terminal shrinks instead of sitting under the bar; the bar wraps, so the
+     terminal must not be measured before the bar's height is known (flex does that by itself) */
+  .body.withpbar {
+    display: flex;
+    flex-direction: column;
+  }
+  .tslot.withpbar {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+  }
+  .pbar {
+    flex: none;
+    padding: 8px 12px 9px;
+    border-bottom: 1px solid rgba(217, 119, 6, 0.45);
+    background: rgba(217, 119, 6, 0.08);
+    font: 12.5px system-ui, -apple-system, sans-serif;
+  }
+  .pbar.answer {
+    border-bottom-color: rgba(249, 115, 22, 0.45);
+    background: rgba(249, 115, 22, 0.08);
+  }
+  .pbar .pq {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: baseline;
+  }
+  .pbar .qtext {
+    font-size: 13px;
+  }
+  .pbar .cmd {
+    padding: 2px 7px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--bg);
+    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .pbar .why {
+    display: block;
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  .pbar .acts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 7px;
+  }
+  .pbar .acts small {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .pbar .optlist {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .pbar .opt {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+    text-align: left;
+    cursor: pointer;
+  }
+  .pbar .opt:hover {
+    border-color: #d97706;
+  }
+  .pbar .opt .num {
+    min-width: 12px;
+    color: var(--muted);
+    font: 11px "SF Mono", Menlo, monospace;
+  }
+  .pbar .reply {
+    display: flex;
+    gap: 6px;
+    margin-top: 7px;
+  }
+  .pbar .rin {
+    flex: 1;
+    height: 28px;
+    padding: 4px 9px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .pbar .berr {
+    margin-top: 6px;
+    color: var(--tx-red, #ef4444);
+    font-size: 11.5px;
+  }
+  .hb.msgbox {
+    width: auto;
+    padding: 0 6px;
+    font-size: 11px;
+  }
+  .hb.msgbox .n {
+    color: var(--tx-amber, #d97706);
+    font-weight: 600;
+  }
   .body.withbar {
     bottom: 26px;
   }
@@ -4713,6 +5171,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   .head .hb {
     visibility: hidden;
+  }
+  /* FR-99 P2: waiting cards are an action, not a tool: this one stays visible (with its count) */
+  .head .hb.msgbox {
+    visibility: visible;
   }
   .tile:hover .head .hb,
   .head.on .hb,
@@ -5023,12 +5485,53 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   .card.offer {
     border-color: var(--blue, #3b82f6);
   }
-  .card pre {
+  /* FR-99 P2: the front card is whole, the rest fold under it (the message text is quoted, like any card's body) */
+  .cards .cnt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--tx-amber, #d97706);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .cards .cnt small {
+    margin-left: auto;
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 10.5px;
+  }
+  .card blockquote {
     margin: 0;
     max-height: 120px;
     overflow: auto;
+    padding: 6px 9px;
+    border-left: 2px solid var(--line);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 12.5px;
     white-space: pre-wrap;
-    font: 12px "SF Mono", Menlo, monospace;
+  }
+  .cards .peek {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid rgba(217, 119, 6, 0.35);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .cards .peek .psum {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cards .peek .dot {
+    flex: none;
+    margin: 0;
   }
   .acts {
     display: flex;
