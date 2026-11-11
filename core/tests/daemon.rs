@@ -1114,6 +1114,44 @@ fn status_blocked_dari_dialog_codex() {
     wait_blocked(&mut ui, pane, "dialog izin Codex");
 }
 
+/// FR-99 P2: the permission bar reads the same dialog as the bot (`pane.dialogs`), and both of its answers only write while
+/// the pane is still `blocked` (`pane.answer`): a button sends the same bytes as the bot's, a typed answer lands in the pane.
+#[test]
+fn fr99_bar_izin_dan_jawaban() {
+    let (_d, mut ui, pane) = pane_with_screen("p2-bar", "codex", "codex-0.167.0-net-y");
+    wait_blocked(&mut ui, pane, "dialog izin Codex");
+    let key = pane.to_string();
+    let resp = ui.call("pane.dialogs", json!({"panes": [pane], "lang": "id"}));
+    let r = resp["result"]["panes"][key.as_str()].clone();
+    assert_eq!(r["waiting"], true, "{resp}");
+    assert_eq!(r["password"], false);
+    assert_eq!(r["ask"], "curl -sI https://example.com -o head.txt");
+    assert!(r["why"].as_str().unwrap().starts_with("Allow this exact curl command"), "{r}");
+    let opts = r["options"].as_array().unwrap();
+    assert_eq!(opts.len(), 3, "{r}");
+    assert_eq!((opts[0]["key"].as_str(), opts[0]["label"].as_str()), (Some("1"), Some("1. Izinkan")));
+    assert_eq!((opts[1]["label"].as_str(), opts[2]["label"].as_str()), (Some("2. Izinkan terus"), Some("Tolak")));
+    // SEC-28: an answer for another dialog generation writes nothing (the bar was rendered before a new question)
+    assert_eq!(ui.call("pane.answer", json!({"pane": pane, "key": "1", "seq": 987654}))["result"]["reason"], "changed");
+    assert_eq!(ui.call("pane.dialogs", json!({"panes": [pane], "lang": "id"}))["result"]["panes"][key.as_str()]["waiting"], true);
+    // a button = the same shortcut the bot sends (`codex_key` read the dialog); the pane echoes it
+    assert_eq!(ui.call("pane.answer", json!({"pane": pane, "key": "1"}))["result"]["sent"], true);
+    // a typed answer is written as if typed (bracketed paste + Enter), and shows up in the pane
+    assert_eq!(ui.call("pane.answer", json!({"pane": pane, "text": "HALO-99"}))["result"]["sent"], true);
+    let out = ui.attach_until(pane, &["HALO-99"]);
+    assert!(out.contains("HALO-99"), "{out}");
+    // a pane that isn't blocked answers nothing (the bar is gone by then); no key or text is written
+    let d = start("p2-gone");
+    let mut idle = Cli::ui(&d);
+    let shell = idle.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(idle.call("pane.answer", json!({"pane": shell, "key": "1"}))["result"]["reason"], "gone");
+    assert_eq!(idle.call("pane.answer", json!({"pane": shell, "text": "x"}))["result"]["reason"], "gone");
+    assert_eq!(idle.call("pane.dialogs", json!({"panes": [shell]}))["result"]["panes"][shell.to_string().as_str()]["waiting"], false);
+    // no pane at all: the UI gets an empty map, never an error that breaks the strip
+    assert_eq!(idle.call("pane.dialogs", json!({"panes": [9999]}))["result"]["panes"], json!({}));
+}
+
 /// FR-4: Claude's WebFetch dialog ("Do you want to allow …") is a permission dialog too, not a finished turn (11 Nov it
 /// read as working, then done, and no card came).
 #[test]

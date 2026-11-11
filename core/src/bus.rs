@@ -25,7 +25,9 @@ pub struct Msg {
 impl Msg {
     pub fn summary(&self) -> Value {
         let preview: String = crate::git::redact(&self.body).chars().take(80).collect();
-        json!({"id": self.id, "from": self.from_name, "to": self.to_name, "hop": self.hop, "reply_to": self.reply_to, "preview": preview})
+        // FR-99 P2: seconds since the epoch, so the "Butuh lu" strip can put the longest wait on top
+        let at = self.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        json!({"id": self.id, "from": self.from_name, "to": self.to_name, "hop": self.hop, "reply_to": self.reply_to, "preview": preview, "at": at})
     }
 }
 
@@ -205,6 +207,19 @@ mod tests {
             hop,
             at: SystemTime::now(),
         }
+    }
+
+    /// FR-99 P2: a pending card / FR-75 request carries its age, so the strip can put the longest wait on top and never
+    /// chains a message written a minute ago above one from an hour ago.
+    #[test]
+    fn ringkasan_pesan_membawa_umur() {
+        let old = Msg { at: SystemTime::now() - Duration::from_secs(3600), ..msg("lama", 0) };
+        let s = old.summary();
+        let at = s["at"].as_u64().unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        assert!((now - 3700..=now - 3500).contains(&at), "{s}");
+        assert_eq!(s["id"], "lama");
+        assert!(!s["preview"].as_str().unwrap().contains("sk-ant"), "{s}");
     }
 
     /// FR-66: only real messages that aren't answered or held get an automatic answer

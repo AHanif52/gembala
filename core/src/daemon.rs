@@ -721,7 +721,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "pending": eng.pending.iter().map(|m| { let mut v = m.summary(); v["body"] = json!(m.body); v }).collect::<Vec<_>>(),
                 // FR-75: same exception, the open card shows the task as it will be sent
                 "opens": eng.opens.iter().map(|o| json!({"id": o.msg.id, "from": o.msg.from_name, "from_pane": o.msg.from, "target": o.msg.to_name, "profile": o.profile,
-                    "account": o.account, "model": o.model, "effort": o.effort, "cwd": o.cwd, "workspace": o.workspace, "body": o.msg.body})).collect::<Vec<_>>(),
+                    "account": o.account, "model": o.model, "effort": o.effort, "cwd": o.cwd, "workspace": o.workspace, "body": o.msg.body,
+                    "at": o.msg.at.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)})).collect::<Vec<_>>(),
                 // FR-86: a close request waits for the user like an open card
                 "closes": closes,
                 "queued": queues,
@@ -1225,6 +1226,58 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             st.release(name);
             st.add_alias(&pane, &old);
             Ok(json!({"name": name, "aliases": *pane.aliases.lock().unwrap()}))
+        }
+        // FR-99 P2: what every blocked pane's dialog asks, read once for the whole UI (permission bar + "Butuh lu" strip).
+        // Same reader as the Telegram card (`telegram::dialog_view`), so the buttons and their words can't drift apart.
+        "pane.dialogs" => {
+            let id_l = p["lang"].as_str() == Some("id");
+            let mut out = serde_json::Map::new();
+            for id in p["panes"].as_array().into_iter().flatten().filter_map(Value::as_u64) {
+                let Some(pane) = st.panes.lock().unwrap().get(&id).cloned() else { continue };
+                let blocked = *pane.status.lock().unwrap() == "blocked";
+                let mut v = if blocked {
+                    let agent = pane.agent_name().unwrap_or_default();
+                    let reason = pane.claude.lock().unwrap().reason.clone();
+                    let screen = pane.view.lock().unwrap().0.text();
+                    telegram::dialog_view(&agent, &screen, &reason, id_l)
+                } else {
+                    json!({})
+                };
+                // same termios signal as the FR-80 sender refusal: a plain shell waiting for a password
+                let password = blocked && pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master);
+                v["waiting"] = json!(blocked);
+                v["password"] = json!(password);
+                // SEC-28: the dialog's generation, given back with the answer; a different one means another question is up
+                v["seq"] = json!(pane.status_seq.load(std::sync::atomic::Ordering::Relaxed));
+                out.insert(id.to_string(), v);
+            }
+            Ok(json!({"panes": Value::Object(out)}))
+        }
+        // FR-99 P2, SEC-20: the only way the app answers an agent's own dialog, by button (`key`) or by typed answer
+        // (`text`). Both re-check that the pane is still blocked; a dialog that is gone sends nothing (`gone`).
+        "pane.answer" => {
+            let pane = st.pane(p)?;
+            let id = p["pane"].as_u64().unwrap_or_default();
+            if *pane.status.lock().unwrap() != "blocked" {
+                return Ok(json!({"sent": false, "reason": "gone"}));
+            }
+            // SEC-28: the bar answers the dialog it read. A different generation = another question came up meanwhile.
+            if let Some(seq) = p["seq"].as_u64()
+                && seq != pane.status_seq.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return Ok(json!({"sent": false, "reason": "changed"}));
+            }
+            if let Some(text) = p["text"].as_str() {
+                let body = msg::sanitize(text)?;
+                if body.trim().is_empty() {
+                    return Err("bad_params");
+                }
+                type_into(st, id, &pane, &msg::paste(body.trim()))?;
+                return Ok(json!({"sent": true}));
+            }
+            let key = p["key"].as_str().ok_or("bad_params")?;
+            let sent = telegram::send_answer(st, id, &pane, key);
+            Ok(json!({"sent": sent, "reason": if sent { Value::Null } else { json!("gone") }}))
         }
         "pane.info" => {
             let pane = st.pane(p)?;

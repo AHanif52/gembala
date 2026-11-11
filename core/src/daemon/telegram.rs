@@ -389,7 +389,9 @@ fn keys(agent: &str) -> &'static [&'static str] {
     // Codex 0.167 numbered dialog (10 Nov screen): `› 1. Yes, proceed (y)`; a digit button sends the shortcut that row
     // shows in parentheses (codex_key), read again when pressed.
     // Claude numbered dialog: digits; Esc cancels.
-    if agent == "claude" || agent == "codex" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &["esc"] }
+    // FR-99 P2: an agent whose dialog was never recorded gets no button (Gemini, a new version): the prompt is answered on
+    // the Mac. Sending Esc there could cancel something the user wanted, so the bar and the bot show no buttons at all.
+    if agent == "claude" || agent == "codex" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &[] }
 }
 
 /// `❯ 2. No` / `  3. No, and tell Claude…` / Codex `› 1. Yes` -> the option number of a numbered dialog row
@@ -405,25 +407,50 @@ fn blocked_keys(agent: &str, screen: &str, reason: &str, id_l: bool) -> Vec<(&'s
     if reason == claude::TRUST {
         Vec::new()
     } else if agent == "claude" || agent == "codex" {
-        claude_keys(screen)
+        claude_keys(agent, screen, id_l)
     } else {
         keys(agent).iter().map(|k| (*k, button_label(agent, k, id_l))).collect()
     }
 }
 
-/// FR-80: omp and OpenCode buttons say what they do in the bot's language (the screen words are English and
-/// "Allow once" doesn't say it approves one run); Claude/Codex keep their own option labels.
+/// FR-80: omp and OpenCode buttons say what they do in the app's language (the screen words are English and "Allow once"
+/// doesn't say it approves one run). FR-99 P2: OpenCode's own words "once/always" became "Izinkan sekali/Izinkan selalu"
+/// (the mockup's bar and the bot show the same three buttons), and "don't ask again" reads "Izinkan terus".
 fn button_label(agent: &str, key: &str, id_l: bool) -> String {
     let word = match (agent, key) {
         ("omp", "once") => if id_l { "Izinkan" } else { "Allow" },
         ("omp", "esc") => if id_l { "Tolak" } else { "Deny" },
-        ("opencode", "once") => if id_l { "Sekali" } else { "Once" },
-        ("opencode", "always") => if id_l { "Selalu" } else { "Always" },
+        ("opencode", "once") => if id_l { "Izinkan sekali" } else { "Allow once" },
+        ("opencode", "always") => if id_l { "Izinkan selalu" } else { "Allow always" },
         ("opencode", "esc") => if id_l { "Tolak" } else { "Reject" },
         (_, "esc") => if id_l { "Tolak" } else { "Deny" },
         _ => key,
     };
     word.to_string()
+}
+
+/// FR-99 P2: one button per option of a numbered dialog, in the words the user acts with. The dialog's own text stays the
+/// fallback (BRD: the agent's question isn't translated), but the shapes every agent has get Gembala's words so the bar,
+/// the bot and the strip say the same thing. None = no button: a mode switch ("switch to auto mode") and the deny option,
+/// which is the same cancel as the one "Tolak" button already under every dialog (Claude "4. No", Codex "3. No … (esc)").
+fn option_label(i: usize, raw: &str, id_l: bool) -> Option<String> {
+    if switches_mode(raw) {
+        return None;
+    }
+    let l = raw.to_lowercase();
+    if ["no", "deny", "reject", "cancel"].iter().any(|w| l.trim_start().starts_with(w)) {
+        return None;
+    }
+    let again = ["don't ask", "dont ask", "always", "from now on", "this session"].iter().any(|w| l.contains(w));
+    let yes = ["yes", "proceed", "allow", "approve"].iter().any(|w| l.contains(w));
+    let word = if again && yes {
+        if id_l { "Izinkan terus" } else { "Allow always" }
+    } else if yes {
+        if id_l { "Izinkan" } else { "Allow" }
+    } else {
+        return Some(format!("{}. {}", i + 1, short(&raw.split_whitespace().collect::<Vec<_>>().join(" "), 60)));
+    };
+    Some(format!("{}. {}", i + 1, word))
 }
 
 const DIGITS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
@@ -507,6 +534,20 @@ fn why_of(screen: &str) -> String {
     screen.lines().map(unbox).filter_map(|r| r.strip_prefix("Reason: ")).next_back().unwrap_or_default().to_string()
 }
 
+/// FR-99 P2: the question above a numbered dialog's options (Claude's "Which database…"), so the answer bar can show it
+/// with the options under it. Empty when nothing readable sits above the options.
+fn question_of(screen: &str) -> String {
+    let rows: Vec<&str> = screen.lines().collect();
+    let Some(first) = rows.iter().rposition(|r| choice(r) == Some(1) && lead(r) <= 4) else { return String::new() };
+    rows[..first]
+        .iter()
+        .rev()
+        .map(|r| unbox(r))
+        .find(|r| !r.is_empty() && !rule_row(r, '─') && !rule_row(r, '╌') && !r.to_lowercase().starts_with("esc"))
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// FR-80: the permission card: title line, what the dialog asks for, its reason when it names one. The TUI's chrome
 /// (stats row, box borders, key hints) never reaches the phone.
 fn blocked_text(name: &str, ws: &str, status: &str, agent: &str, screen: &str, id_l: bool) -> String {
@@ -520,6 +561,21 @@ fn blocked_text(name: &str, ws: &str, status: &str, agent: &str, screen: &str, i
         text += &format!("\n{}: {}", t(id_l, "why"), esc(&why));
     }
     text
+}
+
+/// FR-99 P2: what the permission bar above the pane shows. One reader with the bot (FR-80): `ask`/`why` from the same
+/// functions, buttons from `blocked_keys` (so the bar and the Telegram keyboard carry the same words). A folder-trust
+/// dialog or a dialog this build doesn't recognize has no buttons: it's answered on the Mac.
+pub fn dialog_view(agent: &str, screen: &str, reason: &str, id_l: bool) -> Value {
+    let trust = reason == claude::TRUST;
+    let options = blocked_keys(agent, screen, reason, id_l);
+    json!({
+        "ask": short(&mask_secrets(&ask_of(agent, screen)), 200),
+        "why": short(&mask_secrets(&why_of(screen)), 160),
+        "question": short(&mask_secrets(&question_of(screen)), 200),
+        "trust": trust,
+        "options": options.iter().map(|(k, l)| json!({"key": k, "label": l})).collect::<Vec<_>>(),
+    })
 }
 
 /// characters in front of a dialog row's text: spaces, the box edge, the cursor
@@ -563,17 +619,19 @@ fn switches_mode(label: &str) -> bool {
     ["auto mode", "accept edits", "switch to", "bypass", "yolo", "full access", "dangerously"].iter().any(|w| l.contains(w))
 }
 
-/// FR-80, FR-99 P2: one button per option read on screen, labelled with its own words, except mode switches; plus Esc.
-/// Nothing read = Esc only (rule 9 BRD 11: an unknown dialog is answered on the Mac, never by guessing a number).
-fn claude_keys(screen: &str) -> Vec<(&'static str, String)> {
-    let opts = dialog_opts(screen).unwrap_or_default();
+/// FR-80, FR-99 P2: one button per option read on screen, labelled with what it does, except mode switches; plus Deny.
+/// Nothing read = no button at all (rule 9 BRD 11: an unknown dialog is answered on the Mac, never by guessing a number).
+fn claude_keys(agent: &str, screen: &str, id_l: bool) -> Vec<(&'static str, String)> {
+    // FR-99 P2: a numbered dialog that doesn't read cleanly gets no button at all (not even Deny): guessing a number or
+    // sending Esc could answer something else. The bar offers "Buka buat jawab" and the bot drops its keyboard.
+    let Some(opts) = dialog_opts(screen) else { return Vec::new() };
     let mut v: Vec<(&'static str, String)> = opts
         .iter()
         .enumerate()
-        .filter(|(i, l)| *i < DIGITS.len() && !switches_mode(l))
-        .map(|(i, l)| (DIGITS[i], format!("{}. {}", i + 1, short(l, 28))))
+        .filter(|(i, _)| *i < DIGITS.len())
+        .filter_map(|(i, l)| option_label(i, l, id_l).map(|label| (DIGITS[i], label)))
         .collect();
-    v.push(("esc", "Esc".into()));
+    v.push(("esc", button_label(agent, "esc", id_l)));
     v
 }
 
@@ -617,6 +675,62 @@ fn key_bytes(key: &str) -> &'static [u8] {
         // In::Key arm, not here; falling through to Esc would be a lie, so it
         // has no byte mapping on purpose (the arm handles it before this).
         _ => b"\x1b",
+    }
+}
+
+/// FR-80, FR-99 P2: one button press on the agent's own dialog. The single path for the bot and the permission bar (the
+/// bar never has its own parser or bytes): OpenCode "Always" walks the "△ Always allow" confirmation stage and only
+/// confirms it once that title is on screen; Codex and Claude re-read the dialog and refuse a number that is gone or that
+/// switches the permission mode. `false` = nothing was sent.
+pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str) -> bool {
+    match key {
+        // OpenCode "Always": Right+Enter moves once→always and submits it, which opens the "△ Always allow" confirmation
+        // stage (no reply is sent yet). The confirming Enter goes out only after that title is actually observed on screen;
+        // a dialog that resolved meanwhile, a closed pane, or a timeout sends nothing (retryable: nothing was approved).
+        "always" => {
+            if type_into(st, id, p, b"\x1b[C\r").is_err() {
+                return false;
+            }
+            let mut confirmed = false;
+            let mut resolved = false;
+            for _ in 0..20 {
+                thread::sleep(Duration::from_millis(100));
+                match st.panes.lock().unwrap().get(&id).cloned() {
+                    None => break,
+                    Some(q) => {
+                        if *q.status.lock().unwrap() != "blocked" {
+                            resolved = true;
+                            break;
+                        }
+                        if always_confirm_on_screen(&q) {
+                            confirmed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if resolved {
+                true
+            } else if confirmed {
+                match st.panes.lock().unwrap().get(&id).cloned() {
+                    Some(q) if *q.status.lock().unwrap() == "blocked" => type_into(st, id, &q, b"\r").is_ok(),
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        }
+        k if k != "esc" && p.agent_name().as_deref() == Some("codex") => {
+            let screen = p.view.lock().unwrap().0.text();
+            k.parse().ok().and_then(|n| codex_key(&screen, n)).is_some_and(|bytes| type_into(st, id, p, &bytes).is_ok())
+        }
+        // Claude digit: re-read the dialog now; the option must still be there and not switch the permission mode
+        k if k != "esc" && p.agent_name().as_deref() == Some("claude") => {
+            let screen = p.view.lock().unwrap().0.text();
+            k.parse().is_ok_and(|n| digit_ok(&screen, n)) && type_into(st, id, p, key_bytes(k)).is_ok()
+        }
+        // every other key needs a dialog this build recognizes; an unknown agent has no key at all (keys() is empty)
+        k => keys(&p.agent_name().unwrap_or_default()).contains(&k) && type_into(st, id, p, key_bytes(k)).is_ok(),
     }
 }
 
@@ -1905,58 +2019,9 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                 *p.status.lock().unwrap() == "blocked" && p.status_seq.load(Ordering::Relaxed) == seq && keys(&p.agent_name().unwrap_or_default()).contains(&key.as_str())
             });
             let pane = pane.filter(|_| ok);
-            // OpenCode "Always": Right+Enter moves once→always and submits it,
-            // which opens the "△ Always allow" confirmation stage (no reply is
-            // sent yet). The confirming Enter goes out only after that title is
-            // actually observed on screen; a dialog that resolved meanwhile, a
-            // closed pane, or a timeout sends nothing (retryable: the
-            // same-dialog guard still matches, nothing was approved).
-            let sent = match (pane.as_ref(), key.as_str()) {
-                (Some(p), "always") => {
-                    if type_into(st, id, p, b"\x1b[C\r").is_err() {
-                        false
-                    } else {
-                        let mut confirmed = false;
-                        let mut resolved = false;
-                        for _ in 0..20 {
-                            thread::sleep(Duration::from_millis(100));
-                            match st.panes.lock().unwrap().get(&id).cloned() {
-                                None => break,
-                                Some(q) => {
-                                    if *q.status.lock().unwrap() != "blocked" {
-                                        resolved = true;
-                                        break;
-                                    }
-                                    if always_confirm_on_screen(&q) {
-                                        confirmed = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if resolved {
-                            true
-                        } else if confirmed {
-                            match st.panes.lock().unwrap().get(&id).cloned() {
-                                Some(q) if *q.status.lock().unwrap() == "blocked" => type_into(st, id, &q, b"\r").is_ok(),
-                                _ => false,
-                            }
-                        } else {
-                            false
-                        }
-                    }
-                }
-                (Some(p), k) if k != "esc" && p.agent_name().as_deref() == Some("codex") => {
-                    let screen = p.view.lock().unwrap().0.text();
-                    k.parse().ok().and_then(|n| codex_key(&screen, n)).is_some_and(|bytes| type_into(st, id, p, &bytes).is_ok())
-                }
-                // Claude digit: re-read the dialog now; the option must still be there and not switch the permission mode
-                (Some(p), k) if k != "esc" && p.agent_name().as_deref() == Some("claude") => {
-                    let screen = p.view.lock().unwrap().0.text();
-                    k.parse().is_ok_and(|n| digit_ok(&screen, n)) && type_into(st, id, p, key_bytes(k)).is_ok()
-                }
-                (Some(p), _) => type_into(st, id, p, key_bytes(&key)).is_ok(),
-                _ => false,
+            let sent = match pane.as_ref() {
+                Some(p) => send_answer(st, id, p, &key),
+                None => false,
             };
             let word = if sent { t(id_l, "sent") } else { t(id_l, "gone") };
             let _ = b.out.try_send(Out::Api("answerCallbackQuery", json!({"callback_query_id": cb, "text": word})));
@@ -2074,17 +2139,18 @@ mod tests {
         let dlg = |f: &str| std::fs::read_to_string(format!("{}/tests/dialogs/{f}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
         // Claude 2.1.311 Bash: 1 Yes, 2 always allow folder, 3 switch to auto mode, 4 No. "3" used to turn on auto mode.
         let bash = dlg("claude-2.1.311-bash-k3");
-        let b = claude_keys(&bash);
-        assert_eq!(ks(b.clone()), ["1", "2", "4", "esc"]);
-        assert_eq!(b[2].1, "4. No");
+        let b = claude_keys("claude", &bash, true);
+        // FR-99 P2: the mode switch and the deny option get no button of their own (Tolak = the same cancel)
+        assert_eq!(ks(b.clone()), ["1", "2", "esc"]);
+        assert_eq!((b[0].1.as_str(), b[1].1.as_str(), b[2].1.as_str()), ("1. Izinkan", "2. Izinkan terus", "Tolak"));
         assert!(!digit_ok(&bash, 3) && digit_ok(&bash, 4) && digit_ok(&bash, 1));
         // Write: option 2 switches to accept edits; outside the folder it wraps over two rows
-        assert_eq!(ks(claude_keys(&dlg("claude-2.1.311-write-k1"))), ["1", "3", "esc"]);
-        assert_eq!(ks(claude_keys(&dlg("claude-2.1.311-outside-k1"))), ["1", "3", "esc"]);
-        assert_eq!(ks(claude_keys(&dlg("claude-2.1.311-fetch-esc"))), ["1", "2", "3", "esc"]);
+        assert_eq!(ks(claude_keys("claude", &dlg("claude-2.1.311-write-k1"), true)), ["1", "esc"]);
+        assert_eq!(ks(claude_keys("claude", &dlg("claude-2.1.311-outside-k1"), true)), ["1", "esc"]);
+        assert_eq!(ks(claude_keys("claude", &dlg("claude-2.1.311-fetch-esc"), true)), ["1", "2", "esc"]);
         // Codex 0.167: the shortcut letters per dialog (p for a command, a for edits)
         let net = dlg("codex-0.167.0-net-y");
-        assert_eq!(ks(claude_keys(&net)), ["1", "2", "3", "esc"]);
+        assert_eq!(ks(claude_keys("codex", &net, true)), ["1", "2", "esc"]);
         assert_eq!((codex_key(&net, 1), codex_key(&net, 2), codex_key(&net, 3)), (Some(b"y".to_vec()), Some(b"p".to_vec()), Some(b"\x1b".to_vec())));
         assert_eq!(codex_key(&dlg("codex-0.167.0-outside-a"), 2), Some(b"a".to_vec()));
         // a digit pressed after the dialog is gone sends nothing
@@ -2306,7 +2372,7 @@ mod tests {
         assert_eq!(keys("codex"), &["1", "2", "3", "esc"]);
         // Codex 0.167 dialog as drawn 10 Nov: option 2 wraps, the shortcut is on its last row
         let codex = "  $ bash jam-bukti.sh out\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `bash\n     jam-bukti.sh out` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel";
-        assert_eq!(ks(claude_keys(codex)), ["1", "2", "3", "esc"]);
+        assert_eq!(ks(claude_keys("codex", codex, true)), ["1", "2", "esc"]);
         assert_eq!(codex_key(codex, 1).as_deref(), Some(&b"y"[..]));
         assert_eq!(codex_key(codex, 2).as_deref(), Some(&b"p"[..]));
         assert_eq!(codex_key(codex, 3).as_deref(), Some(&b"\x1b"[..]));
@@ -2318,7 +2384,8 @@ mod tests {
         // numbers out of order = not a dialog read right: nothing is sent
         assert_eq!(codex_key("› 1. Yes (y)\n  3. No (esc)", 3), None);
         assert_eq!(keys("claude"), &["1", "2", "3", "esc"]);
-        assert_eq!(keys("shell"), &["esc"]);
+        // FR-99 P2: a plain shell (and any agent this build doesn't know) has no dialog buttons
+        assert!(keys("shell").is_empty());
         assert_eq!(key_bytes("once"), b"\r");
         assert_eq!(key_bytes("esc"), b"\x1b");
     }
@@ -2383,8 +2450,8 @@ mod tests {
         // title + ask + reason: the buttons stay under the card instead of below a screen dump (11 Nov)
         assert!(card.lines().count() <= 3, "{card}");
         let cb = btns("codex", "codex-0.167.0-net-y", false);
-        assert_eq!(cb.iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["1", "2", "3", "esc"]);
-        assert!(cb[0].1.starts_with("1. Yes, proceed") && cb[1].1.starts_with("2. Yes, and don't ask again") && cb[3].1 == "Esc");
+        assert_eq!(cb.iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["1", "2", "esc"]);
+        assert!(cb[0].1 == "1. Allow" && cb[1].1 == "2. Allow always" && cb[2].1 == "Deny");
         assert_eq!(ask_of("codex", &dlg("codex-0.167.0-outside-a")), "Apply proposed file edits · /Users/demo/.gk-dialog-test/codex-a.txt");
 
         // Claude: its own dialog title + the command/url; write keeps the file name (the body `1 hi` is not the ask)
@@ -2392,24 +2459,25 @@ mod tests {
         assert_eq!(ask_of("claude", &dlg("claude-2.1.311-fetch-esc")), "Fetch · from the web-fetch agent · url: https://example.com/");
         assert_eq!(ask_of("claude", &dlg("claude-2.1.311-write-k1")), "Create file · note.txt");
         assert_eq!(ask_of("claude", &dlg("claude-2.1.311-outside-k1")), "Create file · ../../../../../Users/demo/.gk-dialog-test/claude-outside.txt");
-        // the Bash dialog's 4 options: 3 switches to auto mode, so it gets no button
+        // the Bash dialog's 4 options: 3 switches to auto mode and 4 is the same cancel as Tolak, so neither gets a button
         let cl = btns("claude", "claude-2.1.311-bash-k3", true);
-        assert_eq!(cl.iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["1", "2", "4", "esc"]);
-        assert!(cl[2].1.starts_with("4. No") && cl[1].1.starts_with("2. Yes, and always allow"));
+        assert_eq!(cl.iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["1", "2", "esc"]);
+        assert!(cl[0].1 == "1. Izinkan" && cl[1].1 == "2. Izinkan terus" && cl[2].1 == "Tolak");
 
         // OpenCode: the folder it wants, and the "△ Always allow" confirmation stage
         assert_eq!(ask_of("opencode", &dlg("opencode-1.19.5-outside-once.dialog")), "Access external directory ~/.gk-dialog-test");
         assert_eq!(
             btns("opencode", "opencode-1.19.5-outside-once.dialog", true),
-            [("once", "Sekali".into()), ("always", "Selalu".into()), ("esc", "Tolak".into())]
+            [("once", "Izinkan sekali".into()), ("always", "Izinkan selalu".into()), ("esc", "Tolak".into())]
         );
         assert_eq!(
             ask_of("opencode", &dlg("opencode-1.19.5-outside-always.confirm")),
             "Always allow · This will allow the following patterns until OpenCode is restarted"
         );
-        // an agent whose dialog isn't read: no ask line, Esc only, never a guessed option
+        // an agent whose dialog isn't read: no ask line, no button at all (answered on the Mac), never a guessed option
         assert_eq!(ask_of("gemini", "ada apa ya"), "");
-        assert_eq!(blocked_keys("gemini", "ada apa ya", "", true), [("esc", "Tolak".into())]);
+        assert!(blocked_keys("gemini", "ada apa ya", "", true).is_empty());
+        assert!(keys("gemini").is_empty());
     }
 
     /// FR-66: a done card carries the agent's own answer; Codex's screen is its TUI transcript, so a card that comes
@@ -2506,16 +2574,16 @@ mod tests {
         let ask = ["❯ cek monitoring", "● Bash(curl -s https://x)", "Bash command", "  curl -s https://x", "Do you want to proceed?",
             "❯ 1. Yes", "  2. No", "", "Esc to cancel · Tab to amend"];
         assert_eq!(turn_start(&ask, None), 0);
-        assert_eq!(ks(claude_keys(&ask.join("\n"))), ["1", "2", "esc"]);
-        assert_eq!(ks(claude_keys("│ ❯ 1. Yes\n│   2. Yes, and don't ask again\n│   3. No, and tell Claude (esc)")), ["1", "2", "3", "esc"]);
-        // nothing read = Esc only: never guess a number (rule 9 BRD 11)
-        assert_eq!(ks(claude_keys("no dialog read")), ["esc"]);
-        assert_eq!(ks(claude_keys("1. a\n2. b\n3. c\n4. d\n❯ 1. Yes\n  2. No\nEsc to cancel")), ["1", "2", "esc"]);
+        assert_eq!(ks(claude_keys("claude", &ask.join("\n"), true)), ["1", "esc"]);
+        assert_eq!(ks(claude_keys("claude", "│ ❯ 1. Yes\n│   2. Yes, and don't ask again\n│   3. No, and tell Claude (esc)", true)), ["1", "2", "esc"]);
+        // nothing read = no button: never guess a number or send Esc into a dialog this build doesn't know (rule 9 BRD 11)
+        assert!(claude_keys("claude", "no dialog read", true).is_empty());
+        assert_eq!(ks(claude_keys("claude", "1. a\n2. b\n3. c\n4. d\n❯ 1. Yes\n  2. No\nEsc to cancel", true)), ["1", "esc"]);
         // FR-84: a folder-trust dialog gets no buttons (answered on the Mac); a permission dialog keeps them
         let trust = " Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel";
         assert!(blocked_keys("claude", trust, claude::TRUST, true).is_empty());
         assert!(blocked_keys("codex", "› 1. Trust and continue\n  2. Back\n  enter continue · esc back", claude::TRUST, true).is_empty());
-        assert_eq!(ks(blocked_keys("claude", &ask.join("\n"), "minta izin", true)), ["1", "2", "esc"]);
+        assert_eq!(ks(blocked_keys("claude", &ask.join("\n"), "minta izin", true)), ["1", "esc"]);
         assert_eq!(choice("❯ halo"), None);
         assert_eq!(choice("2026. tahun"), None);
         // omp: banner, older prompt, the phone's prompt, answer, stats row, input box
@@ -2578,6 +2646,44 @@ mod tests {
         ];
         assert_eq!(status_body(rows, false), "<b>gembala</b>\nomp-1 — needs permission (1m 5s)\nshell-25 — idle ← active\n4 shell\n\n<b>Issue Prod</b>\n3 shell");
         assert_eq!(status_body(vec![], true), "Belum ada pane.");
+    }
+
+    /// FR-99 P2: the bar above the pane reads the same dialog as the bot: same ask line, same buttons and words. Folder
+    /// trust and an agent whose dialog was never recorded offer no button, so the app shows "Buka buat jawab" instead.
+    #[test]
+    fn dialog_view_untuk_bar_izin() {
+        let dlg = |f: &str| std::fs::read_to_string(format!("{}/tests/dialogs/{f}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let bash = dlg("claude-2.1.311-bash-k3");
+        let v = dialog_view("claude", &bash, "minta izin", true);
+        assert_eq!(v["ask"], "Bash command · touch ran.txt");
+        assert_eq!(v["trust"], false);
+        let keys: Vec<&str> = v["options"].as_array().unwrap().iter().map(|o| o["key"].as_str().unwrap()).collect();
+        let labels: Vec<&str> = v["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap()).collect();
+        assert_eq!(keys, ["1", "2", "esc"]);
+        assert_eq!(labels, ["1. Izinkan", "2. Izinkan terus", "Tolak"]);
+        // the same screen in English: the buttons follow the app's language, the ask line stays the agent's own words
+        let en = dialog_view("claude", &bash, "", false);
+        assert_eq!(en["options"][0]["label"], "1. Allow");
+        assert_eq!(en["ask"], v["ask"]);
+        // trust: no buttons even with a numbered list on screen
+        let trust = " Quick safety check: Is this a project you trust?\n ❯ 1. No, exit\n  2. Yes, I trust this folder\n Esc to cancel";
+        assert_eq!(dialog_view("claude", trust, claude::TRUST, true)["options"].as_array().unwrap().len(), 0);
+        assert_eq!(dialog_view("claude", trust, claude::TRUST, true)["trust"], true);
+        // Gemini: the dialog was never recorded, so nothing is offered
+        assert_eq!(dialog_view("gemini", "Allow execution of: 'pytest -q'?\n ● Yes, allow once", "", true)["options"].as_array().unwrap().len(), 0);
+        // an answer dialog: the question sits above the numbered options
+        let q = " Which database should store login sessions?\n\n ❯ 1. Postgres   already used in staging\n   2. SQLite     simpler for local\n   3. Type something";
+        let a = dialog_view("claude", q, "nunggu jawaban", true);
+        assert_eq!(a["question"], "Which database should store login sessions?");
+        // the options are answers, not permission grants: their own words stay (only the spacing is cleaned up)
+        assert_eq!(a["options"][1]["label"], "2. SQLite simpler for local");
+    }
+
+    /// FR-99 P2: the answer box writes what the user typed, as if typed at the keyboard (bracketed paste + Enter).
+    #[test]
+    fn jawaban_bebas_dikirim_seperti_diketik() {
+        let bytes = msg::paste("pakai SQLite");
+        assert_eq!(bytes, b"\x1b[200~pakai SQLite\x1b[201~\r");
     }
 
     #[test]

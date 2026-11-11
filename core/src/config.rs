@@ -71,6 +71,9 @@ const NOTIFY: &[(&str, Kind)] = &[
     ("on_approve", Bool(true)),
     ("on_failed", Bool(true)),
     ("sound_done", Bool(false)),
+    // FR-99 P2: the permission bar above a pane (question read from the agent's screen, buttons = the bot's). Off = answer in
+    // the pane as before; the strip, bell, banner and Telegram stay on.
+    ("permission_bar", Bool(true)),
 ];
 /// FR-80: Telegram bot; token and bound chat live in telegram.json, not here (SEC-36)
 const TELEGRAM: &[(&str, Kind)] = &[("away_idle_mins", Int(1, 120, 5)), ("snippet", Bool(true)), ("snippet_off", Names), ("lines", Int(1, 30, 30))];
