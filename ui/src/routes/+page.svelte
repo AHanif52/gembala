@@ -6,6 +6,7 @@
 import changelog from "../../../CHANGELOG.md?raw";
 import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew";
   import Rail from "$lib/Rail.svelte";
+  import NeedStrip from "$lib/NeedStrip.svelte";
   import Changes from "$lib/Changes.svelte";
   import OutputView from "$lib/OutputView.svelte";
   import Messages from "$lib/Messages.svelte";
@@ -30,7 +31,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
-  import { frontCard, needPanes, needRows, word, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed } from "$lib/attention";
+  import { frontCard, needPanes, needRows, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed } from "$lib/attention";
   import type { UsageRow } from "$lib/usage";
   import { splitRows, subtabRows } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
@@ -85,7 +86,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     return COLORS.reduce<string>((best, c) => (used(c) < used(best) ? c : best), FIRST);
   };
   // FR-52: mark per agent (not a brand logo), color close to the agent's signature color
-  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇" };
+  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦" };
   /// agent running in the pane (from a profile or typed by hand); "" = none
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
   /// the agent running in a pane by its profile name, also one typed in a shell pane ("shell-2 · Claude Code", not
@@ -2802,36 +2803,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {runLive(runs[ws.id]) ? "● " : ""}{runs[ws.id].name} · {tOr(`hn.state.${runs[ws.id].state}`, runs[ws.id].state)}
       </button>
     {/if}
-    <!-- FR-44/FR-65/FR-99 P2: "Butuh lu" — everything waiting for a person, one sentence per row; hidden when nothing waits -->
-    {#if needList.length}
-      <div class="queue" role="region" aria-label={tt("side.needsYou")}>
-        <div class="qhead">{tt("side.needsYou")} <span class="n">{needList.length}</span><small>{tt("need.next", { key: pretty("Cmd+Shift+U") })}</small></div>
-        {#each [1, 2, 3] as g (g)}
-          {@const rows = needList.filter((r) => r.group === g)}
-          {#if rows.length}
-            <!-- the group titles only in Sederhana: they explain why the order isn't "newest first" -->
-            {#if simple}<div class="grp">{tOr(`need.group.${g}`, "")}</div>{/if}
-            {#each rows as r (r.key)}
-              <div class="need {r.kind}">
-                <button class="nrow" onclick={() => goNeed(r)}>
-                  <!-- the dot's tooltip is FR-87's kind word, the same one the bell and the banner use -->
-                  <span class="dot {dotOf(r.kind)}" title={tt(word(r.kind) as Key)} aria-hidden="true"></span>
-                  <span class="nmain">
-                    <span class="ntitle">
-                      {#if GLYPH[needIcon(r)]}<span class="aico {needIcon(r)}">{GLYPH[needIcon(r)]}</span>{/if}{needTitle(r)}
-                    </span>
-                    <span class="kind">{tt(r.what as Key, rowParams(r))}</span>
-                    {#if needSub(r)}<span class="sub">{needSub(r)}</span>{/if}
-                  </span>
-                  <span class="k">{ago(now - r.at)}</span>
-                </button>
-                <button class="act" onclick={() => goNeed(r)}>{tOr(`need.act.${r.act}`, "")}</button>
-              </div>
-            {/each}
-          {/if}
-        {/each}
-      </div>
-    {/if}
+    <!-- FR-44/FR-65/FR-99 P2: the wait strip has its own component; the pane and flow actions stay with this page. -->
+    <NeedStrip rows={needList} {simple} nextKey={pretty("Cmd+Shift+U")} titleOf={needTitle} iconOf={needIcon} dotOf={dotOf}
+      paramsOf={rowParams} subOf={needSub} ageOf={(at) => ago(now - at)} onneed={goNeed} />
     {#each wss as w, wi (w.id)}
       <!-- FR-44: click the title = expand/collapse; rename through right click or the palette -->
       {@const liftWs = dragging?.kind === "ws" && dragging.wi === wi}
@@ -4239,124 +4213,6 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  /* FR-65: antrean perhatian (mockup-sidebar-status varian C) */
-  .queue {
-    display: flex;
-    flex-direction: column;
-    margin: 8px 0 2px;
-    padding: 4px 0;
-    border: 1px solid rgba(217, 119, 6, 0.35);
-    border-radius: 6px;
-    background: rgba(217, 119, 6, 0.07);
-  }
-  .qhead {
-    display: flex;
-    gap: 6px;
-    align-items: baseline;
-    padding: 2px 8px;
-    color: var(--tx-amber, #d97706);
-    font-size: 11px;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .qhead small {
-    min-width: 0;
-    margin-left: auto;
-    overflow: hidden;
-    color: var(--muted);
-    font-weight: 400;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .qhead .n {
-    padding: 0 6px;
-    border-radius: 999px;
-    background: rgba(217, 119, 6, 0.2);
-    font-size: 10.5px;
-  }
-  /* FR-99 P2: one row per thing waiting; the action button appears on hover, like the mockup's strip */
-  .grp {
-    padding: 5px 8px 1px;
-    color: var(--tx-amber, #b45309);
-    font-size: 10.5px;
-    font-weight: 600;
-  }
-  .need {
-    position: relative;
-    display: flex;
-  }
-  .need .nrow {
-    flex: 1;
-    display: grid;
-    grid-template-columns: 7px 1fr auto;
-    gap: 6px;
-    align-items: start;
-    min-width: 0;
-    padding: 5px 8px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-  .need .nrow:hover {
-    background: rgba(217, 119, 6, 0.12);
-  }
-  .need .nrow .dot {
-    margin-top: 5px;
-  }
-  .need .nmain {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-  .need .ntitle {
-    overflow: hidden;
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .need .kind,
-  .need .sub {
-    overflow: hidden;
-    color: var(--muted);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  /* the sentence is what the row is for: two lines instead of one cut-off line */
-  .need .kind {
-    display: -webkit-box;
-    white-space: normal;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-  .need .k {
-    color: var(--muted);
-    font-size: 10.5px;
-    white-space: nowrap;
-  }
-  .need .act {
-    display: none;
-    position: absolute;
-    right: 6px;
-    top: 50%;
-    transform: translateY(-50%);
-    padding: 2px 8px;
-    border: 1px solid var(--line);
-    border-radius: 5px;
-    background: var(--card);
-    color: var(--fg);
-    font: 11px system-ui, -apple-system, sans-serif;
-    cursor: pointer;
-  }
-  .need:hover .act,
-  .need .act:focus-visible {
-    display: inline-block;
   }
   .wsum.needsum {
     color: var(--tx-amber, #d97706);
