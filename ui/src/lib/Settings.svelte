@@ -1050,7 +1050,7 @@
           <div class="krow"><span class="klabel">{t("set.keys.rest")}</span><span class="m">{t("set.keys.restTo")}</span></div>
         </section>
         <p class="note">
-          {t("set.keys.note1", { mod: modLabel() })}. {t("set.keys.note2")}
+          {#if isMac}{t("set.keys.note1")} <code>cmd</code>{:else}{t("set.keys.note1_linux", { mod: modLabel() })}{/if}. {t("set.keys.note2")}
           <code>[keys]</code> {t("set.keys.note3")} <code>"{isMac ? "cmd+t" : "ctrl+shift+t"}" = "pane.split.right"</code>{t("set.keys.note4")}
         </p>
       {:else if sec === "toolbar"}

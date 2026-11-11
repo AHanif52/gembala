@@ -630,6 +630,9 @@ fn canon_key(raw: &str, lang: &str) -> Result<String, String> {
     // FR-98: where the app key isn't `Cmd`, `Ctrl+Shift` is the same thing (what the UI shows and the user types)
     let app = out.contains(&"Cmd") || (!cfg!(target_os = "macos") && out.contains(&"Ctrl") && out.contains(&"Shift"));
     if !app {
+        if cfg!(target_os = "macos") {
+            return Err(i18n::fmt(lang, "key.need_cmd", &[("raw", raw)]));
+        }
         return Err(i18n::fmt(lang, "key.need_cmd", &[("raw", raw), ("app", app_mod())]));
     }
     let key = if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric() || ".,=-;'/[]\\`".contains(c)) {
@@ -943,6 +946,10 @@ mod tests {
 
     #[test]
     fn keys_override_dan_bentrok() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(super::canon_key("ctrl+x", "en"), Err("\"ctrl+x\" has to use cmd; other keys belong to the terminal".into()));
+            assert_eq!(super::canon_key("ctrl+x", "id"), Err("\"ctrl+x\" harus memakai cmd; tombol lain milik terminal".into()));
+        }
         let o = json!({"cmd+t": "pane.split.right", "cmd+k": "pane.zoom.toggle", "cmd+y": "tidak.ada", "ctrl+x": "pane.proc.kill"});
         let (items, errors) = super::resolve_keys(o.as_object().unwrap(), "id");
         let key = |id: &str| items.iter().find(|i| i.0 == id).unwrap().2.clone();
