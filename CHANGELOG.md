@@ -32,6 +32,7 @@
 - Settings: Esc closes the add-account form without closing Settings; the form stays closed until "+ Add account" is pressed.
 - Settings covers the whole window again: the sidebar's resize line no longer cuts through it, and the usage rail dims behind it.
 - The bell starts empty after opening the app: a pane that finished while Gembala was closed no longer opens a bell entry or a banner, and a pane on screen in the front window never adds to the badge.
+- Oh My Pi starts in auto mode (`--approval-mode=yolo`), from its profile and when typed in a zsh pane; a profile with `permission = "default"` keeps it asking.
 
 ### Indonesia
 
@@ -61,6 +62,7 @@
 - Pengaturan: Esc menutup formulir tambah akun tanpa ikut menutup Pengaturan; formulir tetap tertutup sampai lu menekan "+ Tambah akun".
 - Pengaturan kembali menutupi seluruh jendela: garis ubah ukuran sidebar tidak lagi menembusnya, dan panel penggunaan meredup di belakang.
 - Lonceng sekarang kosong setelah app dibuka: pane yang selesai saat Gembala tertutup tidak lagi membuat entri lonceng atau banner, dan pane yang tampil di jendela depan tidak menambah badge.
+- Oh My Pi langsung jalan di mode auto (`--approval-mode=yolo`), baik dari profilnya maupun waktu diketik di pane zsh; profil yang nulis `permission = "default"` tetap nanya.
 
 ## 0.1.8
 
