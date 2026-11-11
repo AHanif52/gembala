@@ -1414,6 +1414,39 @@ fn fr75_buka_dan_kirim() {
 }
 
 #[test]
+fn fr75_model_effort_diteruskan_ke_launch() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = std::env::temp_dir().join(format!("gbl-{}-fr75-bin", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    let args = std::env::temp_dir().join(format!("gbl-{}-fr75-args", std::process::id()));
+    let _ = std::fs::remove_file(&args);
+    std::fs::write(&claude, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" > {}\nsleep 30\n", json!(args.to_string_lossy().as_ref()))).unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let d = start("fr75-model-flags");
+    let mut ui = Cli::ui(&d);
+    let config = format!("[[profile]]\nid = \"claude\"\ncommand = {}\n", json!(claude.to_string_lossy()));
+    profiles(&d, &mut ui, &config, claude.to_str().unwrap());
+    let created = ui.call("pane.create", json!({"profile": "claude", "model": "opus", "effort": "high"}));
+    assert!(created["result"]["pane"].is_u64(), "{created}");
+    let pane = created["result"]["pane"].as_u64().unwrap();
+    let started = Instant::now();
+    while !args.exists() {
+        if started.elapsed() >= Duration::from_secs(5) {
+            let screen = ui.call("pane.attach", json!({"pane": pane}));
+            panic!("Claude launch args not recorded: {}", String::from_utf8_lossy(&written(&screen["result"])));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let got = std::fs::read_to_string(&args).unwrap();
+    assert!(got.contains("--model opus --effort high"), "{got}");
+    ui.call("pane.close", json!({"pane": pane}));
+    let _ = std::fs::remove_file(args);
+    let _ = std::fs::remove_dir_all(bin);
+}
+
+#[test]
 fn fr100_lapor_masalah_cuma_draf() {
     // FR-100, SEC-40: an agent's report waits as a draft for the user (title + text, secrets masked, home = ~); nothing is sent
     let d = start("fr100");
