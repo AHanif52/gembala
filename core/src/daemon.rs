@@ -1509,7 +1509,7 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
         (f.helper_of.lock().unwrap().is_some(), alive, cwd)
     };
     if helper {
-        return Err("not_allowed");
+        return Err("helper_cant_open");
     }
     let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
     let mut eng = st.engine.lock().unwrap();

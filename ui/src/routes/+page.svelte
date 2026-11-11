@@ -26,11 +26,12 @@
   import { safeResume } from "$lib/resume";
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
+  import { subtabRows } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
   import { errText, i18n, loc, t as tt, tn as ttn, tOr } from "$lib/i18n/state.svelte";
   import type { Key } from "$lib/i18n";
 
-  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string };
+  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string; parent?: string; helpersOpen?: boolean; doneOpen?: boolean };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: default account per agent; FR-44: block color; FR-13: brief
   /// Per-pane data to restore (FR-45): profile and folder, no screen content (SEC-13).
   type Meta = {
@@ -101,6 +102,8 @@
   let at = $state({ ws: 0, tab: 0 });
   let meta = $state<Record<number, Meta>>({});
   let blockedAt = $state<Record<number, number>>({}); // FR-65: sejak kapan pane butuh izin
+  let statusAt = $state<Record<number, number>>({}); // FR-101: UI-observed status transition; daemon currently sends no timestamp
+  let quietAt = $state<Record<number, number>>({}); // FR-101: keep a new completion visible for one minute
   let now = $state(Date.now()); // FR-65: time waiting in the queue, refreshed every poll
   let ack = $state<Record<number, true>>({});
   let labels = $state<Record<number, string>>({}); // FR-69: from the agent's terminal title; not in layout.json (SEC-13) // panes whose "done" status was already seen; cleared when the status changes
@@ -160,6 +163,39 @@
   const setMode = (m: "simple" | "full") => call("config.set", { section: "ui", key: "mode", value: m }).catch(() => {});
   const ws = $derived(wss[at.ws]);
   const tab = $derived(ws?.tabs[at.tab]);
+  const owner = $derived(tab?.parent ? ws?.tabs.find((t) => t.id === tab.parent) : null);
+  let compareId = $state(""); // temporary two-pane view; never saved to layout.json
+  const compareHelper = $derived(ws?.tabs.find((t) => t.id === compareId && t.parent));
+  const compareOwner = $derived(compareHelper ? ws?.tabs.find((t) => t.id === compareHelper.parent) : null);
+  const TIP_KEY = "gembala.hint.helper";
+  let latestHelper = $state<{ id: string; parent: string } | null>(null);
+  let helperTip = $state((() => { try { return localStorage.getItem(TIP_KEY) !== "done"; } catch { return true; } })());
+  const dismissHelperTip = () => { helperTip = false; try { localStorage.setItem(TIP_KEY, "done"); } catch {} };
+  const openTab = (wi: number, t: Tab) => {
+    at = { ws: wi, tab: wss[wi].tabs.indexOf(t) };
+    if (latestHelper?.id === t.id) latestHelper = null;
+    if (compareId) compareId = t.parent ? t.id : "";
+    zoomed = false;
+  };
+  const goOwner = () => { if (owner && ws) openTab(at.ws, owner); };
+  const nextHelper = (step: number) => {
+    const root = owner ?? tab;
+    const kids = ws?.tabs.filter((t) => t.parent === root?.id) ?? [];
+    if (!kids.length) return;
+    const i = kids.findIndex((t) => t.id === tab?.id);
+    openTab(at.ws, kids[i < 0 ? (step > 0 ? 0 : kids.length - 1) : (i + step + kids.length) % kids.length]);
+  };
+  const toggleCompare = () => { if (compareId) { const t = compareHelper; if (t && ws) at = { ws: at.ws, tab: ws.tabs.indexOf(t) }; compareId = ""; } else if (tab?.parent) compareId = tab.id; };
+  const helperQuiet = (t: Tab) => ["done", "idle"].includes(meta[t.focus]?.status ?? "") && (!quietAt[t.focus] || now - quietAt[t.focus] >= 60_000);
+  const helperStatus = (p: number) => {
+    const s = meta[p]?.status;
+    if (s === "blocked") return `${paneStatusText(p) || tt("status.blocked")} · ${ago(now - (blockedAt[p] ?? now))}`;
+    if (s === "working" && statusAt[p]) return tt("helper.workingFor", { time: ago(now - statusAt[p]) });
+    if (s === "done" && quietAt[p]) return tt("helper.finishedAt", { time: new Date(quietAt[p]).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" }) });
+    if (s === "idle" && quietAt[p]) return tt("helper.idleFor", { time: ago(now - quietAt[p]) });
+    return s === "done" ? tt("status.done") : paneStatusText(p) || tt("status.idle");
+  };
+  const helperRows = (w: Ws) => subtabRows(w.tabs, helperQuiet, (t) => meta[t.focus]?.status === "blocked", tab?.id);
   // saves RAM/CPU: xterm only for the active tab + the last 3 opened; other tabs are detached (the daemon keeps the panes),
   // reopening = re-attach from the daemon snapshot
   const LIVE_TABS = 4;
@@ -190,23 +226,27 @@
     const name = acct && acct !== "utama" ? accs.find((a) => a.id === acct)?.name : accs.some((a) => a.agent === p?.agent) ? tt("acc.main") : "";
     return [p?.name ?? o.profile, name].filter(Boolean).join(" · ");
   };
-  /// FR-75: new pane in the asker's tab (its folder, the workspace default account), then the daemon queues the task for it
+  /// FR-101: a helper gets its own tab under the asker's tab; the asker's focus stays put.
   /// FR-75 requests being opened right now: a second click (card, drawer, double click) must not open a second pane
   const opening = new Set<string>();
   async function approveOpen(o: any) {
-    const t = wss.flatMap((w) => w.tabs).find((x) => panes(x.tree).includes(o.from_pane));
+    const w = wss.find((w) => w.tabs.some((x) => panes(x.tree).includes(o.from_pane)));
+    const t = w?.tabs.find((x) => panes(x.tree).includes(o.from_pane));
     if (!t || opening.has(o.id) || !(msgData?.opens ?? []).some((x: any) => x.id === o.id)) return;
     opening.add(o.id);
     try {
       const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd: o.cwd || undefined });
-      const ps = panes(t.tree);
-      t.tree = split(t.tree, ps[ps.length - 1], ps.length % 2 ? "row" : "col", id);
+      quietAt[id] = Date.now();
+      const child: Tab = { id: uid(), title: "", tree: { pane: id }, focus: id, parent: t.id };
+      t.helpersOpen = true;
+      w!.tabs.splice(w!.tabs.indexOf(t) + 1 + w!.tabs.filter((x) => x.parent === t.id).length, 0, child);
       const r = await call("open.approve", { id: o.id, pane: id }).catch((e) => ({ error: String(e) }));
       // refused (already answered, gone): the pane would sit there unowned, so it goes again
       if (r?.error) {
-        t.tree = remove(t.tree, id) ?? t.tree;
+        w!.tabs.splice(w!.tabs.indexOf(child), 1);
+        delete quietAt[id];
         call("pane.close", { pane: id }).catch(() => {});
-      }
+      } else latestHelper = { id: child.id, parent: t.id };
     } finally {
       opening.delete(o.id);
       refreshMsgs();
@@ -779,7 +819,7 @@
     return home(m?.cwd) === "~" ? "~" : base(m?.cwd) || "~";
   };
   /// Global tab order for ⌘1–⌘9
-  const order = $derived(wss.flatMap((w, wi) => w.tabs.map((t, ti) => ({ wi, ti, t }))));
+  const order = $derived(wss.flatMap((w, wi) => w.tabs.flatMap((t, ti) => t.parent ? [] : [{ wi, ti, t }])));
 
   async function createPane(opts: Record<string, unknown> = {}): Promise<number> {
     const profile = (opts.profile as string) ?? "shell";
@@ -1047,6 +1087,7 @@
 
   /// FR-38: closing a tab = closing all its panes, one confirmation listing the processes still running
   async function closeTabs(wi: number, ts: Tab[]) {
+    ts = [...new Set(ts.flatMap((t) => [t, ...wss[wi].tabs.filter((x) => x.parent === t.id)]))];
     const ps = ts.flatMap((t) => panes(t.tree));
     const known = await Promise.all(ps.filter((p) => !dead[p]).map((p) => paneInfo(p).then((i) => ({ p, i }))));
     ps.filter((p) => dead[p]).concat(known.filter((x) => !x.i).map((x) => x.p)).forEach(onexit);
@@ -1075,6 +1116,8 @@
         if (t.focus === pane || !panes(rest).includes(t.focus)) t.focus = next ?? panes(rest)[0];
       } else {
         w.tabs.splice(ti, 1);
+        for (const child of w.tabs.filter((x) => x.parent === t.id)) child.parent = undefined;
+        if (compareId === t.id) compareId = "";
         if (at.ws === wi && at.tab >= ti) at.tab = Math.max(0, at.tab - 1);
       }
       if (at.ws === wi) zoomed = false;
@@ -1238,6 +1281,10 @@
     if (id === "tab.search") return void openPalette();
     if (id === "tab.prev") return goto((cur + order.length - 1) % order.length);
     if (id === "tab.next") return goto((cur + 1) % order.length);
+    if (id === "tab.helper.owner") return void goOwner();
+    if (id === "tab.helper.next") return void nextHelper(1);
+    if (id === "tab.helper.prev") return void nextHelper(-1);
+    if (id === "tab.helper.compare") return void toggleCompare();
     if (id === "pane.attention.next") {
       if (!queue.length) return;
       const i = queue.findIndex((q) => q.p === tab?.focus);
@@ -1512,8 +1559,12 @@
   function moveTab(wi: number, ti: number, to: number, index: number) {
     keepAt(() => {
       const [t] = wss[wi].tabs.splice(ti, 1);
+      const children = t.parent ? [] : wss[wi].tabs.filter((x) => x.parent === t.id);
+      for (const child of children) wss[wi].tabs.splice(wss[wi].tabs.indexOf(child), 1);
+      if (t.parent && wi !== to) t.parent = undefined;
       wss[to].tabs.splice(Math.min(index, wss[to].tabs.length), 0, t);
-      if (wi !== to) for (const p of panes(t.tree)) if (!dead[p]) call("pane.workspace", { pane: p, workspace: wss[to].id }).catch(() => {});
+      wss[to].tabs.splice(wss[to].tabs.indexOf(t) + 1, 0, ...children);
+      if (wi !== to) for (const moved of [t, ...children]) for (const p of panes(moved.tree)) if (!dead[p]) call("pane.workspace", { pane: p, workspace: wss[to].id }).catch(() => {});
     });
   }
 
@@ -1942,8 +1993,12 @@
             tree: t.tree,
             focus: panes(t.tree).includes(t.focus) ? t.focus : panes(t.tree)[0],
             color: COLORS.some((c) => c === t.color) ? t.color : undefined,
+            parent: typeof t.parent === "string" ? t.parent : undefined,
+            helpersOpen: t.helpersOpen === true,
+            doneOpen: t.doneOpen === true,
           })),
       }));
+    for (const w of out) for (const t of w.tabs) if (t.parent && !w.tabs.some((x) => x.id === t.parent && !x.parent)) t.parent = undefined;
     for (const w of out) if (w.color === undefined) w.color = nextColor(out);
     return out;
   }
@@ -2049,6 +2104,7 @@
       for (const [ti, t] of w.tabs.entries())
         if (panes(t.tree).includes(p)) {
           at = { ws: wi, tab: ti };
+          if (compareId) compareId = t.parent ? t.id : "";
           t.focus = p;
           zoomed = false;
         }
@@ -2150,6 +2206,9 @@
     meta[pane].waitingShell = shell;
     meta[pane].reason = reason;
     if (!changed) return;
+    statusAt[pane] = Date.now();
+    if (status === "done" || status === "idle") quietAt[pane] = Date.now();
+    else delete quietAt[pane];
     delete ack[pane];
     if (status === "done" || status === "idle") {
       refreshGit(pane); // toolbar refreshed per turn (TECH 7a)
@@ -2401,34 +2460,53 @@
         <button class="add empty-ws" data-wi={wi} data-k="{w.id}:e" class:lift={liftWs}
           onclick={() => newTab(undefined, wi)}>+ Tab</button>
       {/if}
-      {#each w.collapsed ? [] : w.tabs as t, ti (t.id)}
+      {#each w.collapsed ? [] : helperRows(w) as row (`${row.kind}:${row.tab.id}`)}
+        {@const t = row.tab}
+        {@const ti = w.tabs.indexOf(t)}
+        {#if row.kind === "summary"}
+          {@const children = w.tabs.filter((x) => x.parent === t.id)}
+          {@const waiting = children.filter((x) => meta[x.focus]?.status === "blocked").length}
+          <button class="helper-summary" aria-expanded={!!t.helpersOpen || waiting > 0} onclick={() => (t.helpersOpen = !t.helpersOpen)}>
+            <span>{t.helpersOpen || waiting ? "▾" : "▸"}</span>
+            {tt("helper.count", { n: children.length })}{waiting ? `, ${tt("helper.waiting", { n: waiting })}` : ""}
+          </button>
+          {#if latestHelper?.parent === t.id && !confirm && !picker && !askMode && !linkAsk}
+            <div class="helper-tip" role="status">
+              {helperTip ? tt("helper.tip", { name: title(t), key: "⌘⌥J" }) : tt("helper.ready")}
+              <span class="helper-tip-actions"><button class="mini" onclick={() => { const child = w.tabs.find((x) => x.id === latestHelper?.id); if (child) openTab(wi, child); }}>{tt("helper.view")}</button>{#if helperTip}<button class="mini" onclick={dismissHelperTip}>{tt("helper.gotIt")}</button>{/if}</span>
+            </div>
+          {/if}
+        {:else if row.kind === "fold"}
+          <button class="helper-fold" aria-expanded={!!t.doneOpen} onclick={() => (t.doneOpen = !t.doneOpen)}>{t.doneOpen ? "▾" : "▸"} {tt(simple ? "helper.doneSimple" : "helper.done", { n: row.count ?? 0 })}</button>
+        {:else}
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
-        {@const st = tabStatus(t)}
-        <button class="tab {t.color ?? ''}" class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} data-wi={wi} data-ti={ti}
+        {@const st = row.child ? (meta[t.focus]?.status ?? "") : tabStatus(t)}
+        <button class="tab {t.color ?? ''}" class:helper={!!row.child} class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} data-wi={wi} data-ti={ti}
           class:lift={(dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti) || (dragging?.kind === "ws" && dragging.wi === wi)}
-          data-k={t.id}
-          onpointerdown={(e) => startDrag(e, "tab", wi, ti)} oncontextmenu={(e) => tabMenu(e, wi, t)}
-          onclick={() => ((at = { ws: wi, tab: ti }), (zoomed = false))}
+          data-k={t.id} title={row.child ? tt("helper.shortcut") : undefined}
+          onpointerdown={(e) => !row.child && startDrag(e, "tab", wi, ti)} oncontextmenu={(e) => tabMenu(e, wi, t)}
+          onclick={() => openTab(wi, t)}
           ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
           {#if editing?.kind === "tab" && editing.id === t.id}
             <!-- svelte-ignore a11y_autofocus -->
             <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label={tt("side.tabName")} />
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
-            <span class="tt">{#if stText(st)}<span class="dot {st}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
-            <span class="n"><span class="k">{n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
+            <span class="tt">{#if row.child || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
+            <span class="n"><span class="k">{!row.child && n >= 0 && n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
             <!-- FR-61: accounts other than Utama show in the tab caption -->
             <!-- agents already show as an icon; other processes (npm, vim) are still named -->
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
-            {@const rest = [g?.repo ? g.branch : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
-            {#if stText(st) || rest}
-              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {paneStatusText(p) || tt('status.idle')}"></span>{/each}{:else if stText(st)}<span class="st {st}">{paneStatusText(t.focus)}</span>{rest ? " · " : ""}{/if}{rest}</span>
+            {@const rest = [g?.repo ? (simple ? tt("helper.branch", { name: g.branch }) : g.branch) : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
+            {#if row.child || stText(st) || rest}
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {paneStatusText(p) || tt('status.idle')}"></span>{/each}{:else if row.child}<span class="st {st}">{helperStatus(t.focus)}</span>{st === "blocked" ? ` · ${tt("helper.open")}` : rest ? " · " : ""}{:else if stText(st)}<span class="st {st}">{paneStatusText(t.focus)}</span>{rest ? " · " : ""}{/if}{rest}</span>
             {/if}
           {/if}
         </button>
+        {/if}
       {/each}
       </div>
     {/each}
@@ -2508,7 +2586,18 @@
   {@const z = paneDrag.zone}
   <div class="dropzone" style:left="{z.left}px" style:top="{z.top}px" style:width="{z.width}px" style:height="{z.height}px"><span>{z.label}</span></div>
 {/if}
-<div class="grid" style:left={sidebar ? `${sideW}px` : "0"} style:top={sidebar ? "0" : "28px"} style:right={changes ? `${panelW}px` : "0"} bind:this={box}>
+{#if (owner || compareHelper) && ws}
+  {@const parent = compareOwner ?? owner}
+  {@const helper = compareHelper ?? tab}
+  {#if parent && helper}
+    <div class="helper-head" style:left={sidebar ? `${sideW}px` : "0"} style:top={sidebar ? "0" : "28px"} style:right={changes ? `${panelW}px` : "0"}>
+      <button class="mini" onclick={() => openTab(at.ws, parent)}>← {title(parent)}</button>
+      <span>› {simple ? tt("helper.simple", { name: title(parent) }) : title(helper)}</span>
+      <button class="mini" onclick={toggleCompare}>{compareId ? tt("helper.unsplit") : simple ? tt("helper.compareSimple", { name: title(parent) }) : tt("helper.compare")}</button>
+    </div>
+  {/if}
+{/if}
+<div class="grid" style:left={sidebar ? `${sideW}px` : "0"} style:top={sidebar ? (owner || compareHelper ? "32px" : "0") : (owner || compareHelper ? "60px" : "28px")} style:right={changes ? `${panelW}px` : "0"} bind:this={box}>
   {#if ws && !tab}
     <div class="empty">
       <span>{tt("main.wsEmpty", { name: ws.name })}</span>
@@ -2518,10 +2607,11 @@
   {#if error}<p class="error">{error}</p>{/if}
   {#each wss as w, wi (w.id)}
     {#each w.tabs as t, ti (t.id)}
-      {@const active = at.ws === wi && at.tab === ti}
+      {@const compared = !!compareId && at.ws === wi && (t.id === compareId || t.id === compareOwner?.id)}
+      {@const active = (at.ws === wi && at.tab === ti) || compared}
       {#each [...rects(t.tree)] as [pane, r] (pane)}
-        {@const hidden = !active || (zoomed && pane !== t.focus)}
-        {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
+        {@const hidden = !active || (compared && pane !== t.focus) || (zoomed && pane !== t.focus)}
+        {@const rr = compared ? { x: t.id === compareOwner?.id ? 0 : 0.5, y: 0, w: 0.5, h: 1 } : zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
         <!-- FR-55: toolbar for agent panes from a profile, and agents typed by hand while running -->
         {@const bar = !dead[pane] && ([...AGENTS, "custom"].includes(meta[pane]?.agent ?? "") || AGENTS.includes(meta[pane]?.busy ?? ""))}
         {@const split = panes(t.tree).length > 1}
@@ -2535,7 +2625,7 @@
           style:top={pct(rr.y)}
           style:width={pct(rr.w)}
           style:height={pct(rr.h)}
-          onpointerdown={() => (t.focus = pane)}
+          onpointerdown={() => { t.focus = pane; if (compared) at = { ws: wi, tab: ti }; }}
           role="presentation"
         >
           {#if dead[pane]}
@@ -2558,15 +2648,17 @@
                 <!-- the folder once is enough: the agent toolbar already shows it -->
                 {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd" title={home(meta[pane]?.cwd)}>{short(meta[pane]?.cwd)}</span>{/if}
                 <span class="grow"></span>
-                <button class="hb" title="{tt('drag.right')} ⌘D" aria-label={tt("drag.right")} onclick={() => splitFocused("row")}>◫</button>
-                <button class="hb" title="{tt('drag.down')} ⌘⇧D" aria-label={tt("drag.down")} onclick={() => splitFocused("col")}>⊟</button>
+                {#if !compared}
+                  <button class="hb" title="{tt('drag.right')} ⌘D" aria-label={tt("drag.right")} onclick={() => splitFocused("row")}>◫</button>
+                  <button class="hb" title="{tt('drag.down')} ⌘⇧D" aria-label={tt("drag.down")} onclick={() => splitFocused("col")}>⊟</button>
+                {/if}
                 <button class="hb" title="{tt('menu.closePane')} ⌘W" aria-label={tt("menu.closePane")} onclick={() => askClose(pane)}>×</button>
               </div>
             {/if}
             {@const ed = editorShown(pane)}
             <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
-              {#if liveTabs.includes(t.id)}
-              <Tile bind:this={tiles[pane]} {pane} codexPane={agentOf(pane) === "codex"} focused={active && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
+              {#if t.parent ? active : liveTabs.includes(t.id) || compared}
+              <Tile bind:this={tiles[pane]} {pane} codexPane={agentOf(pane) === "codex"} focused={at.ws === wi && at.tab === ti && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
@@ -3179,7 +3271,8 @@
   {#if settingsOpen && cfg}
     <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
       onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
-      oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)} />
+      oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)}
+      onresetHints={() => { helperTip = true; try { localStorage.removeItem(TIP_KEY); } catch {} }} />
   {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />
@@ -3559,6 +3652,19 @@
   .tab.on {
     background: var(--line);
   }
+  .tab.helper { margin-left: 16px; border-left: 1px solid var(--line); }
+  .helper-summary, .helper-fold {
+    border: 0; background: transparent; color: var(--muted); font: inherit; text-align: left;
+    padding: 2px 8px 4px 24px; cursor: pointer; font-size: 11px;
+  }
+  .helper-fold { padding-left: 34px; }
+  .helper-tip { margin: 3px 8px 5px 24px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 11px; }
+  .helper-tip-actions { display: flex; gap: 6px; margin-top: 6px; }
+  .helper-head {
+    position: absolute; height: 32px; z-index: 2; display: flex; align-items: center; gap: 8px;
+    padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px;
+  }
+  .helper-head > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* FR-65: antrean perhatian (mockup-sidebar-status varian C) */
   .queue {
     display: flex;

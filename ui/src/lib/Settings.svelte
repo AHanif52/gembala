@@ -30,6 +30,7 @@
     oninstall = () => {},
     onguide,
     onreport = () => {},
+    onresetHints = () => {},
   }: {
     cfg: Config;
     workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
@@ -48,6 +49,7 @@
     oninstall?: (a: { agent: string; name: string; install: string }) => void; // FR-99 P1: install command typed into a new terminal tab
     onguide?: (agent: string) => (() => void) | undefined; // FR-99 P1: the agent's official guide, when there is one
     onreport?: () => void; // FR-100: open the report dialog
+    onresetHints?: () => void; // FR-101: show the one-time helper hint again
   } = $props();
 
   // FR-61: Claude Code accounts (own config folder through CLAUDE_CONFIG_DIR); Utama is always there
@@ -629,6 +631,7 @@
               <option value="en">English</option>
             </select>
           </div>
+          <div class="row"><span>{t("set.general.hints")}<small>{t("set.general.hintsSub")}</small></span><button class="mini" onclick={onresetHints}>{t("set.general.hintsReset")}</button></div>
           <!-- FR-100: in both modes (Diagnostics is hidden in Simple) -->
           <div class="row">
             <span>{t("rep.setting")}<small>{t("rep.settingSub")}</small></span>

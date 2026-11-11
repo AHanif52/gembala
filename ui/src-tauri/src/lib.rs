@@ -47,6 +47,11 @@ const TAB_KEYS: &[(&str, &str)] = &[
     ("task.new", "Cmd+N"), // FR-73, FR-99 P1: "+ Suruh agent"
     ("tab.prev", "Cmd+Shift+["),
     ("tab.next", "Cmd+Shift+]"),
+    // FR-101: Cmd+Alt+Up/Down already focus split panes; use free letter keys for helpers.
+    ("tab.helper.owner", "Cmd+Alt+H"),
+    ("tab.helper.next", "Cmd+Alt+J"),
+    ("tab.helper.prev", "Cmd+Alt+K"),
+    ("tab.helper.compare", "Cmd+Alt+\\"),
     ("tab.goto.1", "Cmd+1"),
     ("tab.goto.2", "Cmd+2"),
     ("tab.goto.3", "Cmd+3"),

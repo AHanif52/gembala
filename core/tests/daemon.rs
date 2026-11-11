@@ -1362,6 +1362,26 @@ fn fr86_tutup_pembantu() {
     assert!(ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(other)));
 }
 
+/// FR-101: a helper may answer its owner, but cannot request another helper.
+#[test]
+fn fr101_pembantu_tidak_bisa_buka_pembantu() {
+    let d = start("fr101");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let owner = format!("sleep 1; '{g}' send helper TUGAS; echo DIMINTA-101; sleep 30");
+    let helper = format!("sleep 2; '{g}' send other TUGAS; echo SELESAI-101; sleep 30");
+    profiles(&d, &mut ui, &(sh_profile("owner", &owner) + &sh_profile("helper", &helper) + &sh_profile("other", "sleep 30")), "SELESAI-101");
+    let k = ui.call("pane.create", json!({"profile": "owner", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    ui.attach_until(k, &["DIMINTA-101"]);
+    let id = ui.call("msg.list", json!({}))["result"]["opens"][0]["id"].as_str().unwrap().to_string();
+    let h = ui.call("pane.create", json!({"profile": "helper", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    assert_eq!(ui.call("open.approve", json!({"id": id, "pane": h}))["result"]["result"], "queued");
+    let mut reader = Cli::ui(&d);
+    let out = reader.attach_until(h, &["SELESAI-101"]);
+    assert!(out.contains("helper_cant_open"), "{out}");
+    assert_eq!(ui.call("msg.list", json!({}))["result"]["opens"], json!([]));
+}
+
 /// Criterion 5: a message with ESC, CR, `\e[201~`, C1, and newlines = exactly one send (one Enter) at the target.
 #[test]
 fn kriteria_5_satu_kiriman() {
