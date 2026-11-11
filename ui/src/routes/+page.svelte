@@ -4,7 +4,7 @@
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
 import changelog from "../../../CHANGELOG.md?raw";
-import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
+import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew";
   import Rail from "$lib/Rail.svelte";
   import Changes from "$lib/Changes.svelte";
   import OutputView from "$lib/OutputView.svelte";
@@ -136,14 +136,25 @@ import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
   let upd = $state<Upd | null>(null);
   let appVer = $state("");
   let whatsNew = $state<ReleaseNotes[] | null>(null);
+  /// FR-103: the card opened itself on an upgrade (only that one names the releases it skipped)
+  let whatsNewAuto = $state(false);
   const SEEN_VERSION = "gembala.seen_version";
   let seenVersion = $state((() => { try { return localStorage.getItem(SEEN_VERSION) ?? ""; } catch { return ""; } })());
   let restored = $state(false);
+  /// FR-103: restore found no layout = a new install, where the welcome card (FR-43) stands in for this one
+  let freshInstall = $state(false);
   function saveSeenVersion(version: string) {
     seenVersion = version;
     try { localStorage.setItem(SEEN_VERSION, version); } catch {}
   }
-  function openWhatsNew() { whatsNew = sections(changelog, "", appVer, ui.language === "en" ? "en" : "id"); }
+  function dismissWhatsNew() {
+    saveSeenVersion(appVer);
+    whatsNew = null;
+  }
+  function openWhatsNew() {
+    whatsNewAuto = false;
+    whatsNew = sections(changelog, "", appVer, i18n.lang);
+  }
   let updOpen = $state(false);
   const SKIP = "gembala.update.lewati";
   let skipped = $state((() => {
@@ -250,7 +261,7 @@ import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
   const opensFor = (pane: number) => (msgData?.opens ?? []).filter((o: any) => o.from_pane === pane);
   /// FR-86: an agent asked to close another pane; the card sits in the asking pane too
   const closesFor = (pane: number) => (msgData?.closes ?? []).filter((c: any) => c.from_pane === pane);
-  const whatsNewBlocked = $derived(askMode || Object.values(meta).some((m) => m.status === "blocked") || !!confirm || !!linkAsk || !!quitAsk || !!wsAsk || !!(msgData?.pending?.length || msgData?.opens?.length || msgData?.closes?.length));
+  const whatsNewBlocked = $derived(askMode || !!welcome || Object.values(meta).some((m) => m.status === "blocked") || !!confirm || !!linkAsk || !!quitAsk || !!wsAsk || !!(msgData?.pending?.length || msgData?.opens?.length || msgData?.closes?.length));
   const openWho = (o: any) => {
     const p = cfg?.values.profiles.find((x) => x.id === o.profile);
     const accs = cfg?.values.accounts ?? [];
@@ -1807,6 +1818,11 @@ import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
       welcome = null;
       return stop(e);
     }
+    // FR-103: Esc = Oke (mockup pen: one main button, Esc and a click outside do the same)
+    if (whatsNew?.length && !whatsNewBlocked && e.key === "Escape") {
+      dismissWhatsNew();
+      return stop(e);
+    }
     if (linkAsk) {
       if (e.key === "Enter") openLink();
       if (e.key === "Escape") linkAsk = "";
@@ -2099,6 +2115,7 @@ import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
     if (ids.length) for (const p of ids) wss[0].tabs.push({ id: uid(), title: "", tree: { pane: p }, focus: p });
     else await newTab(undefined, 0);
     at = { ws: 0, tab: 0 };
+    freshInstall = true; // FR-103: this is the "new install" the welcome card below belongs to
     welcome = await call("agents.detect", {}).catch(() => []);
   }
 
@@ -2499,12 +2516,11 @@ import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
   });
   $effect(() => {
     if (!restored || !appVer) return;
-    if (!seenVersion) {
-      if (welcome) saveSeenVersion(appVer); // a fresh install already has its welcome card
-      else whatsNew = sections(changelog, "", appVer, ui.language === "en" ? "en" : "id").slice(0, 1);
-    } else if (newer(appVer, seenVersion)) {
-      whatsNew = sections(changelog, seenVersion, appVer, ui.language === "en" ? "en" : "id");
-    }
+    // FR-103: a new install shows the welcome card (FR-43) instead; nothing was seen, so remember it now
+    if (!seenVersion && freshInstall) return void saveSeenVersion(appVer);
+    // the card that opened itself follows the language; one opened by hand (palette, Settings) stays as it is
+    whatsNewAuto = untrack(() => whatsNewAuto || whatsNew === null);
+    if (whatsNewAuto) whatsNew = upgradeNotes(changelog, seenVersion, appVer, i18n.lang);
   });
 </script>
 
@@ -3449,16 +3465,19 @@ import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
     </span>
   </div>
 {/if}
-{#if whatsNew && !whatsNewBlocked}
+{#if whatsNew && whatsNew.length && !whatsNewBlocked}
   <div class="confirm whatsnew" role="dialog" aria-label={tt("set.diag.whatsNew")}>
-    <b class="ctitle">{tt("whatsnew.title", { version: whatsNew[0]?.version ?? appVer })}</b>
+    <span class="wnhead">
+      <b class="ctitle">{tt("whatsnew.title", { version: whatsNew[0]?.version ?? appVer })}</b>
+      {#if whatsNewAuto && whatsNew.length > 1}<span class="wnskip">{ttn("whatsnew.skipped", whatsNew.length - 1)}</span>{/if}
+    </span>
     <div class="wnbody">
       {#each whatsNew as release (release.version)}
         {#if release !== whatsNew[0]}<h3>{release.version}</h3>{/if}
         <ul>{#each release.bullets as bullet (bullet)}<li>{#each inline(bullet) as part}<span class:bold={part.kind === "bold"} class:code={part.kind === "code"}>{part.text}</span>{/each}</li>{/each}</ul>
       {/each}
     </div>
-    <span class="acts"><button class="mini pri" onclick={() => (saveSeenVersion(appVer), (whatsNew = null))}>{tt("common.ok")}</button></span>
+    <span class="acts"><button class="mini pri" onclick={dismissWhatsNew}>{tt("common.ok")}</button></span>
   </div>
 {/if}
 
@@ -5419,6 +5438,15 @@ import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
     box-sizing: border-box;
     padding: 16px 20px;
     gap: 12px;
+  }
+  .wnhead {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .wnhead .wnskip {
+    color: var(--muted);
+    font-size: 12px;
   }
   .wnbody {
     overflow: auto;

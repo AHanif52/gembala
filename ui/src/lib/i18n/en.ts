@@ -767,6 +767,8 @@ export default {
   "set.diag.versions": "App, daemon, protocol",
   "set.diag.whatsNew": "What's new",
   "whatsnew.title": "What's new in {version}",
+  "whatsnew.skipped.one": "and 1 release you missed",
+  "whatsnew.skipped.other": "and {n} releases you missed",
   "set.diag.release": "Updates",
   "set.diag.releaseBtn": "Releases page",
   "set.upd.via": "Installed with",

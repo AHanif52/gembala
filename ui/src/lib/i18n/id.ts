@@ -757,6 +757,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "set.diag.versions": "App, daemon, protokol",
   "set.diag.whatsNew": "Yang baru",
   "whatsnew.title": "Yang baru di {version}",
+  "whatsnew.skipped.other": "dan {n} rilis yang kelewat",
   "set.diag.release": "Update",
   "set.diag.releaseBtn": "Halaman rilis",
   "set.upd.via": "Dipasang lewat",

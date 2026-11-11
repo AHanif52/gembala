@@ -31,6 +31,14 @@ export function sections(md: string, from: string, to: string, lang: "en" | "id"
   }).sort((a, b) => compareVersion(b.version, a.version));
 }
 
+/// FR-103: the notes to show when the app opens on `to`. Same version or a downgrade = nothing; no stored
+/// version yet (first run with this feature) = `to` alone, and only when the bundled changelog has that very
+/// section, so a version without notes shows no card instead of another release's list.
+export function upgradeNotes(md: string, seen: string, to: string, lang: "en" | "id"): ReleaseNotes[] {
+  const notes = sections(md, seen, to, lang);
+  return seen ? notes : notes.filter((release) => release.version === to);
+}
+
 export function inline(text: string): { text: string; kind: "plain" | "bold" | "code" }[] {
   return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean).map((part) => ({
     text: part.replace(/^\*\*(.*)\*\*$|^`(.*)`$/, "$1$2"),
