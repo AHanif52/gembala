@@ -2274,6 +2274,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const s = Math.max(0, Math.round(ms / 1000));
     return s < 60 ? tt("tile.secs", { n: s }) : s < 3600 ? tt("tile.mins", { n: Math.floor(s / 60) }) : tt("tile.hours", { n: Math.floor(s / 3600) });
   };
+  /// Sederhana hides the automatic `shell-N` (an engine name): a pane a person renamed keeps its name
+  const paneLabel = (p: number) => {
+    const n = meta[p]?.name ?? "";
+    return simple && /^shell-\d+$/.test(n) ? agentName(meta[p]?.profile) || n : n;
+  };
   /// the profile's display name ("Claude Code", "Codex", "Oh My Pi"…), used by the strip and the cards
   const agentName = (id: string | undefined) => (id ? (cfg?.values.profiles.find((p) => p.id === id)?.name ?? id) : "");
   /// a blocked pane's agent, for the icon and the sentence
@@ -2897,7 +2902,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
             {#if sp}<span class="tt">{title(t)}</span>{:else}
-            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>{/if}
+            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && !simple && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>{/if}
             <span class="n"><span class="k">{!row.child && n >= 0 && n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
@@ -3044,7 +3049,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <!-- FR-37: thin head, also when the tab has only one pane (Gembala.pen 02) -->
               {@const hs = stat(pane)}
               <div class="head" class:on={split && pane === t.focus} onpointerdown={(e) => startPaneDrag(e, t, pane)} role="presentation">
-                <span class="hname">{#if stText(hs)}<span class="dot {hs}" aria-hidden="true"></span>{/if}{meta[pane]?.name}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
+                <span class="hname">{#if stText(hs)}<span class="dot {hs}" aria-hidden="true"></span>{/if}{paneLabel(pane)}{labels[pane] || meta[pane]?.busy ? ` · ${labels[pane] || meta[pane]?.busy}` : ""}</span>
                 {#if stText(hs)}<span class="st {hs}">{paneStatusText(pane)}</span>{/if}
                 <!-- FR-27: token saver on for this pane (read, test log, artifacts are reduced) -->
                 {#if meta[pane]?.saver}<span class="hsaver" title={tt("pane.saverTip")}>{tt("pane.saver")}</span>{/if}
@@ -3303,7 +3308,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   <!-- svelte-ignore a11y_autofocus -->
                   <input class="edit pname" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label={tt("pane.name")} />
                 {:else}
-                  <button class="chip pname" title={tt("pane.renameTip")} ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
+                  <button class="chip pname" title={tt("pane.renameTip")} ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{paneLabel(pane)}</button>
                 {/if}
                 {#if acctOf(pane)}<span class="chip acc c-acc" title={tt("pane.accountTip")}>{acctOf(pane)}</span>{/if}
                 {#if meta[pane]?.owner && agentOf(pane) === "claude"}<span class="chip rwarn" title={tt("pane.ownerTip", { name: meta[pane].owner.name })}>{tt("pane.owner", { name: meta[pane].owner.name })}</span>{/if}

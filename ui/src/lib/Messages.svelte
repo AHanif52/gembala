@@ -55,7 +55,7 @@
       {#each rows as r (r.pane)}
         <div class="row">
           <span class="grow"
-            ><b>{r.name}</b><small>{r.agent} · {r.status ? tOr(`status.${r.status}`, r.status) : t("msg.untracked")}{lastTask[r.name] ? ` · ${t("msg.lastTask", { task: lastTask[r.name] })}` : ""}</small></span
+            ><b>{simple ? person(r.name) : r.name}</b><small>{r.agent} · {r.status ? tOr(`status.${r.status}`, r.status) : t("msg.untracked")}{lastTask[r.name] ? ` · ${t("msg.lastTask", { task: lastTask[r.name] })}` : ""}</small></span
           >
           {#if r.agent === "shell"}
             <label class="sw"><input type="checkbox" checked={r.readable} onchange={(e) => act("pane.readable", { pane: r.pane, on: e.currentTarget.checked })} /> {t("msg.readable")}</label>
