@@ -2712,7 +2712,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             <button class="tab helper" class:blocked={ps === "blocked"} class:on={at.ws === wi && at.tab === ti && t.focus === p} onclick={() => jumpTo(p)}>
               <span class="tt"><span class="dot {ps || 'idle'}" aria-hidden="true"></span>{#if pa}<span class="aico {pa}" title={pa}>{GLYPH[pa]}</span>{/if}{meta[p]?.name}{pa ? ` · ${agentLabel(p)}` : meta[p]?.busy ? ` · ${meta[p].busy}` : ""}</span>
               <span class="sub"><span class="st {ps}">{!pa && meta[p]?.busy && ps !== "blocked" ? tt("helper.workingFor", { time: ago(now - (meta[p].since ?? now)) }) : helperStatus(p)}</span>{ps === "blocked" ? ` · ${tt("helper.open")}` : ""}{acctOf(p) ? ` · ${acctOf(p)}` : ""}</span>
-              {#if meta[p]?.subagents}<span class="sub">└ {tt("split.subagents", { n: meta[p].subagents ?? 0 })}</span>{/if}
+              {#if meta[p]?.subagents}<span class="sub">└ {ttn("split.subagents", meta[p].subagents ?? 0)}</span>{/if}
               {#if previews[p] && ps !== "blocked"}<span class="sub">{previews[p]}</span>{/if}
             </button>
           {/each}
