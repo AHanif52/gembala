@@ -109,6 +109,7 @@
   let quietAt = $state<Record<number, number>>({}); // FR-101: keep a new completion visible for one minute
   let now = $state(Date.now()); // FR-65: time waiting in the queue, refreshed every poll
   let ack = $state<Record<number, true>>({});
+  const readStatus = new Set<number>(); // FR-87: panes whose status was read once since the UI connected
   let labels = $state<Record<number, string>>({}); // FR-69: from the agent's terminal title; not in layout.json (SEC-13) // panes whose "done" status was already seen; cleared when the status changes
   let dead = $state<Record<number, true>>({}); // panes from another daemon run or already exited (negative id)
   let boot = $state(""); // state: the layout is saved again when a new daemon starts
@@ -2102,10 +2103,10 @@
   }
   const tabOf = (p: number) => wss.flatMap((w) => w.tabs).find((t) => panes(t.tree).includes(p));
 
-  // FR-40: the done mark goes away once that pane is seen (agent or shell)
+  // FR-40, FR-87: the done mark goes away once that pane is seen (agent or shell) — every pane on screen, so a split
+  // next to the focused pane doesn't keep the Dock badge up either
   $effect(() => {
-    const f = tab?.focus;
-    if (seen && f && meta[f]?.status === "done" && !meta[f]?.waitingShell && !ack[f]) ack[f] = true;
+    for (const p of tab ? panes(tab.tree) : []) if (onScreen(p) && meta[p]?.status === "done" && !meta[p]?.waitingShell && !ack[p]) ack[p] = true;
   });
 
   // FR-55: the toolbar of the newly focused pane is refreshed (no git polling)
@@ -2146,10 +2147,12 @@
   let bell = $state(false);
   let unfold = $state<Record<number, boolean>>({});
   let noteId = 0;
+  /// FR-87: the pane on screen in the front window is seen as it happens, so its note never adds to the bell count
+  const onScreen = (pane: number) => seen && !settingsOpen && !!tab && panes(tab.tree).includes(pane);
   function note(pane: number, kind: string, label: string) {
     const t = tabOf(pane);
     const w = wss.find((w) => t && w.tabs.includes(t));
-    const n = { id: ++noteId, pane, agent: agentOf(pane), name: meta[pane].name || meta[pane].profile, task: labels[pane] ?? "", tab: t ? title(t) : "", ws: w?.name ?? "", kind, label, at: Date.now() };
+    const n = { id: ++noteId, pane, agent: agentOf(pane), name: meta[pane].name || meta[pane].profile, task: labels[pane] ?? "", tab: t ? title(t) : "", ws: w?.name ?? "", kind, label, at: Date.now(), seen: onScreen(pane) || undefined };
     notes = [n, ...notes].slice(0, 100);
   }
   // one row per pane (newest note, older ones folded); a permission still waiting goes first, the rest stay newest first
@@ -2191,6 +2194,10 @@
   });
   function onStatus(pane: number, status: string, shell = false, reason = "", at?: number, last?: string | null) {
     if (!meta[pane]) return;
+    // FR-87: the first read after the UI connects (or reconnects) says what the pane already was, not something that
+    // just happened; a pane that finished while the app was closed must not open a bell entry or a banner
+    const firstRead = !readStatus.has(pane);
+    readStatus.add(pane);
     if (at) statusAt[pane] = at * 1000;
     if (last !== undefined) previews[pane] = last ?? "";
     if (at && status === "blocked") blockedAt[pane] = at * 1000;
@@ -2210,8 +2217,8 @@
       refreshGit(pane); // toolbar refreshed per turn (TECH 7a)
       if (changes?.pane === pane) loadChanges(pane); // FR-22: the panel is refreshed too
     }
-    if (status === "blocked") alert(pane, "blocked", "alert.blocked");
-    if (status === "done" && !shell) alert(pane, "done", "alert.done");
+    if (!firstRead && status === "blocked") alert(pane, "blocked", "alert.blocked");
+    if (!firstRead && status === "done" && !shell) alert(pane, "done", "alert.done");
   }
 
   // save the layout half a second after the last change (SEC-13: no screen content)
