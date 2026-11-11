@@ -1496,17 +1496,36 @@ fn fr86_tutup_pembantu() {
     let id = ui.call("msg.list", json!({}))["result"]["opens"][0]["id"].as_str().unwrap().to_string();
     let helper = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let other = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let third = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     assert_eq!(ui.call("open.approve", json!({"id": id, "pane": helper}))["result"]["result"], "queued");
     std::fs::write(&go, "").unwrap();
     let mut ui2 = Cli::ui(&d);
     let out = ui2.attach_until(k, &["SELESAI-86"]);
-    assert!(out.contains("no_such_pane") && out.contains("not_allowed") && out.contains("\"closed\""), "{out}");
+    // 4 Nov: a pane that isn't my helper is no longer refused, it waits for the user's card
+    assert!(out.contains("no_such_pane") && out.contains("needs_review") && out.contains("\"closed\""), "{out}");
     let t0 = Instant::now();
     while ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(helper)) {
         assert!(t0.elapsed() < Duration::from_secs(5), "helper still open");
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(other)));
+    // the other two wait as cards: the target's status rides along and nothing was closed yet
+    let closes = ui.call("msg.list", json!({}))["result"]["closes"].clone();
+    let cards: Vec<(&str, &str)> = closes.as_array().into_iter().flatten().map(|c| (c["target"].as_str().unwrap_or(""), c["from"].as_str().unwrap_or(""))).collect();
+    assert_eq!(cards, [("cat-2", "minta-1"), ("cat-3", "minta-1")], "{closes}");
+    // approve = the user's ×: the pane goes; reject = it stays
+    assert_eq!(ui.call("close.approve", json!({"id": closes[0]["id"]}))["result"]["result"], "closed");
+    assert_eq!(ui.call("close.reject", json!({"id": closes[1]["id"]}))["result"]["result"], "rejected");
+    assert_eq!(ui.call("close.reject", json!({"id": closes[1]["id"]}))["error"]["code"], "no_such_msg");
+    assert_eq!(ui.call("msg.list", json!({}))["result"]["closes"], json!([]));
+    let t0 = Instant::now();
+    while ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(other)) {
+        assert!(t0.elapsed() < Duration::from_secs(5), "approved pane still open");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(ui.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(third)), "rejected pane was closed");
+    // the asking agent's `wait --reply` gets the card's answer (it asked before the user decided)
+    let out = ui2.attach_until(k, &["BALAS-86"]);
+    assert!(out.contains("cat-3 was not closed: rejected_by_user"), "{out}");
 }
 
 /// FR-101: a helper may answer its owner, but cannot request another helper.
