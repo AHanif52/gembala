@@ -61,6 +61,45 @@ fn err(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+/// Linux SEC-20 lapis 1: connect to the abstract UI socket named in `<rundir>/ui.addr` (0600). A kernel without a
+/// Landlock scope has no such file, and the daemon then listens on the path socket.
+#[cfg(target_os = "linux")]
+fn abstract_connect(name: &str) -> io::Result<UnixStream> {
+    use std::os::fd::FromRawFd;
+    let bytes = name.as_bytes();
+    let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.is_empty() || bytes.len() + 1 >= sa.sun_path.len() {
+        return Err(err("abstract name"));
+    }
+    sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (i, b) in bytes.iter().enumerate() {
+        sa.sun_path[i + 1] = *b as libc::c_char;
+    }
+    let len = (std::mem::size_of::<libc::sa_family_t>() + 1 + bytes.len()) as libc::socklen_t;
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::connect(fd, (&raw const sa).cast(), len) } == -1 {
+        let e = io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+    Ok(unsafe { UnixStream::from_raw_fd(fd) })
+}
+
+/// UI channel of the daemon in `dir`: the abstract socket the run folder names (Linux lapis 1), else the path socket.
+fn ui_stream(dir: &std::path::Path) -> io::Result<UnixStream> {
+    #[cfg(target_os = "linux")]
+    if let Ok(s) = std::fs::read_to_string(dir.join("ui.addr")) {
+        let name = s.trim();
+        if !name.is_empty() && !name.contains('/') && let Ok(s) = abstract_connect(name) {
+            return Ok(s);
+        }
+    }
+    UnixStream::connect(dir.join("ui.sock"))
+}
+
 /// Same folder as the daemon's `core::os::runtime_dir`: `$TMPDIR/gembala` on macOS, `$XDG_RUNTIME_DIR/gembala` on Linux.
 pub fn rundir() -> PathBuf {
     if let Some(p) = std::env::var_os("GEMBALA_RUNDIR") {
@@ -84,7 +123,6 @@ pub fn connect(on_event: OnEvent) -> io::Result<Client> {
 
 fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     let dir = rundir();
-    let sock = dir.join("ui.sock");
     // one secret per run folder: dev, tests, and the installed app don't overwrite each other
     let account = format!("ui-secret:{}", dir.display());
     // Debug builds only (measuring tools, tests): secret from env, no Keychain. Release builds don't have
@@ -93,14 +131,14 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     let dev = std::env::var("GEMBALA_DEV_SECRET").ok();
     #[cfg(not(debug_assertions))]
     let dev: Option<String> = None;
-    if let (Some(secret), Ok(s)) = (&dev, UnixStream::connect(&sock)) {
+    if let (Some(secret), Ok(s)) = (&dev, ui_stream(&dir)) {
         return Client::open(s, secret, on_event);
     }
     // socket first: the Keychain is only touched when needed. Keychain items of a self-signed app are tied to the build's cdhash,
     // so reading/writing an old build's item brings up a macOS permission dialog on every update.
-    let Ok(s) = UnixStream::connect(&sock) else {
+    let Ok(s) = ui_stream(&dir) else {
         let secret = spawn_daemon()?;
-        let c = Client::open(UnixStream::connect(&sock)?, &secret, on_event)?;
+        let c = Client::open(ui_stream(&dir)?, &secret, on_event)?;
         // SEC-20: the daemon recognizes the UI from its signature = no Keychain needed. Build without a certificate:
         // the secret is stored for reconnecting; a failed save doesn't fail this session.
         // Measuring/test tools (debug build + GEMBALA_DEV_SECRET) don't write to the user's Keychain.
@@ -125,7 +163,7 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
         Err(e) if closing(&e) => return Err(e),
         Err(_) => {} // rejected: try the secret from the Keychain
     }
-    let s = UnixStream::connect(&sock)?;
+    let s = ui_stream(&dir)?;
     match secret_get(&account) {
         // ponytail: daemon alive but the Keychain secret is stale/missing; automatic reset in FR-49 (Phase 1)
         Some(secret) => match Client::open(s, &secret, on_event.clone()) {

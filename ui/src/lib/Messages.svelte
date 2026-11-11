@@ -2,7 +2,7 @@
   // Message drawer (Phase 2): agent status panel (FR-10), pending cards (FR-12), queue, history,
   // recipient policy (SEC-5), mute (SEC-10), shell pane read permission (SEC-21). Every action goes through the UI channel.
   import { call } from "./daemon";
-  import { t, tOr } from "./i18n/state.svelte";
+  import { errText, t, tOr } from "./i18n/state.svelte";
   import { combo } from "./keys.svelte";
 
   type Row = { pane: number; name: string; agent: string; status?: string; policy?: string; readable?: boolean };
@@ -37,7 +37,14 @@
   } = $props();
 
 
-  const act = (method: string, params: object) => call(method, params).then(onchange, onchange);
+  let failed = $state("");
+  const act = (method: string, params: object) =>
+    call(method, params)
+      .then(() => (failed = ""))
+      .then(onchange, (e) => {
+        failed = errText(e);
+        onchange();
+      });
   const muted = $derived(new Set<string>(data?.muted ?? []));
   /// FR-10: last task per agent = the last message sent to that agent
   const lastTask = $derived(
@@ -50,6 +57,7 @@
     <span>{t("msg.title")}</span>
     <button class="mini" onclick={onclose} aria-label={t("msg.close")}>Esc</button>
   </header>
+  {#if failed}<div class="failed" role="alert">{failed}</div>{/if}
   <div class="body">
     <h4>{t("msg.agents")}</h4>
     <section>
@@ -162,6 +170,14 @@
 </aside>
 
 <style>
+  .failed {
+    margin: 8px 12px 0;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--warn, #b26b00);
+    font-size: 12px;
+  }
   .drawer {
     /* FR-99 P2: a column at the right edge, next to the changes panel; the grid narrows by it, so no card is covered */
     position: fixed;

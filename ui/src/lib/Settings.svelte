@@ -112,7 +112,7 @@
     accErr = r?.error ? errText(r.error, r.args) : "";
     loadAccounts();
   }
-  let daemon = $state<{ daemon: string; proto: number; msg?: { rate_per_min: number; hop_max: number } } | null>(null);
+  let daemon = $state<{ daemon: string; proto: number; msg?: { rate_per_min: number; hop_max: number }; polkit?: boolean } | null>(null);
   // FR-29: edit a profile from the screen; one line = one argument / one env
   type Form = {
     id: string;
@@ -1401,6 +1401,12 @@
             </span>
           </div>
           <div class="row"><span>{t("set.upd.auto")}<small>{t("set.upd.autoSub")}</small></span><input type="checkbox" role="switch" aria-label={t("set.upd.auto")} checked={cfg.values.update?.check !== false} onchange={(e) => set("check" as keyof Ui, e.currentTarget.checked as never, "update")} /></div>
+          {#if daemon?.polkit !== undefined}
+            <div class="row">
+              <span>{t("set.diag.polkit")}<small>{daemon.polkit ? t("set.diag.polkitOn") : t("set.diag.polkitOff")}</small></span>
+              <span class="m">{daemon.polkit ? "polkit" : "—"}</span>
+            </div>
+          {/if}
           <div class="row"><span>{t("set.diag.whatsNew")}</span><button class="mini" onclick={onwhatsnew}>{t("set.diag.whatsNew")}</button></div>
         </section>
       {:else}

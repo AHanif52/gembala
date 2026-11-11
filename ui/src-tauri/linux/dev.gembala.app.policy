@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- SEC-20 Linux lapis 3 (TECH 21.8): the two most dangerous human actions ask for the login password. Shipped by the
+     .deb; the AppImage has no policy file and skips the check. -->
+<policyconfig>
+  <vendor>Gembala</vendor>
+  <action id="dev.gembala.app.rules">
+    <description>Change what Gembala agents may do</description>
+    <message>Authentication is required to change Gembala's agent access rules or stop the agents</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

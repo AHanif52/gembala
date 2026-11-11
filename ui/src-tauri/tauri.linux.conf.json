@@ -1,6 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "targets": ["appimage", "deb"]
+    "targets": ["appimage", "deb"],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/polkit-1/actions/dev.gembala.app.policy": "linux/dev.gembala.app.policy"
+        }
+      }
+    }
   }
 }
