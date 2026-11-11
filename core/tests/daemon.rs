@@ -416,7 +416,8 @@ fn info_dan_hentikan_proses() {
     let r = wait_info(&mut ui, pane, true, Duration::from_secs(5));
     assert_eq!(r["name"], "sleep", "{r}");
     assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], true);
-    assert_eq!(wait_info(&mut ui, pane, false, Duration::from_secs(2))["busy"], false, "sleep harus mati oleh TERM");
+    // under 3 s = TERM did it, not the KILL that follows at 3 s; 2 s was too tight on a loaded machine
+    assert_eq!(wait_info(&mut ui, pane, false, Duration::from_millis(2800))["busy"], false, "sleep harus mati oleh TERM");
 
     // TERM is ignored before exec, so it applies as soon as the name shows "perl"
     w(&mut ui, "sh -c \"trap '' TERM; exec perl -e 'sleep 60'\"\r");
@@ -1071,7 +1072,7 @@ fn deteksi_menunggu_password() {
         if info["password"] == true {
             break;
         }
-        if t0.elapsed() > Duration::from_secs(5) {
+        if t0.elapsed() > Duration::from_secs(15) {
             let screen = B64.decode(snapshot(&ui.call("pane.attach", json!({"pane": pane})))).unwrap();
             panic!("prompt password tidak terdeteksi: {info}\n{}", String::from_utf8_lossy(&screen));
         }

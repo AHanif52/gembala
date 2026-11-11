@@ -232,7 +232,8 @@ mod tests {
             let output = if agent == "codex" { serde_json::from_str::<Value>(fixture).unwrap().to_string() } else { fixture.to_owned() };
             let path = script(agent, &format!("{handshake}printf '%s\\n' '{}'", output.replace('\'', "'\\''")));
             let home = (agent == "codex").then_some(std::path::Path::new("/tmp/gbl-models-home"));
-            assert_eq!(probe(path.to_str().unwrap(), agent, home, Duration::from_secs(2)), parse(agent, fixture), "{agent}");
+            // the real limit: a busy machine starts the fake CLI's shell slower than 2 s (failed under parallel tests)
+            assert_eq!(probe(path.to_str().unwrap(), agent, home, LIMIT), parse(agent, fixture), "{agent}");
             std::fs::remove_file(path).unwrap();
         }
         let path = script("hostile", "printf '%s' '[{\"id\":\"--yolo\"},{\"id\":\"gemini-safe\"}]'");
