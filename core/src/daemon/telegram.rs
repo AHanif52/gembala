@@ -67,6 +67,16 @@ pub struct Bot {
     progress: Mutex<HashMap<u64, (Option<i64>, Instant)>>,
     /// picker message already answered: a second tap (before its buttons are gone) must not edit it again (Telegram 400)
     picked: Mutex<Option<i64>>,
+    /// open multiSelect polls by poll id (`multi_opts`); removed on the first vote
+    polls: Mutex<HashMap<String, Poll>>,
+}
+
+/// what a multiSelect poll was sent for: the pane, its dialog generation, the option texts it offered, its message
+struct Poll {
+    pane: u64,
+    seq: u64,
+    labels: Vec<String>,
+    msg: i64,
 }
 
 const TURNS_KEPT: usize = 10;
@@ -111,6 +121,8 @@ enum In {
     /// photo or file: saved like a pasted image (FR-54, SEC-34), its path typed into the pane after the caption
     Media { to: Option<To>, caption: String, file: String, ext: String, msg: i64 },
     Key { pane: u64, seq: u64, key: String, cb: String, msg: i64 },
+    /// a vote on a multiSelect poll: the option indexes picked
+    Vote { poll: String, picks: Vec<usize> },
     Help,
 }
 
@@ -568,6 +580,8 @@ fn question_of(screen: &str) -> String {
 fn blocked_text(name: &str, ws: &str, status: &str, agent: &str, screen: &str, id_l: bool) -> String {
     let mut text = head(name, ws, status);
     let ask = short(&mask_secrets(&ask_of(agent, screen)), 120);
+    // a question (no tool to name) shows its own words: the card used to say only "waiting for an answer" (11 Nov)
+    let ask = if ask.is_empty() { short(&mask_secrets(&question_of(screen)), 200) } else { ask };
     if !ask.is_empty() {
         text += &format!("\n{}", esc(&ask));
     }
@@ -627,6 +641,39 @@ fn dialog_opts(screen: &str) -> Option<Vec<String>> {
     (!opts.is_empty()).then_some(opts)
 }
 
+/// Claude's multiSelect question (AskUserQuestion `multiSelect: true`, 11 Nov): every option a checkbox (`[ ] Apel`,
+/// `[✔] Apel`) under a tab row naming `✔ Submit`. (label, digit, ticked) per option, first row only (the description sits
+/// deeper); Claude's own "Type something" is typed on the Mac, so it isn't one. Numbers must run 1, 2, 3… like
+/// `dialog_opts`. Recorded screen: `core/tests/dialogs/claude-2.1.311-multiselect.txt`.
+fn multi_opts(screen: &str) -> Option<Vec<(String, usize, bool)>> {
+    let rows: Vec<&str> = screen.lines().collect();
+    let first = rows.iter().rposition(|r| choice(r) == Some(1) && lead(r) <= 4)?;
+    if !rows[..first].iter().any(|r| r.contains("✔ Submit")) {
+        return None;
+    }
+    let at = lead(rows[first]);
+    let (mut out, mut n) = (Vec::new(), 0);
+    for r in &rows[first..] {
+        if r.trim().is_empty() || lead(r) < at {
+            break;
+        }
+        if lead(r) > at {
+            continue;
+        }
+        n += 1;
+        if choice(r)? as usize != n {
+            return None;
+        }
+        let text = r.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '│' | '❯' | '›')).split_once(". ")?.1;
+        let (mark, label) = text.strip_prefix('[')?.split_once(']')?;
+        let label = label.trim();
+        if label != "Type something" {
+            out.push((label.to_string(), n, !mark.trim().is_empty()));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// options that change how the agent asks from then on: Claude 2.1.311 "Yes, and switch to auto mode" (3 of 4 in a Bash
 /// dialog, so a "3" button used to turn on auto mode), "switch to accept edits"; never a button, answered on the Mac
 fn switches_mode(label: &str) -> bool {
@@ -640,6 +687,10 @@ fn claude_keys(agent: &str, screen: &str, id_l: bool) -> Vec<(&'static str, Stri
     // FR-99 P2: a numbered dialog that doesn't read cleanly gets no button at all (not even Deny): guessing a number or
     // sending Esc could answer something else. The bar offers "Buka buat jawab" and the bot drops its keyboard.
     let Some(opts) = dialog_opts(screen) else { return Vec::new() };
+    // a multiSelect digit only ticks a box and nothing submits it: the bot sends a poll instead (`notice`), Deny stays
+    if multi_opts(screen).is_some() {
+        return vec![("esc", button_label(agent, "esc", id_l))];
+    }
     let mut v: Vec<(&'static str, String)> = opts
         .iter()
         .enumerate()
@@ -756,6 +807,55 @@ pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str, seq: u64) -> bool {
     }
 }
 
+/// a multiSelect poll vote (11 Nov, recorded live on Claude 2.1.311): digits tick exactly what was picked, → opens the
+/// review page, and its "1. Submit answers" sends it. Every step re-reads the screen and stops, with nothing more typed,
+/// when the dialog changed (other options, another generation, review not reached). Another question tab after → goes
+/// out as a fresh card.
+fn vote(st: &State, b: &Bot, poll: &Poll, picks: &[usize]) -> bool {
+    let r = vote_steps(st, b, poll, picks);
+    if let Err(why) = r {
+        log(format_args!("vote stopped: {why}"));
+    }
+    r.is_ok()
+}
+
+fn vote_steps(st: &State, b: &Bot, poll: &Poll, picks: &[usize]) -> Result<(), &'static str> {
+    let id = poll.pane;
+    let Some(p) = st.panes.lock().unwrap().get(&id).cloned() else { return Err("pane closed") };
+    let screen = || p.view.lock().unwrap().0.text();
+    let same = |s: &str| multi_opts(s).filter(|o| o.iter().map(|(l, ..)| short(&mask_secrets(l), 100)).eq(poll.labels.iter().cloned()));
+    let wait = |ok: &dyn Fn(&str) -> bool| {
+        (0..20).any(|_| {
+            thread::sleep(Duration::from_millis(100));
+            *p.status.lock().unwrap() == "blocked" && p.status_seq.load(Ordering::Relaxed) == poll.seq && ok(&screen())
+        })
+    };
+    let Some(opts) = same(&screen()) else { return Err("options changed") };
+    // one digit at a time, each waited on: Claude drops digits that arrive together ("23" ticked nothing, 11 Nov)
+    for (i, (_, n, on)) in opts.iter().enumerate() {
+        let want = picks.contains(&i);
+        if want != *on {
+            type_into_blocked(st, id, &p, poll.seq, key_bytes(DIGITS[n - 1]))?;
+            if !wait(&|s: &str| same(s).is_some_and(|o| o[i].2 == want)) {
+                return Err("box not ticked");
+            }
+        }
+    }
+    let ticked = |s: &str| same(s).is_some_and(|o| o.iter().enumerate().all(|(i, (.., on))| picks.contains(&i) == *on));
+    type_into_blocked(st, id, &p, poll.seq, b"\x1b[C")?;
+    let review = |s: &str| s.contains("Ready to submit your answers?") && dialog_opts(s).is_some_and(|o| o.first().is_some_and(|f| f == "Submit answers"));
+    // → moved on: the review page, or the next tab (the same question with its boxes no longer shown)
+    if !wait(&|s: &str| !ticked(s)) {
+        return Err("→ did nothing");
+    }
+    if wait(&review) {
+        return type_into_blocked(st, id, &p, poll.seq, b"1");
+    }
+    // the next question tab: its own card (poll or buttons)
+    let _ = b.out.try_send(Out::Notice(id, Kind::Blocked(poll.seq), Instant::now()));
+    Ok(())
+}
+
 fn cb_data(pane: u64, seq: u64, key: &str) -> String {
     format!("k|{pane}|{seq}|{key}")
 }
@@ -783,6 +883,14 @@ fn cb_parse(d: &str) -> Option<(u64, u64, String)> {
 
 /// Update -> what to do. Only the bound private chat counts (SEC-36); while pairing only `/start <code>`.
 fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
+    if let Some(a) = u.get("poll_answer") {
+        let Some(l) = link else { return In::Ignore };
+        if a["user"]["id"].as_i64() != Some(l.user) {
+            return In::Ignore;
+        }
+        let picks = a["option_ids"].as_array().into_iter().flatten().filter_map(|o| o.as_u64().map(|o| o as usize)).collect();
+        return In::Vote { poll: a["poll_id"].as_str().unwrap_or_default().to_string(), picks };
+    }
     if let Some(q) = u.get("callback_query") {
         let Some(l) = link else { return In::Ignore };
         let m = &q["message"];
@@ -1161,6 +1269,7 @@ fn spawn(st: &Arc<State>, token: String, bot: String, link: Option<Link>) -> Arc
         turns: Mutex::default(),
         progress: Mutex::default(),
         picked: Mutex::new(None),
+        polls: Mutex::default(),
     });
     if let Some(old) = st.tg.lock().unwrap().replace(b.clone()) {
         old.stop.store(true, Ordering::Relaxed);
@@ -1247,7 +1356,7 @@ fn poll(st: Arc<State>, b: Arc<Bot>) {
     }
     let (mut offset, mut wait, mut conflicts) = (0i64, 2u64, 0);
     while !b.stop.load(Ordering::Relaxed) {
-        let body = json!({"offset": offset, "timeout": 50, "allowed_updates": ["message", "callback_query"]});
+        let body = json!({"offset": offset, "timeout": 50, "allowed_updates": ["message", "callback_query", "poll_answer"]});
         match api(&b.token, "getUpdates", &body, 60) {
             Ok(list) => {
                 (wait, conflicts) = (2, 0);
@@ -1279,7 +1388,7 @@ fn poll(st: Arc<State>, b: Arc<Bot>) {
 fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
     while !b.stop.load(Ordering::Relaxed) {
         let Ok(o) = rx.recv_timeout(Duration::from_secs(10)) else { continue };
-        let mut progress = None;
+        let (mut progress, mut seq) = (None, 0);
         let (method, mut body, pane) = match o {
             Out::Api(m, body) => (m, body, None),
             Out::Progress(id, body) => {
@@ -1289,11 +1398,14 @@ fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
             Out::Notice(id, kind, at) => {
                 thread::sleep(SETTLE.saturating_sub(at.elapsed()));
                 match notice(&st, &b, id, kind) {
-                    Some(body) => {
+                    Some((method, body)) => {
                         if debug() {
-                            log(format_args!("out {}", body["text"]));
+                            log(format_args!("out {}", if method == "sendPoll" { &body["question"] } else { &body["text"] }));
                         }
-                        ("sendMessage", body, Some(id))
+                        if let Kind::Blocked(s) = kind {
+                            seq = s;
+                        }
+                        (method, body, Some(id))
                     }
                     None => continue,
                 }
@@ -1312,6 +1424,15 @@ fn send_loop(st: Arc<State>, b: Arc<Bot>, rx: Receiver<Out>) {
                                 let _ = b.out.try_send(Out::Api("deleteMessage", json!({"chat_id": b.chat(), "message_id": mid})));
                             }
                         }
+                    }
+                    if let (Some(p), Some(mid), Some(poll)) = (pane, r["message_id"].as_i64(), r["poll"]["id"].as_str()) {
+                        let labels = body["options"].as_array().into_iter().flatten().filter_map(|o| o["text"].as_str().map(String::from)).collect();
+                        let mut polls = b.polls.lock().unwrap();
+                        // ponytail: unanswered polls pile up; past MAP_MAX they're all forgotten (a late vote says "gone")
+                        if polls.len() > MAP_MAX {
+                            polls.clear();
+                        }
+                        polls.insert(poll.to_string(), Poll { pane: p, seq, labels, msg: mid });
                     }
                     if let (Some(p), Some(mid)) = (pane, r["message_id"].as_i64()) {
                         b.remember(mid, p);
@@ -1610,7 +1731,7 @@ fn head(name: &str, ws: &str, status: &str) -> String {
 }
 
 /// message body built when it is sent (after SETTLE), from the pane as it is now; `None` = no longer relevant
-fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
+fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<(&'static str, Value)> {
     let pane = st.panes.lock().unwrap().get(&id).cloned()?;
     if matches!(kind, Kind::Done(_)) && (pane.claude.lock().unwrap().shell || *pane.status.lock().unwrap() != "done") {
         return None;
@@ -1674,11 +1795,20 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
         let reason = pane.claude.lock().unwrap().reason.clone();
         let ks = blocked_keys(&agent, &screen, &reason, id_l);
         let rows = key_rows(id, seq, &ks);
+        // multiSelect (11 Nov "pake vote"): the card is a poll with several answers, its Vote is the Submit (`vote`)
+        if let Some(opts) = multi_opts(&screen).filter(|o| agent == "claude" && (2..=10).contains(&o.len())) {
+            let q = if snippet_on(&v, &[&ws, &ws_id]) { short(&mask_secrets(&question_of(&screen)), 200) } else { String::new() };
+            let first = if ws.is_empty() { format!("{name} {status}") } else { format!("{name} · {ws} {status}") };
+            let options: Vec<Value> = opts.iter().map(|(l, ..)| json!({"text": short(&mask_secrets(l), 100)})).collect();
+            let poll = json!({"chat_id": b.chat(), "question": short(format!("{first}\n{q}").trim(), 300), "options": options,
+                              "is_anonymous": false, "allows_multiple_answers": true, "reply_markup": {"inline_keyboard": rows}});
+            return Some(("sendPoll", poll));
+        }
         if !rows.is_empty() {
             body["reply_markup"] = json!({"inline_keyboard": rows});
         }
     }
-    Some(body)
+    Some(("sendMessage", body))
 }
 
 /// `last` only stands while an agent still runs in that pane. A Claude typed into a shell pane can exit, and `last` stayed
@@ -2062,6 +2192,21 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             let _ = b.out.try_send(Out::Api("editMessageReplyMarkup", json!({"chat_id": b.chat(), "message_id": msg, "reply_markup": {"inline_keyboard": []}})));
             if let (true, Some(p)) = (sent, pane) {
                 audit(st, &p, &format!("[{}: {}]", t(id_l, "answered"), key));
+            }
+        }
+        // a vote taken back (no option) waits for the next one
+        In::Vote { picks, .. } if picks.is_empty() => {}
+        In::Vote { poll, picks } => {
+            let Some(v) = b.polls.lock().unwrap().remove(&poll) else { return b.tell(t(id_l, "gone")) };
+            let sent = vote(st, b, &v, &picks);
+            let _ = b.out.try_send(Out::Api("stopPoll", json!({"chat_id": b.chat(), "message_id": v.msg, "reply_markup": {"inline_keyboard": []}})));
+            let pane = st.panes.lock().unwrap().get(&v.pane).cloned();
+            match (sent, pane) {
+                (true, Some(p)) => {
+                    let picked: Vec<&str> = picks.iter().filter_map(|i| v.labels.get(*i).map(String::as_str)).collect();
+                    audit(st, &p, &format!("[{}: {}]", t(id_l, "answered"), picked.join(", ")));
+                }
+                _ => b.tell(t(id_l, "gone")),
             }
         }
     }
@@ -2457,7 +2602,9 @@ mod tests {
         for e in std::fs::read_dir(&dir).unwrap() {
             let path = e.unwrap().path();
             let name = path.file_name().unwrap().to_string_lossy().to_string();
-            if !name.ends_with(".txt") {
+            // a question isn't read from the screen ("Enter to select" is every picker's footer): Claude's session file says
+            // "input needed" (claude.rs), the multiselect fixture is there for `multiselect_jadi_poll`
+            if !name.ends_with(".txt") || name.contains("multiselect") {
                 continue;
             }
             let screen = std::fs::read_to_string(&path).unwrap();
@@ -2469,6 +2616,29 @@ mod tests {
             files += 1;
         }
         assert!(files >= 16, "dialog fixtures missing: {files}");
+    }
+
+    /// 11 Nov: a Claude multiSelect question goes out as a poll (Vote = Submit); its card keeps only Deny and shows the question
+    #[test]
+    fn multiselect_jadi_poll() {
+        let screen = std::fs::read_to_string(format!("{}/tests/dialogs/claude-2.1.311-multiselect.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let opts = |s: &str| multi_opts(s).unwrap().into_iter().map(|(l, n, on)| format!("{n}:{l}:{on}")).collect::<Vec<_>>();
+        // "Type something" is typed on the Mac, "Chat about this" sits under the rule, descriptions are not labels
+        assert_eq!(opts(&screen), ["1:Apel:false", "2:Mangga:false", "3:Jeruk:false"]);
+        assert_eq!(opts(&screen.replace("[ ] Mangga", "[✔] Mangga")), ["1:Apel:false", "2:Mangga:true", "3:Jeruk:false"]);
+        assert_eq!(blocked_keys("claude", &screen, "", true), vec![("esc", "Tolak".to_string())]);
+        assert!(blocked_text("shell-5", "", "nunggu jawaban", "claude", &screen, true).contains("SIMULASI multiSelect: pilih buah"));
+        // a single-select question (no checkboxes) and the review page keep their numbered buttons
+        assert!(multi_opts(&screen.replace("[ ] ", "")).is_none());
+        let review = "←  ☒ Buah  ✔ Submit  →\nReview your answers\n ● Pilih buah\n   → Apel, Jeruk\nReady to submit your answers?\n❯ 1. Submit answers\n  2. Cancel\n";
+        assert!(multi_opts(review).is_none());
+        assert_eq!(dialog_opts(review).unwrap()[0], "Submit answers");
+        // a vote from the linked user: option indexes; anyone else is ignored
+        let l = Link { token: "t".into(), chat: 42, user: 7, name: "u".into() };
+        let v = |from: i64| json!({"poll_answer": {"poll_id": "P1", "user": {"id": from}, "option_ids": [0, 2]}});
+        assert_eq!(parse(&v(7), Some(&l), 0), In::Vote { poll: "P1".into(), picks: vec![0, 2] });
+        assert_eq!(parse(&v(8), Some(&l), 0), In::Ignore);
+        assert_eq!(parse(&v(7), None, 0), In::Ignore);
     }
 
     /// FR-80: the permission card per agent: one line saying what is asked, the dialog's own reason, and buttons in the

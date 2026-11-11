@@ -1,0 +1,14 @@
+────────────────────────────────────────────────────────────────────────────────
+←  ☐ Uji multi  ✔ Submit  →
+│ SIMULASI multiSelect: pilih buah yang lu suka (boleh lebih dari satu), jawab dari Telegram
+❯ 1. [ ] Apel
+         opsi uji 1
+  2. [ ] Mangga
+         opsi uji 2
+  3. [ ] Jeruk
+         opsi uji 3
+  4. [ ] Type something
+     Submit
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel
