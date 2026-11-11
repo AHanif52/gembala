@@ -1124,7 +1124,7 @@ fn t(id: bool, k: &str) -> &'static str {
 
 /// curl with its options (URL with the token included) on stdin, so nothing secret shows in argv
 fn curl(cfg: &str, secs: u64) -> io::Result<std::process::Output> {
-    let mut c = Command::new("/usr/bin/curl")
+    let mut c = Command::new(crate::os::curl())
         .args(["-sS", "-4", "--max-time", &secs.to_string(), "-K", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -8,13 +8,10 @@ use std::path::{Path, PathBuf};
 /// `sun_path` macOS 104 byte termasuk NUL.
 const SUN_PATH_MAX: usize = 103;
 
-/// `$TMPDIR/gembala`. macOS TMPDIR is already per user; the `/tmp` fallback is still safe
-/// because `ensure_private_dir` rejects folders owned by someone else.
+/// `$TMPDIR/gembala` (macOS) or `$XDG_RUNTIME_DIR/gembala` (Linux, see `os::runtime_dir`); the `/tmp` fallback is
+/// still safe because `ensure_private_dir` rejects folders owned by someone else.
 pub fn default_dir() -> PathBuf {
-    std::env::var_os("TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("gembala")
+    crate::os::runtime_dir()
 }
 
 /// Create the `0700` folder if missing, then reject it if it's a symlink, not a folder,
