@@ -243,9 +243,13 @@ fn claude_permission(payload: &str) -> bool {
 /// On-screen text meaning the agent waits for a human answer (lowercase).
 // FR-68: dialog persetujuan Codex ("Would you like to run/make the following …")
 // only phrases typical of dialogs: loose words like "approve" also show up in agent answers ("approve if it shows") = false needs-permission
-const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to proceed", "do you want to make", "do you want to create", "would you like to run", "would you like to make", "allow once", "allow tool:",
+const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you want to proceed", "do you want to make", "do you want to create",
+    // Claude's WebFetch dialog: "Do you want to allow Claude to fetch this content?" (11 Nov: the fetch dialog read as working, then done)
+    "do you want to allow", "would you like to run", "would you like to make", "allow once", "allow tool:",
     // Codex dialog footer, always on the bottom line: a long "Reason:" pushes "Would you like to run" out of the 12-line tail
-    "press enter to confirm or esc to cancel"];
+    "press enter to confirm or esc to cancel",
+    // OpenCode's "△ Always allow" confirmation stage (Right+Enter on Allow always): the agent still waits for Enter
+    "△ always allow"];
 
 /// FR-84, B2: the folder-trust dialog Claude Code ("Yes, I trust this folder") and Codex ("Trust this folder?") show when
 /// launched in a folder they don't know yet. Read from the screen: Claude writes no session file during it, Codex has no

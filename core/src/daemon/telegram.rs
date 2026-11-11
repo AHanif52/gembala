@@ -22,6 +22,9 @@ const MAX_ANSWER: usize = 3500;
 const MAP_MAX: usize = 500;
 /// a hook can say "blocked" a moment before the dialog is drawn: the screen is read this long after the event
 const SETTLE: Duration = Duration::from_secs(1);
+/// Codex's notify hook can land a moment after its screen goes quiet (the screen watcher calls it done first): a done
+/// card waits this long for the turn's last message instead of going out with no answer (11 Nov).
+const CODEX_ANSWER_WAIT: Duration = Duration::from_secs(3);
 
 pub type Slot = Mutex<Option<Arc<Bot>>>;
 
@@ -254,6 +257,20 @@ fn snippet(screen: &str, lines: usize) -> String {
     text.chars().skip(n.saturating_sub(MAX_SNIPPET)).collect()
 }
 
+/// under a card: the agent's own answer from its stop hook (Claude, Codex), else the screen for agents without one (omp,
+/// OpenCode). Codex's screen is its TUI transcript, never the answer (11 Nov: the done card held the process log, "Viewed
+/// image", the 5h-limit warning and the input box).
+fn turn_body(done: bool, agent: &str, answer: Option<&str>, screen: impl FnOnce() -> String) -> String {
+    match answer {
+        Some(a) => format!("\n\n{}", md_html(&mask_secrets(a), MAX_ANSWER)),
+        None if done && agent == "codex" => String::new(),
+        None => {
+            let snip = screen();
+            if snip.is_empty() { String::new() } else { format!("\n<pre>{}</pre>", esc(&snip)) }
+        }
+    }
+}
+
 /// agent TUI chrome that must not reach the phone: status/footer rows above the
 /// input box (build status `Build · …`, model line, progress bars, quota and
 /// key-hint footers). Dropped before the line budget, so chrome can't push the
@@ -349,17 +366,126 @@ fn choice(row: &str) -> Option<u8> {
 
 /// FR-84: buttons under a "needs you" message. None for the folder-trust dialog: trusting lets the folder run code, and
 /// Claude's first (unnumbered) option there is "No, exit", so it's answered on the Mac.
-fn blocked_keys(agent: &str, screen: &str, reason: &str) -> Vec<(&'static str, String)> {
+fn blocked_keys(agent: &str, screen: &str, reason: &str, id_l: bool) -> Vec<(&'static str, String)> {
     if reason == claude::TRUST {
         Vec::new()
     } else if agent == "claude" || agent == "codex" {
         claude_keys(screen)
     } else {
-        keys(agent).iter().map(|k| (*k, match *k { "esc" => "Esc", "once" => "Allow once", "always" => "Always", _ => k }.to_string())).collect()
+        keys(agent).iter().map(|k| (*k, button_label(agent, k, id_l))).collect()
     }
 }
 
+/// FR-80: omp and OpenCode buttons say what they do in the bot's language (the screen words are English and
+/// "Allow once" doesn't say it approves one run); Claude/Codex keep their own option labels.
+fn button_label(agent: &str, key: &str, id_l: bool) -> String {
+    let word = match (agent, key) {
+        ("omp", "once") => if id_l { "Izinkan" } else { "Allow" },
+        ("omp", "esc") => if id_l { "Tolak" } else { "Deny" },
+        ("opencode", "once") => if id_l { "Sekali" } else { "Once" },
+        ("opencode", "always") => if id_l { "Selalu" } else { "Always" },
+        ("opencode", "esc") => if id_l { "Tolak" } else { "Reject" },
+        (_, "esc") => if id_l { "Tolak" } else { "Deny" },
+        _ => key,
+    };
+    word.to_string()
+}
+
 const DIGITS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+
+/// a screen row without box edges and padding
+fn unbox(r: &str) -> &str {
+    r.trim().trim_matches(|c: char| matches!(c, '│' | '┃')).trim()
+}
+
+/// a horizontal rule row (`──────`, `╌╌╌╌╌╌`): never dialog text
+fn rule_row(r: &str, ch: char) -> bool {
+    let t = r.trim();
+    t.chars().count() >= 10 && t.chars().all(|c| c == ch)
+}
+
+/// Claude's detail block for a write dialog is file content (`1 hi`), not the command/file the dialog is about
+fn file_body(r: &str) -> bool {
+    r.split_once(' ').is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn join_ask(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(format!("{a} · {b}")),
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    }
+}
+
+/// FR-80: what a permission dialog asks for, one line (tool + command/file), read from the agent's own dialog; empty
+/// when the screen doesn't name it. Recorded screens: `core/tests/dialogs/`.
+fn ask_of(agent: &str, screen: &str) -> String {
+    let rows: Vec<&str> = screen.lines().map(unbox).filter(|r| !r.is_empty()).collect();
+    let ask = match agent {
+        // omp: `╭─ Allow tool: bash ─╮` with `Command:` / `Path:` inside the box
+        "omp" => {
+            let tool = rows.iter().rev().find_map(|r| {
+                let (_, t) = r.split_once("Allow tool:")?;
+                let t = t.trim_matches(|c: char| c.is_whitespace() || matches!(c, '─' | '╭' | '╮'));
+                (!t.is_empty()).then(|| t.to_string())
+            });
+            let what = rows.iter().rev().find_map(|r| {
+                r.strip_prefix("Command: ").or_else(|| r.strip_prefix("Path: ")).map(|v| v.split(" · ").next().unwrap_or(v).to_string())
+            });
+            join_ask(tool, what)
+        }
+        // Codex: `$ <command>` inside the dialog, or `Description:` + `Destination:` for edits
+        "codex" => {
+            let from = rows.iter().rposition(|r| r.starts_with("Would you like to")).map_or(0, |i| i + 1);
+            let dialog = &rows[from..];
+            dialog.iter().find_map(|r| r.strip_prefix("$ ").map(str::to_string)).or_else(|| {
+                let desc = dialog.iter().find_map(|r| r.strip_prefix("Description: ").map(str::to_string));
+                let dest = dialog.iter().find_map(|r| r.strip_prefix("Destination: ").map(str::to_string));
+                join_ask(desc, dest)
+            })
+        }
+        // Claude: the block under the dialog's top rule, titled by its own first row (`Bash command`, `Create file`); the
+        // detail between the two thin rules is the command/url unless it's just file content
+        "claude" => rows.iter().rposition(|r| r.starts_with("Do you want")).and_then(|end| {
+            let top = (0..end).rev().find(|&i| rule_row(rows[i], '─'))?;
+            let block = &rows[top + 1..end];
+            let useful: Vec<&str> = block.iter().copied().filter(|r| !rule_row(r, '╌') && !r.starts_with("Tip:")).collect();
+            let title = *useful.first()?;
+            let thin = block.iter().position(|r| rule_row(r, '╌'))?;
+            let detail = block.get(thin + 1).copied().filter(|d| !file_body(d));
+            join_ask(Some(title.to_string()), detail.or_else(|| useful.get(1).copied()).map(str::to_string))
+        }),
+        // OpenCode: `△ Permission required` + `← Access …`, or the `△ Always allow` confirmation stage
+        "opencode" => rows.iter().rev().find_map(|r| r.strip_prefix('←').map(|a| a.trim().to_string())).or_else(|| {
+            let i = rows.iter().position(|r| r.starts_with("△ "))?;
+            let title = rows[i].trim_start_matches("△ ").to_string();
+            let next = rows[i + 1..].iter().copied().find(|r| !r.starts_with('△'));
+            join_ask(Some(title), next.map(str::to_string))
+        }),
+        _ => None,
+    };
+    ask.unwrap_or_default()
+}
+
+/// the dialog's own `Reason:` line (Codex, omp), empty when it has none; the last one wins (the dialog sits at the bottom)
+fn why_of(screen: &str) -> String {
+    screen.lines().map(unbox).filter_map(|r| r.strip_prefix("Reason: ")).next_back().unwrap_or_default().to_string()
+}
+
+/// FR-80: the permission card: title line, what the dialog asks for, its reason when it names one. The TUI's chrome
+/// (stats row, box borders, key hints) never reaches the phone.
+fn blocked_text(name: &str, ws: &str, status: &str, agent: &str, screen: &str, id_l: bool) -> String {
+    let mut text = head(name, ws, status);
+    let ask = short(&mask_secrets(&ask_of(agent, screen)), 120);
+    if !ask.is_empty() {
+        text += &format!("\n{}", esc(&ask));
+    }
+    let why = short(&mask_secrets(&why_of(screen)), 160);
+    if !why.is_empty() {
+        text += &format!("\n{}: {}", t(id_l, "why"), esc(&why));
+    }
+    text
+}
 
 /// characters in front of a dialog row's text: spaces, the box edge, the cursor
 fn lead(row: &str) -> usize {
@@ -639,7 +765,8 @@ fn lang_id(values: &Value) -> bool {
 
 fn t(id: bool, k: &str) -> &'static str {
     let (i, e) = match k {
-        "blocked" => ("butuh izin", "needs permission"),
+        "blocked" => ("minta izin", "needs permission"),
+        "why" => ("Alasan", "Reason"),
         "done" => ("kelar", "done"),
         "working" => ("lagi kerja", "working"),
         "idle" => ("nunggu perintah", "idle"),
@@ -1309,29 +1436,38 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
         Kind::Long(secs) => format!("{} ({})", t(id_l, "long"), dur(secs)),
     };
     let mut text = head(&name, &ws, &status);
-    if kind != Kind::Password && snippet_on(&v, &[&ws, &ws_id]) {
+    let blocked = matches!(kind, Kind::Blocked(_));
+    let screen = if blocked { pane.view.lock().unwrap().0.text() } else { String::new() };
+    if blocked {
+        // FR-80: what the dialog asks for and why, one line each; the TUI's chrome stays on the Mac (11 Nov the card was
+        // a screen dump: stats row, box borders, key hints, and the buttons sat below the fold). SEC-33: a workspace with
+        // screen snippets off gets the buttons only.
+        let shown = if snippet_on(&v, &[&ws, &ws_id]) { &screen } else { "" };
+        text = blocked_text(&name, &ws, &status, &agent, shown, id_l);
+    } else if kind != Kind::Password && snippet_on(&v, &[&ws, &ws_id]) {
         if let Some(l) = label(&pane.title.lock().unwrap(), &agent) {
             text += &format!("\n{}", esc(&l));
         }
-        // "done": the agent's own answer from its stop hook (Claude, Codex); the screen only when there is none (omp,
-        // OpenCode) — 9 Nov the screen was a `/model` picker or tool-call rows instead of the answer
-        let answer = matches!(kind, Kind::Done(_)).then(|| pane.last_msg.lock().unwrap().take()).flatten();
-        match answer {
-            Some(a) => text += &format!("\n\n{}", md_html(&mask_secrets(&a), MAX_ANSWER)),
-            None if agent != "codex" || !matches!(kind, Kind::Done(_)) => {
-                let lines = v["telegram"]["lines"].as_u64().unwrap_or(30).min(30) as usize;
-                let snip = screen_snip(&pane, lines);
-                if !snip.is_empty() {
-                    text += &format!("\n<pre>{}</pre>", esc(&snip));
-                }
+        let done = matches!(kind, Kind::Done(_));
+        // Codex's screen watcher reports done before its notify hook delivers the turn's last message, so the card used
+        // to go out with no answer. Hold it a moment for the answer; a turn that started meanwhile drops it.
+        if done && agent == "codex" && pane.last_msg.lock().unwrap().is_none() {
+            let end = Instant::now() + CODEX_ANSWER_WAIT;
+            while Instant::now() < end && *pane.status.lock().unwrap() == "done" && pane.last_msg.lock().unwrap().is_none() {
+                thread::sleep(Duration::from_millis(100));
             }
-            None => {} // Codex's screen watcher can report done before notify; its TUI transcript is not a final answer.
+            if *pane.status.lock().unwrap() != "done" {
+                return None;
+            }
         }
+        let answer = done.then(|| pane.last_msg.lock().unwrap().take()).flatten();
+        let lines = v["telegram"]["lines"].as_u64().unwrap_or(30).min(30) as usize;
+        text += &turn_body(done, &agent, answer.as_deref(), || screen_snip(&pane, lines));
     }
     let mut body = json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML"});
     if let Kind::Blocked(seq) = kind {
         let reason = pane.claude.lock().unwrap().reason.clone();
-        let ks = blocked_keys(&agent, &pane.view.lock().unwrap().0.text(), &reason);
+        let ks = blocked_keys(&agent, &screen, &reason, id_l);
         let row: Vec<Value> = ks.iter().map(|(k, label)| json!({"text": label, "callback_data": cb_data(id, seq, k)})).collect();
         if !row.is_empty() {
             body["reply_markup"] = json!({"inline_keyboard": [row]});
@@ -2078,6 +2214,110 @@ mod tests {
         assert_eq!(key_bytes("esc"), b"\x1b");
     }
 
+    /// every recorded screen: a dialog reads as blocked with the same 12-row tail the screen watcher reads, an answered
+    /// screen doesn't. 11 Nov: the WebFetch dialog ("Do you want to allow …") read as working, then done, so no card came.
+    #[test]
+    fn rekaman_dialog_terbaca_blocked() {
+        let dir = format!("{}/tests/dialogs", env!("CARGO_MANIFEST_DIR"));
+        let mut files = 0;
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let path = e.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !name.ends_with(".txt") {
+                continue;
+            }
+            let screen = std::fs::read_to_string(&path).unwrap();
+            let rows: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
+            let tail = rows[rows.len().saturating_sub(12)..].join("\n");
+            let blocked = profile::screen_status(&tail, Duration::from_secs(5), "working") == "blocked";
+            // every fixture without `.after` is a dialog (or the "△ Always allow" stage); after = answered
+            assert_eq!(blocked, !name.contains(".after"), "{name}");
+            files += 1;
+        }
+        assert!(files >= 16, "dialog fixtures missing: {files}");
+    }
+
+    /// FR-80: the permission card per agent: one line saying what is asked, the dialog's own reason, and buttons in the
+    /// bot's language. Screens recorded from the real agents (home path replaced with /Users/demo).
+    #[test]
+    fn kartu_izin_per_agent() {
+        let dlg = |f: &str| std::fs::read_to_string(format!("{}/tests/dialogs/{f}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let btns = |agent: &str, f: &str, id_l: bool| -> Vec<(&'static str, String)> { blocked_keys(agent, &dlg(f), "", id_l) };
+
+        // omp bash: tool + command, buttons say what they do (Enter approves, Esc denies)
+        let omp = dlg("omp-18.18.3-bash-once.dialog");
+        assert_eq!(ask_of("omp", &omp), "bash · touch ran.txt");
+        assert_eq!(
+            blocked_text("omp-1", "gembala", "minta izin", "omp", &omp, true),
+            "<b>omp-1 · gembala</b> minta izin\nbash · touch ran.txt"
+        );
+        assert_eq!(btns("omp", "omp-18.18.3-bash-once.dialog", true), [("once", "Izinkan".into()), ("esc", "Tolak".into())]);
+        assert_eq!(btns("omp", "omp-18.18.3-bash-once.dialog", false), [("once", "Allow".into()), ("esc", "Deny".into())]);
+        // omp write: the path, not the file body; no chrome row reaches the card
+        assert_eq!(ask_of("omp", &dlg("omp-18.18.3-write-esc.dialog")), "write · note.txt");
+        assert!(!ask_of("omp", &omp).contains('╭') && !ask_of("omp", &omp).contains('│'));
+        // the reason row a pattern-matched command draws (screenshot 11 Nov) stays one line and is masked in the card
+        let pattern = "╭─ Allow tool: bash ─╮\n│ Reason: Prompt required by bash pattern: *psql* Command: cd x && PGPASSWORD=hunter2 psql │\n│ ❯ Approve │\n│   Deny │\n╰────╯";
+        assert_eq!(ask_of("omp", pattern), "bash");
+        assert_eq!(
+            blocked_text("omp-1", "", "minta izin", "omp", pattern, true),
+            "<b>omp-1</b> minta izin\nbash\nAlasan: Prompt required by bash pattern: *psql* Command: cd x &amp;&amp; PGPASSWORD=*** psql"
+        );
+
+        // Codex: the command it wants to run and the reason it wrote; digits carry its own shortcut letters
+        let codex = dlg("codex-0.167.0-net-y");
+        assert_eq!(ask_of("codex", &codex), "curl -sI https://example.com -o head.txt");
+        assert!(why_of(&codex).starts_with("Allow this exact curl command outside sandbox?"));
+        let card = blocked_text("codex-2", "gembala", "needs permission", "codex", &codex, false);
+        assert!(card.starts_with("<b>codex-2 · gembala</b> needs permission\ncurl -sI https://example.com -o head.txt\nReason: Allow this exact"), "{card}");
+        assert!(!card.contains("OpenAI Codex") && !card.contains("Press enter") && !card.contains('╭'));
+        // title + ask + reason: the buttons stay under the card instead of below a screen dump (11 Nov)
+        assert!(card.lines().count() <= 3, "{card}");
+        let cb = btns("codex", "codex-0.167.0-net-y", false);
+        assert_eq!(cb.iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["1", "2", "3", "esc"]);
+        assert!(cb[0].1.starts_with("1. Yes, proceed") && cb[1].1.starts_with("2. Yes, and don't ask again") && cb[3].1 == "Esc");
+        assert_eq!(ask_of("codex", &dlg("codex-0.167.0-outside-a")), "Apply proposed file edits · /Users/demo/.gk-dialog-test/codex-a.txt");
+
+        // Claude: its own dialog title + the command/url; write keeps the file name (the body `1 hi` is not the ask)
+        assert_eq!(ask_of("claude", &dlg("claude-2.1.311-bash-k3")), "Bash command · touch ran.txt");
+        assert_eq!(ask_of("claude", &dlg("claude-2.1.311-fetch-esc")), "Fetch · from the web-fetch agent · url: https://example.com/");
+        assert_eq!(ask_of("claude", &dlg("claude-2.1.311-write-k1")), "Create file · note.txt");
+        assert_eq!(ask_of("claude", &dlg("claude-2.1.311-outside-k1")), "Create file · ../../../../../Users/demo/.gk-dialog-test/claude-outside.txt");
+        // the Bash dialog's 4 options: 3 switches to auto mode, so it gets no button
+        let cl = btns("claude", "claude-2.1.311-bash-k3", true);
+        assert_eq!(cl.iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["1", "2", "4", "esc"]);
+        assert!(cl[2].1.starts_with("4. No") && cl[1].1.starts_with("2. Yes, and always allow"));
+
+        // OpenCode: the folder it wants, and the "△ Always allow" confirmation stage
+        assert_eq!(ask_of("opencode", &dlg("opencode-1.19.5-outside-once.dialog")), "Access external directory ~/.gk-dialog-test");
+        assert_eq!(
+            btns("opencode", "opencode-1.19.5-outside-once.dialog", true),
+            [("once", "Sekali".into()), ("always", "Selalu".into()), ("esc", "Tolak".into())]
+        );
+        assert_eq!(
+            ask_of("opencode", &dlg("opencode-1.19.5-outside-always.confirm")),
+            "Always allow · This will allow the following patterns until OpenCode is restarted"
+        );
+        // an agent whose dialog isn't read: no ask line, Esc only, never a guessed option
+        assert_eq!(ask_of("gemini", "ada apa ya"), "");
+        assert_eq!(blocked_keys("gemini", "ada apa ya", "", true), [("esc", "Tolak".into())]);
+    }
+
+    /// FR-66: a done card carries the agent's own answer; Codex's screen is its TUI transcript, so a card that comes
+    /// before its notify hook stays short instead of dumping the process log (11 Nov).
+    #[test]
+    fn kartu_done_codex_tanpa_transkrip() {
+        let transcript = "• Viewed image b51d474b.jpg\n  + Show details\n⚠ 5h limit: 18% left\n› Ask Codex to do anything";
+        assert_eq!(turn_body(true, "codex", Some("File sudah dibuat."), || transcript.into()), "\n\nFile sudah dibuat.");
+        assert_eq!(turn_body(true, "codex", None, || transcript.into()), "");
+        // omp/OpenCode have no stop hook: the screen is all there is
+        assert_eq!(turn_body(true, "omp", None, || "halo".into()), "\n<pre>halo</pre>");
+        // other cards (a long command finished) keep the screen
+        assert_eq!(turn_body(false, "codex", None, || "ok".into()), "\n<pre>ok</pre>");
+        // an empty screen adds nothing
+        assert_eq!(turn_body(true, "claude", None, String::new), "");
+    }
+
     #[test]
     fn judul_konfirmasi_always_hanya_garis_judul() {
         assert!(is_always_confirm_line("△ Always allow"));
@@ -2150,9 +2390,9 @@ mod tests {
         assert_eq!(ks(claude_keys("1. a\n2. b\n3. c\n4. d\n❯ 1. Yes\n  2. No\nEsc to cancel")), ["1", "2", "esc"]);
         // FR-84: a folder-trust dialog gets no buttons (answered on the Mac); a permission dialog keeps them
         let trust = " Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel";
-        assert!(blocked_keys("claude", trust, claude::TRUST).is_empty());
-        assert!(blocked_keys("codex", "› 1. Trust and continue\n  2. Back\n  enter continue · esc back", claude::TRUST).is_empty());
-        assert_eq!(ks(blocked_keys("claude", &ask.join("\n"), "minta izin")), ["1", "2", "esc"]);
+        assert!(blocked_keys("claude", trust, claude::TRUST, true).is_empty());
+        assert!(blocked_keys("codex", "› 1. Trust and continue\n  2. Back\n  enter continue · esc back", claude::TRUST, true).is_empty());
+        assert_eq!(ks(blocked_keys("claude", &ask.join("\n"), "minta izin", true)), ["1", "2", "esc"]);
         assert_eq!(choice("❯ halo"), None);
         assert_eq!(choice("2026. tahun"), None);
         // omp: banner, older prompt, the phone's prompt, answer, stats row, input box

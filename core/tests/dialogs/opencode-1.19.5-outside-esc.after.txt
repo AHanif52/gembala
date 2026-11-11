@@ -1,0 +1,44 @@
+
+  ┃                                                                                                 Creating opencode-outside.txt test
+  ┃  Use your bash tool to run exactly this command and nothing else: touch /Users/                 file
+  ┃  demo/.gk-dialog-test/opencode-outside.txt
+  ┃                                                                                                 Context
+                                                                                                    45,279 tokens
+     + Thought: 4.3s                                                                                4% used
+                                                                                                    $0.00 spent
+     + Thought: 2.9s
+                                                                                                    Quota
+     Touching the requested file.                                                                   Unavailable
+
+     $ touch /Users/demo/.gk-dialog-test/opencode-outside.txt                       ▼ MCP
+                                                                                                    • collab-prod Connected
+     ▣  Build · Muse Spark 1.3 Contributor                                                          • context7 Connected
+                                                                                                    • jam Connected
+                                                                                                    • pencil Connected
+                                                                                                    • qa-tools Operation timed out after
+                                                                                                      30000ms
+
+                                                                                                    LSP
+                                                                                                    LSPs are disabled
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Muse Spark 1.3 Contributor OpenCode Go · high                                          /private/tmp/gk-dialog/opencode/
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀    outside-esc
+   /private/tmp/gk-dialog/opencode/outside-esc               45.3K (4%) · $0.00  ctrl+p commands
+                                                                               Quota unavailable    • OpenCode 1.19.5

@@ -1,0 +1,44 @@
+
+  ┃                                                                                                 Creating opencode-outside.txt test
+  ┃  Use your bash tool to run exactly this command and nothing else: touch /Users/                 file
+  ┃  demo/.gk-dialog-test/opencode-outside.txt
+  ┃                                                                                                 Context
+                                                                                                    0 tokens
+     Thought · 3ms                                                                                  0% used
+                                                                                                    $0.00 spent
+     Running the requested touch command.
+                                                                                                    Quota
+     $ touch /Users/demo/.gk-dialog-test/opencode-outside.txt                       Unavailable
+
+     ▣  Build · Muse Spark 1.3 Contributor                                                          ▼ MCP
+                                                                                                    • collab-prod Connected
+                                                                                                    • context7 Connected
+                                                                                                    • jam Connected
+                                                                                                    • pencil Connected
+                                                                                                    • qa-tools Operation timed out after
+                                                                                                      30000ms
+
+                                                                                                    LSP
+                                                                                                    LSPs are disabled
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃  △ Always allow
+  ┃
+  ┃  This will allow the following patterns until OpenCode is restarted
+  ┃
+  ┃  - /Users/demo/.gk-dialog-test/*
+  ┃                                                                                                 /private/tmp/gk-dialog/opencode/
+  ┃                                                                                                 outside-always
+  ┃   Confirm   Cancel                                                ⇆ select  enter confirm
+  ┃                                                                                                 • OpenCode 1.19.5

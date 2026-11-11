@@ -1000,6 +1000,49 @@ fn deteksi_menunggu_password() {
     }
 }
 
+/// FR-4: a pane that prints one recorded agent screen and then sits there (140×45, the size the agents were recorded in);
+/// `id` = the profile it runs, so the pane gets that agent's status source.
+fn pane_with_screen(tag: &str, id: &str, fixture: &str) -> (Daemon, Cli, u64) {
+    use std::os::unix::fs::PermissionsExt;
+    let d = start(tag);
+    let dlg = std::fs::read_to_string(format!("{}/tests/dialogs/{fixture}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let shown = d.dir.join("dialog.txt");
+    std::fs::write(&shown, dlg).unwrap();
+    // hook flags land before a profile's own args, so the stand-in is a script that ignores them
+    let run = d.dir.join("run.sh");
+    std::fs::write(&run, format!("#!/bin/sh\ncat {}; sleep 30\n", shown.display())).unwrap();
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let prof = format!("[[profile]]\nid = \"{id}\"\ncommand = {}\n", json!(run.to_string_lossy()));
+    let mut ui = Cli::ui(&d);
+    profiles(&d, &mut ui, &prof, "run.sh");
+    let pane = ui.call("pane.create", json!({"profile": id, "rows": 45, "cols": 140}))["result"]["pane"].as_u64().unwrap();
+    (d, ui, pane)
+}
+
+fn wait_blocked(ui: &mut Cli, pane: u64, what: &str) {
+    let t0 = Instant::now();
+    while ui.call("pane.info", json!({"pane": pane}))["result"]["status"] != "blocked" {
+        assert!(t0.elapsed() < Duration::from_secs(10), "{what} tidak terbaca dari layar");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// FR-4, FR-80: a Codex pane showing its real permission dialog reads as blocked from the screen, so the app's "Butuh lu"
+/// strip and the Telegram card can name it (11 Nov: Codex asked on screen and nothing came).
+#[test]
+fn status_blocked_dari_dialog_codex() {
+    let (_d, mut ui, pane) = pane_with_screen("codex-dialog", "codex", "codex-0.167.0-net-y");
+    wait_blocked(&mut ui, pane, "dialog izin Codex");
+}
+
+/// FR-4: Claude's WebFetch dialog ("Do you want to allow …") is a permission dialog too, not a finished turn (11 Nov it
+/// read as working, then done, and no card came).
+#[test]
+fn status_blocked_dari_dialog_claude_fetch() {
+    let (_d, mut ui, pane) = pane_with_screen("claude-dialog", "tanya", "claude-2.1.311-fetch-esc");
+    wait_blocked(&mut ui, pane, "dialog izin Claude");
+}
+
 /// FR-4 fallback: agents without hooks (custom profile) are read from the screen.
 #[test]
 fn status_dari_pola_layar() {
