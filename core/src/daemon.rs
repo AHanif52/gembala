@@ -181,6 +181,9 @@ struct State {
     secret: Option<String>,
     /// SEC-20: UI signature requirement (from the daemon's own certificate); `None` = secret only
     ui_req: Option<String>,
+    /// SEC-20 Linux lapis 1: the UI channel is an abstract socket whose name sits in `ui.addr`; a pane's Landlock
+    /// domain can't reach it, so the secret isn't needed (TECH 21.8)
+    ui_abstract: bool,
     pane_sock: String,
     /// UI channel clients currently connected (FR-20: the daemon stops at 0 when every pane is idle).
     ui_clients: AtomicUsize,
@@ -247,14 +250,45 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         libc::pthread_sigmask(libc::SIG_BLOCK, &s, std::ptr::null_mut());
         s
     };
-    let ui = bind(&crate::rundir::socket_path(dir, "ui.sock")?)?;
+    // the pane socket is the singleton guard and binds first: a second daemon stops here (its abstract UI socket and
+    // `ui.addr` would otherwise be random and overwrite a live daemon's)
     let pane_path = crate::rundir::socket_path(dir, "pane.sock")?;
     let pn = bind(&pane_path)?;
+    // SEC-20 Linux: with a Landlock scope the UI channel moves to an abstract socket (a pane's agents can't reach it);
+    // older kernels keep the path socket + secret + the injection check in `client`
+    let ui_addr = dir.join("ui.addr");
+    // `GEMBALA_UI_PATH`: the fallback UI channel on purpose (tests and a user debugging lapis 2); it only takes the
+    // secret path, never more access
+    let force_path = std::env::var_os("GEMBALA_UI_PATH").is_some_and(|v| !v.is_empty() && v != "0");
+    let ui_name = if !force_path && crate::jail::scope_supported() { Some(format!("gembala-ui-{}", &new_secret()?[..16])) } else { None };
+    #[cfg(target_os = "linux")]
+    let ui_abstract = ui_name.is_some();
+    #[cfg(not(target_os = "linux"))]
+    let ui_abstract = false;
+    let ui = match &ui_name {
+        // 0600: the name is only a rendezvous, the kernel does the shielding; written before the handover below
+        #[cfg(target_os = "linux")]
+        Some(name) => {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&ui_addr)?;
+            f.write_all(name.as_bytes())?;
+            crate::ipc::bind_abstract(name)?
+        }
+        _ => {
+            let _ = fs::remove_file(&ui_addr);
+            bind(&crate::rundir::socket_path(dir, "ui.sock")?)?
+        }
+    };
+    #[cfg(target_os = "linux")]
+    if !ui_abstract {
+        eprintln!("kanal UI: tanpa Landlock scope (kernel < 6.12); lewat socket ber-path + rahasia");
+    }
     let st = Arc::new(State {
         panes: Mutex::default(),
         next: AtomicU64::new(1),
         secret,
         ui_req: crate::sign::ui_requirement(),
+        ui_abstract,
         pane_sock: pane_path.to_string_lossy().into_owned(),
         ui_clients: AtomicUsize::new(0),
         ui_txs: Mutex::default(),
@@ -356,8 +390,10 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         return Ok(());
     }
     let peer = peer_pid(&s)?;
-    // SEC-20: a UI signed like the daemon is recognized from the audit token at connect, no secret
-    let signed = chan == Chan::Ui && st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r));
+    // SEC-20: macOS knows the UI from its code signature; Linux lapis 1 from the abstract socket, which only a process
+    // outside a pane's Landlock domain can reach. Lapis 2 (older kernels) keeps the secret and refuses an injected peer.
+    let signed = chan == Chan::Ui && (st.ui_abstract || st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r)));
+    let tainted = chan == Chan::Ui && !signed && crate::ipc::peer_tainted(&s);
     let (tx, rx) = sync_channel::<String>(QUEUE);
     // panes whose output this connection stopped receiving because it fell behind (filled in by `send_all`)
     let lagging: Arc<Mutex<Vec<u64>>> = Arc::default();
@@ -394,7 +430,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         };
         let (id, method, p) = (&req["id"], req["method"].as_str().unwrap_or(""), &req["params"]);
         if !ready {
-            let r = if method == "hello" { hello(&st, chan, peer, signed, p) } else { Err("hello_required") };
+            let r = if method == "hello" { hello(&st, chan, peer, signed, tainted, p) } else { Err("hello_required") };
             ready = r.is_ok();
             ident = r.as_ref().ok().and_then(|v| v["pane"].as_u64());
             if ready && chan == Chan::Ui {
@@ -532,11 +568,11 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             }
             continue;
         }
-        reply(&tx, id, ui_method(&st, method, p));
+        reply(&tx, id, ui_method(&st, peer, method, p));
     }
 }
 
-fn hello(st: &State, chan: Chan, peer: i32, signed: bool, p: &Value) -> Res {
+fn hello(st: &State, chan: Chan, peer: i32, signed: bool, tainted: bool, p: &Value) -> Res {
     if p["proto"].as_u64() != Some(PROTO) {
         return Err("version_mismatch");
     }
@@ -549,11 +585,12 @@ fn hello(st: &State, chan: Chan, peer: i32, signed: bool, p: &Value) -> Res {
     }
     match chan {
         Chan::Ui => {
-            let ok = signed
-                || match (&st.secret, p["secret"].as_str()) {
-                    (Some(a), Some(b)) => ct_eq(a.as_bytes(), b.as_bytes()),
-                    _ => false,
-                };
+            let ok = !tainted
+                && (signed
+                    || match (&st.secret, p["secret"].as_str()) {
+                        (Some(a), Some(b)) => ct_eq(a.as_bytes(), b.as_bytes()),
+                        _ => false,
+                    });
             if pane.is_some() || !ok {
                 return Err("unauthorized");
             }
@@ -573,7 +610,65 @@ fn dim(v: &Value, default: u16) -> u16 {
     v.as_u64().and_then(|n| u16::try_from(n).ok()).filter(|&n| n > 0).unwrap_or(default)
 }
 
-fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
+/// SEC-20 Linux lapis 3 (TECH 21.8): polkit asks for the login password before an access rule changes or the stop button
+/// is pressed. `Some(true)` = a real change that needs the check; `None`/`Some(false)` = nothing to authorize.
+fn guarded_change(st: &State, m: &str, p: &Value) -> Option<bool> {
+    let changed = match m {
+        "msg.pause" => st.engine.lock().unwrap().paused != p["on"].as_bool().unwrap_or(true),
+        "pane.policy" => {
+            let pane = st.pane(p).ok()?;
+            let new = msg::Policy::parse(p["policy"].as_str().unwrap_or_default())?;
+            *pane.policy.lock().unwrap() != new
+        }
+        "pane.readable" => {
+            let pane = st.pane(p).ok()?;
+            pane.readable.load(Ordering::Relaxed) != (p["on"].as_bool() == Some(true))
+        }
+        "pane.workspace" => {
+            let pane = st.pane(p).ok()?;
+            let new: String = p["workspace"].as_str().unwrap_or_default().chars().take(64).collect();
+            *pane.workspace.lock().unwrap() != new
+        }
+        _ => return None,
+    };
+    Some(changed)
+}
+
+/// polkit action the .deb ships (`ui/src-tauri/linux/dev.gembala.app.policy`).
+#[cfg(target_os = "linux")]
+const PK_ACTION: &str = "dev.gembala.app.rules";
+
+/// The action is registered on this system (= the .deb installed it). The AppImage has no policy file, so polkit is
+/// skipped there rather than failing every rule change.
+#[cfg(target_os = "linux")]
+fn pk_available() -> bool {
+    static TOOL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TOOL.get_or_init(|| std::process::Command::new("pkaction").args(["--action-id", PK_ACTION]).output().is_ok_and(|o| o.status.success()))
+}
+
+/// `pkcheck --process <pid peer UI> --allow-user-interaction`: true = allowed. A missing polkit or action = skipped
+/// (lapis 3 is not the real defence; Landlock and the secret are).
+#[cfg(target_os = "linux")]
+fn pk_ok(pid: i32) -> bool {
+    if !pk_available() {
+        return true;
+    }
+    std::process::Command::new("pkcheck")
+        .args(["--action-id", PK_ACTION, "--process", &pid.to_string(), "--allow-user-interaction"])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pk_ok(_pid: i32) -> bool {
+    true
+}
+
+fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
+    // SEC-20 Linux lapis 3: the two most dangerous human actions ask for the login password (polkit, .deb only)
+    if guarded_change(st, m, p) == Some(true) && !pk_ok(peer) {
+        return Err("not_authorized");
+    }
     match m {
         "pane.list" => {
             let panes = st.panes.lock().unwrap();
@@ -583,8 +678,18 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         }
         "config.get" => Ok(st.config.lock().unwrap().clone()),
         // `msg` is used by Settings > Security so the brake numbers aren't written twice in the UI
-        "daemon.info" => Ok(json!({"boot": st.boot, "daemon": env!("CARGO_PKG_VERSION"), "proto": PROTO,
-                                   "msg": {"rate_per_min": crate::msg::RATE_PER_MIN, "hop_max": crate::msg::HOP_MAX}})),
+        "daemon.info" => {
+            let info = json!({"boot": st.boot, "daemon": env!("CARGO_PKG_VERSION"), "proto": PROTO,
+                              "msg": {"rate_per_min": crate::msg::RATE_PER_MIN, "hop_max": crate::msg::HOP_MAX}});
+            // SEC-20 lapis 3: Diagnostik says whether rule changes ask for the login password here
+            #[cfg(target_os = "linux")]
+            let info = {
+                let mut info = info;
+                info["polkit"] = json!(pk_available());
+                info
+            };
+            Ok(info)
+        }
         "git.status" | "git.diff" => {
             // the pane's own working folder (foreground process or shell), not from a parameter
             let pane = st.pane(p)?;
@@ -1354,7 +1459,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 let _ = std::fs::remove_file(f);
             }
             let hooks = st.hooks.dir.clone();
-            for name in profile::hook_files(&st.hooks).into_iter().map(|f| f.0).chain(["accounts.zsh"]) {
+            for name in profile::hook_files(&st.hooks).into_iter().map(|f| f.0).chain(["accounts.zsh", "accounts.bash"]) {
                 let _ = std::fs::remove_file(hooks.join(name));
             }
             let _ = std::fs::remove_dir(&hooks);
@@ -2515,8 +2620,12 @@ fn reload_config(st: &State) {
     let mut cur = st.config.lock().unwrap();
     let values = if c.broken && !cur.is_null() { cur["values"].clone() } else { c.values };
     if !c.broken {
-        if let Err(e) = config::write_atomic(&st.hooks.dir.join("accounts.zsh"), profile::zsh_accounts(&c.accounts).as_bytes()) {
-            eprintln!("gembala daemon: write accounts.zsh: {e}");
+        // FR-61/FR-98: the account functions are the same text for zsh and bash (`function name { … }`)
+        let accounts = profile::zsh_accounts(&c.accounts);
+        for name in ["accounts.zsh", "accounts.bash"] {
+            if let Err(e) = config::write_atomic(&st.hooks.dir.join(name), accounts.as_bytes()) {
+                eprintln!("gembala daemon: write {name}: {e}");
+            }
         }
         *st.profiles.lock().unwrap() = c.profiles;
         *st.accounts.lock().unwrap() = c.accounts;

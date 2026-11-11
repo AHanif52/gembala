@@ -79,6 +79,48 @@ fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> D
     Daemon { child, dir, secret: secret.trim().into() }
 }
 
+/// Linux lapis 1 (SEC-20, TECH 21.8): the UI channel lives on an abstract socket whose name sits in `<rundir>/ui.addr`;
+/// a kernel without a Landlock scope keeps the path socket. The harness uses the same rendezvous as the UI.
+#[cfg(target_os = "linux")]
+fn abstract_connect(name: &str) -> Option<UnixStream> {
+    use std::os::fd::FromRawFd;
+    let bytes = name.as_bytes();
+    let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    if bytes.is_empty() || bytes.len() + 1 >= sa.sun_path.len() {
+        return None;
+    }
+    for (i, b) in bytes.iter().enumerate() {
+        sa.sun_path[i + 1] = *b as libc::c_char;
+    }
+    let len = (std::mem::size_of::<libc::sa_family_t>() + 1 + bytes.len()) as libc::socklen_t;
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd == -1 {
+        return None;
+    }
+    if unsafe { libc::connect(fd, (&raw const sa).cast(), len) } == -1 {
+        unsafe { libc::close(fd) };
+        return None;
+    }
+    Some(unsafe { UnixStream::from_raw_fd(fd) })
+}
+
+/// `ui.addr` content, when the daemon named an abstract UI socket.
+fn ui_addr(d: &Daemon) -> Option<String> {
+    let s = std::fs::read_to_string(d.dir.join("ui.addr")).ok()?;
+    let n = s.trim().to_string();
+    (!n.is_empty()).then_some(n)
+}
+
+/// `nc -U` target of the UI channel: `@name` (abstract) or the path socket.
+fn ui_target(d: &Daemon) -> String {
+    #[cfg(target_os = "linux")]
+    if let Some(name) = ui_addr(d) {
+        return format!("@{name}");
+    }
+    d.dir.join("ui.sock").display().to_string()
+}
+
 /// Attach content as the UI writes it: raw history per size (`segments`), then its tail (`snapshot`), base64.
 fn snapshot(r: &Value) -> String {
     B64.encode(written(&r["result"]))
@@ -103,7 +145,16 @@ struct Cli {
 
 impl Cli {
     fn connect(d: &Daemon, sock: &str) -> Cli {
-        let s = UnixStream::connect(d.dir.join(sock)).unwrap();
+        let s = match (sock, ui_addr(d)) {
+            ("ui.sock", Some(name)) => {
+                #[cfg(target_os = "linux")]
+                let s = abstract_connect(&name).unwrap();
+                #[cfg(not(target_os = "linux"))]
+                let s = { let _ = name; UnixStream::connect(d.dir.join(sock)).unwrap() };
+                s
+            }
+            _ => UnixStream::connect(d.dir.join(sock)).unwrap(),
+        };
         s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         Cli { r: BufReader::new(s.try_clone().unwrap()), w: s, id: 0, events: vec![] }
     }
@@ -165,10 +216,13 @@ fn hello_kanal_ui() {
     Cli::ui(&d);
     let mut c = Cli::connect(&d, "ui.sock");
     assert_eq!(c.call("pane.create", json!({}))["error"]["code"], "hello_required");
-    let mut c = Cli::connect(&d, "ui.sock");
-    assert_eq!(c.call("hello", json!({"proto": 1, "secret": "0".repeat(64)}))["error"]["code"], "unauthorized");
-    let mut c = Cli::connect(&d, "ui.sock");
-    assert_eq!(c.call("hello", json!({"proto": 1}))["error"]["code"], "unauthorized");
+    // lapis 1 (abstract socket): the socket is the proof and no secret is involved; lapis 2 checks the secret
+    if ui_addr(&d).is_none() {
+        let mut c = Cli::connect(&d, "ui.sock");
+        assert_eq!(c.call("hello", json!({"proto": 1, "secret": "0".repeat(64)}))["error"]["code"], "unauthorized");
+        let mut c = Cli::connect(&d, "ui.sock");
+        assert_eq!(c.call("hello", json!({"proto": 1}))["error"]["code"], "unauthorized");
+    }
     let mut c = Cli::connect(&d, "ui.sock");
     assert_eq!(c.call("hello", json!({"proto": 99, "secret": d.secret}))["error"]["code"], "version_mismatch");
     // a process outside a pane isn't recognized by the pane channel
@@ -233,18 +287,51 @@ fn attach_ulang_tidak_menggandakan_output() {
     assert_eq!(out.matches("SATU-2").count(), 1, "{out}");
 }
 
+/// SEC-20 lapis 2 (TECH 21.8): on a kernel without a Landlock scope the UI channel is the path socket, and a peer that
+/// carries an injection library is refused even with the right secret (SO_PEERPIDFD pins the pid for the /proc read).
+#[cfg(target_os = "linux")]
+#[test]
+fn lapis_2_peer_disuntik_ditolak() {
+    use std::process::Stdio;
+    let has = |cmd: &str| std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()));
+    if !has("nc") {
+        eprintln!("lewati: nc (netcat) tidak terpasang");
+        return;
+    }
+    let d = start_env("uipath", 3600, &[("GEMBALA_UI_PATH", std::path::Path::new("1"))]);
+    assert!(d.dir.join("ui.sock").exists(), "jalur 2 memakai socket ber-path");
+    // a clean peer goes through (the harness is the UI here)
+    assert_eq!(Cli::ui(&d).call("daemon.info", json!({}))["result"]["proto"], 1);
+    let sock = d.dir.join("ui.sock");
+    let mut c = Command::new("nc")
+        .args(["-U", &sock.display().to_string()])
+        .env("LD_PRELOAD", "/tidak-ada/libx.so")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut w = c.stdin.take().unwrap();
+    writeln!(w, "{}", json!({"id": 1, "method": "hello", "params": {"proto": 1, "client": "ui", "secret": d.secret}})).unwrap();
+    drop(w);
+    let mut out = String::new();
+    BufReader::new(c.stdout.take().unwrap()).read_line(&mut out).unwrap();
+    let _ = c.wait();
+    assert!(out.contains(r#""code":"unauthorized""#), "peer ber-LD_PRELOAD harus ditolak: {out}");
+}
+
 /// Criterion 9: a script inside a pane, even one holding the UI secret, can't use the UI channel;
 /// through the pane channel, human actions are rejected.
 #[test]
 fn kriteria_9_skrip_di_pane() {
     let d = start("k9");
     let mut ui = Cli::ui(&d);
-    let ui_sock = d.dir.join("ui.sock");
+    let ui_sock = ui_target(&d);
     let script = format!(
         r#"(printf '%s\n' '{{"id":1,"method":"hello","params":{{"proto":1,"secret":"{s}"}}}}'; sleep 1) | nc -U {u}; echo; \
 (printf '%s\n' '{{"id":1,"method":"hello","params":{{"proto":1}}}}' '{{"id":2,"method":"pane.close","params":{{"pane":1}}}}' '{{"id":3,"method":"approve","params":{{}}}}'; sleep 1) | nc -U "$GEMBALA_SOCKET"; echo SELESAI-K9"#,
         s = d.secret,
-        u = ui_sock.display()
+        u = ui_sock
     );
     let pane = ui.call("pane.create", json!({"cmd": script, "rows": 40, "cols": 200}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(pane, &["SELESAI-K9"]);
@@ -1003,6 +1090,35 @@ fn gembala_ada_di_path_pane() {
     ui.call("pane.write", json!({"pane": p, "data": B64.encode("command -v gembala; echo SELESAI-$((1+1))\r")}));
     let out = ui.attach_until(p, &["SELESAI-2"]);
     assert!(out.contains(env!("CARGO_BIN_EXE_gembala")), "{out}");
+}
+
+/// FR-98 / SEC-20: an agent typed in a shell pane goes through its wrapper and `gembala jail --`, so it starts with
+/// no_new_privs (the domain that keeps it off the abstract UI socket on a Landlock kernel).
+#[cfg(target_os = "linux")]
+#[test]
+fn wrapper_agent_lewat_jail() {
+    use std::os::unix::fs::PermissionsExt;
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    if !(shell.ends_with("/zsh") || shell.ends_with("/bash")) {
+        eprintln!("lewati: butuh pane zsh/bash, SHELL={shell:?}");
+        return;
+    }
+    let bin = std::env::temp_dir().join(format!("gbl-{}-jailwrap-bin", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("claude"), "#!/bin/sh\necho \"NNP=$(sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/self/status)\"\necho \"ARGS=$*\"\n").unwrap();
+    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = PathBuf::from(format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
+    let d = start_env("jailwrap", 3600, &[("PATH", &path)]);
+    let mut ui = Cli::ui(&d);
+    let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.attach", json!({"pane": p}));
+    std::thread::sleep(Duration::from_secs(1));
+    ui.call("pane.write", json!({"pane": p, "data": B64.encode("claude\r")}));
+    let out = ui.attach_until(p, &["ARGS="]);
+    assert!(out.contains("ARGS=") && out.contains("--append-system-prompt"), "wrapper agent tidak jalan: {out}");
+    assert!(out.contains("NNP=1"), "agent tidak lewat jail: {out}");
+    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// An agent typed by hand in a shell pane is visible to other agents through `status` (the agent-to-agent path).

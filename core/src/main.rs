@@ -9,6 +9,7 @@ mod grid;
 mod harness;
 mod history;
 mod ipc;
+mod jail;
 mod msg;
 mod os;
 mod profile;
@@ -39,6 +40,8 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str).unwrap_or_default() {
         "daemon" => daemon(&args[1..]),
         "hook" => hook(&args[1..]),
+        // FR-98, SEC-20: runs an agent inside a Landlock domain (internal, not in USAGE; a wrapper prefix)
+        "jail" => jail::main(&args[1..]),
         // FR-102: Claude Code status line wrapper, installed per launch through `--settings` (internal, not in USAGE)
         "statusline" => statusline(),
         // FR-61: called by the zsh `claude` function before Claude for another account runs (not in USAGE: internal)
