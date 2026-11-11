@@ -1458,16 +1458,20 @@ fn fr102_statusline_dan_usage() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// FR-86: `gembala close` closes only a helper opened through the caller's own card; any other pane is `not_allowed`.
+/// FR-86: `gembala close` closes a helper opened through the caller's own card at once; any other pane waits for the
+/// user's card (`needs_review`), which is the only thing that closes it.
 #[test]
 fn fr86_tutup_pembantu() {
     let d = start("fr86");
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let go = d.dir.join("go");
+    // 4 Nov: `gembala send <pane> "/exit"` was the only way to close another pane, and it types text instead of closing.
+    // Now it is a card for the user; the asking agent can `wait --reply` for the outcome.
     let minta = format!(
         "g='{g}'; sleep 1; $g send cat TUGAS; echo DIMINTA; while [ ! -e '{}' ]; do sleep 0.1; done; \
-         $g close nggakada-9; $g close cat-2; $g close cat-1; echo SELESAI-86; sleep 30",
+         $g close nggakada-9; $g close cat-2; i3=$($g close cat-3 | sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p'); \
+         $g close cat-1; echo SELESAI-86; $g wait --reply \"$i3\" --timeout 60; echo BALAS-86; sleep 30",
         go.display()
     );
     profiles(&d, &mut ui, &(sh_profile("cat", "stty raw -echo; cat -v") + &sh_profile("minta", &minta)), "SELESAI-86");

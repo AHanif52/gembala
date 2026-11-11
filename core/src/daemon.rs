@@ -46,6 +46,8 @@ const ALIAS_MAX: usize = 8;
 /// FR-75: helper panes (alive + waiting cards) per requesting agent; a helper's first task waits this long after launch
 const HELPERS_MAX: usize = 4;
 const HELPER_GRACE: Duration = Duration::from_secs(4);
+/// FR-86: close request cards waiting per asking agent (a pane the user didn't answer yet)
+const CLOSES_MAX: usize = 4;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Chan {
@@ -678,6 +680,12 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             let eng = st.engine.lock().unwrap();
             let names = st.names();
             let queues: Vec<Value> = eng.queues.values().flatten().map(|q| q.msg.summary()).collect();
+            // FR-86: the close card carries the target's status as it is now (SEC-28)
+            let closes: Vec<Value> = {
+                let panes = st.panes.lock().unwrap();
+                eng.closes.iter().map(|c| json!({"id": c.msg.id, "from": c.msg.from_name, "from_pane": c.msg.from, "target": c.msg.to_name,
+                    "status": panes.get(&c.msg.to).map_or("", |p| *p.status.lock().unwrap())})).collect()
+            };
             Ok(json!({
                 "paused": eng.paused,
                 "muted": eng.muted.iter().filter_map(|id| names.get(id)).collect::<Vec<_>>(),
@@ -686,6 +694,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 // FR-75: same exception, the open card shows the task as it will be sent
                 "opens": eng.opens.iter().map(|o| json!({"id": o.msg.id, "from": o.msg.from_name, "from_pane": o.msg.from, "target": o.msg.to_name, "profile": o.profile,
                     "account": o.account, "cwd": o.cwd, "workspace": o.workspace, "body": o.msg.body})).collect::<Vec<_>>(),
+                // FR-86: a close request waits for the user like an open card
+                "closes": closes,
                 "queued": queues,
                 // FR-100: drafts an agent made for the user to review; title = first line
                 "reports": eng.reports.iter().map(|r| {
@@ -764,6 +774,26 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             drop(eng);
             record(st, "queued", &msg, None);
             Ok(json!({"result": "queued", "id": msg.id}))
+        }
+        "close.approve" | "close.reject" => {
+            // FR-86: only the human's card decides (SEC-20); approving is the same as the user's × (close_pane), so the
+            // agent inside stops and its session card stays, exactly like a pane the user closed itself
+            let id = p["id"].as_str().ok_or("bad_params")?;
+            let c = {
+                let mut eng = st.engine.lock().unwrap();
+                let i = eng.closes.iter().position(|c| c.msg.id == id).ok_or("no_such_msg")?;
+                eng.closes.remove(i)
+            };
+            if m == "close.reject" {
+                return Ok(close_refused(st, &c.msg, "rejected_by_user"));
+            }
+            let Some(pane) = st.panes.lock().unwrap().get(&c.msg.to).cloned() else {
+                return Ok(close_refused(st, &c.msg, "target_gone"));
+            };
+            close_pane(&pane);
+            close_answer(st, &c.msg, format!("{} was closed by the user", c.msg.to_name));
+            record(st, "closed", &c.msg, Some("closed_by_user"));
+            Ok(json!({"result": "closed", "target": c.msg.to_name}))
         }
         "msg.pause" => {
             // SEC-10: stop button; the queue is held, not dropped
@@ -1497,6 +1527,47 @@ fn draft_path(st: &State, p: &Value) -> Result<std::path::PathBuf, &'static str>
     Ok(drafts_dir(st).join(format!("{d}.toml")))
 }
 
+/// FR-86: `close` to a pane that isn't my own helper = a card for the user, in my own pane (where FR-75's card sits).
+/// Counts to SEC-9 like a send; the same target asked twice returns the request already waiting.
+fn ask_close(st: &State, me: u64, my_name: &str, target: u64, target_name: &str) -> Res {
+    let my_ws = st.workspace_of(me);
+    if st.workspace_of(target) != my_ws {
+        return Err("acl_denied");
+    }
+    let mut eng = st.engine.lock().unwrap();
+    if let Some(c) = eng.closes.iter().find(|c| c.msg.from == me && c.msg.to == target) {
+        return Ok(json!({"result": "queued", "reason": "needs_review", "id": c.msg.id, "target": target_name}));
+    }
+    if eng.closes.iter().filter(|c| c.msg.from == me).count() >= CLOSES_MAX {
+        return Err("close_limit");
+    }
+    let id = eng.new_id(&st.boot);
+    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: target, to_name: target_name.to_string(), body: String::new(), reply_to: None, hop: 0, at: std::time::SystemTime::now() };
+    if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
+        drop(eng);
+        return Ok(reject(st, &m, "rate_limited"));
+    }
+    eng.note_sent(me);
+    eng.remember(&m);
+    eng.closes.push(bus::Close { msg: m.clone(), since: std::time::Instant::now() });
+    drop(eng);
+    record(st, "confirm", &m, Some("needs_close"));
+    Ok(json!({"result": "queued", "reason": "needs_review", "id": m.id, "target": target_name}))
+}
+
+/// FR-86: the requester's `wait --reply` gets the outcome; nothing is typed into the target either way
+fn close_answer(st: &State, m: &bus::Msg, body: String) {
+    let mut r = m.clone();
+    (r.from, r.from_name, r.reply_to) = (0, "gembala".into(), Some(m.id.clone()));
+    r.body = body;
+    st.engine.lock().unwrap().replies.insert(m.id.clone(), r);
+}
+
+fn close_refused(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
+    close_answer(st, m, format!("{} was not closed: {reason}", m.to_name));
+    reject(st, m, reason)
+}
+
 /// FR-75: card rejected or expired; the requester's `wait --reply` gets the answer instead of waiting it out
 fn open_refused(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
     let mut r = m.clone();
@@ -1743,6 +1814,16 @@ fn deliver_loop(st: Arc<State>) {
         for o in stale {
             open_refused(&st, &o.msg, "expired");
         }
+        // FR-86: a close card nobody answered expires like an open card
+        let stale: Vec<bus::Close> = {
+            let mut eng = st.engine.lock().unwrap();
+            let (old, keep) = std::mem::take(&mut eng.closes).into_iter().partition(|c| c.since.elapsed() > msg::QUEUE_TTL);
+            eng.closes = keep;
+            old
+        };
+        for c in stale {
+            close_refused(&st, &c.msg, "expired");
+        }
     }
 }
 
@@ -1882,17 +1963,22 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             Ok(json!({"result": "queued", "reason": "needs_review", "id": id}))
         }
         "close" => {
-            // FR-86: only a helper opened through my own card (FR-75), and not while it works or asks; same as the user's ×
-            let (_, pane) = st.by_name(p["target"].as_str().ok_or("bad_params")?).ok_or("no_such_pane")?;
-            if *pane.helper_of.lock().unwrap() != Some(me) {
+            // FR-86: my own helper (opened through my card, FR-75) closes at once, same as the user's ×; any other pane
+            // the agent was told to close goes to the user as a card first (4 Nov: `gembala send <pane> "/exit"` was the
+            // only way, and that types text instead of closing)
+            let (tid, pane) = st.by_name(p["target"].as_str().ok_or("bad_params")?).ok_or("no_such_pane")?;
+            if tid == me {
                 return Err("not_allowed");
             }
-            if matches!(*pane.status.lock().unwrap(), "working" | "blocked") {
-                return Err("target_busy");
-            }
-            close_pane(&pane);
             let name = pane.name.lock().unwrap().clone();
-            Ok(json!({"result": "closed", "target": name}))
+            if *pane.helper_of.lock().unwrap() == Some(me) {
+                if matches!(*pane.status.lock().unwrap(), "working" | "blocked") {
+                    return Err("target_busy");
+                }
+                close_pane(&pane);
+                return Ok(json!({"result": "closed", "target": name}));
+            }
+            ask_close(st, me, &my_name, tid, &name)
         }
         "reply" => {
             // FR-19: only the message's recipient can reply to it; the sender picks the reply up with `wait --reply`
@@ -2608,8 +2694,9 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
     }
     let code = pty.child.wait().ok().and_then(|s| s.code());
     st.panes.lock().unwrap().remove(&id);
-    // FR-75: a closed pane's open requests go with it
+    // FR-75: a closed pane's open requests go with it; FR-86: so do its close requests (asking or asked)
     st.engine.lock().unwrap().opens.retain(|o| o.msg.from != id);
+    st.engine.lock().unwrap().closes.retain(|c| c.msg.from != id && c.msg.to != id);
     let ev = line(json!({"event": "pane.exit", "params": {"pane": id, "code": code}}));
     for sub in pane.view.lock().unwrap().1.drain(..) {
         let _ = sub.tx.try_send(ev.clone());

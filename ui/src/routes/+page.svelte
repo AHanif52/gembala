@@ -227,6 +227,8 @@
   const pendingFor = (pane: number) => (msgData?.pending ?? []).filter((m: any) => m.to === meta[pane]?.name);
   /// FR-75: agent asked for an agent that isn't open; the card sits in the asking pane
   const opensFor = (pane: number) => (msgData?.opens ?? []).filter((o: any) => o.from_pane === pane);
+  /// FR-86: an agent asked to close another pane; the card sits in the asking pane too
+  const closesFor = (pane: number) => (msgData?.closes ?? []).filter((c: any) => c.from_pane === pane);
   const openWho = (o: any) => {
     const p = cfg?.values.profiles.find((x) => x.id === o.profile);
     const accs = cfg?.values.accounts ?? [];
@@ -2958,7 +2960,7 @@
               </div>
             {/if}
           {/if}
-          {#if pendingFor(pane).length || opensFor(pane).length || offer[pane] || reportsFor(pane).length}
+          {#if pendingFor(pane).length || opensFor(pane).length || closesFor(pane).length || offer[pane] || reportsFor(pane).length}
           <!-- FR-98 bug: the cards stack in one column instead of sitting on top of each other -->
           <div class="cards">
           {#each reportsFor(pane) as r (r.id)}
@@ -3004,6 +3006,20 @@
               <span class="acts">
                 <button class="mini" onclick={() => call("open.reject", { id: o.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
                 <button class="mini" onclick={() => approveOpen(o)}>{tt("open.go")}</button>
+              </span>
+            </div>
+          {/each}
+          {#each closesFor(pane) as c (c.id)}
+            <!-- FR-86: an agent asked to close another pane. Only this card closes it (4 Nov: it used to type "/exit" into it) -->
+            <div class="card" role="alertdialog" aria-label={tt("close.reqTitle", { from: c.from, name: c.target })}>
+              <b>{tt("close.reqTitle", { from: c.from, name: c.target })}</b>
+              <span class="sub">{tt("close.reqAsk")}</span>
+              {#if c.status === "working" || c.status === "blocked"}
+                <span class="sub">{tt(c.status === "working" ? "close.reqBusy" : "close.reqBlocked")}</span>
+              {/if}
+              <span class="acts">
+                <button class="mini" onclick={() => call("close.reject", { id: c.id }).then(refreshMsgs)}>{tt("close.reqStay")}</button>
+                <button class="mini danger" onclick={() => call("close.approve", { id: c.id }).then(refreshMsgs)}>{tt("close.reqGo")}</button>
               </span>
             </div>
           {/each}

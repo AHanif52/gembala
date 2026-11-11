@@ -49,6 +49,13 @@ pub struct Open {
     pub since: Instant,
 }
 
+/// FR-86: an agent asked to close another pane; only the human's card closes it. `msg.to` = the target pane and
+/// `msg.to_name` its name when it asked (nothing is typed into it), so `gembala wait --reply <id>` finds the answer.
+pub struct Close {
+    pub msg: Msg,
+    pub since: Instant,
+}
+
 #[derive(Default)]
 pub struct Engine {
     seq: u64,
@@ -62,6 +69,8 @@ pub struct Engine {
     /// waiting for a human's Approve/Reject (FR-12)
     pub pending: Vec<Msg>,
     pub opens: Vec<Open>,
+    /// FR-86: close requests waiting for the human's card
+    pub closes: Vec<Close>,
     /// FR-100: problem reports an agent drafted with `gembala report`; only the user sends them (SEC-40)
     pub reports: Vec<Msg>,
     pub history: VecDeque<Value>,

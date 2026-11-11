@@ -302,7 +302,7 @@ files/paths, what was tried or is forbidden, constraints, reply format), never a
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. \
 Need an agent that is not open (or more panes)? `gembala send <name> <task>` with a name from `can_open` in `gembala status` \
 (e.g. `claude-utama`, `omp`) asks the user to open it: result `needs_open`, the task goes once they approve; max 4 per agent. \
-Done with a helper you opened? `gembala close <pane>`. Any pane in the workspace can be closed, but one you didn't open asks the user first (`needs_review`). \
+Done with a helper you opened? `gembala close <pane>`. Any pane in the workspace can be closed, but a pane you did not open asks the user first (`needs_review`). \
 Found a bug in Gembala itself? `gembala report <title> <what happened, steps>` (quote each) drafts a GitHub issue the user reviews and sends; you cannot send it. \
 A user prompt naming panes as `@<pane>` = send each of them that full handover yourself with `gembala send`; never the prompt verbatim. \
 Pane names (`shell-N`, `@<pane>`, anything in `gembala status`) are Gembala panes, not sessions of your agent tool: reach them only with `gembala`, \
