@@ -74,7 +74,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: status dot + text label, not color alone (BRD section 11)
-  const stText = (s?: string) => (s === "blocked" || s === "done" || s === "working" ? tt(`status.${s}`) : "");
+  const stText = (s?: string) => (s === "approve" ? tt(wordKey("approve")) : s === "blocked" || s === "done" || s === "working" ? tt(`status.${s}`) : "");
   // FR-52: tab color picked by the user (thin line on the left)
   const COLORS = ["red", "orange", "yellow", "green", "blue", "purple", "pink", "cyan", "brown"] as const; // label: color.<c>
   /// FR-44: a new workspace gets a color automatically: the one least used by other workspaces, starting with blue (Gembala.pen 02)
@@ -108,9 +108,13 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     ...COLORS.map((c) => [tt(`color.${c}`), () => set(c), true, c, { on: cur === c }] as MItem),
     [tt("color.none"), () => set(undefined), true, "none", { on: !cur }],
   ];
-  const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
+  const rank = (s?: string) => ["working", "done", "approve", "blocked"].indexOf(s ?? "");
   /// status shown: a "done" that's already been seen fades (FR-40)
-  const stat = (p: number) => (ack[p] && meta[p]?.status === "done" && !meta[p]?.waitingShell ? "" : (meta[p]?.status ?? ""));
+  const stat = (p: number) => {
+    const s = ack[p] && meta[p]?.status === "done" && !meta[p]?.waitingShell ? "" : (meta[p]?.status ?? "");
+    // FR-65/FR-87: a card waiting for your OK shows as its own status; a permission prompt in that pane goes first
+    return s !== "blocked" && approvalOf(p) ? "approve" : s;
+  };
   // FR-87: a pane that waits on you says the same word as the banner, bell and strip (a shell's password prompt has no reason)
   const paneStatusText = (p: number) =>
     meta[p]?.waitingShell ? `⌛ ${tt("status.shell")}`
@@ -123,6 +127,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   let at = $state({ ws: 0, tab: 0 });
   let meta = $state<Record<number, Meta>>({});
   let blockedAt = $state<Record<number, number>>({}); // FR-65: sejak kapan pane butuh izin
+  let approveAt = $state<Record<number, number>>({}); // FR-65: since when a card waits for your OK in that pane
   let statusAt = $state<Record<number, number>>({}); // FR-101: daemon status time, milliseconds in the UI
   let previews = $state<Record<number, string>>({}); // hook answer, RAM only (SEC-13)
   let quietAt = $state<Record<number, number>>({}); // FR-101: keep a new completion visible for one minute
@@ -235,6 +240,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   const helperQuiet = (t: Tab) => ["done", "idle"].includes(meta[t.focus]?.status ?? "") && (!quietAt[t.focus] || now - quietAt[t.focus] >= 60_000);
   const helperStatus = (p: number) => {
     const s = meta[p]?.status;
+    if (stat(p) === "approve") return `${tt(wordKey("approve"))} ${ago(now - (approveAt[p] ?? now))}`;
     if (s === "blocked") return `${paneStatusText(p) || tt("status.blocked")} · ${ago(now - (blockedAt[p] ?? now))}`;
     if (s === "working" && statusAt[p]) return tt("helper.workingFor", { time: ago(now - statusAt[p]) });
     if (s === "done" && quietAt[p]) return now - quietAt[p] >= 86_400_000 ? tt("helper.finishedYesterday") : tt("helper.finishedAt", { time: new Date(quietAt[p]).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) });
@@ -271,6 +277,15 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   const pendingFor = (pane: number) => (msgData?.pending ?? []).filter((m: any) => m.to === meta[pane]?.name);
   /// FR-75: agent asked for an agent that isn't open; the card sits in the asking pane
   const opensFor = (pane: number) => (msgData?.opens ?? []).filter((o: any) => o.from_pane === pane);
+  /// FR-65/FR-87: the card waiting for your OK in this pane, said without its content: a message from another pane, an
+  /// agent asking to open one (FR-75), or a harness gate. `""` = nothing waits.
+  const approvalOf = (pane: number) => {
+    const m = pendingFor(pane)[0];
+    if (m) return tt("appr.msg", { from: m.from });
+    const o = opensFor(pane)[0];
+    if (o) return tt("appr.open", { target: o.target });
+    return Object.values(runs).some((r) => r.state === "gate" && stagePanes(r).some((x) => x.pane === pane && x.step === r.gate)) ? tt("appr.gate") : "";
+  };
   /// FR-86: an agent asked to close another pane; the card sits in the asking pane too
   const closesFor = (pane: number) => (msgData?.closes ?? []).filter((c: any) => c.from_pane === pane);
   const whatsNewBlocked = $derived(askMode || !!welcome || Object.values(meta).some((m) => m.status === "blocked") || !!confirm || !!linkAsk || !!quitAsk || !!wsAsk || !!(msgData?.pending?.length || msgData?.opens?.length || msgData?.closes?.length));
@@ -2156,12 +2171,14 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     for (const p of Object.keys(meta).map(Number)) {
       if (meta[p]?.status === "blocked") blockedAt[p] ??= Date.now();
       else if (blockedAt[p]) delete blockedAt[p];
+      if (stat(p) === "approve") approveAt[p] ??= Date.now();
+      else if (approveAt[p]) delete approveAt[p];
     }
   });
   const queue = $derived(
     wss
-      .flatMap((w, wi) => w.tabs.flatMap((t, ti) => panes(t.tree).filter((p) => !dead[p] && meta[p]?.status === "blocked").map((p) => ({ p, wi, ti, t, w }))))
-      .sort((a, b) => (blockedAt[a.p] ?? 0) - (blockedAt[b.p] ?? 0)),
+      .flatMap((w, wi) => w.tabs.flatMap((t, ti) => panes(t.tree).filter((p) => !dead[p] && (stat(p) === "blocked" || stat(p) === "approve")).map((p) => ({ p, wi, ti, t, w }))))
+      .sort((a, b) => (blockedAt[a.p] ?? approveAt[a.p] ?? 0) - (blockedAt[b.p] ?? approveAt[b.p] ?? 0)),
   );
   const ago = (ms: number) => {
     const s = Math.max(0, Math.round(ms / 1000));
@@ -2309,7 +2326,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   };
   /// is that pane still waiting for what the note says (permission, answer, password, a card to approve)?
   function stillWaits(pane: number, kind: NoticeKind) {
-    if (kind === "approve") return pendingFor(pane).length > 0 || opensFor(pane).length > 0 || Object.values(runs).some((r) => r.state === "gate" && stagePanes(r).some((x) => x.pane === pane && x.step === r.gate));
+    if (kind === "approve") return !!approvalOf(pane);
     return meta[pane]?.status === "blocked";
   }
   // one row per pane (newest note, older ones folded); a permission still waiting goes first, the rest stay newest first
@@ -2614,10 +2631,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         <div class="qhead">{tt("side.needsYou")} <span>{queue.length}</span></div>
         {#each queue as q (q.p)}
           {@const ag = agentOf(q.p) || meta[q.p]?.agent || ""}
+          {@const appr = stat(q.p) === "approve"}
           <button class="tab" onclick={() => jumpTo(q.p)}>
-            <span class="tt"><span class="dot blocked" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{labels[q.p] || GLYPH[ag] ? ` · ${labels[q.p] || ag}` : ""}</span>
-            <span class="kind">{tt(wordKey(blockedKindOf(q.p)))}</span><span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
-            <span class="sub">{[title(q.t) !== labels[q.p] ? title(q.t) : "", wss.length > 1 ? q.w.name : ""].filter(Boolean).join(" · ")}</span>
+            <span class="tt"><span class="dot {appr ? 'approve' : 'blocked'}" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{labels[q.p] || GLYPH[ag] ? ` · ${labels[q.p] || ag}` : ""}</span>
+            <span class="kind" class:appr>{tt(wordKey(appr ? "approve" : blockedKindOf(q.p)))}</span><span class="k">{ago(now - ((appr ? approveAt[q.p] : blockedAt[q.p]) ?? now))}</span>
+            <span class="sub">{[appr ? approvalOf(q.p) : "", title(q.t) !== labels[q.p] ? title(q.t) : "", wss.length > 1 ? q.w.name : ""].filter(Boolean).join(" · ")}</span>
           </button>
         {/each}
         <div class="qhint">{tt("side.nextHint", { key: pretty("Cmd+Shift+U") })}</div>
@@ -2676,10 +2694,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {:else}
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
-        {@const st = row.child ? (meta[t.focus]?.status ?? "") : tabStatus(t)}
+        {@const st = row.child ? stat(t.focus) : tabStatus(t)}
         <!-- FR-101 item 1 (TECH 29): a tab split by hand lists its agents as rows below the title, like helpers -->
         {@const sp = row.child ? null : splitRows(panes(t.tree), (p) => !!paneAgent(p), (p) => !!meta[p]?.busy || meta[p]?.status === "blocked")}
-        <button class="tab {t.color ?? ''}" class:helper={!!row.child} class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} data-wi={wi} data-ti={ti}
+        <button class="tab {t.color ?? ''}" class:helper={!!row.child} class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} class:approve={st === "approve"} data-wi={wi} data-ti={ti}
           class:lift={(dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti) || (dragging?.kind === "ws" && dragging.wi === wi)}
           data-k={t.id} title={row.child ? tt("helper.shortcut") : undefined}
           onpointerdown={(e) => !row.child && startDrag(e, "tab", wi, ti)} oncontextmenu={(e) => tabMenu(e, wi, t)}
@@ -2700,18 +2718,18 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
             {@const rest = [g?.repo ? (simple ? tt("helper.branch", { name: g.branch }) : g.branch) : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
             {#if !sp && (row.child || ag || stText(st) || rest)}
-              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {helperStatus(p)}"></span>{/each}{/if}{#if row.child || ag || stText(st)}<span class="st {st}">{helperStatus(t.focus)}</span>{/if}{st === "blocked" ? ` · ${tt("helper.open")}` : ""}{#if rest}{row.child || ag || stText(st) || panes(t.tree).length > 1 ? " · " : ""}{rest}{/if}</span>
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {helperStatus(p)}"></span>{/each}{/if}{#if row.child || ag || stText(st)}<span class="st {st}">{helperStatus(t.focus)}</span>{/if}{st === "blocked" || st === "approve" ? ` · ${tt("helper.open")}` : ""}{#if rest}{row.child || ag || stText(st) || panes(t.tree).length > 1 ? " · " : ""}{rest}{/if}</span>
             {/if}
             {#if !sp && previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
           {/if}
         </button>
         {#if sp}
           {#each [...sp.rows, ...(t.shellsOpen ? sp.folded : [])] as p (p)}
-            {@const ps = meta[p]?.status ?? ""}
+            {@const ps = stat(p)}
             {@const pa = paneAgent(p)}
-            <button class="tab helper" class:blocked={ps === "blocked"} class:on={at.ws === wi && at.tab === ti && t.focus === p} onclick={() => jumpTo(p)}>
+            <button class="tab helper" class:blocked={ps === "blocked"} class:approve={ps === "approve"} class:on={at.ws === wi && at.tab === ti && t.focus === p} onclick={() => jumpTo(p)}>
               <span class="tt"><span class="dot {ps || 'idle'}" aria-hidden="true"></span>{#if pa}<span class="aico {pa}" title={pa}>{GLYPH[pa]}</span>{/if}{meta[p]?.name}{pa ? ` · ${agentLabel(p)}` : meta[p]?.busy ? ` · ${meta[p].busy}` : ""}</span>
-              <span class="sub"><span class="st {ps}">{!pa && meta[p]?.busy && ps !== "blocked" ? tt("helper.workingFor", { time: ago(now - (meta[p].since ?? now)) }) : helperStatus(p)}</span>{ps === "blocked" ? ` · ${tt("helper.open")}` : ""}{acctOf(p) ? ` · ${acctOf(p)}` : ""}</span>
+              <span class="sub"><span class="st {ps}">{!pa && meta[p]?.busy && ps !== "blocked" ? tt("helper.workingFor", { time: ago(now - (meta[p].since ?? now)) }) : helperStatus(p)}</span>{ps === "blocked" || ps === "approve" ? ` · ${tt("helper.open")}` : ""}{acctOf(p) ? ` · ${acctOf(p)}` : ""}</span>
               {#if meta[p]?.subagents}<span class="sub">└ {ttn("split.subagents", meta[p].subagents ?? 0)}</span>{/if}
               {#if previews[p] && ps !== "blocked"}<span class="sub">{previews[p]}</span>{/if}
             </button>
@@ -4171,6 +4189,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   .tab.blocked {
     background: rgba(217, 119, 6, 0.14);
   }
+  /* FR-65: a card waiting for your OK, violet like its bell dot (FR-87) */
+  .tab.approve {
+    background: rgba(168, 85, 247, 0.12);
+  }
   /* FR-52: warna tab = garis tipis kiri */
   .tab.red { box-shadow: inset 3px 0 0 #ef4444; }
   .tab.orange { box-shadow: inset 3px 0 0 #f97316; }
@@ -4317,6 +4339,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   .st.blocked {
     color: var(--tx-amber, #d97706);
+    font-weight: 600;
+  }
+  .st.approve,
+  .queue .tab .kind.appr {
+    color: #a855f7;
     font-weight: 600;
   }
   .st.done {
