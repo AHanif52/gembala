@@ -1331,6 +1331,67 @@ fn fr100_lapor_masalah_cuma_draf() {
     assert_eq!(ui.call("msg.list", json!({}))["result"]["reports"], json!([]));
 }
 
+/// FR-102: `gembala statusline` passes Claude's `rate_limits` to the daemon (numbers only) and runs the user's own
+/// status line command with the same stdin, printing its output as is; `usage.list`/`usage.changed` carry one row per
+/// login, Utama and an FR-61 account apart.
+#[test]
+fn fr102_statusline_dan_usage() {
+    let home = std::env::temp_dir().join(format!("gbl-{}-home102", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    // SEC-15 exception 3: only statusLine.command may be read; the other field must make no difference
+    std::fs::write(home.join(".claude/settings.json"), r#"{"statusLine":{"type":"command","command":"/bin/cat"},"env":{"RAHASIA":"x"}}"#).unwrap();
+    let d = start_env("fr102", 3600, &[("HOME", &home)]);
+    let mut ui = Cli::ui(&d);
+    let mut events = Cli::ui(&d);
+    assert_eq!(ui.call("account.create", json!({"name": "Kantor"}))["result"]["id"], "kantor");
+    let pane = ui.call("pane.create", json!({"rows": 40, "cols": 240}))["result"]["pane"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    let payload = json!({"rate_limits": {"five_hour": {"used_percentage": 14, "resets_at": 1794380400}, "seven_day": {"used_percentage": 49, "resets_at": 1794380400}}, "model": {"id": "x"}});
+    let file = d.dir.join("payload.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let run = |ui: &mut Cli, dir: Option<&std::path::Path>, sum: &str, want: &str| {
+        let env = dir.map(|k| format!("CLAUDE_CONFIG_DIR='{}' ", k.display())).unwrap_or_default();
+        let cmd = format!("{env}'{g}' statusline < '{}'; echo; echo SELESAI-$((80+{sum}))\r", file.display());
+        ui.call("pane.write", json!({"pane": pane, "data": B64.encode(cmd)}));
+        ui.attach_until(pane, &[want])
+    };
+
+    let out = run(&mut ui, None, "2", "SELESAI-82");
+    assert!(out.contains(&payload.to_string()), "output status line pengguna hilang: {out}");
+    let e = next_event(&mut events, "usage.changed", Duration::from_secs(5));
+    assert_eq!(e["params"]["rows"][0]["agent"], "claude", "{e}");
+    let row = |r: &Value, login: &str| r["rows"].as_array().unwrap().iter().find(|x| x["login"] == login).cloned().unwrap();
+    let r = ui.call("usage.list", json!({}))["result"].clone();
+    let utama = row(&r, "utama");
+    assert_eq!(utama["login_name"], "Utama", "{utama}");
+    assert_eq!(utama["source"], "claude_statusline", "{utama}");
+    assert_eq!(utama["limited"], false, "{utama}");
+    let w = utama["windows"].clone();
+    assert_eq!(w[0], json!({"kind": "5h", "used_pct": 14.0, "resets_at": 1794380400, "model": null}), "{w}");
+    assert_eq!(w[1], json!({"kind": "week", "used_pct": 49.0, "resets_at": 1794380400, "model": null}), "{w}");
+
+    // an FR-61 account is a row of its own; its settings.json is the same link from Utama
+    let k = home.join(".claude-kantor");
+    let out = run(&mut ui, Some(&k), "3", "SELESAI-83");
+    assert!(out.contains(&payload.to_string()), "{out}");
+    let r = ui.call("usage.list", json!({}))["result"].clone();
+    let kantor = row(&r, "kantor");
+    assert_eq!(kantor["agent"], "claude", "{kantor}");
+    assert_eq!(kantor["login_name"], "Kantor", "{kantor}");
+    // numbers only reach the daemon: a pane can't put free text in a row
+    let bad = d.dir.join("bad.json");
+    std::fs::write(&bad, r#"{"rate_limits":{"five_hour":{"used_percentage":"banyak"},"seven_day":{"used_percentage":null}}}"#).unwrap();
+    let out = {
+        let cmd = format!("'{g}' statusline < '{}'; echo SELESAI-$((80+4))\r", bad.display());
+        ui.call("pane.write", json!({"pane": pane, "data": B64.encode(cmd)}));
+        ui.attach_until(pane, &["SELESAI-84"])
+    };
+    assert_eq!(ui.call("usage.list", json!({}))["result"], r, "teks tidak masuk sebagai angka: {out}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// FR-86: `gembala close` closes only a helper opened through the caller's own card; any other pane is `not_allowed`.
 #[test]
 fn fr86_tutup_pembantu() {

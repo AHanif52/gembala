@@ -1784,7 +1784,22 @@ fn status_text(st: &State, id_l: bool, active: Option<u64>) -> String {
         e.0.push((*p.status.lock().unwrap() != "blocked", p.name.lock().unwrap().clone(), word));
     }
     let rows: Vec<WsRows> = by_ws.into_iter().map(|(ws, (agents, shells))| (ws, agents, shells)).collect();
-    status_body(rows, id_l)
+    let body = status_body(rows, id_l);
+    let jatah = usage_block(st, id_l);
+    if jatah.is_empty() { body } else { format!("{body}\n\n{jatah}") }
+}
+
+/// FR-102: the allowance left per login, numbers and reset times only (SEC-33/36). No work content, no screen text.
+fn usage_block(st: &State, id_l: bool) -> String {
+    let rows = super::usage::telegram_lines(st, id_l);
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("<b>{}</b>\n", if id_l { "Jatah" } else { "Allowance" });
+    for (agent, name, parts) in rows {
+        out += &format!("{} · {} — {}\n", esc(&agent), esc(&name), esc(&parts.join(" · ")));
+    }
+    out.trim_end().to_string()
 }
 
 fn status_body(mut rows: Vec<WsRows>, id_l: bool) -> String {

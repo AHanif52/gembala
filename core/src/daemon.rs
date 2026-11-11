@@ -195,6 +195,8 @@ struct State {
     tg: telegram::Slot,
     /// FR-82: last answer of the GitHub release check (update.rs)
     update: Mutex<Value>,
+    /// FR-102: allowance left per agent login (usage.rs)
+    usage: Mutex<usage::Store>,
     /// FR-100: the last report draft asked for a window screenshot (the user takes it; the agent never sees it)
     report_shot: Mutex<bool>,
 }
@@ -212,6 +214,7 @@ mod runner;
 mod telegram;
 mod claude;
 mod update;
+mod usage;
 
 type Res = Result<Value, &'static str>;
 /// FR-62: (running block + its start time, manual agent block waiting for its resume command)
@@ -255,6 +258,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         harness: Mutex::default(),
         tg: Mutex::default(),
         update: Mutex::default(),
+        usage: Mutex::default(),
         report_shot: Mutex::default(),
     });
     let st7 = st.clone();
@@ -263,6 +267,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     reload_config(&st);
     telegram::start_saved(&st);
     update::start(&st);
+    usage::start(&st);
     on_ready();
     let st3 = st.clone();
     thread::spawn(move || idle_exit(st3));
@@ -393,7 +398,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
                     Ok(json!({}))
                 }
-                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report", Some(me)) => pane_method(&st, me, method, p),
+                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage", Some(me)) => pane_method(&st, me, method, p),
                 // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
@@ -1113,6 +1118,8 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             Ok(json!({}))
         }
         "telegram.status" => Ok(telegram::status(st)),
+        // FR-102: allowance left per agent login; new numbers arrive as `usage.changed`
+        "usage.list" => Ok(usage::status(st)),
         // FR-82: version check; "check" answers at once, the result comes as `update.changed`
         "update.status" => Ok(update::status(st)),
         "update.check" => {
@@ -1286,6 +1293,10 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         return Err("no_picker");
     }
     let agent = prof.as_ref().map_or("shell".to_string(), |x| x.agent.clone());
+    // FR-102: a Codex login in use gets the 10-minute app-server reading too
+    if agent == "codex" {
+        usage::note_codex(st);
+    }
     // FR-27: the harness passes its recipe switch; a pane opened from the UI follows `[harness] token_saver`
     let saver = p["saver"].as_bool().unwrap_or_else(|| st.config.lock().unwrap()["values"]["harness"]["token_saver"].as_bool().unwrap_or(false)) && agent != "shell";
     let launch = picked.as_ref().or(prof.as_ref()).and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session), saver));
@@ -1771,6 +1782,8 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
     match method {
         // FR-78: typed `claude`/`codex` (zsh function) gets the add-ons of this pane's workspace now
         "addons" => Ok(json!({"args": addon::args(&st.addons.lock().unwrap(), p["agent"].as_str().unwrap_or_default(), &my_ws)})),
+        // FR-102: `gembala statusline` passes Claude's `rate_limits`; numbers only, nothing free-form
+        "usage" => usage::from_claude(st, p),
         "token" => {
             // FR-66: pane token for sandboxed processes (spool path); created once, revoked when the pane closes
             let pane = st.panes.lock().unwrap().get(&me).cloned().ok_or("not_a_pane")?;
@@ -1992,6 +2005,8 @@ fn screen_watch(st: Arc<State>) {
         let idle_mins = st.config.lock().unwrap()["values"]["ui"]["helper_idle_close"].as_u64().unwrap_or(15);
         for (id, pane) in panes {
             telegram::tick(&st, id, &pane);
+            // FR-102: Codex/Gemini allowance from the footer the agent drew (numbers only)
+            usage::tick(&st, &pane);
             // FR-86: a helper quiet since its reply (and since its last status change) is closed like the user's ×
             let replied = pane.replied_at.lock().unwrap().map(|t| t.elapsed());
             if pane.helper_of.lock().unwrap().is_some() && helper_quiet(*pane.status.lock().unwrap(), replied, pane.status_at.lock().unwrap().elapsed(), idle_mins) {

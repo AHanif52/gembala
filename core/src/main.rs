@@ -37,6 +37,8 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str).unwrap_or_default() {
         "daemon" => daemon(&args[1..]),
         "hook" => hook(&args[1..]),
+        // FR-102: Claude Code status line wrapper, installed per launch through `--settings` (internal, not in USAGE)
+        "statusline" => statusline(),
         // FR-61: called by the zsh `claude` function before Claude for another account runs (not in USAGE: internal)
         "trust-sync" => {
             // only accounts in config with trust on (FR-61 (8): "Trusted folders" can be Own)
@@ -149,6 +151,97 @@ fn hook(args: &[String]) -> ExitCode {
     };
     let _ = send();
     ExitCode::SUCCESS
+}
+
+/// FR-102: Claude Code's status line wrapper, installed per launch through `--settings`. Claude runs it with the session
+/// JSON on stdin: the `rate_limits` numbers go to the daemon, then the user's own `statusLine.command` — that field only,
+/// from that account's settings.json (SEC-15 exception 3) — gets the same stdin and its stdout is printed as is. Any
+/// problem prints nothing: a failing wrapper must not break Claude's status line.
+fn statusline() -> ExitCode {
+    use std::io::Read;
+    let mut input = String::new();
+    let _ = std::io::stdin().take(64 * 1024).read_to_string(&mut input);
+    let payload: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    send_usage(&payload);
+    if let Some(cmd) = user_statusline()
+        && let Some(out) = run_statusline(&cmd, &input)
+    {
+        print!("{out}");
+        let _ = std::io::stdout().flush();
+    }
+    ExitCode::SUCCESS
+}
+
+/// The rate limits reach the daemon as numbers through the pane channel; the rest of the status line JSON stays here.
+fn send_usage(payload: &serde_json::Value) {
+    let rate = &payload["rate_limits"];
+    if !rate.is_object() {
+        return;
+    }
+    let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else { return };
+    let dir = std::env::var("CLAUDE_CONFIG_DIR").ok();
+    let token = std::env::var("GEMBALA_TOKEN").ok();
+    let send = || -> std::io::Result<()> {
+        use std::io::{BufRead, BufReader};
+        let mut s = std::os::unix::net::UnixStream::connect(&sock)?;
+        s.set_read_timeout(Some(std::time::Duration::from_secs(1)))?;
+        let mut r = BufReader::new(s.try_clone()?);
+        let mut l = String::new();
+        writeln!(s, "{}", serde_json::json!({"id": 1, "method": "hello", "params": {"proto": daemon::PROTO, "client": "statusline", "token": token}}))?;
+        r.read_line(&mut l)?;
+        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "usage", "params": {"dir": dir, "rate_limits": rate}}))?;
+        r.read_line(&mut l)?;
+        Ok(())
+    };
+    let _ = send();
+}
+
+/// SEC-15 exception 3: only `statusLine.command` is read, and nothing is written.
+fn user_statusline() -> Option<String> {
+    let dir = std::env::var("CLAUDE_CONFIG_DIR").map(|d| account::expand(&d)).unwrap_or_else(|_| account::main_dir());
+    let path = dir.join("settings.json");
+    // follows the account's link to Utama; a device or a giant file is not a settings file
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > 1024 * 1024 {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let cmd = v["statusLine"]["command"].as_str()?.trim();
+    (!cmd.is_empty()).then(|| cmd.to_string())
+}
+
+/// Runs the user's command with the same stdin; 2 second limit, failure or timeout = nothing.
+fn run_statusline(cmd: &str, input: &str) -> Option<String> {
+    use std::process::{Command, Stdio};
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", cmd]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = c.spawn().ok()?;
+    let mut stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    let data = input.as_bytes().to_vec();
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = stdin.write_all(&data);
+    });
+    let reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut out = String::new();
+        let _ = stdout.take(64 * 1024).read_to_string(&mut out);
+        out
+    });
+    let start = std::time::Instant::now();
+    while child.try_wait().ok()?.is_none() {
+        if start.elapsed() > std::time::Duration::from_secs(2) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = writer.join();
+    // a command that wrote too much is cut, not an error
+    reader.join().ok()
 }
 
 /// Phase 2 (O2): CLI for agents inside a pane. One JSON line to stdout; exit code 0 = accepted/succeeded,
@@ -297,4 +390,20 @@ fn hand_over(h: Handoff, secret: &str) -> std::io::Result<()> {
 fn usage() -> ExitCode {
     eprintln!("{USAGE}");
     ExitCode::from(2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FR-102: the user's command gets the status line stdin as is; one that doesn't answer in 2 seconds prints nothing.
+    #[test]
+    fn statusline_perintah_pengguna() {
+        assert_eq!(run_statusline("/bin/cat", "{\"a\":1}"), Some("{\"a\":1}".into()));
+        let start = std::time::Instant::now();
+        assert_eq!(run_statusline("sleep 5; echo lama", "x"), None);
+        assert!(start.elapsed() < std::time::Duration::from_secs(4), "batas waktu tidak jalan");
+        // a command that prints nothing is not an error
+        assert_eq!(run_statusline("/bin/cat >/dev/null", "x"), Some(String::new()));
+    }
 }

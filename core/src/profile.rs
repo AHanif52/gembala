@@ -344,10 +344,12 @@ fn claude_hooks(exe: &str, rtk: bool) -> Value {
         pre.push(json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]}));
     }
     pre.push(json!({"hooks": [{"type": "command", "command": format!("{} hook claude tool", q(exe))}]}));
+    // FR-102: the status line goes through Gembala's wrapper, which passes the same stdin to the user's own
+    // statusLine.command (read from that account's settings.json, SEC-15 exception 3) and prints its output as is
     json!({"hooks": {
         "UserPromptSubmit": one("prompt"), "PreToolUse": pre, "PostToolUse": one("tool"), "Stop": one("stop"), "StopFailure": one("stop"),
         "Notification": one("notify"), "SessionStart": one("start"),
-    }})
+    }, "statusLine": {"type": "command", "command": format!("{} statusline", q(exe))}})
 }
 
 fn hook_flags(p: &Profile, h: &Hooks, saver: bool) -> (Vec<String>, Vec<(String, String)>) {
@@ -907,6 +909,8 @@ mod tests {
         assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
         assert_eq!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude tool");
         assert_eq!(settings["hooks"]["StopFailure"][0]["hooks"][0]["command"], "'/Apps/Gem bala/gembala' hook claude stop");
+        // FR-102: the status line goes through the wrapper; the user's own command is run by it
+        assert_eq!(settings["statusLine"], serde_json::json!({"type": "command", "command": "'/Apps/Gem bala/gembala' statusline"}));
         // FR-27: no saver = no RTK entry; saver + rtk found = RTK first, then Gembala's own tool hook
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().map(Vec::len), Some(1), "{settings}");
         let with = claude_hooks("/x/gembala", true);
