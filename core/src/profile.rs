@@ -540,7 +540,7 @@ fn bash_agents(dir: &std::path::Path, exe: &str) -> String {
            [ -n \"$CLAUDE_CONFIG_DIR\" ] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null\n\
            if [ $# -eq 0 ] || [ \"${{1#-}}\" != \"$1\" ]; then\n\
              local s=() a=()\n\
-             case \" $* \" in *\" -r \"*|*\" -c \"*|*\" --resume \"*|*\" --continue \"*|*\" --session-id \"*|*\" --fork-session \"*) ;; *) s=(--session-id \"$(__gembala_uuid)\");; esac\n\
+             case \" $* \" in *\" -r \"*|*\" -c \"*|*\" --resume\"*|*\" --continue\"*|*\" --session-id\"*|*\" --fork-session\"*) ;; *) s=(--session-id \"$(__gembala_uuid)\");; esac\n\
              if command -v mapfile >/dev/null; then mapfile -t a < <(command gembala addons claude 2>/dev/null); fi\n\
              command gembala jail -- claude --append-system-prompt \"$(cat {f})\" --settings {start} \"${{a[@]}}\" \"${{s[@]}}\" \"$@\"\n\
            else command claude \"$@\"; fi\n\
@@ -1304,6 +1304,29 @@ mod tests {
         let out = run_with_timeout(c, Duration::from_secs(3)).unwrap();
         assert_eq!(out.len(), 1 << 20);
         assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
+    }
+
+    /// FR-98: resume flags must not receive a second session id, including `--flag=value` forms.
+    #[test]
+    fn bash_claude_keeps_requested_session() {
+        let dir = std::env::temp_dir().join(format!("gembala-bash-session-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        };
+        bin("gembala", "[ \"$1\" = jail ] && { shift 2; exec \"$@\"; }; exit 1");
+        bin("claude", "printf '<%s>' \"$@\"");
+        std::fs::write(dir.join("gembala.md"), "hint").unwrap();
+        for args in ["--resume=id", "--session-id=id", "--fork-session=x", "-r id", "-c", "--continue", "--continue=x", "--resume id", "--session-id id", "--fork-session x", "--model x"] {
+            let script = format!("{}claude {args}", bash_agents(&dir, "/x/gembala"));
+            let out = Command::new("/bin/bash").args(["--noprofile", "--norc", "-c", &script]).env("PATH", format!("{}:/usr/bin:/bin", dir.display())).output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{args}: {out:?}");
+            assert_eq!(text.matches("<--session-id>").count(), usize::from(args == "--session-id id" || args == "--model x"), "{args}: {text}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// FR-78: typed `claude` gets the daemon's add-on lines as separate arguments (spaces kept); no daemon = none
