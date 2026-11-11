@@ -1476,6 +1476,14 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     Some(body)
 }
 
+/// `last` only stands while an agent still runs in that pane. A Claude typed into a shell pane can exit, and `last` stayed
+/// on it, so a reply to a card an agent posted through the bot itself (no pane name on the first line) was typed into that
+/// shell and answered "shell panes don't take typing" (11 Nov). A shell pane is no pick at all: the single-agent / `pick` /
+/// `no_agent` rules decide instead. `panes`: (id, an agent runs there).
+fn last_agent(last: Option<u64>, panes: &[(u64, bool)]) -> Option<u64> {
+    last.filter(|id| panes.iter().any(|(p, agent)| p == id && *agent))
+}
+
 /// pane for a phone message: reply to a bot message, a name, or the active pane; no active pane and a single agent pane = that
 /// one; several = `pick` (the caller offers buttons)
 fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'static str> {
@@ -1493,10 +1501,11 @@ fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'sta
         }
         None => {
             let panes = st.panes.lock().unwrap();
-            match (*b.last.lock().unwrap()).filter(|id| panes.contains_key(id)) {
+            let listed: Vec<(u64, bool)> = panes.iter().map(|(id, p)| (*id, p.agent_name().is_some())).collect();
+            match last_agent(*b.last.lock().unwrap(), &listed) {
                 Some(id) => id,
                 None => {
-                    let agents: Vec<u64> = panes.iter().filter(|(_, p)| p.agent_name().is_some()).map(|(id, _)| *id).collect();
+                    let agents: Vec<u64> = listed.iter().filter(|(_, agent)| *agent).map(|(id, _)| *id).collect();
                     match agents[..] {
                         [] => return Err("no_agent"),
                         [one] => one,
@@ -1677,7 +1686,8 @@ fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64, file
             }
             Err(_) => "no_pane",
         },
-        Err(Why::Shell) => "shell",
+        // which pane it landed on: the phone shows only the pane names, and a stray message needs to be traceable (11 Nov)
+        Err(Why::Shell) => return b.tell(&format!("{}: {}", pane.name.lock().unwrap(), t(b.id_lang, "shell"))),
         // the buttons may never have gone out (Mac not away, prompt not from the phone): send them now (9 Nov: "use the
         // buttons" with no buttons in the chat)
         Err(Why::Blocked) => {
@@ -2328,6 +2338,20 @@ mod tests {
         assert!(!is_always_confirm_line("Allow once  Always allow  Reject"));
         assert!(!is_always_confirm_line("Always allow"));
         assert!(!is_always_confirm_line(""));
+    }
+
+    /// FR-80: plain phone text follows `last` only while an agent still runs in that pane. After a Claude exits in a shell
+    /// pane, a reply to a card the agent posted through the bot itself (no pane name) was typed into that shell.
+    #[test]
+    fn pane_terakhir_dipakai_hanya_kalau_masih_agent() {
+        let panes = [(3, false), (5, true)];
+        assert_eq!(last_agent(Some(5), &panes), Some(5));
+        // left on a shell pane: back to the single-agent / pick / no_agent rules
+        assert_eq!(last_agent(Some(3), &panes), None);
+        // pane closed meanwhile
+        assert_eq!(last_agent(Some(9), &panes), None);
+        assert_eq!(last_agent(None, &panes), None);
+        assert_eq!(last_agent(Some(3), &[(3, false)]), None);
     }
 
     #[test]
