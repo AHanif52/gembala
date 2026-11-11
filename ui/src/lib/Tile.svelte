@@ -13,6 +13,7 @@
   import { errText, i18n, t } from "./i18n/state.svelte";
   import { safeResume } from "./resume";
   import { encodeKey, onCsi } from "./kitty";
+  import { mod } from "./keys.svelte";
   import { codexStatus, type CodexStatus } from "./codex-status";
   import type { Ui } from "./config";
 
@@ -641,7 +642,7 @@
       // baris yang dilacak di sini (sinkron): state Svelte (mention) update-nya
       // async, jadi Tab cepat sesudah "@@" tidak boleh jatuh ke picker milik
       // agent (mis. daftar file/agent omp) sebelum daftar pane sempat kebuka.
-      if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !e.metaKey && !e.shiftKey) {
+      if (e.type === "keydown" && ["Tab", "Enter", "ArrowUp", "ArrowDown", "Escape"].includes(e.key) && !mod(e) && !e.shiftKey) {
         if (onkey(e.key)) {
           e.preventDefault(); // WebKit's default Tab moves focus out of the terminal; agents hide the cursor when focus is lost
           return false;
@@ -656,7 +657,8 @@
           return false;
         }
       }
-      const ku = (kitty.at(-1) ?? 0) & 1 ? encodeKey(e, !!term.options.macOptionIsMeta) : null;
+      // FR-98: an app combo never goes to the agent (on Linux the app key is Ctrl+Shift)
+      const ku = (kitty.at(-1) ?? 0) & 1 && !mod(e) ? encodeKey(e, !!term.options.macOptionIsMeta) : null;
       if (ku) {
         e.preventDefault(); // Ctrl+Enter: macOS WebKit opens the context menu even after the code was sent
         if (e.type === "keydown") (track(ku), call("pane.write", { pane, data: b64(enc.encode(ku)) }));
@@ -668,7 +670,7 @@
         if (e.type === "keydown") call("pane.write", { pane, data: b64(enc.encode("\r")) });
         return false;
       }
-      if (e.key !== "Enter" || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return true;
+      if (e.key !== "Enter" || !e.shiftKey || mod(e) || e.ctrlKey || e.altKey) return true;
       if (e.type === "keydown") call("pane.write", { pane, data: b64(enc.encode("\x1b\r")) });
       return false;
     });

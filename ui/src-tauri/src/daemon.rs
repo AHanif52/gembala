@@ -1,11 +1,11 @@
-//! UI channel client (TECH section 8, T1): secret from the Keychain; when the daemon isn't running,
-//! the UI launches it and receives the secret through descriptor 3.
+//! UI channel client (TECH section 8, T1): secret from the login store (macOS Keychain, Linux Secret Service); when the
+//! daemon isn't running, the UI launches it and receives the secret through `hand.sock` (a pipe in the fallback).
 
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
+#[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -14,6 +14,38 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub const KC_SERVICE: &str = "dev.gembala.app";
+
+/// SEC-20: the UI channel secret in the login store, same service/account words on every system.
+/// macOS uses the Keychain through `security-framework`; Linux the Secret Service through `keyring`.
+#[cfg(target_os = "macos")]
+fn secret_get(account: &str) -> Option<String> {
+    security_framework::passwords::get_generic_password(KC_SERVICE, account).ok().and_then(|s| String::from_utf8(s).ok())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn secret_get(account: &str) -> Option<String> {
+    keyring::Entry::new(KC_SERVICE, account).ok()?.get_password().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn secret_set(account: &str, secret: &str) -> Result<(), String> {
+    security_framework::passwords::set_generic_password(KC_SERVICE, account, secret.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn secret_set(account: &str, secret: &str) -> Result<(), String> {
+    keyring::Entry::new(KC_SERVICE, account).map_err(|e| e.to_string())?.set_password(secret).map_err(|e| e.to_string())
+}
+
+/// FR-48: forget this app's item (Settings > Security > "Forget secret").
+pub fn secret_forget(account: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = security_framework::passwords::delete_generic_password(KC_SERVICE, account);
+    #[cfg(not(target_os = "macos"))]
+    if let Ok(e) = keyring::Entry::new(KC_SERVICE, account) {
+        let _ = e.delete_credential();
+    }
+}
 
 pub struct Client {
     /// Daemon disconnected = false; the caller makes a new client (criterion 17: the daemon is launched again).
@@ -29,10 +61,18 @@ fn err(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+/// Same folder as the daemon's `core::os::runtime_dir`: `$TMPDIR/gembala` on macOS, `$XDG_RUNTIME_DIR/gembala` on Linux.
 pub fn rundir() -> PathBuf {
-    std::env::var_os("GEMBALA_RUNDIR").map(PathBuf::from).unwrap_or_else(|| {
-        std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| "/tmp".into()).join("gembala")
-    })
+    if let Some(p) = std::env::var_os("GEMBALA_RUNDIR") {
+        return p.into();
+    }
+    // macOS TMPDIR is already per user; the /tmp fallback is still checked by the daemon's `ensure_private_dir`
+    let base = |k: &str| std::env::var_os(k).filter(|x| !x.is_empty()).map(PathBuf::from);
+    #[cfg(target_os = "linux")]
+    if let Some(d) = base("XDG_RUNTIME_DIR") {
+        return d.join("gembala");
+    }
+    base("TMPDIR").unwrap_or_else(|| "/tmp".into()).join("gembala")
 }
 
 pub type OnEvent = Arc<dyn Fn(Value) + Send + Sync>;
@@ -66,9 +106,9 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
         // Measuring/test tools (debug build + GEMBALA_DEV_SECRET) don't write to the user's Keychain.
         if !c.signed
             && dev.is_none()
-            && let Err(e) = security_framework::passwords::set_generic_password(KC_SERVICE, &account, secret.as_bytes())
+            && let Err(e) = secret_set(&account, &secret)
         {
-            eprintln!("simpan rahasia ke Keychain: {e}");
+            eprintln!("simpan rahasia: {e}");
         }
         return Ok(c);
     };
@@ -86,8 +126,7 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
         Err(_) => {} // rejected: try the secret from the Keychain
     }
     let s = UnixStream::connect(&sock)?;
-    let kc = security_framework::passwords::get_generic_password(KC_SERVICE, &account).ok();
-    match kc.and_then(|s| String::from_utf8(s).ok()) {
+    match secret_get(&account) {
         // ponytail: daemon alive but the Keychain secret is stale/missing; automatic reset in FR-49 (Phase 1)
         Some(secret) => match Client::open(s, &secret, on_event.clone()) {
             Err(e) if retry && closing(&e) => {
@@ -96,7 +135,7 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
             }
             r => r.map_err(|e| err(format!("{e}; stop the old daemon with: pkill -f 'gembala daemon'"))),
         },
-        None => Err(err("the daemon is running but its secret isn't in the Keychain; stop it with: pkill -f 'gembala daemon'")),
+        None => Err(err("the daemon is running but its secret isn't in the login store; stop it with: pkill -f 'gembala daemon'")),
     }
 }
 
@@ -107,36 +146,42 @@ pub fn daemon_exe() -> Option<PathBuf> {
     Some(if helper.exists() { helper } else { me.with_file_name("gembala") })
 }
 
-/// FR-20: the daemon is launched by LaunchServices (`open`) as its own background app. Processes launched by the app
-/// (setsid, double-fork, disclaim, even a `launchctl bootstrap` job) land in or are attributed to the app's coalition,
-/// and when the app closes loginwindow stops all of them, pane shells and agents included (tested 2 Nov 2026).
-/// No helper (dev) or `open` failing = a direct child as before, with that limitation.
+/// FR-20: macOS launches the daemon helper through LaunchServices (`open`), because processes started by the app
+/// (setsid, double-fork, disclaim, even a `launchctl bootstrap` job) land in the app's coalition and loginwindow stops
+/// them when the app closes, pane shells and agents included (tested 2 Nov 2026). Linux has no coalition: `setsid` plus a
+/// direct spawn is enough (the app's systemd scope stays alive while the daemon lives). Both hand the secret over
+/// `hand.sock` in the run folder (`0700`), and the UI only accepts it from this install's daemon binary.
 fn spawn_daemon() -> io::Result<String> {
-    let exe = daemon_exe().ok_or_else(|| err("path app tidak terbaca"))?;
-    let helper = exe.ancestors().nth(3).filter(|p| p.extension().is_some_and(|e| e == "app")).map(|p| p.to_path_buf());
-    match helper {
-        Some(app) => spawn_helper(&app, &exe).or_else(|e| {
-            eprintln!("helper daemon: {e}; daemon dijalankan langsung");
-            spawn_child(&exe)
-        }),
-        None => spawn_child(&exe),
-    }
-}
-
-/// Secret through `hand.sock` in the run folder (`0700`): the daemon only writes when the socket owner is this bundle's
-/// `gembala-ui`, and the UI only accepts it from this bundle's daemon binary.
-fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<String> {
     use std::os::unix::fs::DirBuilderExt;
-    use std::time::{Duration, Instant};
+    let exe = daemon_exe().ok_or_else(|| err("path app tidak terbaca"))?;
     let dir = rundir();
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
     let hand = dir.join("hand.sock");
     let _ = std::fs::remove_file(&hand);
     let l = std::os::unix::net::UnixListener::bind(&hand)?;
-    // `open --stderr` overwrites the log: the previous daemon log is kept one generation for diagnosis
-    let _ = std::fs::rename(dir.join("daemon.log"), dir.join("daemon.log.1"));
+    // the previous daemon log is kept one generation for diagnosis
+    let log = dir.join("daemon.log");
+    let _ = std::fs::rename(&log, dir.join("daemon.log.1"));
+    #[cfg(target_os = "macos")]
+    {
+        let helper = exe.ancestors().nth(3).filter(|p| p.extension().is_some_and(|e| e == "app")).map(|p| p.to_path_buf());
+        match helper {
+            Some(app) => spawn_open(&app, &exe, &hand, &log, l).or_else(|e| {
+                eprintln!("helper daemon: {e}; daemon dijalankan langsung");
+                spawn_child(&exe)
+            }),
+            None => spawn_child(&exe),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    accept_hand(&exe, &hand, l, detach(&exe, &hand, &log))
+}
+
+/// macOS: `open -g -n` puts the daemon in its own app instance, never in the UI's coalition.
+#[cfg(target_os = "macos")]
+fn spawn_open(app: &std::path::Path, exe: &std::path::Path, hand: &std::path::Path, log: &std::path::Path, l: std::os::unix::net::UnixListener) -> io::Result<String> {
     let mut c = Command::new("/usr/bin/open");
-    c.args(["-g", "-n", "--stderr"]).arg(dir.join("daemon.log"));
+    c.args(["-g", "-n", "--stderr"]).arg(log);
     // the app environment is passed on as when the daemon was the app's child (panes inherit it)
     for (k, v) in std::env::vars_os() {
         let (Some(k), Some(v)) = (k.to_str(), v.to_str()) else { continue };
@@ -144,11 +189,40 @@ fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<Stri
             c.arg("--env").arg(format!("{k}={v}"));
         }
     }
-    c.arg(app).args(["--args", "daemon", "--secret-sock"]).arg(&hand);
+    c.arg(app).args(["--args", "daemon", "--secret-sock"]).arg(hand);
     let out = c.output()?;
     if !out.status.success() {
         return Err(err(format!("open: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
+    accept_hand(exe, hand, l, Ok(()))
+}
+
+/// Linux: direct spawn in its own session, stderr into the daemon log; the app doesn't wait for it.
+#[cfg(not(target_os = "macos"))]
+fn detach(exe: &std::path::Path, hand: &std::path::Path, log: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let mut c = Command::new(exe);
+    c.args(["daemon", "--secret-sock"]).arg(hand).stdin(Stdio::null()).stdout(Stdio::null());
+    c.stderr(Stdio::from(std::fs::OpenOptions::new().append(true).create(true).open(log)?));
+    unsafe {
+        c.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = c.spawn().map_err(|e| err(format!("jalankan {}: {e}", exe.display())))?;
+    // the daemon lives until it's stopped on purpose; reap it so the app doesn't keep a zombie
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// Secret through `hand.sock`: the daemon only writes when the socket owner is this install's `gembala-ui`, and the UI
+/// only accepts it from this install's daemon binary (`peer_path`).
+fn accept_hand(exe: &std::path::Path, hand: &std::path::Path, l: std::os::unix::net::UnixListener, launched: io::Result<()>) -> io::Result<String> {
+    use std::time::{Duration, Instant};
+    launched?;
     l.set_nonblocking(true)?;
     let deadline = Instant::now() + Duration::from_secs(10);
     let s = loop {
@@ -158,7 +232,7 @@ fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<Stri
             Err(e) => return Err(err(format!("the daemon didn't hand over its secret: {e}"))),
         }
     };
-    let _ = std::fs::remove_file(&hand);
+    let _ = std::fs::remove_file(hand);
     s.set_nonblocking(false)?;
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
     if peer_path(&s) != exe.canonicalize().ok() {
@@ -174,6 +248,7 @@ fn spawn_helper(app: &std::path::Path, exe: &std::path::Path) -> io::Result<Stri
 }
 
 /// Binary path of the process at the other end of the socket.
+#[cfg(target_os = "macos")]
 fn peer_path(s: &UnixStream) -> Option<PathBuf> {
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
@@ -188,8 +263,22 @@ fn peer_path(s: &UnixStream) -> Option<PathBuf> {
     p.canonicalize().ok()
 }
 
-/// Old way: a direct child of the app, secret through descriptor 3.
+/// Linux: `SO_PEERCRED` carries the pid; `/proc/<pid>/exe` its binary.
+#[cfg(target_os = "linux")]
+fn peer_path(s: &UnixStream) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd;
+    let mut c: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    if unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut c).cast(), &mut len) } != 0 {
+        return None;
+    }
+    std::fs::read_link(format!("/proc/{}/exe", c.pid)).ok().and_then(|p| p.canonicalize().ok())
+}
+
+/// Old way (macOS without a helper): a direct child of the app, secret through descriptor 3.
+#[cfg(target_os = "macos")]
 fn spawn_child(exe: &std::path::Path) -> io::Result<String> {
+    use std::os::fd::{FromRawFd, OwnedFd};
     let mut fds = [0; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
         return Err(io::Error::last_os_error());

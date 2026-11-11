@@ -3,6 +3,7 @@
   // recipient policy (SEC-5), mute (SEC-10), shell pane read permission (SEC-21). Every action goes through the UI channel.
   import { call } from "./daemon";
   import { t, tOr } from "./i18n/state.svelte";
+  import { combo } from "./keys.svelte";
 
   type Row = { pane: number; name: string; agent: string; status?: string; policy?: string; readable?: boolean };
   let {
@@ -154,7 +155,7 @@
   <!-- FR-99 P2: "hold every message" lives in the footer, away from Close, and says the agents keep working -->
   <footer>
     <button class="mini" class:on={data?.paused} onclick={() => act("msg.pause", { on: !data?.paused })}>
-      {data?.paused ? t("msg.resumeAll") : t("msg.holdAll")} <span class="k">⌘⇧.</span>
+      {data?.paused ? t("msg.resumeAll") : t("msg.holdAll")} <span class="k">{combo("msg.stop")}</span>
     </button>
     {#if !data?.paused}<small>{t("msg.holdNote")}</small>{/if}
   </footer>

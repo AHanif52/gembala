@@ -2,18 +2,28 @@
 // WKWebView reports only one language (`navigator.languages` = ["en-GB"] on an en-ID, id-ID Mac), so the macOS list
 // comes from `defaults`. Shortcut labels are sent to Settings > Shortcuts and the palette from here: one source.
 
-/// macOS preferred languages, e.g. ["en-ID", "id-ID"]; read once (macOS restarts apps after a language change)
+/// Preferred languages; read once (macOS restarts apps after a language change).
+/// macOS: the system list from `defaults` (`en-ID`, `id-ID`). Linux: `LANGUAGE` (colon separated, the same order the
+/// desktop shows), else `LC_ALL`/`LANG` as in `id_ID.UTF-8`.
 pub fn system_langs() -> Vec<String> {
     static LANGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     LANGS
         .get_or_init(|| {
-            let out = std::process::Command::new("/usr/bin/defaults").args(["read", "-g", "AppleLanguages"]).output();
-            // output is an old-style plist array: `(\n    "en-ID",\n    "id-ID"\n)`
-            out.map(|o| {
-                let text = String::from_utf8_lossy(&o.stdout);
-                text.lines().map(|l| l.trim().trim_end_matches(',').trim_matches('"').to_string()).filter(|l| !l.is_empty() && l != "(" && l != ")").collect()
-            })
-            .unwrap_or_default()
+            #[cfg(target_os = "macos")]
+            {
+                let out = std::process::Command::new("/usr/bin/defaults").args(["read", "-g", "AppleLanguages"]).output();
+                // output is an old-style plist array: `(\n    "en-ID",\n    "id-ID"\n)`
+                out.map(|o| {
+                    let text = String::from_utf8_lossy(&o.stdout);
+                    text.lines().map(|l| l.trim().trim_end_matches(',').trim_matches('"').to_string()).filter(|l| !l.is_empty() && l != "(" && l != ")").collect()
+                })
+                .unwrap_or_default()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let env = std::env::var("LANGUAGE").ok().filter(|v| !v.is_empty()).or_else(|| std::env::var("LC_ALL").ok().filter(|v| !v.is_empty())).or_else(|| std::env::var("LANG").ok().filter(|v| !v.is_empty()));
+                env.map(|v| v.split(':').map(|l| l.split('.').next().unwrap_or_default().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_default()
+            }
         })
         .clone()
 }
@@ -120,7 +130,7 @@ const TEXT: &[(&str, &str, &str)] = &[
     // `[keys]` problems (Settings > Shortcuts)
     ("key.empty", "empty", "kosong"),
     ("key.bad_mod", "unknown modifier in \"{raw}\"", "modifier tidak dikenal di \"{raw}\""),
-    ("key.need_cmd", "\"{raw}\" has to use cmd; other keys belong to the terminal", "\"{raw}\" harus memakai cmd; tombol lain milik terminal"),
+    ("key.need_cmd", "\"{raw}\" has to use the app key ({app}); other keys belong to the terminal", "\"{raw}\" harus memakai tombol aplikasi ({app}); tombol lain milik terminal"),
     ("key.bad_key", "unknown key in \"{raw}\"", "tombol tidak dikenal di \"{raw}\""),
     ("key.bad_action", "keys.\"{raw}\": unknown action \"{action}\"", "keys.\"{raw}\": aksi \"{action}\" tidak dikenal"),
     ("key.clash", "clash: {key} is used by {owner} and {id}; {id} gets no shortcut", "bentrok: {key} dipakai {owner} dan {id}; {id} tanpa pintasan"),

@@ -4,6 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { call } from "./daemon";
   import { t } from "./i18n/state.svelte";
+  import { keyText } from "./keys.svelte";
 
   let {
     draft,
@@ -73,7 +74,7 @@
     // too long for the URL: the log goes first, then the text is cut; the whole report is on the clipboard either way
     if (encodeURIComponent(b).length > URL_BODY_MAX) {
       await invoke("copy_text", { text: body }).catch(() => {});
-      b = [`### What happened\n${strip(text.trim())}`, `### Environment\n${envLines}`, t("rep.cut")].join("\n\n");
+      b = [`### What happened\n${strip(text.trim())}`, `### Environment\n${envLines}`, t("rep.cut", { key: keyText("Cmd+V") })].join("\n\n");
       while (encodeURIComponent(b).length > URL_BODY_MAX) b = b.slice(0, Math.floor(b.length * 0.9));
     }
     await invoke("open_url", { url: url(b) }).catch(() => {});
@@ -103,7 +104,7 @@
   <pre aria-label={t("rep.preview")}>{body}</pre>
   <div class="acts">
     <span class="m grow">{note}</span>
-    <button class="mini" class:pri={suggestShot} onclick={shot} title={t("rep.shotTip")}>{t("rep.shot")}</button>
+    <button class="mini" class:pri={suggestShot} onclick={shot} title={t("rep.shotTip", { key: keyText("Cmd+V") })}>{t("rep.shot")}</button>
     <button class="mini" onclick={onclose}>{t("common.cancel")}</button>
     <button class="mini" onclick={copy}>{t("wel.copy")}</button>
     <button class="mini go" disabled={!title.trim()} onclick={open}>{t("rep.open")} ↗</button>

@@ -11,6 +11,7 @@
   import { lineDiff } from "./diff";
   import type { AiAsk, AiDraft } from "./harness";
   import { errText, loc, t, tn, tOr } from "./i18n/state.svelte";
+  import { combo, isMac, keyText, modLabel, quitKey } from "./keys.svelte";
 
   let {
     cfg,
@@ -708,8 +709,8 @@
         <h4>{t("set.general.quit")}</h4>
         <section>
           <div class="row">
-            <span>{t("set.general.onQuit")}<small>{t("set.general.onQuitSub")}</small></span>
-            <select aria-label={t("set.general.onQuit")} value={ui.on_quit} onchange={(e) => set("on_quit", e.currentTarget.value as Ui["on_quit"])}>
+            <span>{t("set.general.onQuit", { key: quitKey() })}<small>{t("set.general.onQuitSub")}</small></span>
+            <select aria-label={t("set.general.onQuit", { key: quitKey() })} value={ui.on_quit} onchange={(e) => set("on_quit", e.currentTarget.value as Ui["on_quit"])}>
               <option value="keep">{t("set.general.keep")}</option>
               <option value="stop">{t("set.general.stop")}</option>
             </select>
@@ -736,7 +737,7 @@
             </select>
           </div>
           <div class="row">
-            <span>{t("set.look.size")}<small>{t("set.look.sizeSub")}</small></span>
+            <span>{t("set.look.size")}<small>{t("set.look.sizeSub", { in: combo("term.zoom.in"), out: combo("term.zoom.out"), reset: combo("term.zoom.reset") })}</small></span>
             <select aria-label={t("set.look.sizeAria")} value={ui.font_size} onchange={(e) => set("font_size", +e.currentTarget.value)}>
               {#each [10, 11, 12, 13, 14, 15, 16, 18, 20] as n}<option value={n}>{n} px</option>{/each}
             </select>
@@ -1026,7 +1027,7 @@
                 <span class="klabel">{goto ? t("set.keys.goto") : label}</span>
                 {#if keyEdit?.id === id}
                   <!-- svelte-ignore a11y_autofocus -->
-                  <input class="keyin" bind:value={keyEdit.combo} autofocus aria-label={t("set.keys.comboAria", { label })} spellcheck="false" placeholder={t("set.keys.comboPh")}
+                  <input class="keyin" bind:value={keyEdit.combo} autofocus aria-label={t("set.keys.comboAria", { label })} spellcheck="false" placeholder={t("set.keys.comboPh", { example: isMac ? "cmd+shift+d" : "ctrl+shift+d" })}
                     onkeydown={(e) => {
                       if (e.key === "Enter") saveKey(id, keyEdit?.combo ?? "");
                       if (e.key === "Escape") (e.stopPropagation(), (keyEdit = null));
@@ -1036,7 +1037,7 @@
                     {#if custom}<button class="link" title={t("set.keys.defaultTip")} onclick={() => saveKey(id, "")}>{t("set.acc.default.opt")}</button>{/if}
                     {#if !goto}<button class="link" onclick={() => (keyEdit = { id, combo: key.toLowerCase() })}>{t("common.edit")}</button>{/if}
                   </span>
-                  <kbd class:custom>{goto ? "⌘1 … ⌘9" : key ? pretty(key) : "—"}</kbd>
+                  <kbd class:custom>{goto ? `${combo("tab.goto.1")} … ${combo("tab.goto.9")}` : key ? pretty(key) : "—"}</kbd>
                 {/if}
               </div>
             {/each}
@@ -1044,13 +1045,13 @@
         {/each}
         <h4 class="khead">{t("set.keys.other")}</h4>
         <section>
-          <div class="krow"><span class="klabel">{t("set.keys.copyPaste")}</span><kbd>⌘C ⌘V</kbd></div>
-          <div class="krow"><span class="klabel">{t("set.title")}</span><kbd>⌘,</kbd></div>
+          <div class="krow"><span class="klabel">{t("set.keys.copyPaste")}</span><kbd>{keyText("Cmd+C")} {keyText("Cmd+V")}</kbd></div>
+          <div class="krow"><span class="klabel">{t("set.title")}</span><kbd>{keyText("Cmd+,")}</kbd></div>
           <div class="krow"><span class="klabel">{t("set.keys.rest")}</span><span class="m">{t("set.keys.restTo")}</span></div>
         </section>
         <p class="note">
-          {t("set.keys.note1")} <code>cmd</code>. {t("set.keys.note2")}
-          <code>[keys]</code> {t("set.keys.note3")} <code>"cmd+t" = "pane.split.right"</code>{t("set.keys.note4")}
+          {t("set.keys.note1", { mod: modLabel() })}. {t("set.keys.note2")}
+          <code>[keys]</code> {t("set.keys.note3")} <code>"{isMac ? "cmd+t" : "ctrl+shift+t"}" = "pane.split.right"</code>{t("set.keys.note4")}
         </p>
       {:else if sec === "toolbar"}
         <!-- FR-55: drag chips to reorder or switch sides; × removes; available chips can be added back -->

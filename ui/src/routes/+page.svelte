@@ -19,6 +19,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getVersion } from "@tauri-apps/api/app";
   import { activeAddons, pretty, UI_DEFAULT, type Agent, type Config, type Profile } from "$lib/config";
+  import { combo, isMac, keyText, loadCombos, mod } from "$lib/keys.svelte";
   import { homeDir } from "@tauri-apps/api/path";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -603,8 +604,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// FR-101 (5): what the "⋯" of a narrow pane bar offers (the chips the width hid, and the rest)
   function barMenu(pane: number, g: any): MItem[] {
     const m: MItem[] = [[tt("chip.attach"), async () => attach(pane, await invoke<string[]>("pick_files"), true)]];
-    if (g?.repo && g.files) m.push([`${tt("chip.diffTip")} · ${g.files}`, () => openChanges(pane)]);
-    m.push(["Rich Input ⌘G", () => openRich(pane)]);
+    if (g?.repo && g.files) m.push([`${tt("chip.diffTip", { key: combo("pane.diff.toggle") })} · ${g.files}`, () => openChanges(pane)]);
+    m.push([`${tt("toolbar.chip.rich_input")} ${combo("pane.input.rich")}`, () => openRich(pane)]);
     if (meta[pane]?.cwd) m.push([`${tt("chip.copyCwd")} · ${short(meta[pane].cwd)}`, () => copy(meta[pane]?.cwd ?? "")]);
     if (g?.repo && g.branch) m.push([`${tt("chip.branch")} ${g.branch}`, () => copy(g.branch)]);
     m.push([tt("set.title"), () => (settingsOpen = true)]);
@@ -1499,7 +1500,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       const st = tabStatus(o.t);
       const agent = panes(o.t.tree).map(agentOf).find(Boolean) ?? "";
       // one workspace = shortcuts only (Gembala.pen 03); more than one = workspace name too, so twin tabs can be told apart
-      const key = i < 9 ? `⌘${i + 1}` : "";
+      const key = i < 9 ? combo(`tab.goto.${i + 1}`) : "";
       return {
         label: [meta[o.t.focus]?.name ?? "", title(o.t), stText(st)].filter(Boolean).join(" · "),
         hint: wss.length > 1 ? [wss[o.wi].name, key].filter(Boolean).join(" · ") : key,
@@ -1526,7 +1527,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       { label: editorOn ? tt("act.editorOff") : tt("act.editorOn"), hint: "", kind: "action", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
       { label: tt("act.renameTab"), hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
       { label: tt("act.renameWs"), hint: "", kind: "action", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
-      { label: tt("set.title"), hint: "⌘,", kind: "action", go: () => (settingsOpen = true) },
+      { label: tt("set.title"), hint: keyText("Cmd+,"), kind: "action", go: () => (settingsOpen = true) },
       { label: tt("set.diag.whatsNew"), hint: "", kind: "action", go: openWhatsNew },
       // FR-77: Atur pakai AI from the palette (recipe, Gembala settings or agent instructions)
       { label: `${tt("hn.set.aiTitle")}…`, hint: "", kind: "action", go: () => ((aiOpen = ""), (settingsSec = "harness"), (settingsOpen = true)) },
@@ -1925,8 +1926,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       if (e.key === "Escape") quitAsk = 0;
       return stop(e);
     }
-    // WKWebView eats ⌘⇧↩ before the menu gets it
-    if (!confirm && e.metaKey && e.shiftKey && e.key === "Enter") {
+    // WKWebView eats the app key + Shift+Enter before the menu gets it
+    if (!confirm && mod(e) && e.shiftKey && e.key === "Enter") {
       run("pane.zoom.toggle");
       return stop(e);
     }
@@ -2668,7 +2669,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       if (meta[p] && !dead[p]) jumpTo(p);
     });
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
-      if (payload.event === "config.changed") cfg = payload.params;
+      if (payload.event === "config.changed") {
+        cfg = payload.params;
+        loadCombos();
+      }
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status, payload.params.shell, payload.params.reason, payload.params.status_at, payload.params.last);
       // a tab whose xterm is detached has no Tile listening for pane.exit
       if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane);
@@ -2713,6 +2717,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     (async () => {
       try {
         cfg = await call("config.get");
+        loadCombos();
         // FR-59: bahan autocomplete
         homePath = (await homeDir().catch(() => "")).replace(/\/$/, "");
         call("agents.detect", {}).then((a: Agent[]) => (installed = a.filter((x) => x.installed).map((x) => x.agent))).catch(() => {});
@@ -2776,9 +2781,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   {#if c === "attach"}
     <button class="chip box c-attach" title={tt("chip.attachTip")} aria-label={tt("chip.attach")} onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
   {:else if c === "diff" && g?.repo && g.files}
-    <button class="chip box c-diff" title={tt("chip.diffTip")} onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+    <button class="chip box c-diff" title={tt("chip.diffTip", { key: combo("pane.diff.toggle") })} onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
-    <button class="chip box c-rich" onclick={() => openRich(pane)}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
+    <button class="chip box c-rich" onclick={() => openRich(pane)}>{@render icon("rich")}Rich Input <span class="n">{combo("pane.input.rich")}</span></button>
   {:else if c === "cwd"}
     <span class="chip box quiet c-cwd" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{short(meta[pane]?.cwd) || "~"}</span>
   {:else if c === "branch" && g?.repo && g.branch}
@@ -2794,22 +2799,23 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   onsearch={openPalette} ontask={() => (newTask = true)} onbell={() => (bell = !bell)}
   ontelegram={() => ((settingsSec = "telegram"), (settingsOpen = true))} onsettings={() => (settingsOpen = true)} />
 {#if sidebar}
-  <aside class="side" aria-label={tt("menu.tab")} style:width="{sideW}px" style:left="44px" class:dragging={!!dragging} class:full={fullscreen}>
+  <!-- FR-98: the `.full` padding also applies with a native frame (Linux), where there are no macOS window buttons -->
+  <aside class="side" aria-label={tt("menu.tab")} style:width="{sideW}px" style:left="44px" class:dragging={!!dragging} class:full={fullscreen || !isMac}>
     <!-- transparent title bar: window button area + window drag -->
     <div class="drag" data-tauri-drag-region></div>
     <button class="add find" onclick={openPalette}>
       <span class="fl"><svg class="pfind" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>{tt("side.find")}</span>
-      <span class="n">⌘P</span>
+      <span class="n">{combo("tab.search")}</span>
     </button>
     <!-- FR-99 P1: the main door, framed and named after what happens (not a "New task" label that reads like a to-do) -->
-    <button class="add ask" onclick={() => (newTask = true)}><span>+ {tt("hn.newTask")}</span><span class="n">⌘N</span></button>
+    <button class="add ask" onclick={() => (newTask = true)}><span>+ {tt("hn.newTask")}</span><span class="n">{combo("task.new")}</span></button>
     {#if ws && runs[ws.id] && runs[ws.id].state !== "gate"}
       <button class="add" onclick={() => ((drawer = false), (flow = !flow))}>
         {runLive(runs[ws.id]) ? "● " : ""}{runs[ws.id].name} · {tOr(`hn.state.${runs[ws.id].state}`, runs[ws.id].state)}
       </button>
     {/if}
     <!-- FR-44/FR-65/FR-99 P2: the wait strip has its own component; the pane and flow actions stay with this page. -->
-    <NeedStrip rows={needList} {simple} nextKey={pretty("Cmd+Shift+U")} titleOf={needTitle} iconOf={needIcon} dotOf={dotOf}
+    <NeedStrip rows={needList} {simple} nextKey={combo("pane.attention.next")} titleOf={needTitle} iconOf={needIcon} dotOf={dotOf}
       paramsOf={rowParams} subOf={needSub} ageOf={(at) => ago(now - at)} onneed={goNeed} />
     {#each wss as w, wi (w.id)}
       <!-- FR-44: click the title = expand/collapse; rename through right click or the palette -->
@@ -2857,7 +2863,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           </button>
           {#if latestHelper?.parent === t.id && !confirm && !picker && !askMode && !linkAsk}
             <div class="helper-tip" role="status">
-              {helperTip ? tt("helper.tip", { name: title(t), key: "⌘⌥J" }) : tt("helper.ready")}
+              {helperTip ? tt("helper.tip", { name: title(t), key: combo("tab.helper.next") }) : tt("helper.ready")}
               <span class="helper-tip-actions"><button class="mini" onclick={() => { const child = w.tabs.find((x) => x.id === latestHelper?.id); if (child) openTab(wi, child); }}>{tt("helper.view")}</button>{#if helperTip}<button class="mini" onclick={dismissHelperTip}>{tt("helper.gotIt")}</button>{/if}</span>
             </div>
           {/if}
@@ -2871,7 +2877,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {@const sp = row.child ? null : splitRows(panes(t.tree), (p) => !!paneAgent(p), (p) => !!meta[p]?.busy || meta[p]?.status === "blocked")}
         <button class="tab {t.color ?? ''}" class:helper={!!row.child} class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} class:approve={st === "approve"} data-wi={wi} data-ti={ti}
           class:lift={(dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti) || (dragging?.kind === "ws" && dragging.wi === wi)}
-          data-k={t.id} title={row.child ? tt("helper.shortcut") : undefined}
+          data-k={t.id} title={row.child ? tt("helper.shortcut", { next: combo("tab.helper.next"), prev: combo("tab.helper.prev") }) : undefined}
           onpointerdown={(e) => !row.child && startDrag(e, "tab", wi, ti)} oncontextmenu={(e) => tabMenu(e, wi, t)}
           onclick={() => openTab(wi, t)}
           ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
@@ -2882,7 +2888,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
             {#if sp}<span class="tt">{title(t)}</span>{:else}
             <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && !simple && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>{/if}
-            <span class="n"><span class="k">{!row.child && n >= 0 && n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
+            <span class="n"><span class="k">{!row.child && n >= 0 && n < 9 ? combo(`tab.goto.${n + 1}`) : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
             <!-- FR-61: accounts other than Utama show in the tab caption -->
@@ -2990,7 +2996,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   {#if ws && !tab}
     <div class="empty">
       <span>{tt("main.wsEmpty", { name: ws.name })}</span>
-      <button class="mini" onclick={openPicker}>+ Tab <span class="keys">⌘T</span></button>
+      <button class="mini" onclick={openPicker}>+ Tab <span class="keys">{combo("tab.new")}</span></button>
     </div>
   {/if}
   {#if error}<p class="error">{error}</p>{/if}
@@ -3044,10 +3050,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   </button>
                 {/if}
                 {#if !compared}
-                  <button class="hb" title="{tt('drag.right')} ⌘D" aria-label={tt("drag.right")} onclick={() => splitFocused("row")}>◫</button>
-                  <button class="hb" title="{tt('drag.down')} ⌘⇧D" aria-label={tt("drag.down")} onclick={() => splitFocused("col")}>⊟</button>
+                  <button class="hb" title="{tt("drag.right")} {combo("pane.split.right")}" aria-label={tt("drag.right")} onclick={() => splitFocused("row")}>◫</button>
+                  <button class="hb" title="{tt("drag.down")} {combo("pane.split.down")}" aria-label={tt("drag.down")} onclick={() => splitFocused("col")}>⊟</button>
                 {/if}
-                <button class="hb" title="{tt('menu.closePane')} ⌘W" aria-label={tt("menu.closePane")} onclick={() => askClose(pane)}>×</button>
+                <button class="hb" title="{tt("menu.closePane")} {combo("pane.proc.close")}" aria-label={tt("menu.closePane")} onclick={() => askClose(pane)}>×</button>
               </div>
             {/if}
             {@const ed = editorShown(pane)}
@@ -3165,7 +3171,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <div class="editor" class:withbar={bar}>
                 <!-- Warp-style context: folder and branch, replacing the shell prompt -->
                 <div class="ctx">
-                  <button class="cchip" title={tt("ed.attachTip")} aria-label={tt("chip.attach")}
+                  <button class="cchip" title={tt("ed.attachTip", { key: keyText("Cmd+V") })} aria-label={tt("chip.attach")}
                     onclick={async () => insertPaths(pane, await invoke<string[]>("pick_files").catch(() => [] as string[]))}>{@render icon("plus")}</button>
                   <!-- FR-59: klik = pemilih folder ala Warp -->
                   <button class="cchip dir" title="{tt('ed.cdTip')} · {meta[pane]?.cwd ?? ''}" onclick={() => openDirs(pane)}>
@@ -3311,7 +3317,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <!-- pen 04: titled card; attachments as chips, sent as quoted paths after the text -->
               {@const agName = cfg?.values.profiles.find((p) => p.agent === agentOf(pane))?.name}
               <div class="rich" role="dialog" aria-label="Rich Input" tabindex="-1" onkeydown={(e) => e.key === "Escape" && (e.preventDefault(), (rich = null))}>
-                <div class="rhead"><b>Rich Input</b><span class="rto">{tt("rich.to", { name: meta[pane]?.name ?? "" })}{agName ? ` · ${agName}` : ""}</span><span class="n">⌘G</span></div>
+                <div class="rhead"><b>Rich Input</b><span class="rto">{tt("rich.to", { name: meta[pane]?.name ?? "" })}{agName ? ` · ${agName}` : ""}</span><span class="n">{combo("pane.input.rich")}</span></div>
                 <!-- svelte-ignore a11y_autofocus -->
                 <textarea
                   bind:value={rich.text}
@@ -3481,7 +3487,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     </div>
   {/if}
   {#if msgData?.paused}
-    <div class="paused" role="status">{tt("main.paused")}</div>
+    <div class="paused" role="status">{tt("main.paused", { key: combo("msg.stop") })}</div>
   {/if}
   {#if flow && ws && runs[ws.id]}
     <HarnessFlow snap={runs[ws.id]} has={(p: number) => !!meta[p]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onchanges={(p: number) => ((flow = false), showChanges(p))} onclose={() => (flow = false)} />
@@ -3531,10 +3537,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       </div>
       <!-- svelte-ignore a11y_autofocus -->
       <textarea bind:value={compose.body} rows="5" autofocus aria-label={tt("cmp.body")} placeholder={tt("cmp.bodyPh")} spellcheck="false" autocapitalize="off"
-        onkeydown={(e) => e.key === "Enter" && e.metaKey && sendCompose()}></textarea>
+        onkeydown={(e) => e.key === "Enter" && mod(e) && sendCompose()}></textarea>
       <label class="inline"><input type="checkbox" bind:checked={compose.force} /> {tt("cmp.force")}</label>
       {#if compose.error}<span class="err">{errText(compose.error)}</span>{/if}
-      <span class="acts"><button class="mini" onclick={() => (compose = null)}>{tt("common.cancel")}</button> <button class="mini" onclick={sendCompose}>{tt("common.send")} ⌘↩</button></span>
+      <span class="acts"><button class="mini" onclick={() => (compose = null)}>{tt("common.cancel")}</button> <button class="mini" onclick={sendCompose}>{tt("common.send")} {keyText("Cmd+Enter")}</button></span>
     </div>
   {/if}
   {#if changes}
@@ -3594,7 +3600,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           <span class="wrow wdir" title={dir}>{tt("wel.folder", { name: dir.split("/").filter(Boolean).pop() ?? "~" })}<button class="mini" onclick={() => startHere !== null && startInFolder(startHere)}>{tt("hn.pick")}</button></span>
         {/if}
         {#if !simple}
-          <span class="wrow"><kbd class="wkey">⌘P</kbd>{tt("wel.p")}</span>
+          <span class="wrow"><kbd class="wkey">{combo("tab.search")}</kbd>{tt("wel.p")}</span>
           <span class="wrow"><kbd class="wkey">{tt("wel.boxKey")}</kbd>{tt("wel.box")}</span>
           <span class="wrow"><kbd class="wkey">@@</kbd>{tt("wel.at")}</span>
         {/if}
@@ -3755,7 +3761,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       <span class="keys">{tt("pick.hint")}</span>
     </div>
   {/if}
-  {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
+  {#if zoomed}<span class="zoom">{tt("main.zoomed", { key: combo("pane.zoom.toggle") })}</span>{/if}
   <ContextMenu bind:menu />
   <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
 </div>
