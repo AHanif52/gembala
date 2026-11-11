@@ -97,7 +97,11 @@
   const rank = (s?: string) => ["working", "done", "blocked"].indexOf(s ?? "");
   /// status shown: a "done" that's already been seen fades (FR-40)
   const stat = (p: number) => (ack[p] && meta[p]?.status === "done" && !meta[p]?.waitingShell ? "" : (meta[p]?.status ?? ""));
-  const paneStatusText = (p: number) => meta[p]?.waitingShell ? `⌛ ${tt("status.shell")}` : (meta[p]?.reason ? tOr(waitingReasonKey(meta[p].reason) ?? meta[p].reason, meta[p].reason) : stText(stat(p)));
+  // FR-87: a pane that waits on you says the same word as the banner, bell and strip (a shell's password prompt has no reason)
+  const paneStatusText = (p: number) =>
+    meta[p]?.waitingShell ? `⌛ ${tt("status.shell")}`
+    : stat(p) === "blocked" ? kindText(blockedKindOf(p), meta[p]?.reason ? (waitingReasonKey(meta[p].reason) ?? meta[p].reason) : "")
+    : meta[p]?.reason ? tOr(waitingReasonKey(meta[p].reason) ?? meta[p].reason, meta[p].reason) : stText(stat(p));
   const worst = (ps: number[]): string => ps.reduce((a, p) => (rank(stat(p)) > rank(a) ? stat(p) : a), "");
   const tabStatus = (t: Tab) => worst(panes(t.tree));
 
@@ -2220,7 +2224,8 @@
   /// bell line: the kind's word, then the FR-84 reason when it says more ("butuh izin · minta percaya folder")
   const kindText = (kind: NoticeKind, detail = "") => {
     const word = tt(wordKey(kind));
-    const more = detail ? tOr(detail, detail) : "";
+    // the FR-84 reasons that only restate the kind ("minta izin", "nunggu jawaban") add nothing
+    const more = detail && detail !== "reason.permission" && detail !== "reason.input" ? tOr(detail, detail) : "";
     return more && more !== word ? `${word} · ${more}` : word;
   };
   const noteText = (n: Note) => kindText(n.kind, n.detail);
