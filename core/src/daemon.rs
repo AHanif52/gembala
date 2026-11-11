@@ -1770,6 +1770,13 @@ fn model_effort(p: &Value) -> Result<(&str, &str), &'static str> {
 
 /// Decision facts are re-read every time (SEC-28). `counted` = rate already counted on receipt.
 fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_queue: bool, approved: bool, counted: bool) -> msg::Facts<'a> {
+    // SEC-5 exceptions to "confirm" (BRD 11 Nov 2026): the harness to a pane it drives (the recipe was approved, SEC-27),
+    // and an owner to the helper it opened through an approved card (FR-75). Rate, hop, deny and pause still apply.
+    // Read before the engine lock: the registry is never taken while the engine is held.
+    let trusted = *to.helper_of.lock().unwrap() == Some(m.from) || {
+        let reg = st.harness.lock().unwrap();
+        reg.is_sender(m.from) && reg.is_locked(m.to)
+    };
     let mut eng = st.engine.lock().unwrap();
     let typing = to.typed_at.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
     msg::Facts {
@@ -1785,7 +1792,7 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
         hop: m.hop,
         want_queue,
         queue_len: eng.queue_len(m.to),
-        approved,
+        approved: approved || trusted,
     }
 }
 

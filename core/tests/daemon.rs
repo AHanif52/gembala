@@ -1561,6 +1561,33 @@ fn fr75_buka_dan_kirim() {
     ui3.attach_until(t, &["TUGAS-A^M"]);
 }
 
+/// SEC-5 exception: the owner's later messages reach its helper (opened through an approved card) without a card, even when
+/// the helper skips permission prompts (`--yolo` = forced confirm); anyone else sending to that helper still gets the card.
+#[test]
+fn sec5_pemilik_ke_pembantu_tanpa_kartu() {
+    let d = start("sec5");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let toml = sh_profile("nekat", "stty raw -echo; exec perl -e '$|=1; while (sysread(STDIN, $b, 1)) { print $b }' -- --yolo")
+        + &sh_profile("bos", &format!("g='{g}'; sleep 1; $g send nekat TUGAS-A; echo DIMINTA; sleep 7; $g send nekat-1 TUGAS-B; echo SELESAI-B; sleep 30"))
+        + &sh_profile("lain", &format!("sleep 9; '{g}' send nekat-1 DARI-LAIN; echo SELESAI-L; sleep 30"));
+    profiles(&d, &mut ui, &toml, "SELESAI-L");
+    let bos = ui.call("pane.create", json!({"profile": "bos", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    ui.attach_until(bos, &["DIMINTA"]);
+    let open = ui.call("msg.list", json!({}))["result"]["opens"][0]["id"].as_str().unwrap().to_string();
+    let helper = ui.call("pane.create", json!({"profile": "nekat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    assert_eq!(ui.call("open.approve", json!({"id": open, "pane": helper}))["result"]["result"], "queued");
+    let lain = ui.call("pane.create", json!({"profile": "lain", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let mut ui2 = Cli::ui(&d);
+    let out = ui2.attach_until(bos, &["SELESAI-B"]);
+    assert!(!out.contains("needs_confirmation"), "owner to its own helper got a card: {out}");
+    let mut ui3 = Cli::ui(&d);
+    let out = ui3.attach_until(lain, &["SELESAI-L"]);
+    assert!(out.contains("needs_confirmation"), "another sender skipped the card: {out}");
+    let mut ui4 = Cli::ui(&d);
+    ui4.attach_until(helper, &["TUGAS-B"]);
+}
+
 #[test]
 fn fr75_model_effort_diteruskan_ke_launch() {
     use std::os::unix::fs::PermissionsExt;
