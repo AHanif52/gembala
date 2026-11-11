@@ -1148,8 +1148,8 @@ fn fr99_bar_izin_dan_jawaban() {
     let mut idle = Cli::ui(&d);
     let shell = idle.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(idle.call("pane.answer", json!({"pane": shell, "key": "1"}))["result"]["reason"], "gone");
-    assert_eq!(idle.call("pane.answer", json!({"pane": shell, "text": "x"}))["result"]["reason"], "gone");
+    assert_eq!(idle.call("pane.answer", json!({"pane": shell, "key": "1", "seq": 0}))["result"]["reason"], "shell");
+    assert_eq!(idle.call("pane.answer", json!({"pane": shell, "text": "x", "seq": 0}))["result"]["reason"], "shell");
     assert_eq!(idle.call("pane.dialogs", json!({"panes": [shell]}))["result"]["panes"][shell.to_string().as_str()]["waiting"], false);
     // no pane at all: the UI gets an empty map, never an error that breaks the strip
     assert_eq!(idle.call("pane.dialogs", json!({"panes": [9999]}))["result"]["panes"], json!({}));

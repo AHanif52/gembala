@@ -1265,6 +1265,12 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         "pane.answer" => {
             let pane = st.pane(p)?;
             let id = p["pane"].as_u64().unwrap_or_default();
+            if pane.agent_name().is_none() {
+                return Ok(json!({"sent": false, "reason": "shell"}));
+            }
+            if pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master) {
+                return Ok(json!({"sent": false, "reason": "password"}));
+            }
             let status = pane.status.lock().unwrap();
             if *status != "blocked" {
                 return Ok(json!({"sent": false, "reason": "gone"}));
