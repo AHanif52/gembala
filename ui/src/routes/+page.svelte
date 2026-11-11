@@ -3759,6 +3759,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   <ContextMenu bind:menu />
   <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
 </div>
+{#if __GEMBALA_DEBUG__}<span class="devtag" title={__GEMBALA_DEBUG__}>{__GEMBALA_DEBUG__}</span>{/if}
 <!-- outside .grid: a fixed .grid is its own stacking layer, so inside it Settings (z-index 10) lost to the sidebar grip (4) and the rail (6) -->
 {#if settingsOpen && cfg}
   <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
@@ -4914,6 +4915,20 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   .sbtn:hover {
     border-color: var(--muted);
+  }
+  /* a debug/dev build says so in the window strip (top centre, above everything, never in the way of a click) */
+  .devtag {
+    position: fixed;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 70;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: #d97706;
+    color: #fff;
+    font: 600 11px system-ui, -apple-system, sans-serif;
+    pointer-events: none;
   }
   .toast {
     position: absolute;

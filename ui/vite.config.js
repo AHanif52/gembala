@@ -2,11 +2,23 @@ import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+// @ts-expect-error type error without @types/node package
+import { execSync } from "node:child_process";
 const host = process.env.TAURI_DEV_HOST;
+// GESEKAN 11 Nov ("itu debug mode bukan?"): a debug or dev build names itself and its branch in the window; release = ""
+const debugBranch = () => {
+  try {
+    return execSync("git rev-parse --abbrev-ref HEAD").toString().trim();
+  } catch {
+    return "?";
+  }
+};
+const debugTag = process.env.TAURI_ENV_DEBUG === "true" ? `debug · ${debugBranch()}` : "";
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [sveltekit()],
+  define: { __GEMBALA_DEBUG__: JSON.stringify(debugTag) },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
