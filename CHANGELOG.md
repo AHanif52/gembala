@@ -15,6 +15,7 @@
 - A tab split by hand lists each of its agents as its own row in the sidebar.
 - After an upgrade, a "What's new" card shows this list once (and names releases you skipped); Esc or a click outside closes it.
 - Panes no longer inherit `NO_COLOR` from the agent that started the daemon.
+- A pane whose agent exited is a plain shell again: `gembala send` to it is refused instead of typing the message into zsh, and `gembala status` no longer lists it until an agent runs there again.
 - Notifications say who needs you and why: the pane and its agent, what it waits for (a permission, an answer, a password, your OK, or a failure) or that it finished, and what to do next. One banner per pane; a banner goes away once you answer, and panes that finish together share one. Each kind has its own switch in Settings › General › Notifications.
 - Report a problem (⌘P › Report a problem): Gembala fills in the versions, you check the text, and it opens a new GitHub issue in your browser. Nothing is sent until you press Submit there. Agents can draft one with `gembala report`.
 - How much allowance is left per agent login (Claude, Codex, Oh My Pi, Gemini) shows in a rail beside the panes.
@@ -43,6 +44,7 @@
 - Tab yang lu belah sendiri nampilin tiap agent di dalamnya sebagai baris sendiri di sidebar.
 - Habis upgrade, kartu "Yang baru" nampilin daftar ini sekali (plus nyebut rilis yang kelewat); Esc atau klik di luar kartu buat nutup.
 - Pane nggak lagi ikut kebawa `NO_COLOR` dari agent yang nyalain daemon.
+- Pane yang agent-nya udah keluar balik jadi shell biasa: `gembala send` ke situ ditolak, nggak lagi ngetik pesannya ke zsh, dan `gembala status` nggak nampilin pane itu sampai ada agent jalan lagi di sana.
 - Notifikasi sekarang bilang siapa yang butuh lu dan kenapa: pane dan agent-nya, apa yang ditunggu (izin, jawaban, password, persetujuan lu, atau kegagalan), atau bahwa tugasnya selesai, plus apa yang perlu lu lakukan. Satu banner per pane; banner hilang setelah lu menjawab, dan pane yang selesai barengan berbagi satu banner. Tiap jenis punya saklar sendiri di Pengaturan › Umum › Notifikasi.
 - Laporkan masalah (⌘P › Laporkan masalah): Gembala isi versi buat lu, lu cek teksnya, lalu Gembala buka issue GitHub baru di browser. Belum ada yang dikirim sampai lu menekan Submit di sana. Agent juga bisa nyiapin laporan lewat `gembala report`.
 - Sisa jatah per login agent (Claude, Codex, Oh My Pi, Gemini) sekarang tampil di sisi pane.
