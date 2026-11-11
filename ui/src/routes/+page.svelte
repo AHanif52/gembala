@@ -250,14 +250,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     return s === "done" ? tt("status.done") : paneStatusText(p) || tt("status.idle");
   };
   const helperRows = (w: Ws) => subtabRows(w.tabs, helperQuiet, (t) => meta[t.focus]?.status === "blocked", tab?.id);
-  // saves RAM/CPU: xterm only for the active tab + the last 3 opened; other tabs are detached (the daemon keeps the panes),
-  // reopening = re-attach from the daemon snapshot
-  const LIVE_TABS = 4;
-  let liveTabs = $state<string[]>([]);
-  $effect(() => {
-    const id = tab?.id;
-    if (id) liveTabs = [id, ...untrack(() => liveTabs).filter((x) => x !== id)].slice(0, LIVE_TABS);
-  });
+  // FR-101 (4): only tabs on screen hold an xterm; every other tab is detached (the daemon keeps its panes and history),
+  // so opening a tab re-attaches it from the daemon snapshot — scroll position and selection start fresh (TECH 24).
   // Phase 2: message drawer, manual send, message engine data from the daemon
   let drawer = $state(false);
   // FR-16, FR-26, FR-73: harness. `runs` = latest run per workspace id (the daemon pushes harness.state)
@@ -3112,7 +3106,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 </div>
               {/if}
               <div class="tslot" class:withpbar={barShown(pane)}>
-              {#if t.parent ? active : liveTabs.includes(t.id) || compared}
+              {#if active}
               <Tile bind:this={tiles[pane]} {pane} codexPane={agentOf(pane) === "codex"} focused={at.ws === wi && at.tab === ti && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
