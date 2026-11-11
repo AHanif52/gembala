@@ -408,8 +408,23 @@ fn blocked_keys(agent: &str, screen: &str, reason: &str, id_l: bool) -> Vec<(&'s
         Vec::new()
     } else if agent == "claude" || agent == "codex" {
         claude_keys(agent, screen, id_l)
-    } else {
+    } else if known_dialog(agent, screen) {
         keys(agent).iter().map(|k| (*k, button_label(agent, k, id_l))).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// static-key agents still need the recorded prompt on screen; an unrelated blocked screen gets no guessed buttons.
+fn known_dialog(agent: &str, screen: &str) -> bool {
+    let rows: Vec<&str> = screen.lines().map(unbox).collect();
+    match agent {
+        "omp" => rows.iter().any(|r| r.contains("Allow tool:"))
+            && rows.iter().any(|r| r.trim_start_matches(['❯', '›']).trim() == "Approve")
+            && rows.iter().any(|r| r.trim_start_matches(['❯', '›']).trim() == "Deny"),
+        "opencode" => rows.contains(&"△ Permission required")
+            && rows.iter().any(|r| r.contains("Allow once") && r.contains("Allow always") && r.contains("Reject")),
+        _ => false,
     }
 }
 
@@ -682,13 +697,16 @@ fn key_bytes(key: &str) -> &'static [u8] {
 /// bar never has its own parser or bytes): OpenCode "Always" walks the "△ Always allow" confirmation stage and only
 /// confirms it once that title is on screen; Codex and Claude re-read the dialog and refuse a number that is gone or that
 /// switches the permission mode. `false` = nothing was sent.
-pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str) -> bool {
+pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str, seq: u64) -> bool {
     match key {
         // OpenCode "Always": Right+Enter moves once→always and submits it, which opens the "△ Always allow" confirmation
         // stage (no reply is sent yet). The confirming Enter goes out only after that title is actually observed on screen;
         // a dialog that resolved meanwhile, a closed pane, or a timeout sends nothing (retryable: nothing was approved).
         "always" => {
-            if type_into(st, id, p, b"\x1b[C\r").is_err() {
+            if !known_dialog("opencode", &p.view.lock().unwrap().0.text()) {
+                return false;
+            }
+            if type_into_blocked(st, id, p, seq, b"\x1b[C\r").is_err() {
                 return false;
             }
             let mut confirmed = false;
@@ -713,7 +731,7 @@ pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str) -> bool {
                 true
             } else if confirmed {
                 match st.panes.lock().unwrap().get(&id).cloned() {
-                    Some(q) if *q.status.lock().unwrap() == "blocked" => type_into(st, id, &q, b"\r").is_ok(),
+                    Some(q) => type_into_blocked(st, id, &q, seq, b"\r").is_ok(),
                     _ => false,
                 }
             } else {
@@ -722,15 +740,19 @@ pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str) -> bool {
         }
         k if k != "esc" && p.agent_name().as_deref() == Some("codex") => {
             let screen = p.view.lock().unwrap().0.text();
-            k.parse().ok().and_then(|n| codex_key(&screen, n)).is_some_and(|bytes| type_into(st, id, p, &bytes).is_ok())
+            k.parse().ok().and_then(|n| codex_key(&screen, n)).is_some_and(|bytes| type_into_blocked(st, id, p, seq, &bytes).is_ok())
         }
         // Claude digit: re-read the dialog now; the option must still be there and not switch the permission mode
         k if k != "esc" && p.agent_name().as_deref() == Some("claude") => {
             let screen = p.view.lock().unwrap().0.text();
-            k.parse().is_ok_and(|n| digit_ok(&screen, n)) && type_into(st, id, p, key_bytes(k)).is_ok()
+            k.parse().is_ok_and(|n| digit_ok(&screen, n)) && type_into_blocked(st, id, p, seq, key_bytes(k)).is_ok()
         }
         // every other key needs a dialog this build recognizes; an unknown agent has no key at all (keys() is empty)
-        k => keys(&p.agent_name().unwrap_or_default()).contains(&k) && type_into(st, id, p, key_bytes(k)).is_ok(),
+        k => {
+            let agent = p.agent_name().unwrap_or_default();
+            let screen = p.view.lock().unwrap().0.text();
+            keys(&agent).contains(&k) && known_dialog(&agent, &screen) && type_into_blocked(st, id, p, seq, key_bytes(k)).is_ok()
+        }
     }
 }
 
@@ -2032,7 +2054,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             });
             let pane = pane.filter(|_| ok);
             let sent = match pane.as_ref() {
-                Some(p) => send_answer(st, id, p, &key),
+                Some(p) => send_answer(st, id, p, &key, seq),
                 None => false,
             };
             let word = if sent { t(id_l, "sent") } else { t(id_l, "gone") };
@@ -2701,6 +2723,13 @@ mod tests {
         let en = dialog_view("claude", &bash, "", false);
         assert_eq!(en["options"][0]["label"], "1. Allow");
         assert_eq!(en["ask"], v["ask"]);
+        // static-key dialogs also require the recorded screen shape; another blocked screen cannot inherit their buttons
+        let omp = dlg("omp-18.18.3-bash-once.dialog");
+        assert_eq!(dialog_view("omp", &omp, "", true)["options"].as_array().unwrap().len(), 2);
+        assert_eq!(dialog_view("omp", "waiting for input", "", true)["options"].as_array().unwrap().len(), 0);
+        let opencode = dlg("opencode-1.19.5-outside-once.dialog");
+        assert_eq!(dialog_view("opencode", &opencode, "", true)["options"].as_array().unwrap().len(), 3);
+        assert_eq!(dialog_view("opencode", "waiting for input", "", true)["options"].as_array().unwrap().len(), 0);
         // trust: no buttons even with a numbered list on screen
         let trust = " Quick safety check: Is this a project you trust?\n ❯ 1. No, exit\n  2. Yes, I trust this folder\n Esc to cancel";
         assert_eq!(dialog_view("claude", trust, claude::TRUST, true)["options"].as_array().unwrap().len(), 0);

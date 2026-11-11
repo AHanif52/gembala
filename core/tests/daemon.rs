@@ -1135,10 +1135,13 @@ fn fr99_bar_izin_dan_jawaban() {
     assert_eq!(ui.call("pane.answer", json!({"pane": pane, "key": "1", "seq": 987654}))["result"]["reason"], "changed");
     assert_eq!(ui.call("pane.dialogs", json!({"panes": [pane], "lang": "id"}))["result"]["panes"][key.as_str()]["waiting"], true);
     // a button = the same shortcut the bot sends (`codex_key` read the dialog); the pane echoes it
-    assert_eq!(ui.call("pane.answer", json!({"pane": pane, "key": "1"}))["result"]["sent"], true);
-    // a typed answer is written as if typed (bracketed paste + Enter), and shows up in the pane
-    assert_eq!(ui.call("pane.answer", json!({"pane": pane, "text": "HALO-99"}))["result"]["sent"], true);
-    let out = ui.attach_until(pane, &["HALO-99"]);
+    assert_eq!(ui.call("pane.answer", json!({"pane": pane, "key": "1", "seq": r["seq"]}))["result"]["sent"], true);
+    // typed answers use the same blocked+sequence guard as buttons
+    let (_d2, mut ui2, pane2) = pane_with_screen("p2-text", "codex", "codex-0.167.0-net-y");
+    wait_blocked(&mut ui2, pane2, "dialog izin Codex");
+    let seq2 = ui2.call("pane.dialogs", json!({"panes": [pane2], "lang": "id"}))["result"]["panes"][pane2.to_string().as_str()]["seq"].clone();
+    assert_eq!(ui2.call("pane.answer", json!({"pane": pane2, "text": "HALO-99", "seq": seq2}))["result"]["sent"], true);
+    let out = ui2.attach_until(pane2, &["HALO-99"]);
     assert!(out.contains("HALO-99"), "{out}");
     // a pane that isn't blocked answers nothing (the bar is gone by then); no key or text is written
     let d = start("p2-gone");

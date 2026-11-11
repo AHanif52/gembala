@@ -1234,7 +1234,10 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             let mut out = serde_json::Map::new();
             for id in p["panes"].as_array().into_iter().flatten().filter_map(Value::as_u64) {
                 let Some(pane) = st.panes.lock().unwrap().get(&id).cloned() else { continue };
-                let blocked = *pane.status.lock().unwrap() == "blocked";
+                let (blocked, seq) = {
+                    let status = pane.status.lock().unwrap();
+                    (*status == "blocked", pane.status_seq.load(std::sync::atomic::Ordering::Relaxed))
+                };
                 let mut v = if blocked {
                     let agent = pane.agent_name().unwrap_or_default();
                     let reason = pane.claude.lock().unwrap().reason.clone();
@@ -1245,10 +1248,13 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 };
                 // same termios signal as the FR-80 sender refusal: a plain shell waiting for a password
                 let password = blocked && pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master);
-                v["waiting"] = json!(blocked);
+                let status = pane.status.lock().unwrap();
+                let waiting = blocked && *status == "blocked" && seq == pane.status_seq.load(std::sync::atomic::Ordering::Relaxed);
+                if blocked && !waiting { v["options"] = json!([]); }
+                v["waiting"] = json!(waiting);
                 v["password"] = json!(password);
                 // SEC-28: the dialog's generation, given back with the answer; a different one means another question is up
-                v["seq"] = json!(pane.status_seq.load(std::sync::atomic::Ordering::Relaxed));
+                v["seq"] = json!(seq);
                 out.insert(id.to_string(), v);
             }
             Ok(json!({"panes": Value::Object(out)}))
@@ -1258,25 +1264,29 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         "pane.answer" => {
             let pane = st.pane(p)?;
             let id = p["pane"].as_u64().unwrap_or_default();
-            if *pane.status.lock().unwrap() != "blocked" {
+            let status = pane.status.lock().unwrap();
+            if *status != "blocked" {
                 return Ok(json!({"sent": false, "reason": "gone"}));
             }
+            let Some(seq) = p["seq"].as_u64() else { return Err("bad_params") };
             // SEC-28: the bar answers the dialog it read. A different generation = another question came up meanwhile.
-            if let Some(seq) = p["seq"].as_u64()
-                && seq != pane.status_seq.load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if seq != pane.status_seq.load(std::sync::atomic::Ordering::Relaxed) {
                 return Ok(json!({"sent": false, "reason": "changed"}));
             }
+            drop(status);
             if let Some(text) = p["text"].as_str() {
                 let body = msg::sanitize(text)?;
                 if body.trim().is_empty() {
                     return Err("bad_params");
                 }
-                type_into(st, id, &pane, &msg::paste(body.trim()))?;
-                return Ok(json!({"sent": true}));
+                return match type_into_blocked(st, id, &pane, seq, &msg::paste(body.trim())) {
+                    Ok(()) => Ok(json!({"sent": true})),
+                    Err("changed") => Ok(json!({"sent": false, "reason": "changed"})),
+                    Err(e) => Err(e),
+                };
             }
             let key = p["key"].as_str().ok_or("bad_params")?;
-            let sent = telegram::send_answer(st, id, &pane, key);
+            let sent = telegram::send_answer(st, id, &pane, key, seq);
             Ok(json!({"sent": sent, "reason": if sent { Value::Null } else { json!("gone") }}))
         }
         "pane.info" => {
@@ -2302,7 +2312,10 @@ fn screen_watch(st: Arc<State>) {
             let startup = pane.started.elapsed() < std::time::Duration::from_secs(3)
                 || pane.trust_off.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10));
             if next != cur && (!startup || next == "blocked") {
-                *pane.status.lock().unwrap() = next;
+                let mut status = pane.status.lock().unwrap();
+                *status = next;
+                pane.status_seq.fetch_add(1, Ordering::Relaxed);
+                drop(status);
                 *pane.status_at.lock().unwrap() = std::time::Instant::now();
                 status_changed(&st, id, &pane, next);
             }
@@ -2331,7 +2344,10 @@ fn trust_watch(st: &State, id: u64, pane: &Pane, on: bool) -> bool {
     let cur = *pane.status.lock().unwrap();
     if let Some(next) = trust_next(on, was, cur) {
         pane.claude.lock().unwrap().reason = if on { claude::TRUST.into() } else { String::new() };
-        *pane.status.lock().unwrap() = next;
+        let mut status = pane.status.lock().unwrap();
+        *status = next;
+        pane.status_seq.fetch_add(1, Ordering::Relaxed);
+        drop(status);
         *pane.status_at.lock().unwrap() = std::time::Instant::now();
         status_changed(st, id, pane, next);
     }
@@ -2346,6 +2362,19 @@ fn type_into(st: &State, id: u64, pane: &Pane, data: &[u8]) -> Result<(), &'stat
     Ok(())
 }
 
+/// SEC-28: serialize the final status/generation check with the PTY write so a stale bar or Telegram button writes no byte.
+fn type_into_blocked(st: &State, id: u64, pane: &Pane, seq: u64, data: &[u8]) -> Result<(), &'static str> {
+    let status = pane.status.lock().unwrap();
+    if *status != "blocked" || pane.status_seq.load(Ordering::Relaxed) != seq {
+        return Err("changed");
+    }
+    (&pane.master).write_all(data).map_err(|_| "io")?;
+    drop(status);
+    *pane.typed_at.lock().unwrap() = Some(std::time::Instant::now());
+    set_status(st, id, pane, "idle", Some("done"));
+    Ok(())
+}
+
 /// Change a pane's status and tell every UI (`pane.status`). `only_from` = change only when the current status is that.
 fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from: Option<&str>) {
     let mut cur = pane.status.lock().unwrap();
@@ -2353,6 +2382,7 @@ fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from:
         return;
     }
     let prev = std::mem::replace(&mut *cur, status);
+    pane.status_seq.fetch_add(1, Ordering::Relaxed);
     drop(cur);
     *pane.status_at.lock().unwrap() = std::time::Instant::now();
     turn_edge(pane, prev, status);
@@ -2390,7 +2420,6 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
 
 /// Tell the UI and pane channel subscribers (FR-8). A subscriber only gets panes it may read (SEC-21).
 fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
-    pane.status_seq.fetch_add(1, Ordering::Relaxed);
     telegram::on_status(st, id, pane, status);
     let cache = pane.claude.lock().unwrap();
     let (shell, reason) = (cache.shell, cache.reason.clone());
