@@ -38,8 +38,9 @@ pub fn peer_ok(s: &UnixStream, requirement: &str) -> bool {
 }
 
 /// Linux has no code identity here either, and a binary path proves nothing (`setsid env LD_PRELOAD=… /usr/bin/gembala-ui`
-/// matches it): the UI channel is an abstract socket behind a Landlock scope, the secret stays the fallback
-/// (TECH 21.8). Other systems: secret only.
+/// matches it): the secret is the proof on both of its UI-channel paths — the abstract socket, which a pane's Landlock
+/// domain can't cross, and the path socket on a kernel without that scope — plus `ipc::peer_tainted` (TECH 21.8).
+/// Other systems: secret only.
 #[cfg(not(target_os = "macos"))]
 pub fn ui_requirement() -> Option<String> {
     None
