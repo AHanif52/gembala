@@ -488,6 +488,19 @@ fn wait_info(ui: &mut Cli, pane: u64, busy: bool, within: Duration) -> Value {
     }
 }
 
+/// Waits until the pane's foreground process is `name`. A bash pane can still be starting (its rc files run in a child
+/// `bash`), so the first busy reading after typing a command isn't that command yet.
+fn wait_name(ui: &mut Cli, pane: u64, name: &str, within: Duration) -> Value {
+    let t0 = Instant::now();
+    loop {
+        let r = ui.call("pane.info", json!({"pane": pane}))["result"].clone();
+        if r["name"] == name || t0.elapsed() > within {
+            return r;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// FR-38 process name for the close confirmation; FR-50 stop: TERM first, KILL after 3 seconds, shell stays.
 #[test]
 fn info_dan_hentikan_proses() {
@@ -499,15 +512,7 @@ fn info_dan_hentikan_proses() {
     assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], false);
 
     w(&mut ui, "sleep 60\r");
-    // a bash pane can still be starting (its rc files run in a child `bash`): the first busy reading isn't the command yet
-    let t0 = Instant::now();
-    let r = loop {
-        let r = wait_info(&mut ui, pane, true, Duration::from_secs(5));
-        if r["name"] == "sleep" || t0.elapsed() > Duration::from_secs(5) {
-            break r;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    let r = wait_name(&mut ui, pane, "sleep", Duration::from_secs(5));
     assert_eq!(r["name"], "sleep", "{r}");
     assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], true);
     // under 3 s = TERM did it, not the KILL that follows at 3 s; 2 s was too tight on a loaded machine
@@ -1186,8 +1191,8 @@ fn deteksi_menunggu_password() {
     w(&mut ui, "sleep 30\r");
     // a loaded runner can take >5 s to start the login shell; without the check the kill misses `sleep 30` and the next
     // line waits behind it
-    let r = wait_info(&mut ui, pane, true, Duration::from_secs(20));
-    assert_eq!((&r["busy"], &r["password"]), (&json!(true), &json!(false)), "{r}");
+    let r = wait_name(&mut ui, pane, "sleep", Duration::from_secs(20));
+    assert_eq!((&r["name"], &r["busy"], &r["password"]), (&json!("sleep"), &json!(true), &json!(false)), "{r}");
     ui.call("pane.kill", json!({"pane": pane}));
     let r = wait_info(&mut ui, pane, false, Duration::from_secs(10));
     assert_eq!(r["busy"], false, "{r}");
