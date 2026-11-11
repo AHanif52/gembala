@@ -2844,10 +2844,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           <span class="chev" aria-hidden="true">{w.collapsed ? "▸" : "▾"}</span>
           <span class="wsname" title={w.name}>{w.name}</span>
           {#if w.collapsed}
-            <!-- FR-44: collapsed still shows the tab count and the most severe status; FR-99 P2: and how many wait inside -->
+            <!-- FR-44: collapsed still shows the tab count and the most severe status; FR-99 P2: while something waits, the
+                 count of what waits takes that place (a collapsed row has no room for both, mockup section 1) -->
             {@const st = worst(w.tabs.flatMap((t) => panes(t.tree)))}
             {@const need = needCountIn(wi)}
-            <span class="wsum">{#if stText(st)}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{stText(st)}</span>{" · "}{/if}{ttn("side.tabs", w.tabs.length)}{#if need}<span class="needsum"> · {tt("need.inWs", { n: need })}</span>{/if}</span>
+            <span class="wsum">{#if need}{"· "}<span class="needsum">{tt("need.inWs", { n: need })}</span>{:else}{#if stText(st)}<span class="dot {st}" aria-hidden="true"></span><span class="st {st}">{stText(st)}</span>{" · "}{/if}{ttn("side.tabs", w.tabs.length)}{/if}</span>
           {/if}
           <!-- FR-52: new tab in THIS workspace; right click/Option = pick a profile -->
           <button class="wsadd" title={tt("side.newTabTip", { name: w.name })} aria-label={tt("side.newTabAria", { name: w.name })}
