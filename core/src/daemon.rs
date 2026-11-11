@@ -105,6 +105,9 @@ struct Pane {
     /// FR-4: this manual agent sends full hooks (Claude, omp, OpenCode; not Codex, which only has `notify`):
     /// status from hooks only. Without this, Claude's status line redraws read as working then done over and over (notifications pile up)
     hooked: std::sync::atomic::AtomicBool,
+    /// The agent in front has exited (`agent_done`): until one runs again (`agent-start`, a hook, one typed by
+    /// hand), the pane is a plain shell for `agent_name` — send/read/wait reject like a shell pane (11 Nov 2026)
+    exited: std::sync::atomic::AtomicBool,
     /// FR-84: the agent's folder-trust dialog was on screen at the last check (`screen_watch`), and when it went away
     trust: std::sync::atomic::AtomicBool,
     trust_off: Mutex<Option<std::time::Instant>>,
@@ -148,8 +151,12 @@ struct Pane {
 
 impl Pane {
     /// Agent from a profile, or an agent typed by hand in a shell pane (FR-56): shows in `status`, can be messaged
-    /// and read like any other agent. A plain shell pane still falls under SEC-21.
+    /// and read like any other agent. A plain shell pane still falls under SEC-21. None once the agent exited
+    /// (`exited`): the pane is a shell again, so `status` doesn't list it and `send` is rejected (target_unknown).
     fn agent_name(&self) -> Option<String> {
+        if self.exited.load(Ordering::Relaxed) {
+            return None;
+        }
         if self.agent != "shell" {
             return Some(self.agent.clone());
         }
@@ -1534,6 +1541,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         last_out: Mutex::new(std::time::Instant::now()),
         at_prompt: std::sync::atomic::AtomicBool::new(false),
         hooked: std::sync::atomic::AtomicBool::new(false),
+        exited: std::sync::atomic::AtomicBool::new(false),
         trust: std::sync::atomic::AtomicBool::new(false),
         trust_off: Mutex::new(None),
         // FR-68: Codex only has the `notify` hook (done); working and needs-permission come from the screen
@@ -2256,15 +2264,21 @@ fn screen_watch(st: Arc<State>) {
                 *pane.replied_at.lock().unwrap() = None;
                 close_pane(&pane);
             }
-            let fg = (pane.agent == "shell").then(|| pty::busy(&pane.master, pane.sid)).flatten();
+            // an exited pane (profile agent gone) is watched like a shell pane: an agent typed there (Resume,
+            // FR-56's resume command) is detected by hand again; an active manual agent keeps `fg` fresh, so its
+            // exit below is seen from a real empty foreground, not from a pane whose foreground was never read
+            let active = pane.manual.lock().unwrap().is_some();
+            let exited = pane.exited.load(Ordering::Relaxed);
+            let fg = (pane.agent == "shell" || exited || active).then(|| pty::busy(&pane.master, pane.sid)).flatten();
             let found = fg.and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?))).filter(|(_, n)| AGENTS.contains(&n.as_str()));
             // FR-56: manual agent starts = record the session log. Exit is usually handled by `pump` as soon as the shell writes its prompt;
             // this is the fallback when the shell is quiet, the prompt already shown is written again below the block.
-            let active = pane.manual.lock().unwrap().is_some();
             // another process in front while the agent is active = the agent's child (e.g. `brew` from omp): agent hasn't exited
             let manual = found.is_some() || (active && fg.is_some());
             match (active, found, fg) {
                 (false, Some((pid, name)), _) => {
+                    // an agent runs in front again (typed in a shell pane, or Resume in a pane whose agent exited)
+                    pane.exited.store(false, Ordering::Relaxed);
                     let v = pane.view.lock().unwrap();
                     // no C marker (shell without integration): start of the last prompt
                     let pre = pane.pre_cmd.lock().unwrap().take().or(*pane.prompt_at.lock().unwrap());
@@ -2304,17 +2318,19 @@ fn screen_watch(st: Arc<State>) {
                 continue;
             }
             let cur = *pane.status.lock().unwrap();
+            // an exited pane isn't judged from the screen: the relaunched zsh prompt would read as an agent again
+            // (11 Nov 2026: a Codex pane stayed `done`, so `send` was accepted and typed into zsh)
             let next = if manual && pane.hooked.load(Ordering::Relaxed) {
                 // a hook (e.g. SessionStart) can arrive before the agent is recognized: initial status = waiting for a task
                 if !cur.is_empty() {
                     continue;
                 }
                 "idle"
-            } else if pane.screen || manual {
+            } else if (pane.screen || manual) && !pane.exited.load(Ordering::Relaxed) {
                 let tail = pane.view.lock().unwrap().0.tail(12);
                 profile::screen_status(&tail, pane.last_out.lock().unwrap().elapsed(), cur)
-            } else if pane.agent == "shell" {
-                "" // manual agent has exited: the shell pane goes back to untracked
+            } else if pane.agent == "shell" || pane.exited.load(Ordering::Relaxed) {
+                "" // manual agent has exited (or the profile agent left): the pane goes back to untracked
             } else {
                 continue;
             };
@@ -2658,6 +2674,8 @@ fn find_marker(b: &[u8]) -> Option<(usize, usize, &str)> {
 /// FR-56: agent starts = record the session log; agent exits = screen replaced by one summary block, full log kept in RAM.
 fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     if mark == "agent-start" {
+        // the profile agent runs again (a rerun): the pane carries an agent again
+        pane.exited.store(false, Ordering::Relaxed);
         *pane.pre_agent.lock().unwrap() = Some(v.0.mark());
         *pane.agent_log.lock().unwrap() = Some((std::time::Instant::now(), Vec::new()));
         // profile agent runs (again, e.g. "Resume") = ready to take messages
@@ -2734,6 +2752,9 @@ fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8], code: Option<i
 fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_dir: Option<std::path::PathBuf>, code: &str, prompt: &[u8]) {
     // the next agent typed in this pane (e.g. Codex without full hooks) is judged again
     pane.hooked.store(false, Ordering::Relaxed);
+    // the agent is gone: the pane is a plain shell again for status/read/send until an agent runs again
+    // (`agent-start`, a hook, one typed by hand); 11 Nov 2026: a `send` must not type into the relaunched zsh
+    pane.exited.store(true, Ordering::Relaxed);
     *pane.last_preview.lock().unwrap() = None;
     pane.subagents.store(0, Ordering::Relaxed);
     *pane.claude.lock().unwrap() = claude::Cache::default();

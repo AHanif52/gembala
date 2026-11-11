@@ -1621,6 +1621,43 @@ fn fr75_model_effort_diteruskan_ke_launch() {
     let _ = std::fs::remove_dir_all(bin);
 }
 
+/// 11 Nov 2026: a profile agent that has exited is a plain shell again. `send` to the pane is rejected like a shell
+/// pane (target_unknown) and not one byte is typed into zsh, `status` no longer lists the pane as a live agent, and
+/// `send <profile>` asks to open a new pane. An agent typed there afterwards is tracked and messaged again.
+#[test]
+fn agent_profil_keluar_ditolak_lalu_kembali() {
+    let d = start("agent-exit");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    // the built-in codex profile stands in: the "agent" prints one line and exits at once, the pane shell comes back;
+    // the sender retries until the pane takes messages again
+    let kirim = format!(
+        "g='{g}'; sleep 5; echo HASIL:$($g send codex-1 TUGAS-LAMA); echo DAFTAR:$($g status); echo BUKA:$($g send codex TUGAS-BARU); \
+         until r=$($g send codex-1 TUGAS-BARU-LAGI); do sleep 1; done; echo KEMBALI:$r; echo SELESAI-EXIT; sleep 30"
+    );
+    profiles(&d, &mut ui, &(sh_profile("codex", "echo AGENT-JALAN") + &sh_profile("kirim", &kirim)), "SELESAI-EXIT");
+    let k = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let c = ui.call("pane.create", json!({"profile": "codex", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    // the fake agent exits at once; the sender's checks run ~5 s after both panes are up
+    std::thread::sleep(Duration::from_secs(6));
+    // not one byte of the brief reached the pane that went back to zsh (the sender's later accepted send comes after this snapshot)
+    let mut ui2 = Cli::ui(&d);
+    let pane = snapshot(&ui2.call("pane.attach", json!({"pane": c})));
+    let pane = String::from_utf8(B64.decode(pane).unwrap()).unwrap();
+    assert!(pane.contains("codex-1") && !pane.contains("TUGAS-") && !pane.contains("Gembala · from"), "{pane}");
+    // recovery: an agent typed in that pane (a copy of the binary named omp, agents are recognized by process name)
+    // is detected again, so the sender's retry is accepted
+    let omp = d.dir.join("omp");
+    std::fs::copy(env!("CARGO_BIN_EXE_gembala"), &omp).unwrap();
+    std::fs::set_permissions(&omp, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    ui2.call("pane.write", json!({"pane": c, "data": B64.encode(format!("'{}' watch\r", omp.display()))}));
+    let out = ui.attach_until(k, &["SELESAI-EXIT"]);
+    assert!(out.contains("\"result\":\"rejected\"") && out.contains("target_unknown"), "{out}");
+    assert!(out.contains("\"me\":\"kirim-1\"") && out.contains("\"panes\":[]"), "{out}");
+    assert!(out.contains("needs_open"), "{out}");
+    assert!(out.contains("KEMBALI:") && out.contains("\"result\":\"accepted\""), "{out}");
+}
+
 #[test]
 fn fr100_lapor_masalah_cuma_draf() {
     // FR-100, SEC-40: an agent's report waits as a draft for the user (title + text, secrets masked, home = ~); nothing is sent
