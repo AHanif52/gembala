@@ -2513,7 +2513,7 @@
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
             {@const rest = [g?.repo ? (simple ? tt("helper.branch", { name: g.branch }) : g.branch) : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
             {#if row.child || ag || stText(st) || rest}
-              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {helperStatus(p)}"></span>{/each}{/if}{#if row.child || ag || stText(st)}<span class="st {st}">{helperStatus(t.focus)}</span>{/if}{#if st === "blocked"} · {tt("helper.open")}{/if}{#if rest}{row.child || ag || stText(st) || panes(t.tree).length > 1 ? " · " : ""}{rest}{/if}</span>
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {helperStatus(p)}"></span>{/each}{/if}{#if row.child || ag || stText(st)}<span class="st {st}">{helperStatus(t.focus)}</span>{/if}{st === "blocked" ? ` · ${tt("helper.open")}` : ""}{#if rest}{row.child || ag || stText(st) || panes(t.tree).length > 1 ? " · " : ""}{rest}{/if}</span>
             {/if}
             {#if previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
           {/if}
