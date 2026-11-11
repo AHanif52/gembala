@@ -424,6 +424,17 @@
     const sent = await call("msg.send", { to: id, body: task }).then((r) => !r?.error, () => false);
     if (!sent) rich = { pane: id, text: task };
   }
+  /// FR-101 (5): what the "⋯" of a narrow pane bar offers (the chips the width hid, and the rest)
+  function barMenu(pane: number, g: any): MItem[] {
+    const m: MItem[] = [[tt("chip.attach"), async () => attach(pane, await invoke<string[]>("pick_files"), true)]];
+    if (g?.repo && g.files) m.push([`${tt("chip.diffTip")} · ${g.files}`, () => openChanges(pane)]);
+    m.push(["Rich Input ⌘G", () => openRich(pane)]);
+    if (meta[pane]?.cwd) m.push([`${tt("chip.copyCwd")} · ${short(meta[pane].cwd)}`, () => copy(meta[pane]?.cwd ?? "")]);
+    if (g?.repo && g.branch) m.push([`${tt("chip.branch")} ${g.branch}`, () => copy(g.branch)]);
+    m.push([tt("set.title"), () => (settingsOpen = true)]);
+    return m;
+  }
+
   async function startInFolder(pane: number) {
     const path = await invoke<string | null>("pick_folder").catch(() => null);
     if (path) toShell(pane, `cd ${quote(path)}`, true);
@@ -2312,18 +2323,18 @@
 
 {#snippet chip(c: string, pane: number, g: any)}
   {#if c === "attach"}
-    <button class="chip box" title={tt("chip.attachTip")} aria-label={tt("chip.attach")} onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
+    <button class="chip box c-attach" title={tt("chip.attachTip")} aria-label={tt("chip.attach")} onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
   {:else if c === "diff" && g?.repo && g.files}
-    <button class="chip box" title={tt("chip.diffTip")} onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+    <button class="chip box c-diff" title={tt("chip.diffTip")} onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
-    <button class="chip box" onclick={() => openRich(pane)}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
+    <button class="chip box c-rich" onclick={() => openRich(pane)}>{@render icon("rich")}Rich Input <span class="n">⌘G</span></button>
   {:else if c === "cwd"}
-    <span class="chip box quiet" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{short(meta[pane]?.cwd) || "~"}</span>
+    <span class="chip box quiet c-cwd" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{short(meta[pane]?.cwd) || "~"}</span>
   {:else if c === "branch" && g?.repo && g.branch}
     <!-- the branch isn't cut; the folder gives way (TECH 19 #9) -->
-    <span class="chip box">{@render icon("branch")}{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
+    <span class="chip box c-branch">{@render icon("branch")}{g.branch}{g.ahead ? ` ↑${g.ahead}` : ""}{g.behind ? ` ↓${g.behind}` : ""}</span>
   {:else if c === "settings"}
-    <button class="chip box" title={tt("set.title")} aria-label={tt("chip.settingsAria")} onclick={() => (settingsOpen = true)}>{@render icon("sliders")}</button>
+    <button class="chip box c-set" title={tt("set.title")} aria-label={tt("chip.settingsAria")} onclick={() => (settingsOpen = true)}>{@render icon("sliders")}</button>
   {/if}
 {/snippet}
 
@@ -2736,7 +2747,7 @@
                 {:else}
                   <button class="chip pname" title={tt("pane.renameTip")} ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{meta[pane]?.name}</button>
                 {/if}
-                {#if acctOf(pane)}<span class="chip acc" title={tt("pane.accountTip")}>{acctOf(pane)}</span>{/if}
+                {#if acctOf(pane)}<span class="chip acc c-acc" title={tt("pane.accountTip")}>{acctOf(pane)}</span>{/if}
                 {#if meta[pane]?.owner && agentOf(pane) === "claude"}<span class="chip rwarn" title={tt("pane.ownerTip", { name: meta[pane].owner.name })}>{tt("pane.owner", { name: meta[pane].owner.name })}</span>{/if}
                 {#if meta[pane]?.roleWarn}<span class="chip rwarn" title={tt("pane.roleWarnTip")}>{tt("pane.roleWarn")}</span>{/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
@@ -2747,6 +2758,8 @@
                 {/if}
                 <span class="grow"></span>
                 {#each toolbar.right as c}{@render chip(c, pane, g)}{/each}
+                <!-- FR-101 (5): narrow pane = chips give way (CSS container query on .bar); everything stays reachable here -->
+                <button class="chip box c-more" aria-label={tt("chip.more")} onclick={(e) => popup(e, barMenu(pane, g))}>⋯</button>
               </div>
             {/if}
             {#if outputOf === pane}
@@ -4362,6 +4375,48 @@
     padding: 0 8px;
     border-top: 1px solid var(--line);
     font: 12px system-ui, -apple-system, sans-serif;
+    /* FR-101 (5): chips give way by the bar's own width, folder first; the pane name stays and is cut last */
+    container-type: inline-size;
+    overflow: hidden;
+  }
+  .bar .pname {
+    flex-shrink: 0;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bar .chip.box.c-more {
+    display: none;
+  }
+  @container (max-width: 760px) {
+    .bar .chip.box.c-cwd {
+      display: none;
+    }
+    .bar .chip.box.c-more {
+      display: inline-flex;
+    }
+  }
+  @container (max-width: 620px) {
+    .bar .chip.box.c-branch {
+      display: none;
+    }
+  }
+  @container (max-width: 520px) {
+    .bar .chip.box.c-rich,
+    .bar .chip.box.c-set {
+      display: none;
+    }
+  }
+  @container (max-width: 420px) {
+    .bar .chip.box.c-diff {
+      display: none;
+    }
+  }
+  @container (max-width: 330px) {
+    .bar .chip.acc.c-acc,
+    .bar .chip.box.c-attach {
+      display: none;
+    }
   }
   .chip {
     padding: 2px 8px;
