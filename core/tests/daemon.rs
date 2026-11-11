@@ -216,13 +216,12 @@ fn hello_kanal_ui() {
     Cli::ui(&d);
     let mut c = Cli::connect(&d, "ui.sock");
     assert_eq!(c.call("pane.create", json!({}))["error"]["code"], "hello_required");
-    // lapis 1 (abstract socket): the socket is the proof and no secret is involved; lapis 2 checks the secret
-    if ui_addr(&d).is_none() {
-        let mut c = Cli::connect(&d, "ui.sock");
-        assert_eq!(c.call("hello", json!({"proto": 1, "secret": "0".repeat(64)}))["error"]["code"], "unauthorized");
-        let mut c = Cli::connect(&d, "ui.sock");
-        assert_eq!(c.call("hello", json!({"proto": 1}))["error"]["code"], "unauthorized");
-    }
+    // SEC-20: the secret is the proof on both paths (the abstract socket only keeps a pane's agents away, and every
+    // process of this uid can read its name); a signature can stand in for it, which only a macOS app build has
+    let mut c = Cli::connect(&d, "ui.sock");
+    assert_eq!(c.call("hello", json!({"proto": 1, "secret": "0".repeat(64)}))["error"]["code"], "unauthorized");
+    let mut c = Cli::connect(&d, "ui.sock");
+    assert_eq!(c.call("hello", json!({"proto": 1}))["error"]["code"], "unauthorized");
     let mut c = Cli::connect(&d, "ui.sock");
     assert_eq!(c.call("hello", json!({"proto": 99, "secret": d.secret}))["error"]["code"], "version_mismatch");
     // a process outside a pane isn't recognized by the pane channel

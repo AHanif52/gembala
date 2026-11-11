@@ -181,9 +181,6 @@ struct State {
     secret: Option<String>,
     /// SEC-20: UI signature requirement (from the daemon's own certificate); `None` = secret only
     ui_req: Option<String>,
-    /// SEC-20 Linux lapis 1: the UI channel is an abstract socket whose name sits in `ui.addr`; a pane's Landlock
-    /// domain can't reach it, so the secret isn't needed (TECH 21.8)
-    ui_abstract: bool,
     pane_sock: String,
     /// UI channel clients currently connected (FR-20: the daemon stops at 0 when every pane is idle).
     ui_clients: AtomicUsize,
@@ -255,18 +252,14 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
     let pane_path = crate::rundir::socket_path(dir, "pane.sock")?;
     let pn = bind(&pane_path)?;
     // SEC-20 Linux: with a Landlock scope the UI channel moves to an abstract socket (a pane's agents can't reach it);
-    // older kernels keep the path socket + secret + the injection check in `client`
+    // older kernels keep the path socket. Both demand the secret and pass the injection check in `client`.
     let ui_addr = dir.join("ui.addr");
     // `GEMBALA_UI_PATH`: the fallback UI channel on purpose (tests and a user debugging lapis 2); it only takes the
     // secret path, never more access
     let force_path = std::env::var_os("GEMBALA_UI_PATH").is_some_and(|v| !v.is_empty() && v != "0");
     let ui_name = if !force_path && crate::jail::scope_supported() { Some(format!("gembala-ui-{}", &new_secret()?[..16])) } else { None };
-    #[cfg(target_os = "linux")]
-    let ui_abstract = ui_name.is_some();
-    #[cfg(not(target_os = "linux"))]
-    let ui_abstract = false;
     let ui = match &ui_name {
-        // 0600: the name is only a rendezvous, the kernel does the shielding; written before the handover below
+        // 0600: the name is only a rendezvous; the secret and the Landlock domain are what shield the channel (TECH 21.8)
         #[cfg(target_os = "linux")]
         Some(name) => {
             use std::os::unix::fs::OpenOptionsExt;
@@ -280,7 +273,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         }
     };
     #[cfg(target_os = "linux")]
-    if !ui_abstract {
+    if ui_name.is_none() {
         eprintln!("kanal UI: tanpa Landlock scope (kernel < 6.12); lewat socket ber-path + rahasia");
     }
     let st = Arc::new(State {
@@ -288,7 +281,6 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         next: AtomicU64::new(1),
         secret,
         ui_req: crate::sign::ui_requirement(),
-        ui_abstract,
         pane_sock: pane_path.to_string_lossy().into_owned(),
         ui_clients: AtomicUsize::new(0),
         ui_txs: Mutex::default(),
@@ -390,9 +382,11 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         return Ok(());
     }
     let peer = peer_pid(&s)?;
-    // SEC-20: macOS knows the UI from its code signature; Linux lapis 1 from the abstract socket, which only a process
-    // outside a pane's Landlock domain can reach. Lapis 2 (older kernels) keeps the secret and refuses an injected peer.
-    let signed = chan == Chan::Ui && (st.ui_abstract || st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r)));
+    // SEC-20: macOS knows the UI from its code signature. Linux has no code identity (`setsid env LD_PRELOAD=… gembala-ui`
+    // passes any path check), so both laps demand the secret from the keyring; the abstract socket only adds a layer a
+    // pane's Landlock domain can't cross, it is not the proof — any process of this uid can read `ui.addr` or
+    // /proc/net/unix. Lapis 2's injection check applies to both as well.
+    let signed = chan == Chan::Ui && st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r));
     let tainted = chan == Chan::Ui && !signed && crate::ipc::peer_tainted(&s);
     let (tx, rx) = sync_channel::<String>(QUEUE);
     // panes whose output this connection stopped receiving because it fell behind (filled in by `send_all`)

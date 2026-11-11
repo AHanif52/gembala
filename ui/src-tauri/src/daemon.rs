@@ -153,7 +153,8 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
     // a daemon stopping on its own (FR-20: no UI, panes idle) closes the socket in the middle of hello:
     // wait for it to exit, then connect or launch a new daemon
     let closing = |e: &io::Error| matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof);
-    // SEC-20: no secret first (recognized by signature); the Keychain is only a fallback for old/uncertified daemons
+    // SEC-20: no secret first (a macOS app build is recognized by its signature); Linux answers `unauthorized` and the
+    // secret from the login store below follows — it is the proof on both of Linux's paths (TECH 21.8)
     match Client::open(s, "", on_event.clone()) {
         Ok(c) => return Ok(c),
         Err(e) if closing(&e) && retry => {
