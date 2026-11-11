@@ -2327,11 +2327,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// click a strip row: a pane/its card, or the flow view of the run at its gate
   function goNeed(r: NeedRow) {
     if (r.pane != null && meta[r.pane] && !dead[r.pane]) return jumpTo(r.pane);
-    if (r.pane == null) {
-      // the gate row has no pane: open that workspace's flow, where the gate card and its button live
-      at = { ws: r.ws, tab: at.ws === r.ws ? at.tab : 0 };
-      flow = true;
-    }
+    // only a harness row has somewhere else to go; a card whose pane is gone has no jump target
+    if (r.kind !== "gate" && r.kind !== "ship") return;
+    // the gate row has no pane: open that workspace's flow, where the gate card and its button live
+    at = { ws: r.ws, tab: at.ws === r.ws ? at.tab : 0 };
+    flow = true;
   }
   let barError = $state<Record<number, string>>({});
   let answerText = $state<Record<number, string>>({});
