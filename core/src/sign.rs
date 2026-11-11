@@ -37,30 +37,17 @@ pub fn peer_ok(s: &UnixStream, requirement: &str) -> bool {
     SecCode::copy_guest_with_attribues(None, &attrs, Flags::NONE).is_ok_and(|code| code.check_validity(Flags::NONE, &req).is_ok())
 }
 
-#[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
+/// Linux has no code identity here either, and a binary path proves nothing (`setsid env LD_PRELOAD=… /usr/bin/gembala-ui`
+/// matches it): the UI channel is an abstract socket behind a Landlock scope, the secret stays the fallback
+/// (TECH 21.8). Other systems: secret only.
+#[cfg(not(target_os = "macos"))]
 pub fn ui_requirement() -> Option<String> {
-    None // ponytail: other systems still use the secret only
+    None
 }
 
-#[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
+#[cfg(not(target_os = "macos"))]
 pub fn peer_ok(_s: &UnixStream, _requirement: &str) -> bool {
     false
-}
-
-/// Linux has no code signature to check: the UI is recognized by its binary path instead, `gembala-ui` next to this
-/// daemon binary (the bundle's `usr/bin`, a folder only the owner/root can write). The secret stays the fallback, so a
-/// dev build without that binary works as before.
-#[cfg(target_os = "linux")]
-pub fn ui_requirement() -> Option<String> {
-    let me = std::env::current_exe().ok()?.canonicalize().ok()?;
-    Some(me.with_file_name("gembala-ui").to_string_lossy().into_owned())
-}
-
-/// Peer binary from `/proc/<pid>/exe` at connect (the pid comes from `SO_PEERCRED`, immune to PID reuse for this socket).
-#[cfg(target_os = "linux")]
-pub fn peer_ok(s: &UnixStream, requirement: &str) -> bool {
-    let Ok(pid) = crate::ipc::peer_pid(s) else { return false };
-    std::fs::read_link(format!("/proc/{pid}/exe")).ok().is_some_and(|p| p.to_string_lossy() == *requirement)
 }
 
 #[cfg(all(test, target_os = "macos"))]

@@ -440,15 +440,18 @@ autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hoo
 /// wholesale and a login shell would lose the daemon's folder together with `gembala` (FR-9). User files aren't changed.
 fn bash_login(login: &str, extra: &str) -> String {
     format!(
-        "# made by Gembala (FR-58); your login files are read as is, then the daemon's folder comes back\n\
+        "# made by Gembala (FR-58); your login files are read as is, then the PATH the pane was started with comes back\n\
          GEMBALA_BIN={bin}\n\
+         GEMBALA_PANE_PATH=$PATH\n\
          [ -r /etc/profile ] && . /etc/profile\n\
          if [ -r \"$HOME/.bash_profile\" ]; then . \"$HOME/.bash_profile\"\n\
          elif [ -r \"$HOME/.bash_login\" ]; then . \"$HOME/.bash_login\"\n\
          elif [ -r \"$HOME/.profile\" ]; then . \"$HOME/.profile\"\n\
          fi\n\
-         case \":$PATH:\" in *\":$GEMBALA_BIN:\"*) ;; *) PATH=$GEMBALA_BIN:$PATH ;; esac\n\
-         unset GEMBALA_BIN\n\
+         # /etc/profile replaces PATH: login dirs first, then the app's own (the `gembala` folder and agents the app\n\
+         # was started with), the same order a zsh pane ends up with (FR-9, FR-98)\n\
+         PATH=$PATH:$GEMBALA_PANE_PATH\n\
+         unset GEMBALA_PANE_PATH GEMBALA_BIN\n\
          export PATH\n\
          {extra}",
         bin = q(login)
@@ -500,10 +503,11 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     // FR-4, FR-61: typed Claude = same hooks as the profile (status, session id + owning account); the daemon doesn't read its screen
     let start = q(&claude_hooks(exe, false).to_string());
     format!(
-        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
-         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
-         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
-         function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command opencode \"$@\" }}\n\
+        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command gembala jail -- claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
+         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command gembala jail -- omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
+         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command gembala jail -- codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
+         function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command gembala jail -- opencode \"$@\" }}\n\
+         function gemini {{ command gembala jail -- gemini \"$@\" }}\n\
          zmodload -F zsh/stat b:zstat\n\
          __gembala_accounts() {{\n\
            local -A info\n\
@@ -515,6 +519,42 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
          __gembala_accounts\n\
          autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_accounts\n",
         acc = q(&dir.join("accounts.zsh").to_string_lossy())
+    )
+}
+
+/// FR-98: the same typed-agent wrappers for bash panes (Linux's default shell), each starting the agent through
+/// `gembala jail --` (SEC-20). `mapfile` splits the add-ons by line like zsh's `${(f)}`; bash 3.2 has no `mapfile`, so
+/// the add-ons are skipped there (Linux has bash 4+). `gemini` only needs the jail: Gembala has no hook for it.
+fn bash_agents(dir: &std::path::Path, exe: &str) -> String {
+    let f = q(&dir.join("gembala.md").to_string_lossy());
+    let notify = q(&format!("notify={}", json!([exe, "hook", "codex", "notify"])));
+    let oc = q(&dir.join("opencode.json").to_string_lossy());
+    let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
+    let start = q(&claude_hooks(exe, false).to_string());
+    format!(
+        "# FR-9/FR-98: typed agents get the same flags as the profiles; SEC-20 wraps each one in `gembala jail --`\n\
+         __gembala_uuid() {{ cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-Z' 'a-z'; }}\n\
+         function claude {{\n\
+           [ -n \"$CLAUDE_CONFIG_DIR\" ] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null\n\
+           if [ $# -eq 0 ] || [ \"${{1#-}}\" != \"$1\" ]; then\n\
+             local s=() a=()\n\
+             case \" $* \" in *\" -r \"*|*\" -c \"*|*\" --resume \"*|*\" --continue \"*|*\" --session-id \"*|*\" --fork-session \"*) ;; *) s=(--session-id \"$(__gembala_uuid)\");; esac\n\
+             if command -v mapfile >/dev/null; then mapfile -t a < <(command gembala addons claude 2>/dev/null); fi\n\
+             command gembala jail -- claude --append-system-prompt \"$(cat {f})\" --settings {start} \"${{a[@]}}\" \"${{s[@]}}\" \"$@\"\n\
+           else command claude \"$@\"; fi\n\
+         }}\n\
+         function omp {{\n\
+           if [ $# -eq 0 ] || [ \"${{1#-}}\" != \"$1\" ]; then command gembala jail -- omp --approval-mode=yolo {hook} \"--append-system-prompt=$(cat {fo})\" \"$@\"; else command omp \"$@\"; fi\n\
+         }}\n\
+         function codex {{\n\
+           local a=()\n\
+           if command -v mapfile >/dev/null; then mapfile -t a < <(command gembala addons codex 2>/dev/null); fi\n\
+           GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command gembala jail -- codex -c {notify} -c \"$(cat {f}.codex)\" \"${{a[@]}}\" \"$@\"\n\
+         }}\n\
+         function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command gembala jail -- opencode \"$@\"; }}\n\
+         function gemini {{ command gembala jail -- gemini \"$@\"; }}\n\
+         [ -f {acc} ] && . {acc}\n",
+        acc = q(&dir.join("accounts.bash").to_string_lossy())
     )
 }
 
@@ -557,7 +597,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
         (".zshrc", zsh_file(".zshrc", &format!("{ZSH_MARKS}{}", zsh_agents(&h.dir, &h.exe)))),
         (".zlogin", format!("# made by Gembala (FR-58); your .zlogin is read as is, then ZDOTDIR is restored\n{ZSH_RESTORE}")),
         // FR-58: bash (Linux default). The `gembala` folder is the daemon's own binary folder, the one on the pane PATH (FR-9)
-        (".bashrc", bash_login(&bin, BASH_MARKS)),
+        (".bashrc", bash_login(&bin, &format!("{BASH_MARKS}{}", bash_agents(&h.dir, &h.exe)))),
         (".bash_env", bash_login(&bin, "# BASH_ENV runs for a `-c` command (agent launch) too; it must not reach the pane's own scripts\nunset BASH_ENV\n")),
         (
             "opencode.json",
@@ -742,6 +782,12 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
     // FR-66: the Codex sandbox blocks the pane socket; token (name without TOKEN so Codex doesn't drop it) for the spool path
     if p.agent == "codex" {
         s += "export GEMBALA_SPOOL=\"$(gembala token 2>/dev/null)\"; ";
+    }
+    // SEC-20: the agent (never a plain pane shell) runs inside a Landlock domain so its scripts can't reach the UI
+    // channel; on macOS and old kernels `jail` just execs the command (TECH 21.8)
+    if let Some(h) = h {
+        s += &q(&h.exe);
+        s += " jail -- ";
     }
     s += &q(&p.command);
     for a in flags.iter().chain(&p.args) {
@@ -1048,6 +1094,18 @@ mod tests {
         assert_eq!(with["hooks"]["PreToolUse"][1]["hooks"][0]["command"], "'/x/gembala' hook claude tool", "{with}");
         // FR-4: a typed claude carries the same hooks (status from hooks, not the screen)
         assert!(rc.contains(&q(&settings.to_string())), "{rc}");
+        // SEC-20: the agent launch and both wrapper sets run through `gembala jail --`
+        assert!(claude.contains("'/Apps/Gem bala/gembala' jail -- 'claude'"), "{claude}");
+        assert!(rc.contains("command gembala jail -- claude") && rc.contains("command gembala jail -- codex") && rc.contains("command gembala jail -- omp") && rc.contains("command gembala jail -- opencode") && rc.contains("command gembala jail -- gemini"), "{rc}");
+        let bashrc = &files.iter().find(|f| f.0 == ".bashrc").unwrap().1;
+        assert!(bashrc.contains("function claude") && bashrc.contains("command gembala jail -- claude"), "{bashrc}");
+        assert!(bashrc.contains("command gembala jail -- codex") && bashrc.contains("command gembala jail -- gemini"), "{bashrc}");
+        // the bash wrappers must be valid bash
+        let tmp = std::env::temp_dir().join(format!("gembala-bashrc-{}", std::process::id()));
+        std::fs::write(&tmp, bashrc).unwrap();
+        let ok = std::process::Command::new("/bin/bash").arg("-n").arg(&tmp).status().unwrap().success();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(ok, "{bashrc}");
     }
 
     /// FR-58, FR-9: bash has no ZDOTDIR. The hook files read the login files, then put the daemon's folder back, and
@@ -1076,18 +1134,22 @@ mod tests {
         }
         assert!(rc.contains("133;D") && rc.contains("133;C") && rc.contains("133;A") && rc.contains("133;B"), "{rc}");
         assert!(rc.contains("trap '__gembala_preexec' DEBUG") && rc.contains("PROMPT_COMMAND="), "{rc}");
-        // interactive (`--rcfile`): the folder is back after the login file wiped PATH
+        // interactive (`--rcfile`): the folder is back after the login file wiped PATH, and so is the PATH the pane
+        // was started with (an agent the app found through its own PATH must stay reachable in a bash pane)
         let out = std::process::Command::new("/bin/bash")
-            .args(["--rcfile", d.join(".bashrc").to_str().unwrap(), "-i", "-c", "command -v gembala"])
+            .args(["--rcfile", d.join(".bashrc").to_str().unwrap(), "-i", "-c", "case \":$PATH:\" in *\":$GEMBALA_T:\"*) echo ADA ;; esac"])
             .env("HOME", d.join("home"))
+            .env("GEMBALA_T", d.join("bin"))
+            .env("PATH", format!("{}:/usr/bin:/bin", d.join("bin").display()))
             .env_remove("GEMBALA_EDITOR")
             .output()
             .unwrap();
-        assert!(String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == exe.to_string_lossy()), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("ADA"), "{out:?}");
         // `-c` (agent launch): BASH_ENV reads the login files, and it doesn't leak into the pane's own scripts
         let out = std::process::Command::new("/bin/bash")
             .args(["-c", "command -v gembala; echo BASH_ENV=${BASH_ENV:-kosong}"])
             .env("HOME", d.join("home"))
+            .env("PATH", format!("{}:/usr/bin:/bin", d.join("bin").display()))
             .env("BASH_ENV", d.join(".bash_env"))
             .output()
             .unwrap();
@@ -1233,9 +1295,10 @@ mod tests {
             let out = std::process::Command::new("zsh").args(["-f", "-c", &script]).env("PATH", format!("{}:/usr/bin:/bin", dir.display())).output().unwrap();
             String::from_utf8_lossy(&out.stdout).into_owned()
         };
-        let out = run("[ \"$1 $2\" = 'addons claude' ] && printf -- '--plugin-dir\\n/p a/x\\n'");
+        // the wrapper starts the agent through `gembala jail --`; the stub stands in for it (SEC-20)
+        let out = run("[ \"$1\" = jail ] && { shift 2; exec \"$@\"; }; [ \"$1 $2\" = 'addons claude' ] && printf -- '--plugin-dir\\n/p a/x\\n'");
         assert!(out.ends_with("<--plugin-dir></p a/x><--session-id><id><--x>"), "{out}");
-        assert!(run("exit 1").ends_with("}><--session-id><id><--x>"));
+        assert!(run("[ \"$1\" = jail ] && { shift 2; exec \"$@\"; }; exit 1").ends_with("><--session-id><id><--x>"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
