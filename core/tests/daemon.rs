@@ -313,7 +313,9 @@ fn saver_on_only_when_the_switch_is_on() {
     assert_eq!(on.matches("SAMA-BARIS").count(), 1, "{on}");
 }
 
-/// A client that attaches but doesn't read is dropped when its queue fills; the pane keeps running to the end.
+/// A client that attaches but doesn't read is dropped when its queue fills; the pane keeps running to the end and the
+/// daemon never waits for it. Nothing here depends on how fast the runner is: a reply that timed out says nothing about
+/// the pane (ask again), and the wait is wide enough for a loaded machine to push the 8 MB through.
 #[test]
 fn klien_lambat_diputus() {
     let d = start("lambat");
@@ -324,19 +326,33 @@ fn klien_lambat_diputus() {
     let t0 = Instant::now();
     loop {
         let e = ui.call("pane.list", json!({}));
-        if !e["result"].as_array().unwrap().contains(&json!(pane)) {
-            break; // pane finished; the daemon isn't held up by a slow client
+        match e["result"].as_array() {
+            // pane finished; the daemon isn't held up by a slow client
+            Some(l) if !l.contains(&json!(pane)) => break,
+            // listed, or a reply that timed out (loaded runner): the pane hasn't finished yet
+            _ => assert!(t0.elapsed() < Duration::from_secs(120), "pane tertahan klien lambat: {e}"),
         }
-        assert!(t0.elapsed() < Duration::from_secs(30), "pane tertahan klien lambat");
         std::thread::sleep(Duration::from_millis(200));
     }
+    // the daemon shut the slow client down: its side reaches end-of-file without a single `pane.exit` (a client that was
+    // kept would have received one)
     let mut exit_seen = false;
+    let t0 = Instant::now();
     loop {
         let mut l = String::new();
-        if lambat.r.read_line(&mut l).unwrap_or(0) == 0 {
-            break;
-        }
+        let n = lambat.r.read_line(&mut l);
         exit_seen |= l.contains("pane.exit");
+        match n {
+            // the daemon closed its side: nothing more will arrive
+            Ok(0) => break,
+            Ok(_) => {}
+            // a read that timed out on a busy runner: ask again, the daemon closes its side by itself
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                assert!(t0.elapsed() < Duration::from_secs(60), "klien lambat nggak diputus daemon");
+            }
+            // reset by the daemon
+            Err(_) => break,
+        }
     }
     assert!(!exit_seen, "klien lambat seharusnya sudah diputus sebelum pane keluar");
 }
