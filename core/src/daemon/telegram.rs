@@ -1073,6 +1073,7 @@ fn t(id: bool, k: &str) -> &'static str {
         "working" => ("lagi kerja", "working"),
         "idle" => ("nunggu perintah", "idle"),
         "password" => ("minta password", "asks for a password"),
+        "password_hint" => ("Jawab di Mac; password nggak dikirim lewat HP.", "Answer it on the Mac; passwords never go through the phone."),
         "long" => ("selesai", "done"),
         "shell_st" => ("shell", "shell"),
         "linked" => ("Nyambung ke Gembala di", "Connected to Gembala on"),
@@ -1757,13 +1758,15 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<(&'static str, Val
     let mut text = head(&name, &ws, &status);
     let blocked = matches!(kind, Kind::Blocked(_));
     let screen = if blocked { pane.view.lock().unwrap().0.text() } else { String::new() };
-    if blocked {
+    if kind == Kind::Password {
+        text += &format!("\n{}", esc(t(id_l, "password_hint")));
+    } else if blocked {
         // FR-80: what the dialog asks for and why, one line each; the TUI's chrome stays on the Mac (11 Nov the card was
         // a screen dump: stats row, box borders, key hints, and the buttons sat below the fold). SEC-33: a workspace with
         // screen snippets off gets the buttons only.
         let shown = if snippet_on(&v, &[&ws, &ws_id]) { &screen } else { "" };
         text = blocked_text(&name, &ws, &status, &agent, shown, id_l);
-    } else if kind != Kind::Password && snippet_on(&v, &[&ws, &ws_id]) {
+    } else if snippet_on(&v, &[&ws, &ws_id]) {
         if let Some(l) = label(&pane.title.lock().unwrap(), &agent) {
             text += &format!("\n{}", esc(&l));
         }
@@ -2939,6 +2942,17 @@ mod tests {
         assert_eq!(idle_secs("nothing"), None);
         assert!(locked(r#""IOConsoleUsers" = ({"CGSSessionScreenIsLocked"=Yes,"kCGSSessionOnConsoleKey"=Yes})"#));
         assert!(!locked(r#""IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes})"#));
+    }
+
+    #[test]
+    fn password_hint_says_to_answer_on_mac_in_both_languages() {
+        assert_eq!(t(true, "password_hint"), "Jawab di Mac; password nggak dikirim lewat HP.");
+        assert_eq!(t(false, "password_hint"), "Answer it on the Mac; passwords never go through the phone.");
+        for id_l in [true, false] {
+            assert!(!t(id_l, "password").contains('\n'));
+        }
+        assert!(matches!(typed(false, "working", true, "secret"), Err(Why::Shell)));
+        assert!(matches!(typed(true, "working", true, "secret"), Err(Why::Password)));
     }
 
     #[test]
