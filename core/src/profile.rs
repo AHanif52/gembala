@@ -1370,6 +1370,11 @@ claude-baru --resume x
         let cmd = dir.join("omp");
         std::fs::write(&cmd, "#!/bin/sh\nprintf '<%s>' \"$@\"\n").unwrap();
         std::fs::set_permissions(&cmd, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        // the wrapper starts the agent through `gembala jail --` (SEC-20); the jail's own work is the integration test's
+        // job, this stub only passes the agent's arguments on
+        let g = dir.join("gembala");
+        std::fs::write(&g, "#!/bin/sh\n[ \"$1\" = jail ] && shift 2\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&g, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         std::fs::write(dir.join("gembala.md.omp"), "hint").unwrap();
         let script = format!("{}omp --model x", zsh_agents(&dir, "/x/gembala"));
         let out = Command::new("zsh").args(["-f", "-c", &script]).env("PATH", format!("{}:/usr/bin:/bin", dir.display())).output().unwrap();
