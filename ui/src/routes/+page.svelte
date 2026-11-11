@@ -24,7 +24,7 @@
     dividers, neighbor, nudge, panes, place, rects, remove, replace, setRatio, split, swap, valid,
     type Arrow, type Dir, type Divider, type Node,
   } from "$lib/layout";
-  import { safeResume } from "$lib/resume";
+  import { safeResume, suggestion } from "$lib/resume";
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
   import type { UsageRow } from "$lib/usage";
@@ -612,14 +612,7 @@
     const def = wss.find((w) => w.id === wsIdOf(pane))?.accounts?.claude;
     comp = { pane, items, sel: Math.max(0, items.findIndex((it) => it.insert === `claude-${def} `)), auto: true };
   }
-  const ghost = (pane: number) => {
-    const d = draft[pane] ?? "";
-    if (!d || d.includes("\n") || d.startsWith("@")) return "";
-    // the resume command from the finished session card (FR-56) goes first: `claude` → this pane's `claude --resume <id>`
-    const resume = meta[pane]?.ended?.resume;
-    const hit = [...(resume ? [resume] : []), ...[...history].reverse(), ...zhist].find((h) => h.startsWith(d) && h.length > d.length && !h.includes("\n"));
-    return hit ? hit.slice(d.length) : "";
-  };
+  const ghost = (pane: number) => suggestion(draft[pane] ?? "", meta[pane]?.ended?.resume, history, zhist);
   async function complete(pane: number) {
     const text = draft[pane] ?? "";
     const token = /(\S*)$/.exec(text)![1];
