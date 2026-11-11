@@ -9,6 +9,12 @@
 - Agents can request a model and effort when asking you to open a new pane. Choose a listed model or enter an ID in the confirmation card; a setting doesn't change an agent pane that's already open.
 - The Open and send card lists models from the destination agent and login (Codex, Oh My Pi, OpenCode, Gemini). Claude keeps its latest-model aliases; entering a model ID always works, including when the CLI cannot list models.
 - "Needs you" (sidebar): everything that waits for a person in one list, from any agent: a permission, an answer, a password, a folder to trust, a message to approve, an agent to open, or a harness gate. One sentence per row, longest wait on top, grouped by what it blocks; the row takes you to its pane or card. A pane that asks gets a bar above it with the agent's own question and the same buttons as the Telegram card (Claude, Codex, Oh My Pi, OpenCode; an agent whose dialog was never recorded says "Open to answer"). Cards in one pane stack (front card whole, the rest fold with "See"), and the message box is a column that narrows the pane instead of covering the buttons. Settings › General › Notifications turns the bar off; the list, bell and Telegram stay.
+- A tab whose pane waits for your OK (a message, an agent to open, a harness gate) says "waiting for your OK" in the sidebar, and ⌘⇧U cycles to it too.
+- Fewer approval cards: the harness messages its own stage panes, and an agent messages a helper it opened through a card you approved, without asking again.
+- Simple mode names the agent, not shell-N, in the tab, the pane head and the message box.
+- A tab split by hand lists each of its agents as its own row in the sidebar.
+- After an upgrade, a "What's new" card shows this list once (and names releases you skipped); Esc or a click outside closes it.
+- Panes no longer inherit `NO_COLOR` from the agent that started the daemon.
 - Notifications say who needs you and why: the pane and its agent, what it waits for (a permission, an answer, a password, your OK, or a failure) or that it finished, and what to do next. One banner per pane; a banner goes away once you answer, and panes that finish together share one. Each kind has its own switch in Settings › General › Notifications.
 - Report a problem (⌘P › Report a problem): Gembala fills in the versions, you check the text, and it opens a new GitHub issue in your browser. Nothing is sent until you press Submit there. Agents can draft one with `gembala report`.
 - How much allowance is left per agent login (Claude, Codex, Oh My Pi, Gemini) shows in a rail beside the panes.
@@ -30,6 +36,13 @@
 
 - Agent bisa minta model dan effort waktu minta lu buka pane baru. Pilih model dari daftar atau isi ID-nya sendiri di kartu konfirmasi; pane agent yang udah kebuka nggak ikut berubah.
 - Kartu Buka dan kirim sekarang nampilin model dari agent dan login tujuan (Codex, Oh My Pi, OpenCode, Gemini). Claude tetap pakai alias model terbaru; ngetik ID model sendiri selalu bisa, termasuk kalau CLI-nya nggak bisa ngasih daftar.
+- "Butuh lu" (sidebar): semua yang nunggu lu ada di satu daftar, dari agent mana pun: izin, jawaban, password, folder yang perlu dipercaya, pesan yang perlu disetujui, agent yang mau dibuka, atau gerbang harness. Satu kalimat per baris, yang paling lama nunggu di atas, dikelompokkan menurut apa yang ketahan; klik barisnya buat langsung ke pane atau kartunya. Pane yang nanya dapat bar di atasnya, isinya pertanyaan agent itu sendiri dan tombol yang sama dengan kartu Telegram (Claude, Codex, Oh My Pi, OpenCode; agent yang dialognya belum pernah direkam bilang "Buka buat jawab"). Kartu di satu pane ditumpuk (kartu depan utuh, sisanya dilipat dengan "Lihat"), dan kotak pesan jadi kolom yang menyempitkan pane, nggak lagi nutupin tombol. Bar bisa dimatikan di Pengaturan › Umum › Notifikasi; daftar, lonceng, dan Telegram tetap jalan.
+- Tab yang pane-nya nunggu persetujuan lu (pesan, agent yang mau dibuka, gerbang harness) bilang "nunggu lu setujui" di sidebar, dan ⌘⇧U juga lompat ke situ.
+- Kartu persetujuan lebih sedikit: harness kirim pesan ke pane tahapnya sendiri, dan agent kirim pesan ke helper yang dia buka lewat kartu yang udah lu setujui, tanpa nanya lagi.
+- Mode Sederhana nyebut nama agent, bukan shell-N, di tab, kepala pane, dan kotak pesan.
+- Tab yang lu belah sendiri nampilin tiap agent di dalamnya sebagai baris sendiri di sidebar.
+- Habis upgrade, kartu "Yang baru" nampilin daftar ini sekali (plus nyebut rilis yang kelewat); Esc atau klik di luar kartu buat nutup.
+- Pane nggak lagi ikut kebawa `NO_COLOR` dari agent yang nyalain daemon.
 - Notifikasi sekarang bilang siapa yang butuh lu dan kenapa: pane dan agent-nya, apa yang ditunggu (izin, jawaban, password, persetujuan lu, atau kegagalan), atau bahwa tugasnya selesai, plus apa yang perlu lu lakukan. Satu banner per pane; banner hilang setelah lu menjawab, dan pane yang selesai barengan berbagi satu banner. Tiap jenis punya saklar sendiri di Pengaturan › Umum › Notifikasi.
 - Laporkan masalah (⌘P › Laporkan masalah): Gembala isi versi buat lu, lu cek teksnya, lalu Gembala buka issue GitHub baru di browser. Belum ada yang dikirim sampai lu menekan Submit di sana. Agent juga bisa nyiapin laporan lewat `gembala report`.
 - Sisa jatah per login agent (Claude, Codex, Oh My Pi, Gemini) sekarang tampil di sisi pane.
