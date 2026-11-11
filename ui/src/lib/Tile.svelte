@@ -38,7 +38,7 @@
     focused: boolean;
     ui: Ui;
     zoom: number;
-    onexit: (pane: number) => void;
+    onexit: (pane: number, code?: number | null) => void; // code: exit code of the pane process (FR-87: non-zero = failed)
     onlink: (url: string) => void;
     onpasted: (path: string) => void;
     online: (line: string) => void; // FR-57: text typed since the last Enter
@@ -584,7 +584,7 @@
         attached = false;
         replay(e.params).then(() => ((attached = true), early.splice(0).forEach(onEvent)));
       }
-      if (e.event === "pane.exit") onexit(pane);
+      if (e.event === "pane.exit") onexit(pane, e.params?.code);
     };
     const unlisten = listen<any>("daemon", ({ payload }) => {
       if (payload.params?.pane !== pane) return;

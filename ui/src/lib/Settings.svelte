@@ -654,15 +654,43 @@
         <section>
           <div class="row">
             <span>{t("set.general.blocked")}<small>{t("set.general.blockedSub")}</small></span>
-            <input type="checkbox" role="switch" aria-label={t("set.general.blocked")} checked={cfg.values.notify.on_blocked} onchange={(e) => setNotify("on_blocked", e.currentTarget.checked)} />
+            <input type="checkbox" role="switch" aria-label={t("set.general.blocked")} checked={cfg.values.notify.on_blocked !== false} onchange={(e) => setNotify("on_blocked", e.currentTarget.checked)} />
+          </div>
+          <div class="row sub" class:off={cfg.values.notify.on_blocked === false}>
+            <span>{t("set.general.nPermission")}</span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.nPermission")} checked={cfg.values.notify.on_permission !== false} onchange={(e) => setNotify("on_permission", e.currentTarget.checked)} />
+          </div>
+          <div class="row sub" class:off={cfg.values.notify.on_blocked === false}>
+            <span>{t("set.general.nAnswer")}</span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.nAnswer")} checked={cfg.values.notify.on_answer !== false} onchange={(e) => setNotify("on_answer", e.currentTarget.checked)} />
+          </div>
+          <div class="row sub" class:off={cfg.values.notify.on_blocked === false}>
+            <span>{t("set.general.nPassword")}</span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.nPassword")} checked={cfg.values.notify.on_password !== false} onchange={(e) => setNotify("on_password", e.currentTarget.checked)} />
           </div>
           <div class="row">
-            <span>{t("set.general.done")}</span>
-            <input type="checkbox" role="switch" aria-label={t("set.general.doneAria")} checked={cfg.values.notify.on_done} onchange={(e) => setNotify("on_done", e.currentTarget.checked)} />
+            <span>{t("set.general.nApprove")}<small>{t("set.general.nApproveSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.nApprove")} checked={cfg.values.notify.on_approve !== false} onchange={(e) => setNotify("on_approve", e.currentTarget.checked)} />
           </div>
           <div class="row">
-            <span>{t("set.general.sound")}</span>
-            <input type="checkbox" role="switch" aria-label={t("set.general.soundAria")} checked={cfg.values.notify.sound} onchange={(e) => setNotify("sound", e.currentTarget.checked)} />
+            <span>{t("set.general.nFailed")}<small>{t("set.general.nFailedSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.nFailed")} checked={cfg.values.notify.on_failed !== false} onchange={(e) => setNotify("on_failed", e.currentTarget.checked)} />
+          </div>
+          <div class="row">
+            <span>{t("set.general.nLimit")}<small>{t("set.general.nLimitSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.nLimit")} checked={cfg.values.notify.on_limit !== false} onchange={(e) => setNotify("on_limit", e.currentTarget.checked)} />
+          </div>
+          <div class="row">
+            <span>{t("set.general.done")}<small>{t("set.general.doneSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.doneAria")} checked={cfg.values.notify.on_done !== false} onchange={(e) => setNotify("on_done", e.currentTarget.checked)} />
+          </div>
+          <div class="row">
+            <span>{t("set.general.sound")}<small>{t("set.general.soundSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.soundAria")} checked={cfg.values.notify.sound !== false} onchange={(e) => setNotify("sound", e.currentTarget.checked)} />
+          </div>
+          <div class="row">
+            <span>{t("set.general.soundDone")}<small>{t("set.general.soundDoneSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.general.soundDoneAria")} checked={cfg.values.notify.sound_done === true} onchange={(e) => setNotify("sound_done", e.currentTarget.checked)} />
           </div>
           <div class="row">
             <span>{t("set.general.long")}<small>{t("set.general.longSub")}</small></span>
@@ -1585,6 +1613,10 @@
   .row.sub {
     min-height: 32px;
     padding-left: 30px;
+  }
+  /* FR-87: the three "needs you" kinds sit under their parent switch; parent off = they dim */
+  .row.off {
+    opacity: 0.5;
   }
   /* FR-61 (8): account page, three groups */
   .accd {

@@ -272,17 +272,43 @@ fn resolve_paths(paths: Vec<String>) -> Vec<String> {
     canonical(paths.into_iter().map(Into::into))
 }
 
-/// FR-40 macOS banner (T5). Content is only pane name + status (SEC-33): it may show on the lock screen.
+/// FR-40 macOS banner (T5). Title = pane name · agent, body = event · workspace › tab + the action (FR-87, SEC-33): it
+/// may show on the lock screen, so the UI only passes fixed words and names, never output or a task label.
+/// `replace` = titles of banners this one takes the place of, withdrawn first (a title is the pane's, so the old and the
+/// new one can share it: two separate commands could withdraw the new banner too).
 #[tauri::command]
-fn notify_pane(app: tauri::AppHandle, body: String, sound: bool, pane: Option<u64>) {
+fn notify_pane(app: tauri::AppHandle, title: String, body: String, sound: bool, pane: Option<u64>, replace: Option<Vec<String>>) {
     use tauri_plugin_notification::NotificationExt;
-    let body: String = body.chars().filter(|c| !c.is_control()).take(80).collect();
+    let clean = |s: String, n: usize| s.chars().filter(|c| *c == '\n' || !c.is_control()).take(n).collect::<String>();
+    if let Some(old) = replace {
+        withdraw(old);
+    }
     // id = pane: clicking the banner (`on_action` in `run`) moves to that pane
-    let mut n = app.notification().builder().title("Gembala").body(body).id(pane.and_then(|p| i32::try_from(p).ok()).unwrap_or(0));
+    let mut n = app.notification().builder().title(clean(title, 60)).body(clean(body, 120)).id(pane.and_then(|p| i32::try_from(p).ok()).unwrap_or(0));
     if sound {
         n = n.sound("default");
     }
     let _ = n.show();
+}
+
+/// FR-87: take the delivered banners with these titles out of Notification Center (replaced, merged, or answered).
+/// The notification plugin's `remove_active` does nothing on macOS, so this talks to `NSUserNotificationCenter` itself
+/// (the same center the plugin's backend delivers to). Titles are unique per pane (pane names are, FR-79).
+#[tauri::command]
+fn withdraw(titles: Vec<String>) {
+    #[cfg(target_os = "macos")]
+    #[allow(deprecated)] // the plugin's backend is the old center too; both move together
+    {
+        use objc2_foundation::NSUserNotificationCenter;
+        let center = NSUserNotificationCenter::defaultUserNotificationCenter();
+        for n in center.deliveredNotifications().iter() {
+            if n.title().is_some_and(|t| titles.iter().any(|x| *x == t.to_string())) {
+                center.removeDeliveredNotification(&n);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = titles; // Linux: FR-98 follows the plugin's own `remove_active` there
 }
 
 /// FR-60: Gembala-owned processes for Settings > Processes: this UI, its WebKit, the daemon, and all daemon descendants.
@@ -632,7 +658,7 @@ pub fn run() {
                 w.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, reveal_dir, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, shot_window, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list, system_lang])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, reveal_dir, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, withdraw, pick_files, pick_folder, resolve_paths, copy_text, paste_text, shot_window, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list, system_lang])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, ev| {

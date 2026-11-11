@@ -66,7 +66,7 @@ export type Config = {
   values: {
     ui: Ui;
     limits: { max_panes: number };
-    notify: { on_blocked: boolean; on_done: boolean; long_command_secs: number; sound: boolean };
+    notify: { on_blocked: boolean; on_done: boolean; long_command_secs: number; sound: boolean; on_permission?: boolean; on_answer?: boolean; on_password?: boolean; on_limit?: boolean; on_approve?: boolean; on_failed?: boolean; sound_done?: boolean }; // FR-87: per-kind switches; missing (older daemon) = on, sound_done off
     toolbar: { left: string[]; right: string[] };
     telegram?: { away_idle_mins: number; snippet: boolean; snippet_off: string[]; lines: number }; // FR-80
     update?: { check: boolean }; // FR-82

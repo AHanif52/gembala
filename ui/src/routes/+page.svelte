@@ -27,6 +27,7 @@
   import { safeResume, suggestion } from "$lib/resume";
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
+  import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
   import type { UsageRow } from "$lib/usage";
   import { subtabRows } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
@@ -1048,11 +1049,13 @@
     // so it only comes from here when that one is off
     const h = cfg?.values.harness;
     const on = p.notice === "gate" ? h?.notify_gate !== false : p.notice === "blocked" ? h?.notify_blocked !== false && cfg?.values.notify.on_blocked === false : h?.notify_done !== false;
-    if (seen || !on) return;
+    if (!on) return;
     const snap = runs[p.workspace];
     const ps = snap ? stagePanes(snap) : [];
     const pane = (ps.find((x) => x.step === p.step) ?? ps[ps.length - 1])?.pane;
-    invoke("notify_pane", { body: tt(`hn.notify.${p.notice}` as Key, { name: snap?.name ?? "" }), sound: notify.sound, pane }).catch(() => {});
+    // FR-87: gate = "waiting for your OK", halted = "failed"; the harness switches above decide, not [notify]'s
+    const kind: NoticeKind = p.notice === "gate" ? "approve" : p.notice === "blocked" ? "permission" : p.notice === "halted" ? "failed" : "done";
+    notice(pane, kind, { force: true, bell: false, run: snap?.name });
   }
   /// FR-73 manual: one agent pane in the folder, the task as its first prompt. If the agent isn't ready to take it,
   /// the task lands in Rich Input so nothing is lost.
@@ -1095,9 +1098,12 @@
   }
 
   /// Pane exits: gone from its tab; an empty tab closes; a workspace may be empty (FR-44).
-  async function onexit(pane: number) {
+  async function onexit(pane: number, code?: number | null) {
     if (relaunching.has(pane)) return;
+    // FR-87: an agent profile's process ended with an error (a signal gives no code: that's the user closing the pane)
+    if (code && AGENTS.includes(meta[pane]?.agent ?? "")) notice(pane, "failed");
     if (confirm?.pane === pane) confirm = null;
+    withdrawTitles(settle(nst, pane));
     for (const [wi, w] of wss.entries()) {
       const ti = w.tabs.findIndex((t) => panes(t.tree).includes(pane));
       if (ti < 0) continue;
@@ -2121,40 +2127,87 @@
   const toolbar = $derived(cfg?.values.toolbar ?? { left: ["attach", "diff", "rich_input"], right: ["cwd", "branch", "settings"] });
   const notify = $derived(cfg?.values.notify ?? { on_blocked: true, on_done: true, long_command_secs: 30, sound: true });
 
-  /// FR-40: banner + Dock bounce while the window isn't being looked at; content is pane name + status only (SEC-33).
-  /// Clicking a banner = go to that pane (`notify-click` event from the plugin's `on_action`, notification id = pane id);
-  /// normal window focus (Cmd+Tab) doesn't move panes.
-  /// label = alert.* key: the bell renders it in the language of the moment, the banner in the current one
-  function alert(pane: number, kind: "blocked" | "done", label: Key) {
-    const m = meta[pane];
-    if (m) note(pane, kind, kind === "blocked" && m.reason ? waitingReasonKey(m.reason) ?? m.reason : label);
-    if (seen || !m || !(kind === "blocked" ? notify.on_blocked : notify.on_done)) return;
-    if (cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false) return;
-    if (kind === "blocked") invoke("attention").catch(() => {}); // the Dock bounces only when action is needed; done just gets the badge
-    // SEC-33: pane name, tab name (FR-65), status; no screen content
-    // tab title as seen from this pane: the focused pane's label/agent would name another pane's task in a split
-    const t = tabOf(pane);
-    const tb = t && { ...t, focus: pane };
-    const name = m.name || m.profile;
-    // SEC-33: arbitrary waitingFor text stays in-app; banners use only fixed translations.
-    const what = kind === "blocked" && m.reason ? tt(waitingReasonKey(m.reason) ?? "reason.other") : tt(label);
-    invoke("notify_pane", { body: tb ? tt("alert.bodyTab", { name, tab: title(tb), what }) : tt("alert.body", { name, what }), sound: notify.sound, pane }).catch(() => {});
+  /// FR-40 / FR-87 (TECH 27): every notification goes through here. The bell always records; the banner follows the rules
+  /// in lib/notice.ts (one per pane, no repeat inside 60 s, several "done" merged, withdrawn once answered) and only shows
+  /// while the window isn't being looked at. Content is pane name · agent, kind · Workspace › Tab, action: no task label,
+  /// no screen content, no message (SEC-33). Clicking a banner = go to that pane (`notify-click` from the plugin's
+  /// `on_action`, notification id = pane id); normal window focus (Cmd+Tab) doesn't move panes.
+  /// `detail` = FR-84 reason shown only in the app; `force` skips the switches and `bell: false` skips the bell (harness
+  /// banners keep their own switches, FR-74).
+  const nst = newState();
+  function notice(pane: number | undefined, kind: NoticeKind, o: { detail?: string; force?: boolean; bell?: boolean; run?: string } = {}) {
+    const m = pane === undefined ? undefined : meta[pane];
+    if (m && pane !== undefined && o.bell !== false) note(pane, kind, o.detail);
+    if (seen || (!o.force && !enabled(kind, notify))) return;
+    if (m && cfg?.values.profiles.find((p) => p.id === m.profile)?.notify === false && !o.force) return;
+    const t = pane === undefined ? undefined : tabOf(pane);
+    const w = t && wss.find((w) => w.tabs.includes(t));
+    // SEC-33: the tab name only when a person gave it (`t.title`); `title()` falls back to the agent's task label (FR-69)
+    const at = whereOf(w?.name ?? "", t?.title ?? "");
+    const agent = m ? (cfg?.values.profiles.find((p) => p.id === m.profile)?.name ?? m.profile) : "";
+    const title = m ? tt("notice.title", { name: m.name || m.profile, agent }) : (o.run ?? "Gembala");
+    const what = tt(wordKey(kind));
+    const e: NoticeEvent = {
+      pane: pane ?? 0,
+      kind,
+      now: Date.now(),
+      title,
+      body: `${at ? tt("notice.body", { what, where: at }) : what}\n${tt(actKey(kind))}`,
+      sound: soundOn(kind, notify),
+      merged: (n) => ({ title: tt("notice.merged", { n }), body: `${at}${at ? "\n" : ""}${tt("notice.mergedAct")}` }),
+    };
+    const p = plan(nst, e);
+    if (!p.show) return;
+    if (p.show.bounce) invoke("attention").catch(() => {}); // the Dock bounces only when action is needed
+    invoke("notify_pane", { title: p.show.title, body: p.show.body, sound: p.show.sound, pane: p.show.pane || undefined, replace: p.remove }).catch(() => {});
+  }
+  /// FR-87: a card waiting for your OK (kiriman antar agent, Buka dan kirim) or a message that was refused or expired.
+  /// `msg.event` carries pane names, not ids (names are unique, FR-79); a name that matches no pane = no banner.
+  function onMsgEvent(ev: { kind?: string; reason?: string | null; msg?: { from?: string; to?: string } } | undefined) {
+    if (!ev) return;
+    const named = (n?: string) => Object.entries(meta).find(([p, m]) => n && m.name === n && !dead[+p])?.[0];
+    // an open request's card sits in the asking pane (`from`); a held message's card in the receiver (`to`)
+    if (ev.kind === "confirm") return void ((p) => p !== undefined && notice(+p, "approve"))(named(ev.reason === "needs_open" ? ev.msg?.from : ev.msg?.to));
+    if (ev.kind === "rejected" && ev.reason !== "rejected_by_user") ((p) => p !== undefined && notice(+p, "failed"))(named(ev.msg?.from));
+  }
+  const withdrawTitles = (titles: string[]) => titles.length && invoke("withdraw", { titles }).catch(() => {});
+  /// a kind that waits on you is withdrawn once the pane isn't waiting anymore (answered, closed, card gone)
+  function sweep() {
+    for (const [p, s] of [...nst.by]) if (p && !stillWaits(p, s.kind)) withdrawTitles(settle(nst, p));
   }
   // FR-76: bell history; unlike the macOS banner it may carry the task label (FR-69), being in-app only (SEC-33).
   // Newest first, max 100.
   // ponytail: kept in UI memory, so it clears when the app restarts; move to the daemon if it must outlive the UI
-  type Note = { id: number; pane: number; agent: string; name: string; task: string; tab: string; ws: string; kind: string; label: string; at: number; seen?: boolean };
+  type Note = { id: number; pane: number; agent: string; name: string; task: string; tab: string; ws: string; kind: NoticeKind; detail: string; at: number; seen?: boolean };
   let notes = $state<Note[]>([]);
   let bell = $state(false);
   let unfold = $state<Record<number, boolean>>({});
   let noteId = 0;
   /// FR-87: the pane on screen in the front window is seen as it happens, so its note never adds to the bell count
   const onScreen = (pane: number) => seen && !settingsOpen && !!tab && panes(tab.tree).includes(pane);
-  function note(pane: number, kind: string, label: string) {
+  function note(pane: number, kind: NoticeKind, detail = "") {
     const t = tabOf(pane);
     const w = wss.find((w) => t && w.tabs.includes(t));
-    const n = { id: ++noteId, pane, agent: agentOf(pane), name: meta[pane].name || meta[pane].profile, task: labels[pane] ?? "", tab: t ? title(t) : "", ws: w?.name ?? "", kind, label, at: Date.now(), seen: onScreen(pane) || undefined };
+    const n = { id: ++noteId, pane, agent: agentOf(pane), name: meta[pane].name || meta[pane].profile, task: labels[pane] ?? "", tab: t ? title(t) : "", ws: w?.name ?? "", kind, detail, at: Date.now(), seen: onScreen(pane) || undefined };
     notes = [n, ...notes].slice(0, 100);
+  }
+  /// bell line: the kind's word, then the FR-84 reason when it says more ("butuh izin · minta percaya folder")
+  const kindText = (kind: NoticeKind, detail = "") => {
+    const word = tt(wordKey(kind));
+    const more = detail ? tOr(detail, detail) : "";
+    return more && more !== word ? `${word} · ${more}` : word;
+  };
+  const noteText = (n: Note) => kindText(n.kind, n.detail);
+  /// kind of a pane that is `blocked`: FR-84 reason when the agent gave one, else a password prompt in a plain shell
+  const blockedKindOf = (p: number): NoticeKind => {
+    const m = meta[p];
+    if (m?.reason) return blockedKind(waitingReasonKey(m.reason));
+    return m && !AGENTS.includes(m.agent) && m.agent !== "custom" && !AGENTS.includes(m.busy ?? "") ? "password" : "permission";
+  };
+  /// is that pane still waiting for what the note says (permission, answer, password, a card to approve)?
+  function stillWaits(pane: number, kind: NoticeKind) {
+    if (kind === "approve") return pendingFor(pane).length > 0 || opensFor(pane).length > 0 || Object.values(runs).some((r) => r.state === "gate" && stagePanes(r).some((x) => x.pane === pane && x.step === r.gate));
+    return meta[pane]?.status === "blocked";
   }
   // one row per pane (newest note, older ones folded); a permission still waiting goes first, the rest stay newest first
   const groups = $derived.by(() => {
@@ -2164,13 +2217,13 @@
   });
   const unseen = $derived(groups.filter((g) => g.some((n) => !n.seen)).length);
   const noteWhere = (n: Note) => [n.ws, n.tab].filter(Boolean).join(" › ");
-  // a blocked note is still waiting only while it is its pane's newest note and the pane is still blocked
+  // a waiting kind (permission, answer, password, approve) is still waiting only while it is its pane's newest note and the pane still waits
   const waiting = $derived.by(() => {
     const open = new Set<number>(), saw = new Set<number>();
     for (const n of notes) {
       if (saw.has(n.pane)) continue;
       saw.add(n.pane);
-      if (n.kind === "blocked" && meta[n.pane]?.status === "blocked") open.add(n.id);
+      if (KINDS[n.kind].waits && stillWaits(n.pane, n.kind)) open.add(n.id);
     }
     return open;
   });
@@ -2188,7 +2241,8 @@
     return () => window.removeEventListener("pointerdown", off);
   });
   const attention = $derived(
-    Object.keys(meta).map(Number).filter((p) => (stat(p) === "blocked" && notify.on_blocked) || (stat(p) === "done" && !meta[p]?.waitingShell && notify.on_done)).length,
+    Object.keys(meta).map(Number).filter((p) => (stat(p) === "blocked" && enabled(blockedKindOf(p), notify)) || (stat(p) === "done" && !meta[p]?.waitingShell && enabled("done", notify))).length +
+      (enabled("approve", notify) ? (msgData?.pending?.length ?? 0) + (msgData?.opens?.length ?? 0) : 0), // FR-87: cards waiting for your OK count too
   );
   $effect(() => {
     invoke("badge", { count: seen ? 0 : attention }).catch(() => {});
@@ -2221,8 +2275,12 @@
       refreshGit(pane); // toolbar refreshed per turn (TECH 7a)
       if (changes?.pane === pane) loadChanges(pane); // FR-22: the panel is refreshed too
     }
-    if (!stale && status === "blocked") alert(pane, "blocked", "alert.blocked");
-    if (!stale && status === "done" && !shell) alert(pane, "done", "alert.done");
+    if (!stale && status === "blocked") {
+      const key = waitingReasonKey(reason);
+      notice(pane, blockedKind(key), { detail: reason ? (key ?? reason) : "" });
+    }
+    if (!stale && status === "done" && !shell) notice(pane, "done");
+    sweep(); // FR-87: a banner whose pane isn't waiting anymore leaves Notification Center
   }
 
   // save the layout half a second after the last change (SEC-13: no screen content)
@@ -2259,12 +2317,12 @@
         if (busy && !m.busy) m.since = Date.now();
         if (i.password && m.status !== "blocked") {
           m.status = "blocked";
-          alert(p, "blocked", "alert.password");
-        } else if (!i.password && m.status === "blocked") m.status = "";
+          notice(p, "password");
+        } else if (!i.password && m.status === "blocked") (m.status = ""), sweep();
         if (!busy && m.busy && Date.now() - (m.since ?? Date.now()) >= notify.long_command_secs * 1000) {
           delete ack[p];
           m.status = "done";
-          alert(p, "done", "alert.longCmd");
+          notice(p, "done");
         }
       }
       if (busy && busy !== m.busy && m.ended) delete m.ended; // FR-56: the finished block goes away once a new process runs
@@ -2305,14 +2363,14 @@
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status, payload.params.shell, payload.params.reason, payload.params.status_at, payload.params.last);
       // a tab whose xterm is detached has no Tile listening for pane.exit
-      if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane);
+      if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane, payload.params.code);
       if (payload.event === "pane.replace" && meta[payload.params.pane]) {
         // agent exits = empty status (the daemon clears it without a pane.status event; without this it stays "working")
         previews[payload.params.pane] = "";
         Object.assign(meta[payload.params.pane], { output: true, status: "", ended: { resume: payload.params.resume ?? null } });
       }
       if (payload.event === "daemon.lost") onLost();
-      if (payload.event === "msg.event") refreshMsgs();
+      if (payload.event === "msg.event") (onMsgEvent(payload.params), refreshMsgs().then(sweep));
       if (payload.event === "harness.state") onRun(payload.params);
       if (payload.event === "harness.notice") runNotice(payload.params);
       if (payload.event === "telegram.changed") tg = payload.params ?? { state: "off" };
@@ -2335,7 +2393,7 @@
       if (editorShown(pane)) invoke<string[]>("resolve_paths", { paths: payload.paths }).then((p) => insertPaths(pane, p)).catch(() => {});
       else attach(pane, payload.paths);
     });
-    const onFocus = () => (seen = true);
+    const onFocus = () => ((seen = true), withdrawTitles(clear(nst))); // FR-87: looked at = the banners are done with
     const onBlur = () => (seen = false);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
@@ -2437,7 +2495,7 @@
           {@const ag = agentOf(q.p) || meta[q.p]?.agent || ""}
           <button class="tab" onclick={() => jumpTo(q.p)}>
             <span class="tt"><span class="dot blocked" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{labels[q.p] || GLYPH[ag] ? ` · ${labels[q.p] || ag}` : ""}</span>
-            <span>{paneStatusText(q.p) || tt("status.blocked")}</span><span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
+            <span>{tt(wordKey(blockedKindOf(q.p)))}</span><span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
             <span class="sub">{[title(q.t) !== labels[q.p] ? title(q.t) : "", wss.length > 1 ? q.w.name : ""].filter(Boolean).join(" · ")}</span>
           </button>
         {/each}
@@ -2558,13 +2616,13 @@
       <div class="nlist">
         {#each groups as g, i (g[0].pane)}
           {@const n = g[0]}
-          {@const past = n.kind === "blocked" && !waiting.has(n.id)}
+          {@const past = KINDS[n.kind].waits && !waiting.has(n.id)}
           {#if noteWhere(n) && (i === 0 || noteWhere(groups[i - 1][0]) !== noteWhere(n))}<div class="nwhere">{noteWhere(n)}</div>{/if}
           <button class="nrow" class:seen={g.every((o) => o.seen)} class:past onclick={() => (g.forEach((o) => (o.seen = true)), (bell = false), meta[n.pane] && !dead[n.pane] && jumpTo(n.pane))}>
             <span class="dot {n.kind}" aria-hidden="true"></span>
             <span class="nmain">
               <span class="ntitle">{#if GLYPH[n.agent]}<span class="aico {n.agent}">{GLYPH[n.agent]}</span>{/if}{n.name}{n.task && n.task !== n.tab ? ` · ${n.task}` : ""}</span>
-              <span class="nwhat">{tOr(n.label, n.label)}{#if past}{` · ${meta[n.pane] && !dead[n.pane] ? tt("bell.answered") : tt("bell.closed")}`}{/if}</span>
+              <span class="nwhat">{noteText(n)}{#if past}{` · ${meta[n.pane] && !dead[n.pane] ? tt("bell.answered") : tt("bell.closed")}`}{/if}</span>
             </span>
             <span class="k">{noteTime(n.at)}</span>
           </button>
@@ -2572,7 +2630,7 @@
             <button class="nmore" aria-expanded={!!unfold[n.pane]} onclick={() => (unfold[n.pane] = !unfold[n.pane])}>{unfold[n.pane] ? tt("bell.hide") : tt("bell.earlier", { n: g.length - 1 })}</button>
             {#if unfold[n.pane]}
               {#each g.slice(1) as o (o.id)}
-                <div class="nold"><span>{tOr(o.label, o.label)}{o.kind === "blocked" ? ` · ${tt("bell.answered")}` : ""}{o.task && o.task !== n.task ? ` · ${o.task}` : ""}</span><span class="k">{noteTime(o.at)}</span></div>
+                <div class="nold"><span>{noteText(o)}{KINDS[o.kind].waits ? ` · ${tt("bell.answered")}` : ""}{o.task && o.task !== n.task ? ` · ${o.task}` : ""}</span><span class="k">{noteTime(o.at)}</span></div>
               {/each}
             {/if}
           {/if}
@@ -3987,8 +4045,19 @@
     border-radius: 50%;
     background: var(--line);
   }
-  .dot.blocked {
+  .dot.blocked,
+  .dot.permission,
+  .dot.answer,
+  .dot.password {
     background: #d97706;
+  }
+  /* FR-87 bell kinds: waiting for your OK, failed / hit a limit */
+  .dot.approve {
+    background: #a855f7;
+  }
+  .dot.failed,
+  .dot.limit {
+    background: #dc2626;
   }
   .dot.done {
     background: #16a34a;

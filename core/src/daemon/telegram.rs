@@ -763,15 +763,26 @@ fn lang_id(values: &Value) -> bool {
     }
 }
 
+/// FR-87: kind word of a blocked pane. Only "waiting for an answer" (FR-84) is its own kind; every other ask is
+/// "needs permission", followed by the agent's own reason when it says more (masked, it may hold a command)
+fn blocked_word(reason: &str, id_l: bool) -> String {
+    let (permission, answer) = (t(id_l, "blocked"), t(id_l, "answer"));
+    let plain = |w: &str| ["minta izin", "needs permission", "nunggu jawaban", "waiting for an answer"].contains(&w);
+    let word = if reason == "nunggu jawaban" || reason == answer { answer } else { permission };
+    if reason.is_empty() || plain(reason) { word.to_string() } else { format!("{word} · {}", mask_secrets(reason)) }
+}
+
 fn t(id: bool, k: &str) -> &'static str {
     let (i, e) = match k {
-        "blocked" => ("minta izin", "needs permission"),
+        // FR-87 (TECH 27.1): the same words as the macOS banner, the bell and the "Butuh lu" strip
+        "blocked" => ("butuh izin", "needs permission"),
+        "answer" => ("nunggu jawaban", "waiting for an answer"),
         "why" => ("Alasan", "Reason"),
-        "done" => ("kelar", "done"),
+        "done" => ("selesai", "done"),
         "working" => ("lagi kerja", "working"),
         "idle" => ("nunggu perintah", "idle"),
-        "password" => ("nunggu password", "waiting for a password"),
-        "long" => ("perintah kelar", "command finished"),
+        "password" => ("minta password", "asks for a password"),
+        "long" => ("selesai", "done"),
         "shell_st" => ("shell", "shell"),
         "linked" => ("Nyambung ke Gembala di", "Connected to Gembala on"),
         "gone" => ("udah lewat", "already answered"),
@@ -1428,7 +1439,7 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
                 return None;
             }
             let reason = pane.claude.lock().unwrap().reason.clone();
-            if reason.is_empty() { t(id_l, "blocked").to_string() } else { mask_secrets(&reason) }
+            blocked_word(&reason, id_l)
         }
         Kind::Done(0) => t(id_l, "done").to_string(),
         Kind::Done(secs) => format!("{} ({})", t(id_l, "done"), dur(secs)),
@@ -1997,6 +2008,17 @@ mod tests {
 
     fn ks(v: Vec<(&'static str, String)>) -> Vec<&'static str> {
         v.into_iter().map(|(k, _)| k).collect()
+    }
+
+    /// FR-87: a blocked pane's card says "butuh izin" or "nunggu jawaban" (the banner's words), then the agent's own reason
+    #[test]
+    fn blocked_kind_words() {
+        assert_eq!(blocked_word("", true), "butuh izin");
+        assert_eq!(blocked_word("needs permission", false), "needs permission");
+        assert_eq!(blocked_word("nunggu jawaban", true), "nunggu jawaban");
+        assert_eq!(blocked_word("waiting for an answer", false), "waiting for an answer");
+        assert_eq!(blocked_word("minta percaya folder", true), "butuh izin · minta percaya folder");
+        assert_eq!(blocked_word("nunggu jawaban", false), "waiting for an answer"); // either language's plain word maps to the one in use
     }
 
     /// dialogs recorded from the real agents on 10 Nov 2026 (research/agent-dialogs, home path replaced): the buttons come

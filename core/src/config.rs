@@ -57,9 +57,21 @@ const CHIPS: &[&str] = &["attach", "diff", "rich_input", "cwd", "branch", "setti
 /// FR-55: content and order of the agent toolbar chips
 const TOOLBAR: &[(&str, Kind)] = &[("left", List(CHIPS, &["attach", "diff", "rich_input"])), ("right", List(CHIPS, &["cwd", "branch", "settings"]))];
 const LIMITS: &[(&str, Kind)] = &[("max_panes", Int(1, 256, 32))];
-/// FR-40: banner macOS + badge Dock + Dock melompat
-const NOTIFY: &[(&str, Kind)] =
-    &[("on_blocked", Bool(true)), ("on_done", Bool(true)), ("long_command_secs", Int(5, 3600, 30)), ("sound", Bool(true))];
+/// FR-40: banner macOS + badge Dock + Dock melompat. FR-87: one switch per event kind; `on_blocked` stays the parent of
+/// permission/answer/password, and `sound_done` is the only sound that starts off (TECH 27.5)
+const NOTIFY: &[(&str, Kind)] = &[
+    ("on_blocked", Bool(true)),
+    ("on_done", Bool(true)),
+    ("long_command_secs", Int(5, 3600, 30)),
+    ("sound", Bool(true)),
+    ("on_permission", Bool(true)),
+    ("on_answer", Bool(true)),
+    ("on_password", Bool(true)),
+    ("on_limit", Bool(true)),
+    ("on_approve", Bool(true)),
+    ("on_failed", Bool(true)),
+    ("sound_done", Bool(false)),
+];
 /// FR-80: Telegram bot; token and bound chat live in telegram.json, not here (SEC-36)
 const TELEGRAM: &[(&str, Kind)] = &[("away_idle_mins", Int(1, 120, 5)), ("snippet", Bool(true)), ("snippet_off", Names), ("lines", Int(1, 30, 30))];
 /// FR-82: check GitHub for a newer release (the only network use besides the Telegram bot)
@@ -589,6 +601,20 @@ mod tests {
         for want in ["ui.font_size", "ui.theme", "ui.warna", "cmd+y"] {
             assert!(all.contains(want), "{want} tidak ditandai: {all}");
         }
+    }
+
+    #[test]
+    fn notifikasi_per_jenis() {
+        // FR-87: a file from before the per-kind switches still reads; new kinds default on, the done sound off
+        let c = load(Some("[notify]\non_blocked = false\nsound = false\n"));
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.values["notify"]["on_blocked"], false);
+        assert_eq!(c.values["notify"]["sound"], false);
+        for k in ["on_permission", "on_answer", "on_password", "on_limit", "on_approve", "on_failed"] {
+            assert_eq!(c.values["notify"][k], true, "{k}");
+        }
+        assert_eq!(c.values["notify"]["sound_done"], false);
+        assert_eq!(load(Some("[notify]\non_failed = false\nsound_done = true\n")).values["notify"]["on_failed"], false);
     }
 
     #[test]
