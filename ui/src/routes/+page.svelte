@@ -2809,7 +2809,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     </button>
     <!-- FR-99 P1: the main door, framed and named after what happens (not a "New task" label that reads like a to-do) -->
     <button class="add ask" onclick={() => (newTask = true)}><span>+ {tt("hn.newTask")}</span><span class="n">⌘N</span></button>
-    {#if ws && runs[ws.id]}
+    {#if ws && runs[ws.id] && runs[ws.id].state !== "gate"}
       <button class="add" onclick={() => ((drawer = false), (flow = !flow))}>
         {runLive(runs[ws.id]) ? "● " : ""}{runs[ws.id].name} · {tOr(`hn.state.${runs[ws.id].state}`, runs[ws.id].state)}
       </button>
