@@ -130,6 +130,9 @@ const TEXT: &[(&str, &str, &str)] = &[
     // `[keys]` problems (Settings > Shortcuts)
     ("key.empty", "empty", "kosong"),
     ("key.bad_mod", "unknown modifier in \"{raw}\"", "modifier tidak dikenal di \"{raw}\""),
+    #[cfg(target_os = "macos")]
+    ("key.need_cmd", "\"{raw}\" has to use cmd; other keys belong to the terminal", "\"{raw}\" harus memakai cmd; tombol lain milik terminal"),
+    #[cfg(not(target_os = "macos"))]
     ("key.need_cmd", "\"{raw}\" has to use the app key ({app}); other keys belong to the terminal", "\"{raw}\" harus memakai tombol aplikasi ({app}); tombol lain milik terminal"),
     ("key.bad_key", "unknown key in \"{raw}\"", "tombol tidak dikenal di \"{raw}\""),
     ("key.bad_action", "keys.\"{raw}\": unknown action \"{action}\"", "keys.\"{raw}\": aksi \"{action}\" tidak dikenal"),
