@@ -472,7 +472,8 @@
   /// FR-100: the report dialog (the user's own, or an agent's draft from `gembala report`)
   let reportDraft = $state<{ title: string; body: string; from?: string; id?: string } | null>(null);
   const reportsFor = (pane: number) => (msgData?.reports ?? []).filter((r: any) => r.from_pane === pane);
-  const askOffer = (cmd: string, code: number) => code === 127 && cmd.trim().split(/\s+/).length >= 3;
+  // a word starting with "-" is a flag: a command that wasn't found (`claude-kantor --permission-mode default`), not a sentence
+  const askOffer = (cmd: string, code: number) => code === 127 && cmd.trim().split(/\s+/).length >= 3 && !/(^|\s)-/.test(cmd);
   /// ponytail: the first installed agent is offered; remember the last one used per workspace when people ask for it
   const offerAgent = $derived((cfg?.values.profiles ?? []).find((p) => p.agent !== "shell" && installed.includes(p.agent)));
   /// "Kirim": this terminal pane becomes the agent and the sentence is its first message (same wait as a manual task)
@@ -2370,6 +2371,8 @@
         }
       }
       if (busy && busy !== m.busy && m.ended) delete m.ended; // FR-56: the finished block goes away once a new process runs
+      // FR-99 P1: so does the "send it to an agent?" card: Send would swap the pane and close what runs there now
+      if (busy && !m.busy && offer[p]) delete offer[p];
       if (m.busy !== busy) m.busy = busy;
       if (m.shell !== i.shell) m.shell = i.shell;
       // FR-69: label only while an agent runs in this pane
