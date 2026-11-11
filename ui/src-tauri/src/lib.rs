@@ -280,15 +280,34 @@ fn resolve_paths(paths: Vec<String>) -> Vec<String> {
 fn notify_pane(app: tauri::AppHandle, title: String, body: String, sound: bool, pane: Option<u64>, replace: Option<Vec<String>>) {
     use tauri_plugin_notification::NotificationExt;
     let clean = |s: String, n: usize| s.chars().filter(|c| *c == '\n' || !c.is_control()).take(n).collect::<String>();
-    if let Some(old) = replace {
-        withdraw(old);
+    if let Some(old) = &replace {
+        withdraw(old.clone());
     }
+    let keep = clean(title, 60);
     // id = pane: clicking the banner (`on_action` in `run`) moves to that pane
-    let mut n = app.notification().builder().title(clean(title, 60)).body(clean(body, 120)).id(pane.and_then(|p| i32::try_from(p).ok()).unwrap_or(0));
+    let mut n = app.notification().builder().title(keep.clone()).body(clean(body, 120)).id(pane.and_then(|p| i32::try_from(p).ok()).unwrap_or(0));
     if sound {
         n = n.sound("default");
     }
     let _ = n.show();
+    // macOS commits a delivery asynchronously: a banner shown a few milliseconds ago (every pane finishing inside one
+    // poll, or the merged count taking over) can still be missing from the center when the withdraw above ran, and it
+    // then stays there as a duplicate. Take the replaced titles out once more shortly after, never the one just shown
+    // (a replacement may share its title).
+    #[cfg(target_os = "macos")]
+    if let Some(old) = replace {
+        let titles: Vec<String> = old.into_iter().filter(|t| *t != keep).collect();
+        if !titles.is_empty() {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                for ms in [250u64, 900] {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    let t = titles.clone();
+                    let _ = app.run_on_main_thread(move || withdraw(t));
+                }
+            });
+        }
+    }
 }
 
 /// FR-87: take the delivered banners with these titles out of Notification Center (replaced, merged, or answered).
