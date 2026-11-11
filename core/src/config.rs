@@ -37,8 +37,9 @@ const UI: &[(&str, Kind)] = &[
     ("cursor", Enum(&["bar", "block", "underline"], "bar")),
     ("cursor_blink", Bool(true)),
     ("option_as_meta", Enum(&["none", "left", "right", "both"], "left")),
-    // xterm about 12 bytes per cell: 5,000 rows × 200 columns ≈ 12 MB per pane when full
-    ("scrollback_lines", Int(0, 100_000, 5_000)),
+    // measured 11 Nov 2026 (TECH 24): a full scrollback costs WebKit ~8 KB per line per live pane; 5,000 lines × 4 busy panes
+    // ≈ +125 MB over 1,000. 2,000 keeps a long agent answer on screen; older output is in the daemon log (FR-62)
+    ("scrollback_lines", Int(0, 100_000, 2_000)),
     ("screen_reader", Bool(false)),
     // FR-59: editor input at the zsh prompt; the shell prompt is hidden (applies to new panes)
     ("input_editor", Bool(true)),

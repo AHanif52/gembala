@@ -92,7 +92,7 @@ export const UI_DEFAULT: Ui = {
   cursor: "bar",
   cursor_blink: true,
   option_as_meta: "left",
-  scrollback_lines: 5000,
+  scrollback_lines: 2000,
   screen_reader: false,
   input_editor: true,
   command_timeline: true,

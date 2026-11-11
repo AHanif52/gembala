@@ -731,7 +731,7 @@
           <div class="row">
             <span>Scrollback<small>{t("set.look.scrollSub")}</small></span>
             <select aria-label="Scrollback" value={ui.scrollback_lines} onchange={(e) => set("scrollback_lines", +e.currentTarget.value)}>
-              {#each [1000, 5000, 10000, 50000] as n}<option value={n}>{t("set.look.lines", { n: n.toLocaleString(loc()) })}</option>{/each}
+              {#each [1000, 2000, 5000, 10000, 50000] as n}<option value={n}>{t("set.look.lines", { n: n.toLocaleString(loc()) })}</option>{/each}
             </select>
           </div>
           <div class="row">
