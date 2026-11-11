@@ -738,6 +738,18 @@ fn cb_data(pane: u64, seq: u64, key: &str) -> String {
     format!("k|{pane}|{seq}|{key}")
 }
 
+/// Telegram's own limit is 8 buttons per row; the mockup keeps 4 so the labels stay readable on a phone (user decision
+/// 11 Nov 2026). A longer dialog wraps onto another row instead of being squeezed: every option used to sit in one row,
+/// which cut the last ones off on screen (the complaint that some choices were missing).
+const KEYS_PER_ROW: usize = 4;
+
+/// one dialog's buttons as `inline_keyboard` rows (`[]` = no keyboard at all, which is also the "answered" state)
+fn key_rows(pane: u64, seq: u64, ks: &[(&'static str, String)]) -> Vec<Vec<Value>> {
+    ks.chunks(KEYS_PER_ROW)
+        .map(|row| row.iter().map(|(k, label)| json!({"text": label, "callback_data": cb_data(pane, seq, k)})).collect())
+        .collect()
+}
+
 fn cb_parse(d: &str) -> Option<(u64, u64, String)> {
     let mut it = d.split('|');
     if it.next()? != "k" {
@@ -1639,9 +1651,9 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
     if let Kind::Blocked(seq) = kind {
         let reason = pane.claude.lock().unwrap().reason.clone();
         let ks = blocked_keys(&agent, &screen, &reason, id_l);
-        let row: Vec<Value> = ks.iter().map(|(k, label)| json!({"text": label, "callback_data": cb_data(id, seq, k)})).collect();
-        if !row.is_empty() {
-            body["reply_markup"] = json!({"inline_keyboard": [row]});
+        let rows = key_rows(id, seq, &ks);
+        if !rows.is_empty() {
+            body["reply_markup"] = json!({"inline_keyboard": rows});
         }
     }
     Some(body)
@@ -2351,6 +2363,30 @@ mod tests {
         assert_eq!(parse(&ex, Some(&l), n), In::Type { to: Some(To::Reply(77, "claude-1".into())), text: "/exit".into(), msg: 5 });
         assert_eq!(parse(&msg(42, 7, "/help", n), Some(&l), n), In::Help);
         assert_eq!(parse(&msg(42, 7, "/buka", n), Some(&l), n), In::Help);
+    }
+
+    /// FR-99 P2 (mockup "Susunan tombol", user decision 11 Nov 2026): at most 4 buttons per row; a dialog with more wraps
+    /// onto the next row instead of squeezing, so every choice can be answered from the phone. 0 = no keyboard at all.
+    #[test]
+    fn tombol_izin_maks_empat_per_baris() {
+        let b = |k: &'static str, l: &str| (k, l.to_string());
+        let three = [b("1", "1. Izinkan"), b("2", "2. Izinkan terus"), b("esc", "Tolak")];
+        let r3 = key_rows(7, 9, &three);
+        assert_eq!(r3.len(), 1);
+        assert_eq!(r3[0].len(), 3);
+        assert_eq!(r3[0][2]["callback_data"], "k|7|9|esc");
+        // Claude's four options + Tolak: 4 + 1, the last one is still there (the missing-choice complaint)
+        let five = [b("1", "1. Izinkan"), b("2", "2. Izinkan terus"), b("3", "3. Lagi"), b("4", "4. Opsi"), b("esc", "Tolak")];
+        let r5 = key_rows(7, 9, &five);
+        assert_eq!(r5.iter().map(Vec::len).collect::<Vec<_>>(), [4, 1]);
+        assert_eq!(r5[1][0], json!({"text": "Tolak", "callback_data": "k|7|9|esc"}));
+        // 8 = two rows of four (Telegram's own per-row limit), a ninth button starts a third row
+        let eight: Vec<_> = DIGITS.iter().take(8).map(|k| (*k, format!("{k}."))).collect();
+        assert_eq!(key_rows(1, 2, &eight).iter().map(Vec::len).collect::<Vec<_>>(), [4, 4]);
+        let nine: Vec<_> = DIGITS.iter().map(|k| (*k, format!("{k}."))).collect();
+        assert_eq!(key_rows(1, 2, &nine).iter().map(Vec::len).collect::<Vec<_>>(), [4, 4, 1]);
+        // nothing to answer = no keyboard, which is also what "answered" sends
+        assert!(key_rows(7, 9, &[]).is_empty());
     }
 
     #[test]
