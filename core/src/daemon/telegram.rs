@@ -1055,7 +1055,7 @@ pub fn pair(st: &Arc<State>, token: &str) -> Res {
             Err((401 | 404, _)) => return fail("token_rejected"),
             Err(_) => return fail("offline"),
         };
-        let Ok(code) = new_code() else { return fail("io") };
+        let Ok(code) = new_code() else { return fail("tg_io") };
         let _ = fs::remove_file(file());
         let b = spawn(&st, token, me["username"].as_str().unwrap_or_default().to_string(), None);
         *b.code.lock().unwrap() = Some((code, Instant::now(), 0));
@@ -1783,7 +1783,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             let link = Link { token: b.token.clone(), chat, user, name };
             let body = json!({"token": link.token, "chat": chat, "user": user, "name": link.name}).to_string();
             if config::write_atomic(&file(), body.as_bytes()).is_err() {
-                return b.set(st, "error", "io");
+                return b.set(st, "error", "tg_io"); // not "io": that one means a pane folder in the UI
             }
             *b.stamp.lock().unwrap() = mtime();
             *b.link.lock().unwrap() = Some(link);

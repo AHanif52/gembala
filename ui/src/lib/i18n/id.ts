@@ -165,6 +165,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "err.bad_token": "Bentuknya bukan token BotFather (angka:kode)",
   "err.token_rejected": "Tokennya ditolak Telegram",
   "err.offline": "Nggak bisa nyambung ke Telegram",
+  "err.tg_io": "Gagal nyimpen sambungan bot (telegram.json di samping config.toml)",
   "err.token_busy": "Bot ini lagi dipakai program lain (Gembala lain, tg-recv, …)",
   "err.file_changed": "telegram.json diubah di luar app, pasang ulang",
   "err.names": "daftar nama",

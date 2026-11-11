@@ -168,6 +168,7 @@ export default {
   "err.bad_token": "That doesn't look like a BotFather token (digits:code)",
   "err.token_rejected": "Telegram rejected the token",
   "err.offline": "Can't reach Telegram",
+  "err.tg_io": "Couldn't save the bot link (telegram.json next to config.toml)",
   "err.token_busy": "Another program is using this bot (another Gembala, tg-recv, …)",
   "err.file_changed": "telegram.json was changed outside the app, pair again",
   "err.names": "a list of names",
