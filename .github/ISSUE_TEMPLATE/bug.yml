@@ -1,0 +1,29 @@
+name: Bug report
+description: Something in Gembala doesn't work as expected. In the app you can also use "Report a problem" (⌘P), which fills this in for you.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Gembala and daemon version (Settings › Diagnostics), macOS version, agents and their versions, Simple or Full mode.
+      placeholder: |
+        - Gembala 0.1.8 · daemon 0.1.8
+        - macOS 27.2
+        - Agents: Claude Code 2.1.311, Codex 0.167.0
+        - Mode: Full
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log (optional)
+      description: Only if you want to. Check it for secrets and private paths before posting; this repository is public.
+      render: text

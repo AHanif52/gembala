@@ -28,6 +28,7 @@ const USAGE: &str = "usage: gembala daemon [--secret-fd N | --secret-sock <path>
        gembala read <pane> [-n <lines>]
        gembala reply <msg_id> <text…>
        gembala close <pane>
+       gembala report <title> [text…] [--screenshot]
        gembala status
        gembala watch";
 
@@ -47,7 +48,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // FR-78: `addons <agent>` is called by the zsh `claude`/`codex` functions (internal, not in USAGE)
-        cmd @ ("send" | "wait" | "read" | "reply" | "close" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
+        cmd @ ("send" | "wait" | "read" | "reply" | "close" | "report" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -160,6 +161,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--queue" => drop(opt.insert("queue", Value::Bool(true))),
+            "--screenshot" => drop(opt.insert("screenshot", Value::Bool(true))),
             "--reply-to" | "--reply" | "--pattern" | "--timeout" | "-n" => match it.next() {
                 Some(v) => drop(opt.insert(a.trim_start_matches('-'), json!(v))),
                 None => return usage(),
@@ -172,6 +174,8 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
         "send" if rest.len() >= 2 => json!({"to": rest[0], "body": text(1), "queue": opt.get("queue"), "reply_to": opt.get("reply-to")}),
         "reply" if rest.len() >= 2 => json!({"msg_id": rest[0], "body": text(1)}),
         "close" if rest.len() == 1 => json!({"target": rest[0]}),
+        // FR-100: a draft for the user to review; Gembala never sends it anywhere (SEC-40)
+        "report" if !rest.is_empty() => json!({"title": rest[0], "body": text(1), "screenshot": opt.get("screenshot")}),
         "read" if rest.len() == 1 => json!({"target": rest[0], "lines": opt.get("n").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok())}),
         "wait" if rest.len() <= 1 => json!({
             "target": rest.first(), "reply": opt.get("reply"), "pattern": opt.get("pattern"),

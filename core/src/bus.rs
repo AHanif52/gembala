@@ -62,6 +62,8 @@ pub struct Engine {
     /// waiting for a human's Approve/Reject (FR-12)
     pub pending: Vec<Msg>,
     pub opens: Vec<Open>,
+    /// FR-100: problem reports an agent drafted with `gembala report`; only the user sends them (SEC-40)
+    pub reports: Vec<Msg>,
     pub history: VecDeque<Value>,
 }
 

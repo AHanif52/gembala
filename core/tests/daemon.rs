@@ -1309,6 +1309,28 @@ fn fr75_buka_dan_kirim() {
     ui3.attach_until(t, &["TUGAS-A^M"]);
 }
 
+#[test]
+fn fr100_lapor_masalah_cuma_draf() {
+    // FR-100, SEC-40: an agent's report waits as a draft for the user (title + text, secrets masked, home = ~); nothing is sent
+    let d = start("fr100");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let lapor = format!("g='{g}'; sleep 1; $g report 'Kartu izin nggak muncul' \"langkah: buka $HOME/x, token sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123\" --screenshot; echo SELESAI-100; sleep 30");
+    profiles(&d, &mut ui, &sh_profile("lapor", &lapor), "SELESAI-100");
+    let k = ui.call("pane.create", json!({"profile": "lapor", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(k, &["SELESAI-100"]);
+    assert!(out.contains("needs_review"), "{out}");
+    let r = ui.call("msg.list", json!({}))["result"]["reports"][0].clone();
+    assert_eq!(r["title"], "Kartu izin nggak muncul", "{r}");
+    let body = r["body"].as_str().unwrap();
+    assert!(body.contains("~/x") && !body.contains("sk-ant-api03-abcdef"), "{body}");
+    let env = ui.call("report.env", json!({}))["result"].clone();
+    assert!(env["daemon"].is_string() && env["log"].is_null() && env["screenshot"] == true, "{env}");
+    assert_eq!(ui.call("report.env", json!({}))["result"]["screenshot"], false);
+    assert_eq!(ui.call("report.discard", json!({"id": r["id"]}))["result"], json!({}));
+    assert_eq!(ui.call("msg.list", json!({}))["result"]["reports"], json!([]));
+}
+
 /// FR-86: `gembala close` closes only a helper opened through the caller's own card; any other pane is `not_allowed`.
 #[test]
 fn fr86_tutup_pembantu() {

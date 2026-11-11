@@ -29,6 +29,7 @@
     start = "umum",
     oninstall = () => {},
     onguide,
+    onreport = () => {},
   }: {
     cfg: Config;
     workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
@@ -46,6 +47,7 @@
     onlogin: (id: string, name: string) => void; // FR-61: open a pane on that account to log in
     oninstall?: (a: { agent: string; name: string; install: string }) => void; // FR-99 P1: install command typed into a new terminal tab
     onguide?: (agent: string) => (() => void) | undefined; // FR-99 P1: the agent's official guide, when there is one
+    onreport?: () => void; // FR-100: open the report dialog
   } = $props();
 
   // FR-61: Claude Code accounts (own config folder through CLAUDE_CONFIG_DIR); Utama is always there
@@ -201,15 +203,6 @@
     if (r.error) failed = errText(r.error, r.args);
   }
   let resetAsk = $state(false);
-  let copied = $state("");
-
-  /// FR-49: bug report info without env, folders, or screen content (SEC-12)
-  async function copyInfo() {
-    const rows = Object.values(meta).map((m) => `${m.name || m.profile} (${m.agent || "shell"}) status=${m.status || "-"}`);
-    // English on purpose: pasted into a GitHub issue
-    const text = [`Gembala ${version} · daemon ${daemon?.daemon} · protocol ${daemon?.proto}`, `${navigator.userAgent}`, `panes: ${rows.length}`, ...rows].join("\n");
-    await navigator.clipboard.writeText(text).then(() => (copied = t("common.copied")), () => (copied = t("chg.copyFailed")));
-  }
 
   /// FR-48: delete Gembala's config, layout, hooks, and Keychain secret, then quit
   async function reset() {
@@ -635,6 +628,11 @@
               <option value="id">Indonesia</option>
               <option value="en">English</option>
             </select>
+          </div>
+          <!-- FR-100: in both modes (Diagnostics is hidden in Simple) -->
+          <div class="row">
+            <span>{t("rep.setting")}<small>{t("rep.settingSub")}</small></span>
+            <button class="mini" onclick={onreport}>{t("rep.title")}…</button>
           </div>
           <div class="row"><span>{t("set.general.daemon")}<small>{t("set.general.daemonSub")}</small></span><span class="m">{t("set.general.daemonState")}</span></div>
           <!-- FR-86: helpers an agent opened (FR-75) close after sitting quiet this long past their first reply -->
@@ -1384,8 +1382,8 @@
         <h4>{t("set.diag.help")}</h4>
         <section>
           <div class="row">
-            <span>{t("set.diag.bug")}<small>{t("set.diag.bugSub")}</small></span>
-            <span><span class="m">{copied}</span> <button class="mini" onclick={copyInfo}>{t("tile.copy")}</button></span>
+            <span>{t("set.diag.bug")}<small>{t("rep.settingSub")}</small></span>
+            <button class="mini" onclick={onreport}>{t("rep.title")}…</button>
           </div>
           {#if resetAsk}
             <div class="row" role="alert">

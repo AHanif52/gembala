@@ -1,0 +1,2 @@
+# blank issues stay on: the app's "Report a problem" opens issues/new with the text already filled in
+blank_issues_enabled: true

@@ -11,7 +11,7 @@ struct Daemon(Mutex<Option<Arc<daemon::Client>>>);
 /// The webview may only call pane methods; other human actions are added per feature.
 const ALLOWED: &[&str] =
     &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset", "git.status", "git.diff", "pane.rename", "pane.agent_output", "profile.save", "profile.reset", "keys.set",
-      "account.list", "account.create", "account.remove", "account.update", "git.worktree_add", "git.worktree_remove", "git.turns", "git.turn_diff", "git.turn_preview", "git.turn_restore", "git.file_preview", "git.file_restore", "git.file_commit", "ctx.compose", "msg.list", "msg.approve", "msg.reject", "open.approve", "open.reject", "update.status", "update.check", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace",
+      "account.list", "account.create", "account.remove", "account.update", "git.worktree_add", "git.worktree_remove", "git.turns", "git.turn_diff", "git.turn_preview", "git.turn_restore", "git.file_preview", "git.file_restore", "git.file_commit", "ctx.compose", "msg.list", "msg.approve", "msg.reject", "open.approve", "open.reject", "report.discard", "report.env", "update.status", "update.check", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace",
       "addon.plugin", "addon.mcp.get", "addon.mcp.set", "addon.status",
       "recipe.list", "recipe.get", "recipe.approve", "recipe.delete", "recipe.duplicate", "recipe.draft_new", "recipe.draft_get", "recipe.draft_apply", "config.draft_new", "config.draft_get", "config.draft_apply", "agent_file.brief", "recipe.validate", "recipe.library", "recipe.render", "recipe.save",
       "harness.preflight", "harness.start", "harness.state", "harness.stop", "harness.gate", "harness.takeover", "harness.release", "harness.close_panes",
@@ -93,6 +93,19 @@ fn open_url(url: String) -> Result<(), String> {
         return Err("url_not_http".into());
     }
     std::process::Command::new("/usr/bin/open").arg(&url).spawn().map(drop).map_err(|e| e.to_string())
+}
+
+/// FR-100: the user's own Gembala window to the clipboard for a GitHub issue (pressed by the user in the report dialog, never by
+/// an agent: the window shows panes an agent may not read, SEC-21). Nothing is saved; the user sees it when pasting into GitHub.
+/// macOS asks for Screen Recording the first time.
+#[tauri::command]
+fn shot_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    let s = window.scale_factor().map_err(|e| e.to_string())?;
+    let p = window.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(s);
+    let z = window.outer_size().map_err(|e| e.to_string())?.to_logical::<f64>(s);
+    let region = format!("{},{},{},{}", p.x.round(), p.y.round(), z.width.round(), z.height.round());
+    let ok = std::process::Command::new("/usr/sbin/screencapture").args(["-c", "-x", "-R", &region]).status().map_err(|e| e.to_string())?.success();
+    if ok { Ok(()) } else { Err("screencapture".into()) }
 }
 
 /// Folders next to config.toml that may be opened in Finder (Settings > Security > audit log).
@@ -614,7 +627,7 @@ pub fn run() {
                 w.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, reveal_dir, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list, system_lang])
+        .invoke_handler(tauri::generate_handler![daemon_call, quit, open_url, reveal_dir, shortcuts, badge, attention, forget_secret, save_paste, forget_paste, notify_pane, pick_files, pick_folder, resolve_paths, copy_text, paste_text, shot_window, list_dir, list_commands, shell_history, git_branches, npm_scripts, proc_list, system_lang])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, ev| {

@@ -7,6 +7,7 @@
   import OutputView from "$lib/OutputView.svelte";
   import Messages from "$lib/Messages.svelte";
   import NewTask from "$lib/NewTask.svelte";
+  import Report from "$lib/Report.svelte";
   import HarnessFlow from "$lib/HarnessFlow.svelte";
   import { live as runLive, stagePanes, type AiAsk, type AiDraft, type Snap } from "$lib/harness";
   import ContextMenu, { type MenuAt, type MItem } from "$lib/ContextMenu.svelte";
@@ -392,6 +393,9 @@
   /// FR-99 P1: a sentence typed into the terminal by mistake. zsh answers 127 (command not found); three words or more,
   /// so a mistyped short command (`gti status`) doesn't get the offer. Shown in Simple and Full (user decision 10 Nov 2026).
   let offer = $state<Record<number, string>>({});
+  /// FR-100: the report dialog (the user's own, or an agent's draft from `gembala report`)
+  let reportDraft = $state<{ title: string; body: string; from?: string; id?: string } | null>(null);
+  const reportsFor = (pane: number) => (msgData?.reports ?? []).filter((r: any) => r.from_pane === pane);
   const askOffer = (cmd: string, code: number) => code === 127 && cmd.trim().split(/\s+/).length >= 3;
   /// ponytail: the first installed agent is offered; remember the last one used per workspace when people ask for it
   const offerAgent = $derived((cfg?.values.profiles ?? []).find((p) => p.agent !== "shell" && installed.includes(p.agent)));
@@ -481,7 +485,7 @@
   }
   // FR-59 Warp-style autocomplete: gray suggestion from history (→ accepts), Tab = folder/file/command list
   let zhist: string[] = []; // zsh history, loaded once when the app opens
-  let homePath = "";
+  let homePath = $state("");
   type Comp = { label: string; kind: string; insert: string };
   // `auto` = account suggestions that show up on their own while typing `cl…` (FR-61): Tab/Enter fills the command, then
   // arguments can be added before the next Enter runs it
@@ -1293,6 +1297,7 @@
       { label: tt("act.template"), hint: tt("act.templateHint"), kind: "action", go: () => openTemplate() },
       ...pickable.map((p) => ({ label: tt("act.pickSessionOf", { name: p.label }), hint: tt("act.pickSessionHint"), kind: "action" as const, go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
       { label: tt("hn.newTask"), hint: "", kind: "action", go: () => (newTask = true) },
+      { label: tt("rep.title"), hint: "", kind: "action", go: () => (reportDraft = { title: "", body: "" }) },
       { label: tt("act.newWs"), hint: "", kind: "action", go: addWorkspace },
       { label: editorOn ? tt("act.editorOff") : tt("act.editorOn"), hint: "", kind: "action", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
       { label: tt("act.renameTab"), hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
@@ -2772,9 +2777,20 @@
               </div>
             {/if}
           {/if}
-          {#if pendingFor(pane).length || opensFor(pane).length || offer[pane]}
+          {#if pendingFor(pane).length || opensFor(pane).length || offer[pane] || reportsFor(pane).length}
           <!-- FR-98 bug: the cards stack in one column instead of sitting on top of each other -->
           <div class="cards">
+          {#each reportsFor(pane) as r (r.id)}
+            <!-- FR-100: an agent drafted a GitHub issue; nothing is sent until the user opens it and presses Submit on GitHub -->
+            <div class="card offer" role="alert">
+              <span>{tt("rep.card", { from: r.from })} <b>{r.title}</b></span>
+              <span class="sub">{tt("rep.cardSub")}</span>
+              <span class="acts">
+                <button class="mini" onclick={() => call("report.discard", { id: r.id }).then(refreshMsgs)}>{tt("rep.discard")}</button>
+                <button class="mini pri" onclick={() => (reportDraft = { title: r.title, body: r.body, from: r.from, id: r.id })}>{tt("rep.review")}</button>
+              </span>
+            </div>
+          {/each}
           {#if offer[pane]}
             <!-- FR-99 P1: the sentence went to zsh; offer it to an agent instead -->
             <div class="card offer" role="alert">
@@ -2875,6 +2891,11 @@
       }}
       onmanual={startManual}
     />
+  {/if}
+  {#if reportDraft}
+    {@const d = reportDraft}
+    <Report draft={d} version={appVer} mode={simple ? "Simple" : "Full"} home={homePath} onclose={() => (reportDraft = null)}
+      onsent={() => ((reportDraft = null), d.id && call("report.discard", { id: d.id }).then(refreshMsgs))} />
   {/if}
   {#if drawer}
     <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho} />
@@ -3132,7 +3153,7 @@
   {/if}
   {#if settingsOpen && cfg}
     <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
-      onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount}
+      onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
       oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)} />
   {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}

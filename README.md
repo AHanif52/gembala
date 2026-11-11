@@ -236,6 +236,10 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the workf
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for code structure, how to test, and the gotchas we've already hit. New
 feature? Open an issue first so it can be discussed before you build it.
 
+Found a bug? In the app, press ⌘P and pick **Report a problem**: Gembala fills in the versions for you, you check the text, and
+it opens a new GitHub issue in your browser. Nothing is sent until you press Submit there. You can also
+[open an issue](https://github.com/AHanif52/gembala/issues/new/choose) directly.
+
 ## 📄 License
 
 [MIT](LICENSE)

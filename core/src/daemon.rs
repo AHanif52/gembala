@@ -195,6 +195,8 @@ struct State {
     tg: telegram::Slot,
     /// FR-82: last answer of the GitHub release check (update.rs)
     update: Mutex<Value>,
+    /// FR-100: the last report draft asked for a window screenshot (the user takes it; the agent never sees it)
+    report_shot: Mutex<bool>,
 }
 
 struct UiClient(Arc<State>, u64);
@@ -253,6 +255,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         harness: Mutex::default(),
         tg: Mutex::default(),
         update: Mutex::default(),
+        report_shot: Mutex::default(),
     });
     let st7 = st.clone();
     thread::spawn(move || deliver_loop(st7));
@@ -390,7 +393,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
                     Ok(json!({}))
                 }
-                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close", Some(me)) => pane_method(&st, me, method, p),
+                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report", Some(me)) => pane_method(&st, me, method, p),
                 // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start"].into_iter().find(|s| *s == x)) {
                     Some(status) => {
@@ -670,6 +673,11 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "opens": eng.opens.iter().map(|o| json!({"id": o.msg.id, "from": o.msg.from_name, "from_pane": o.msg.from, "target": o.msg.to_name, "profile": o.profile,
                     "account": o.account, "cwd": o.cwd, "workspace": o.workspace, "body": o.msg.body})).collect::<Vec<_>>(),
                 "queued": queues,
+                // FR-100: drafts an agent made for the user to review; title = first line
+                "reports": eng.reports.iter().map(|r| {
+                    let (title, text) = r.body.split_once('\n').unwrap_or((&r.body, ""));
+                    json!({"id": r.id, "from": r.from_name, "from_pane": r.from, "title": title, "body": text})
+                }).collect::<Vec<_>>(),
                 "history": eng.history,
             }))
         }
@@ -687,6 +695,28 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 reject(st, &held, "rejected_by_user");
                 Ok(json!({"result": "rejected", "reason": "rejected_by_user"}))
             }
+        }
+        // FR-100: the user dropped an agent's draft, or opened it in the report dialog (it leaves the list either way)
+        "report.discard" => {
+            let id = p["id"].as_str().ok_or("bad_params")?;
+            let mut eng = st.engine.lock().unwrap();
+            let i = eng.reports.iter().position(|r| r.id == id).ok_or("no_such_msg")?;
+            eng.reports.remove(i);
+            Ok(json!({}))
+        }
+        // FR-100: what goes under "Environment" in a report, and the daemon log tail only when asked; secrets masked, home = ~
+        "report.env" => {
+            let macos = std::process::Command::new("/usr/bin/sw_vers").arg("-productVersion").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            let agents: Vec<Value> = st.agents.lock().unwrap().as_array().into_iter().flatten().filter(|a| a["installed"] == true)
+                .map(|a| json!({"name": a["name"], "version": a["version"]})).collect();
+            let log = p["log"].as_bool().unwrap_or(false).then(|| {
+                let path = std::path::Path::new(&st.pane_sock).parent().unwrap_or(std::path::Path::new("/")).join("daemon.log");
+                let text = fs::read_to_string(path).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                report_clean(&lines[lines.len().saturating_sub(50)..].join("\n"))
+            });
+            let shot = std::mem::take(&mut *st.report_shot.lock().unwrap());
+            Ok(json!({"daemon": env!("CARGO_PKG_VERSION"), "proto": PROTO, "macos": macos, "agents": agents, "log": log, "screenshot": shot}))
         }
         "open.approve" | "open.reject" => {
             // FR-75: only a human opens a pane an agent asked for (SEC-20). Approve = the UI already opened `pane`
@@ -1417,6 +1447,15 @@ fn reject(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
     json!({"result": "rejected", "reason": reason, "id": m.id})
 }
 
+/// FR-100: text leaving for a GitHub issue: secrets masked like Telegram (SEC-38), the home folder (= account name) as `~`
+fn report_clean(text: &str) -> String {
+    let t = telegram::mask_secrets(text);
+    match std::env::var("HOME") {
+        Ok(h) if h.len() > 1 => t.replace(&h, "~"),
+        _ => t,
+    }
+}
+
 /// FR-77: drafts from "Atur pakai AI" live in the run folder (0700, gone with the daemon's run), never next to recipes
 fn drafts_dir(st: &State) -> std::path::PathBuf {
     std::path::Path::new(&st.pane_sock).parent().unwrap_or(std::path::Path::new("/")).join("drafts")
@@ -1562,7 +1601,7 @@ fn spool(st: Arc<State>, dir: std::path::PathBuf) {
                 let method = v["method"].as_str().unwrap_or_default();
                 let r = match v["token"].as_str().and_then(|t| st.pane_of_token(t)) {
                     None => Err("unauthorized"),
-                    Some(me) if ["send", "reply", "wait", "read", "status", "token", "close"].contains(&method) => pane_method(&st, me, method, &v["params"]),
+                    Some(me) if ["send", "reply", "wait", "read", "status", "token", "close", "report"].contains(&method) => pane_method(&st, me, method, &v["params"]),
                     Some(_) => Err("not_allowed"),
                 };
                 let body = match r {
@@ -1790,6 +1829,32 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 *at = Some(std::time::Instant::now());
             }
             Ok(r)
+        }
+        "report" => {
+            // FR-100, SEC-40: an agent only drafts. The draft waits as a card for the user, who opens GitHub in the browser
+            // and presses Submit there; nothing leaves the Mac from here. Same sanitizer and rate limit as a message (SEC-7, SEC-9).
+            let title: String = msg::sanitize(p["title"].as_str().ok_or("bad_params")?)?.lines().next().unwrap_or_default().chars().take(120).collect();
+            if title.trim().is_empty() {
+                return Err("bad_params");
+            }
+            let text: String = msg::sanitize(p["body"].as_str().unwrap_or_default())?.chars().take(8000).collect();
+            let mut eng = st.engine.lock().unwrap();
+            if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
+                return Ok(json!({"result": "rejected", "reason": "rate_limited"}));
+            }
+            eng.note_sent(me);
+            let id = eng.new_id(&st.boot);
+            let body = report_clean(&format!("{}\n{}", title.trim(), text.trim()));
+            let r = bus::Msg { id: id.clone(), from: me, from_name: my_name, to: me, to_name: String::new(), body, reply_to: None, hop: 0, at: std::time::SystemTime::now() };
+            eng.reports.push(r.clone());
+            // ponytail: the 10 newest drafts; an agent drafting more than that is noise, the oldest goes
+            if eng.reports.len() > 10 {
+                eng.reports.remove(0);
+            }
+            drop(eng);
+            *st.report_shot.lock().unwrap() = p["screenshot"].as_bool() == Some(true);
+            record(st, "report", &r, None);
+            Ok(json!({"result": "queued", "reason": "needs_review", "id": id}))
         }
         "close" => {
             // FR-86: only a helper opened through my own card (FR-75), and not while it works or asks; same as the user's ×

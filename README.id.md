@@ -236,6 +236,10 @@ Kontribusi dipersilakan. Baca [CONTRIBUTING.md](CONTRIBUTING.md) untuk alur kerj
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) untuk struktur kode, cara uji, dan jebakan yang udah ketemu. Fitur baru:
 buka issue dulu biar dibahas sebelum dikerjain.
 
+Nemu bug? Di app, pencet ⌘P lalu pilih **Laporkan masalah**: Gembala ngisiin versinya, lu cek teksnya, terus kebuka issue
+baru di GitHub lewat browser. Nggak ada yang kekirim sebelum lu pencet Submit di sana. Bisa juga
+[langsung bikin issue](https://github.com/AHanif52/gembala/issues/new/choose).
+
 ## 📄 Lisensi
 
 [MIT](LICENSE)
