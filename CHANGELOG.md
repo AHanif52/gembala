@@ -6,12 +6,14 @@
 
 ### English
 
+- A helper pane is no longer closed for being idle while a message to it is still waiting for your approval or in its queue (the card used to disappear with it).
 - An agent asking to close a helper it opened that is still working or waiting now shows you the close card (with its status) instead of being refused.
 - `gembala wait` can wait up to 6 hours (`--timeout 21600`), so a long task given to another agent no longer looks like a failure after an hour.
 - A debug or development build of Gembala says "debug · <branch>" at the top of the window, so it can't be mistaken for the installed app.
 
 ### Indonesia
 
+- Pane helper nggak lagi ditutup karena nganggur selama masih ada pesan buat dia yang nunggu persetujuan lu atau masih antre (dulu kartunya ikut hilang).
 - Agent yang minta nutup helper yang dia buka sendiri tapi masih kerja atau nunggu sekarang nampilin kartu tutup ke lu (lengkap dengan statusnya), bukan ditolak.
 - `gembala wait` bisa nunggu sampai 6 jam (`--timeout 21600`), jadi tugas panjang ke agent lain nggak kelihatan gagal setelah sejam.
 - Build debug atau development Gembala nulis "debug · <branch>" di atas jendela, jadi nggak ketuker sama app yang terpasang.

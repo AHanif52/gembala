@@ -2260,8 +2260,14 @@ fn screen_watch(st: Arc<State>) {
             // FR-102: Codex/Gemini allowance from the footer the agent drew (numbers only)
             usage::tick(&st, &pane);
             // FR-86: a helper quiet since its reply (and since its last status change) is closed like the user's ×
+            // a message to it still waiting on the user's card or in its queue keeps it open (GESEKAN 11 Nov: omp-5 was
+            // closed while the coordinator's next brief sat on a card, and the card went with it)
             let replied = pane.replied_at.lock().unwrap().map(|t| t.elapsed());
-            if pane.helper_of.lock().unwrap().is_some() && helper_quiet(*pane.status.lock().unwrap(), replied, pane.status_at.lock().unwrap().elapsed(), idle_mins) {
+            let incoming = {
+                let eng = st.engine.lock().unwrap();
+                eng.queue_len(id) > 0 || eng.pending.iter().any(|m| m.to == id)
+            };
+            if pane.helper_of.lock().unwrap().is_some() && !incoming && helper_quiet(*pane.status.lock().unwrap(), replied, pane.status_at.lock().unwrap().elapsed(), idle_mins) {
                 *pane.replied_at.lock().unwrap() = None;
                 close_pane(&pane);
             }
