@@ -3514,6 +3514,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   </div>
 {/if}
 {#if whatsNew && whatsNew.length && !whatsNewBlocked}
+  <!-- FR-103 (mockup 1): the window recedes and a click here is Oke (same as Esc); the card sits above it, so a click inside does nothing -->
+  <div class="wnveil" role="presentation" aria-hidden="true" onclick={dismissWhatsNew}></div>
   <div class="confirm whatsnew" role="dialog" aria-label={tt("set.diag.whatsNew")}>
     <span class="wnhead">
       <b class="ctitle">{tt("whatsnew.title", { version: whatsNew[0]?.version ?? appVer })}</b>
@@ -5472,6 +5474,14 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   .confirm.over {
     z-index: 11;
+  }
+  /* FR-103: the window recedes behind the notes card. Same colour as the page, so dark dims and light washes out
+     from the tokens already there; above the rail (6) and side panels (5), below the cards (8) */
+  .wnveil {
+    position: fixed;
+    inset: 0;
+    z-index: 7;
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
   }
   /* pen 13: confirmation card = bold title, body, Batal · Esc / main action */
   .confirm.ask {
