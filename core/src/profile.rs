@@ -768,7 +768,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
     let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
     // interactive PATH (already taken by detect at daemon start), so agents only on the `.zshrc` PATH are found;
     // the app's own PATH after it (`/etc/profile` on Debian/Ubuntu resets PATH)
-    s += &format!("export PATH={}; ", pane_path(USER_PATH.get().cloned().flatten().as_deref()));
+    s += &pane_path(USER_PATH.get().cloned().flatten().as_deref());
     for (k, v) in p.env.iter().chain(&hook_env) {
         // `~/…` outside the quotes so it becomes the home folder (e.g. CLAUDE_CONFIG_DIR per account)
         s += &format!("export {k}={}; ", home_q(v));
@@ -839,10 +839,13 @@ static USER_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new
 /// The daemon's own PATH (what the app was started with) after the login shell PATH: Debian/Ubuntu `/etc/profile`
 /// replaces PATH wholesale, so a login shell alone drops folders the app was given.
 fn pane_path(login: Option<&str>) -> String {
+    if !cfg!(target_os = "linux") {
+        return login.map(|p| format!("export PATH={}:\"$PATH\"; ", q(p))).unwrap_or_default();
+    }
     let own = std::env::var("PATH").unwrap_or_default();
     match login {
-        Some(p) => format!("{}:{}:\"$PATH\"", q(p), q(&own)),
-        None => format!("{}:\"$PATH\"", q(&own)),
+        Some(p) => format!("export PATH={}:{}:\"$PATH\"; ", q(p), q(&own)),
+        None => format!("export PATH={}:\"$PATH\"; ", q(&own)),
     }
 }
 
@@ -867,7 +870,7 @@ fn user_path() -> Option<String> {
 pub fn detect() -> Value {
     let names: Vec<&str> = AGENTS.iter().map(|a| a.0).collect();
     let script = format!(
-        "export PATH={}; for a in {}; do p=$(command -v \"$a\") && printf '%s\\t%s\\t%s\\n' \"$a\" \"$p\" \"$(\"$a\" --version 2>/dev/null | head -1)\"; done",
+        "{}for a in {}; do p=$(command -v \"$a\") && printf '%s\\t%s\\t%s\\n' \"$a\" \"$p\" \"$(\"$a\" --version 2>/dev/null | head -1)\"; done",
         pane_path(user_path().as_deref()),
         names.join(" ")
     );
@@ -976,6 +979,18 @@ mod tests {
     }
 
     #[test]
+    fn pane_path_matches_platform() {
+        let own = std::env::var("PATH").unwrap_or_default();
+        if cfg!(target_os = "linux") {
+            assert_eq!(pane_path(None), format!("export PATH={}:\"$PATH\"; ", q(&own)));
+            assert_eq!(pane_path(Some("/login path")), format!("export PATH='/login path':{}:\"$PATH\"; ", q(&own)));
+        } else {
+            assert_eq!(pane_path(None), "");
+            assert_eq!(pane_path(Some("/login path")), "export PATH='/login path':\"$PATH\"; ");
+        }
+    }
+
+    #[test]
     fn launch_mengutip_semua_bagian() {
         let p = Profile {
             command: "my tool".into(),
@@ -985,7 +1000,8 @@ mod tests {
             ..builtin()[1].clone()
         };
         let s = launch(&p, None, None, false).unwrap();
-        assert!(s.starts_with("printf '\\033]777;gembala;agent-start\\007'; ( export PATH="), "{s}");
+        let path = pane_path(USER_PATH.get().cloned().flatten().as_deref());
+        assert!(s.starts_with(&format!("printf '\\033]777;gembala;agent-start\\007'; ( {path}")), "{s}");
         assert!(s.contains("export X='a b'\\''c'; export D=\"$HOME\"/'.claude-kerja'; "), "{s}");
         assert!(s.contains("printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\""), "{s}");
         let quiet = Profile { summarize: false, ..p.clone() };
