@@ -5364,15 +5364,19 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     display: flex;
     align-items: center;
     gap: 8px;
+    margin-bottom: 4px;
+    padding: 4px 8px;
+    border-radius: 5px;
+    background: var(--card);
     color: var(--tx-amber, #d97706);
-    font-size: 11.5px;
+    font: 600 11.5px system-ui, -apple-system, sans-serif;
     font-weight: 600;
   }
   .cards .cnt small {
     margin-left: auto;
     color: var(--muted);
     font-weight: 400;
-    font-size: 10.5px;
+    font: 400 10.5px system-ui, -apple-system, sans-serif;
   }
   .card blockquote {
     margin: 0;
