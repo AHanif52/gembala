@@ -1131,6 +1131,10 @@ fn fr99_bar_izin_dan_jawaban() {
     assert_eq!(opts.len(), 3, "{r}");
     assert_eq!((opts[0]["key"].as_str(), opts[0]["label"].as_str()), (Some("1"), Some("1. Izinkan")));
     assert_eq!((opts[1]["label"].as_str(), opts[2]["label"].as_str()), (Some("2. Izinkan terus"), Some("Tolak")));
+    let en = ui.call("pane.dialogs", json!({"panes": [pane], "lang": "en"}));
+    let en_opts = en["result"]["panes"][key.as_str()]["options"].as_array().unwrap();
+    assert_eq!((en_opts[0]["label"].as_str(), en_opts[1]["label"].as_str(), en_opts[2]["label"].as_str()),
+        (Some("1. Allow"), Some("2. Allow always"), Some("Deny")));
     // SEC-28: an answer for another dialog generation writes nothing (the bar was rendered before a new question)
     assert_eq!(ui.call("pane.answer", json!({"pane": pane, "key": "1", "seq": 987654}))["result"]["reason"], "changed");
     assert_eq!(ui.call("pane.dialogs", json!({"panes": [pane], "lang": "id"}))["result"]["panes"][key.as_str()]["waiting"], true);
