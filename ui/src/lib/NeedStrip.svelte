@@ -21,7 +21,7 @@
 
 {#if rows.length}
   <div class="queue" role="region" aria-label={t("side.needsYou")}>
-    <div class="qhead">{t("side.needsYou")} <span class="n">{rows.length}</span><small>{t("need.next", { key: nextKey })}</small></div>
+    <div class="qhead">{t("side.needsYou")} <span class="n">{rows.length}</span><small>{simple ? t("card.countHint") : t("need.next", { key: nextKey })}</small></div>
     {#each [1, 2, 3] as g (g)}
       {@const groupRows = rows.filter((r) => r.group === g)}
       {#if groupRows.length}
