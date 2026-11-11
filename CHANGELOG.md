@@ -2,6 +2,20 @@
 
 `scripts/rilis.sh` puts the section of the version being released on its GitHub release page.
 
+## 0.1.10
+
+### English
+
+- An agent asking to close a helper it opened that is still working or waiting now shows you the close card (with its status) instead of being refused.
+- `gembala wait` can wait up to 6 hours (`--timeout 21600`), so a long task given to another agent no longer looks like a failure after an hour.
+- A debug or development build of Gembala says "debug · <branch>" at the top of the window, so it can't be mistaken for the installed app.
+
+### Indonesia
+
+- Agent yang minta nutup helper yang dia buka sendiri tapi masih kerja atau nunggu sekarang nampilin kartu tutup ke lu (lengkap dengan statusnya), bukan ditolak.
+- `gembala wait` bisa nunggu sampai 6 jam (`--timeout 21600`), jadi tugas panjang ke agent lain nggak kelihatan gagal setelah sejam.
+- Build debug atau development Gembala nulis "debug · <branch>" di atas jendela, jadi nggak ketuker sama app yang terpasang.
+
 ## 0.1.9
 
 ### English
