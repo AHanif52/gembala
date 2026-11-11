@@ -2183,7 +2183,11 @@
     const w = t && wss.find((w) => w.tabs.includes(t));
     // SEC-33: the tab name only when a person gave it (`t.title`); `title()` falls back to the agent's task label (FR-69)
     const at = whereOf(w?.name ?? "", t?.title ?? "");
-    const agent = m ? (cfg?.values.profiles.find((p) => p.id === m.profile)?.name ?? m.profile) : "";
+    // the agent running there, also one typed in a shell pane ("shell-2 · Claude Code", not "· Shell"); the pane's own
+    // profile first when it is that agent
+    const own = m && cfg?.values.profiles.find((p) => p.id === m.profile);
+    const running = pane === undefined ? "" : agentOf(pane);
+    const agent = m ? ((running && own?.agent !== running && cfg?.values.profiles.find((p) => p.agent === running)?.name) || own?.name || m.profile) : "";
     const title = m ? tt("notice.title", { name: m.name || m.profile, agent }) : (o.run ?? "Gembala");
     const what = tt(wordKey(kind));
     const e: NoticeEvent = {
