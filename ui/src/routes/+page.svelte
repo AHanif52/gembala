@@ -226,7 +226,13 @@
   let msgData = $state<any>(null);
   let compose = $state<{ to: number | null; body: string; force: boolean; error: string } | null>(null);
   async function refreshMsgs() {
+    const picked = new Map((msgData?.opens ?? []).map((o: any) => [o.id, o]));
     msgData = await call("msg.list").catch(() => msgData);
+    // FR-75: a model/effort the user changed on an open card survives the refresh
+    for (const o of msgData?.opens ?? []) {
+      const p: any = picked.get(o.id);
+      if (p) Object.assign(o, { model: p.model, effort: p.effort });
+    }
   }
   const pendingFor = (pane: number) => (msgData?.pending ?? []).filter((m: any) => m.to === meta[pane]?.name);
   /// FR-75: agent asked for an agent that isn't open; the card sits in the asking pane

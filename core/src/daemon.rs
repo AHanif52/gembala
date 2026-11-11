@@ -1659,8 +1659,9 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
     Ok(json!({"result": "queued", "reason": "needs_open", "id": m.id, "to": target}))
 }
 
+/// a model starting with `-` would be read as a flag (`gemini --model --yolo` skips every permission prompt)
 fn validate_model_effort(model: &str, effort: &str) -> Result<(), &'static str> {
-    if model.len() > 64 || !model.bytes().all(|c| c.is_ascii_alphanumeric() || b"._:/[]-".contains(&c))
+    if model.len() > 64 || model.starts_with('-') || !model.bytes().all(|c| c.is_ascii_alphanumeric() || b"._:/[]-".contains(&c))
         || (!effort.is_empty() && !account::EFFORTS.contains(&effort)) {
         return Err("bad_args");
     }
@@ -2887,6 +2888,7 @@ mod tests {
         assert_eq!(validate_model_effort("provider/model:v1[fast]", "high"), Ok(()));
         assert_eq!(validate_model_effort(&"x".repeat(65), ""), Err("bad_args"));
         assert_eq!(validate_model_effort("bad model", ""), Err("bad_args"));
+        assert_eq!(validate_model_effort("--yolo", ""), Err("bad_args"));
         assert_eq!(validate_model_effort("opus", "extreme"), Err("bad_args"));
         assert_eq!(model_effort(&json!({"model": 3})), Err("bad_args"));
     }
