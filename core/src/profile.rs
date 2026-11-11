@@ -454,13 +454,23 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
          function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
          function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command opencode \"$@\" }}\n\
-         [[ -f {acc} ]] && builtin source {acc}\n",
+         zmodload -F zsh/stat b:zstat\n\
+         __gembala_accounts() {{\n\
+           local -A info\n\
+           builtin zstat -H info {acc} 2>/dev/null || return 0\n\
+           local stamp=\"$info[inode]:$info[mtime]:$info[size]\"\n\
+           [[ $stamp == $__gembala_accounts_stamp ]] && return 0\n\
+           builtin source {acc} && __gembala_accounts_stamp=$stamp\n\
+         }}\n\
+         __gembala_accounts\n\
+         autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_accounts\n",
         acc = q(&dir.join("accounts.zsh").to_string_lossy())
     )
 }
 
 /// FR-61: `claude-<account>` in a shell pane = `claude` (with the hooks above) using that account's folder.
-/// Rewritten by the daemon each time config loads, so a new account works in panes opened after that.
+/// Rewritten by the daemon each time config loads; pane shells reload it before the next prompt.
+/// shortcut: removed account functions remain until shell restart; track generated names if removal must be immediate.
 pub fn zsh_accounts(accounts: &[crate::account::Account]) -> String {
     let mut s = String::from("# made by Gembala (FR-61): one command per agent account\n");
     // a Utama session resumed from a shell on another account (resume command `claude-utama --resume <id>`).
@@ -1110,6 +1120,37 @@ mod tests {
         assert!(out.ends_with("<--plugin-dir></p a/x><--session-id><id><--x>"), "{out}");
         assert!(run("exit 1").ends_with("}><--session-id><id><--x>"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shell_reloads_accounts_before_next_prompt() {
+        let dir = std::env::temp_dir().join(format!("gembala-accounts-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let account = |id: &str| crate::account::Account { id: id.into(), agent: "claude".into(), name: id.into(), dir: format!("/accounts/{id}"), share: vec![], model: String::new(), effort: String::new(), trust: true };
+        let accounts = dir.join("accounts.zsh");
+        let next = dir.join("next.zsh");
+        std::fs::write(&accounts, zsh_accounts(&[account("lama")])).unwrap();
+        std::fs::write(&next, format!("{}\n(( ++loads ))\n", zsh_accounts(&[account("baru")]))).unwrap();
+        // Atomic config rewrites within the same second must still reload.
+        let modified = std::fs::metadata(&accounts).unwrap().modified().unwrap();
+        std::fs::File::options().write(true).open(&next).unwrap().set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+        let rc = dir.join("rc.zsh");
+        std::fs::write(&rc, zsh_agents(&dir, "/x/gembala")).unwrap();
+        let script = format!(r#"
+builtin source {rc}
+(( $+functions[claude-lama] && ! $+functions[claude-baru] )) || exit 1
+command mv {next} {accounts} || exit 2
+for hook in $precmd_functions; do "$hook"; done
+(( $+functions[claude-baru] && loads == 1 )) || exit 3
+for hook in $precmd_functions; do "$hook"; done
+(( loads == 1 )) || exit 4
+function claude {{ print -r -- "$CLAUDE_CONFIG_DIR $*" }}
+claude-baru --resume x
+"#, rc = q(&rc.to_string_lossy()), next = q(&next.to_string_lossy()), accounts = q(&accounts.to_string_lossy()));
+        let out = Command::new("zsh").args(["-f", "-c", &script]).output().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        assert!(out.status.success(), "{:?}: {}", out.status, String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/accounts/baru --resume x");
     }
 
     #[test]
