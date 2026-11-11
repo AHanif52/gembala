@@ -1170,15 +1170,38 @@
 
   /// Criterion 17: daemon force-killed = every pane shows as a dead pane (rerun button),
   /// then a new daemon is launched by the next call.
+  /// A dropped connection doesn't have to mean the daemon is gone: the panes keep running inside it (a daemon before
+  /// 0.1.9 shut the socket of a UI client that fell behind during a big burst, TECH 16; now it sends `pane.lag`). So
+  /// ask who the daemon is first — same boot id and the pane still listed = re-attach it; a different boot id = the
+  /// panes stopped with it.
   let lost = false;
   async function onLost() {
     if (lost) return;
     lost = true;
+    confirm = null;
+    changes = null;
+    rich = null;
+    await new Promise((r) => setTimeout(r, 500));
+    // the next call reconnects (no answer = the daemon is really gone and this says nothing)
+    let alive = new Set<number>();
+    let same = false;
+    try {
+      same = (await call("daemon.info")).boot === boot;
+      alive = new Set<number>(await call("pane.list"));
+    } catch {
+      same = false;
+    }
     let next = Math.min(-1, ...Object.keys(meta).map(Number), ...Object.keys(dead).map(Number)) - 1;
+    const again: number[] = [];
     for (const w of wss)
       for (const t of w.tabs)
         for (const p of panes(t.tree)) {
           if (dead[p]) continue;
+          // the same daemon and the pane is still there: it outlived the connection (only its events were missed)
+          if (same && alive.has(p)) {
+            again.push(p);
+            continue;
+          }
           const id = next--;
           t.tree = replace(t.tree, p, id);
           if (t.focus === p) t.focus = id;
@@ -1186,10 +1209,13 @@
           delete meta[p];
           dead[id] = true;
         }
-    confirm = null;
-    changes = null;
-    rich = null;
-    await new Promise((r) => setTimeout(r, 500));
+    if (same) {
+      // a new connection has no pane subscriptions: attach again (status and cwd follow from the 2 s poll)
+      cfg = await call("config.get").catch(() => cfg);
+      for (const p of again) tiles[p]?.reattach();
+      lost = false;
+      return;
+    }
     try {
       boot = (await call("daemon.info")).boot;
       cfg = await call("config.get");

@@ -166,6 +166,11 @@
     online(line);
   }
   export const focus = () => term.focus();
+  /// The page re-attaches every pane of a daemon it reconnected to (criterion 17); filled in `onMount`
+  let reattachNow: (() => void) | null = null;
+  export function reattach() {
+    reattachNow?.();
+  }
 
   /// FR-58: command block timeline from the shell's OSC 133 markers (A prompt, C command runs + base64 text, D done + exit code).
   /// Only blocks from the stream since attach; the attach snapshot holds no markers.
@@ -584,6 +589,8 @@
         attached = false;
         replay(e.params).then(() => ((attached = true), early.splice(0).forEach(onEvent)));
       }
+      // the daemon stopped feeding this client output for this pane (it fell behind): re-attach rebuilds the screen
+      if (e.event === "pane.lag") void doAttach();
       if (e.event === "pane.exit") onexit(pane);
     };
     const unlisten = listen<any>("daemon", ({ payload }) => {
@@ -593,7 +600,17 @@
       else early.push(payload);
     });
 
-    (async () => {
+    // Attach, and attach again: a reconnected UI channel and a `pane.lag` (the daemon stopped feeding this client, see
+    // `send_all`) both rebuild the screen from a fresh snapshot, so the terminal is reset first — output written before
+    // that snapshot is already in it.
+    let attaching = false;
+    const doAttach = async () => {
+      if (attaching) return; // a lag noticed during an attach is covered by it
+      attaching = true;
+      attached = false;
+      synced = false;
+      early.splice(0);
+      term.reset();
       try {
         await unlisten; // listener ready before attach: the marker must not be missed
         // the attach reply and events take different paths in Tauri: events arriving first are held
@@ -608,9 +625,15 @@
         if (synced) early.splice(0).forEach(onEvent); // not yet: a marker arriving later drops what's held
       } catch (e) {
         sized = true;
+        // the pane left while this screen was away (a `pane.lag` or a reconnect whose pane.exit was missed): drop it
+        if (String(e).includes("no_such_pane")) return onexit(pane);
         term.write(`\x1b[31m${t("tile.attachFailed", { pane, why: errText(e) })}\x1b[0m\r\n`);
+      } finally {
+        attaching = false;
       }
-    })();
+    };
+    reattachNow = () => void doAttach();
+    void doAttach();
 
     // Shift+Enter = ESC CR (same as Claude Code's /terminal-setup in iTerm2): newline in agent TUIs
     term.attachCustomKeyEventHandler((e) => {
