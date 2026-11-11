@@ -65,11 +65,13 @@ impl Cache {
             }
             self.pending_done = None;
             "done"
-        } else if hook.is_none() && self.pending_blocked.is_some_and(|start| now.duration_since(start) >= BLOCKED_SETTLE)
-            && self.data.as_ref().is_some_and(|d| d.status == "busy")
+        } else if hook.is_none()
+            && self.pending_blocked.is_some_and(|start| now.duration_since(start) >= BLOCKED_SETTLE)
+            && let Some(session) = self.data.as_ref().filter(|d| d.status == "busy" || d.status == "idle")
         {
+            // A background agent's prompt notification never gets its own clearing hook; a real prompt writes `waiting` to the session file.
             self.pending_blocked = None;
-            "working"
+            if session.status == "busy" { "working" } else { "idle" }
         } else {
             hook.unwrap_or(current)
         };
@@ -292,6 +294,25 @@ mod tests {
         cache.data = None;
         assert_eq!(cache.next(Some("blocked"), "working", now), Some(("blocked", false)));
         assert_eq!(cache.next(None, "blocked", now + BLOCKED_SETTLE), Some(("blocked", false)));
+    }
+
+    #[test]
+    fn idle_session_releases_stale_permission_hook() {
+        let now = Instant::now();
+        let mut cache = Cache { data: Some(Session { status: "idle".into(), reason: String::new() }), ..Cache::default() };
+        assert_eq!(cache.next(Some("blocked"), "working", now), Some(("blocked", false)));
+        assert!(cache.overrides());
+        assert_eq!(cache.next(None, "blocked", now + Duration::from_secs(2)), Some(("blocked", false)));
+        assert_eq!(cache.next(None, "blocked", now + BLOCKED_SETTLE), Some(("idle", false)));
+        assert!(cache.pending_blocked.is_none());
+        assert!(!cache.overrides());
+
+        // A real prompt keeps `waiting` in the session file: the hook holds.
+        cache.data = Some(Session { status: "waiting".into(), reason: "minta izin".into() });
+        assert_eq!(cache.next(Some("blocked"), "idle", now), Some(("blocked", false)));
+        assert_eq!(cache.next(None, "blocked", now + BLOCKED_SETTLE), Some(("blocked", false)));
+        assert!(cache.pending_blocked.is_some());
+        assert_eq!(cache.reason, "minta izin");
     }
 
     #[test]

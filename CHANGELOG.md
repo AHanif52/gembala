@@ -12,6 +12,7 @@
 - Telegram: permission cards say what the agent asks for and why, with buttons right under the text (Oh My Pi, OpenCode, Claude, Codex). Codex's done card waits for its answer instead of showing its screen. Claude's web-fetch dialog now counts as "needs you".
 - Telegram: phone text follows the last pane only while an agent still runs in it, so a reply to a card an agent posted through the bot itself (no pane name on its first line) no longer lands on the shell that pane became; a shell pane's refusal now names the pane.
 - Fixes: a Claude pane no longer stays on "needs permission" after the prompt is gone; a second click on "Open and send" no longer opens another pane.
+- A Claude pane whose session file reads idle no longer stays on "needs permission" when the prompt hook came from a background agent.
 
 ## 0.1.8
 
