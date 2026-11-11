@@ -30,7 +30,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
-  import { frontCard, needPanes, needRows, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed } from "$lib/attention";
+  import { frontCard, needPanes, needRows, word, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed } from "$lib/attention";
   import type { UsageRow } from "$lib/usage";
   import { splitRows, subtabRows } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
@@ -2809,7 +2809,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             {#each rows as r (r.key)}
               <div class="need {r.kind}">
                 <button class="nrow" onclick={() => goNeed(r)}>
-                  <span class="dot {dotOf(r.kind)}" aria-hidden="true"></span>
+                  <!-- the dot's tooltip is FR-87's kind word, the same one the bell and the banner use -->
+                  <span class="dot {dotOf(r.kind)}" title={tt(word(r.kind) as Key)} aria-hidden="true"></span>
                   <span class="nmain">
                     <span class="ntitle">
                       {#if GLYPH[needIcon(r)]}<span class="aico {needIcon(r)}">{GLYPH[needIcon(r)]}</span>{/if}{needTitle(r)}
