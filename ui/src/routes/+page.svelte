@@ -3577,6 +3577,10 @@
   .side.full {
     padding-top: 10px;
   }
+  /* the line under the window-button strip, continuing the rail's (Rail.svelte) */
+  .side:not(.full) {
+    background: linear-gradient(transparent 34px, var(--line) 34px 35px, transparent 35px) no-repeat, var(--side);
+  }
   .drag.top {
     position: fixed;
     height: 28px;

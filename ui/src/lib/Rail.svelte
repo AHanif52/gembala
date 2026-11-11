@@ -182,6 +182,20 @@
   .usage-rail.full {
     padding-top: 10px;
   }
+  /* the macOS window buttons (≈70 px) sit across the rail and the sidebar: the top strip is one color with the
+     sidebar, the rail's own color and line start below it */
+  .usage-rail:not(.full) {
+    border-right: 0;
+    background: linear-gradient(var(--side) 34px, var(--line) 34px 35px, color-mix(in srgb, var(--bg) 97%, var(--fg)) 35px);
+  }
+  .usage-rail:not(.full)::after {
+    content: "";
+    position: absolute;
+    top: 34px;
+    right: 0;
+    bottom: 0;
+    border-right: 1px solid var(--line);
+  }
   .window-drag {
     position: absolute;
     inset: 0 0 auto;
