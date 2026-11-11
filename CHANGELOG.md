@@ -2,6 +2,16 @@
 
 `scripts/rilis.sh` puts the section of the version being released on its GitHub release page.
 
+## 0.1.9
+
+- Report a problem (⌘P › Report a problem): Gembala fills in the versions, you check the text, and it opens a new GitHub issue in your browser. Nothing is sent until you press Submit there. Agents can draft one with `gembala report`.
+- How much allowance is left per agent login (Claude, Codex, Oh My Pi, Gemini) shows in a rail beside the panes.
+- Helper panes an agent opens show as sub-tabs under its tab, with their stage and status.
+- The pane bar shrinks with its width; what doesn't fit moves into a "…" menu.
+- Lighter: the default scrollback is now 2,000 lines (each line costs memory in every live pane). Already set to more? Settings › Appearance.
+- Telegram: permission cards say what the agent asks for and why, with buttons right under the text (Oh My Pi, OpenCode, Claude, Codex). Codex's done card waits for its answer instead of showing its screen. Claude's web-fetch dialog now counts as "needs you".
+- Fixes: a Claude pane no longer stays on "needs permission" after the prompt is gone; a second click on "Open and send" no longer opens another pane.
+
 ## 0.1.8
 
 - Safety fix for Telegram permission buttons: Claude Code 2.1.311 asks with 4 options in a Bash dialog, and button "3" used to switch the session to auto mode. Buttons now come from the options on screen with their own words ("4. No"); options that change the permission mode never get a button, and an unknown dialog only gets Esc.
