@@ -2534,7 +2534,8 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let (rows, cols) = v.0.size();
     let (segs, tail) = v.0.replay();
     let segs: Vec<_> = segs.iter().map(|s| json!({"rows": s.rows, "cols": s.cols, "data": B64.encode(&s.data)})).collect();
-    let ev = json!({"event": "pane.replace", "params": {"pane": id, "segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "resume": resume}});
+    // FR-87: the agent's own exit code (the pane process is the shell after it, so pane.exit never carries it)
+    let ev = json!({"event": "pane.replace", "params": {"pane": id, "segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "resume": resume, "code": code.parse::<i32>().ok()}});
     send_all(v, line(ev));
 }
 

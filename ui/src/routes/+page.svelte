@@ -1098,10 +1098,8 @@
   }
 
   /// Pane exits: gone from its tab; an empty tab closes; a workspace may be empty (FR-44).
-  async function onexit(pane: number, code?: number | null) {
+  async function onexit(pane: number) {
     if (relaunching.has(pane)) return;
-    // FR-87: an agent profile's process ended with an error (a signal gives no code: that's the user closing the pane)
-    if (code && AGENTS.includes(meta[pane]?.agent ?? "")) notice(pane, "failed");
     if (confirm?.pane === pane) confirm = null;
     withdrawTitles(settle(nst, pane));
     for (const [wi, w] of wss.entries()) {
@@ -2363,11 +2361,15 @@
       if (payload.event === "config.changed") cfg = payload.params;
       if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status, payload.params.shell, payload.params.reason, payload.params.status_at, payload.params.last);
       // a tab whose xterm is detached has no Tile listening for pane.exit
-      if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane, payload.params.code);
+      if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane);
       if (payload.event === "pane.replace" && meta[payload.params.pane]) {
         // agent exits = empty status (the daemon clears it without a pane.status event; without this it stays "working")
         previews[payload.params.pane] = "";
         Object.assign(meta[payload.params.pane], { output: true, status: "", ended: { resume: payload.params.resume ?? null } });
+        // FR-87: the agent itself failed; 126/127 = didn't start or wasn't found (the pane already says so), >128 = a
+        // signal (Ctrl+C, closing it): not news
+        const code = payload.params.code;
+        if (typeof code === "number" && code >= 1 && code <= 125) notice(payload.params.pane, "failed");
       }
       if (payload.event === "daemon.lost") onLost();
       if (payload.event === "msg.event") (onMsgEvent(payload.params), refreshMsgs().then(sweep));
