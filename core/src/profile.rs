@@ -1180,7 +1180,9 @@ mod tests {
         assert!(launch(&by("opencode"), None, Some(&none), false).unwrap().contains("'opencode' '--continue'"));
         assert!(!valid_session("opencode", "a b") && !valid_session("codex", "ses_1") && valid_session("omp", "01a19b03-x"));
         let bad = Session { id: Some("x; rm -rf /".into()), resume: false };
-        assert!(!launch(&by("claude"), None, Some(&bad), false).unwrap().contains("rm"));
+        // the rejected id never reaches the command (the launch also carries the PATH, which may hold "rm" on a runner)
+        let l = launch(&by("claude"), None, Some(&bad), false).unwrap();
+        assert!(!l.contains("x; rm") && !l.contains("rm -rf"), "{l}");
         assert!(valid_uuid(id) && !valid_uuid("0b6f2a1e"));
     }
 
