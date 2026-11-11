@@ -153,7 +153,11 @@ fn step_flags(s: &recipe::Step, agent: &str) -> Vec<String> {
 
 /// B1 `recipe.library`: which card fields mean something for an agent (`flags` below sets nothing for the others)
 pub fn supports(agent: &str) -> Value {
-    json!({"model": true, "effort": agent != "opencode", "cost": agent == "omp"})
+    json!({
+        "model": matches!(agent, "claude" | "codex" | "omp" | "opencode" | "gemini"),
+        "effort": matches!(agent, "claude" | "codex" | "omp"),
+        "cost": agent == "omp"
+    })
 }
 
 pub fn flags(agent: &str, model: &str, effort: &str, cost: Option<f64>) -> Vec<String> {
@@ -169,6 +173,10 @@ pub fn flags(agent: &str, model: &str, effort: &str, cost: Option<f64>) -> Vec<S
                 add("--effort".into());
                 add(effort.into());
             }
+        }
+        "gemini" if !model.is_empty() => {
+            add("--model".into());
+            add(model.into());
         }
         "codex" => {
             if !model.is_empty() {
@@ -976,6 +984,10 @@ mod tests {
         assert_eq!(flags("claude", "", "", None), Vec::<String>::new());
         assert_eq!(flags("codex", "gpt-5", "max", None), ["-m", "gpt-5", "-c", "model_reasoning_effort=\"high\""]);
         assert_eq!(flags("omp", "x", "low", Some(2.5)), ["--model=x", "--thinking=low", "--max-cost=2.5", "--warn-cost=2"]);
+        assert_eq!(flags("gemini", "gemini-3-pro-preview", "", None), ["--model", "gemini-3-pro-preview"]);
+        assert_eq!(supports("gemini")["effort"], false);
+        assert_eq!(supports("opencode")["effort"], false);
+        assert_eq!(supports("custom")["model"], false);
         assert_eq!(flags("opencode", "p/m", "high", None), ["-m", "p/m"]);
         assert!(flags("shell", "x", "y", None).is_empty());
         // the step's model only reaches its first agent; a fallback keeps the effort and its own default model

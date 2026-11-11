@@ -240,16 +240,19 @@
     const name = acct && acct !== "utama" ? accs.find((a) => a.id === acct)?.name : accs.some((a) => a.agent === p?.agent) ? tt("acc.main") : "";
     return [p?.name ?? o.profile, name].filter(Boolean).join(" · ");
   };
+  const agentForOpen = (o: any) => cfg?.values.profiles.find((x) => x.id === o.profile)?.agent;
   /// FR-101: a helper gets its own tab under the asker's tab; the asker's focus stays put.
   /// FR-75 requests being opened right now: a second click (card, drawer, double click) must not open a second pane
   const opening = new Set<string>();
+  let openModels = $state<string[]>([]);
+  let openEfforts = $state<string[]>([]);
   async function approveOpen(o: any) {
     const w = wss.find((w) => w.tabs.some((x) => panes(x.tree).includes(o.from_pane)));
     const t = w?.tabs.find((x) => panes(x.tree).includes(o.from_pane));
     if (!t || opening.has(o.id) || !(msgData?.opens ?? []).some((x: any) => x.id === o.id)) return;
     opening.add(o.id);
     try {
-      const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd: o.cwd || undefined });
+      const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd: o.cwd || undefined, model: o.model, effort: o.effort });
       quietAt[id] = Date.now();
       const child: Tab = { id: uid(), title: "", tree: { pane: id }, focus: id, parent: t.id };
       t.helpersOpen = true;
@@ -2378,6 +2381,7 @@
   let fullscreen = $state(false); // full screen: macOS window buttons disappear, their space in the sidebar goes too
 
   onMount(() => {
+    call("account.list", {}).then((r) => { openModels = r.models ?? []; openEfforts = r.efforts ?? []; }).catch(() => {});
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("keydown", keepFullscreen);
     const win = getCurrentWindow();
@@ -3029,10 +3033,28 @@
           {#each opensFor(pane).slice(0, 1) as o (o.id)}
             <!-- FR-75 (pen screen 15): one card at a time, the rest counted; click only, like FR-12 -->
             {@const n = opensFor(pane).length}
+            {@const openAgent = agentForOpen(o)}
             <div class="card" role="alertdialog" aria-label={tt("open.title", { who: openWho(o) })}>
               <b>{tt("open.title", { who: openWho(o) })}{n > 1 ? ` · ${tt("open.more", { n: n - 1 })}` : ""}</b>
               <span>{tt("open.ask", { from: o.from, who: openWho(o) })}</span>
               <pre>{o.body}</pre>
+              {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(openAgent ?? "")}
+                <div class="sub"><span>{tt("open.modelEffort")}</span>
+                  <select aria-label={tt("open.modelEffort")} value={openModels.includes(o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
+                    <option value="">{tt("set.acc.default.opt")}</option>{#each openModels as model (model)}<option value={model}>{model}</option>{/each}
+                  </select>
+                  <input aria-label={tt("set.acc.modelAria", { name: openWho(o) })} value={o.model} placeholder={tt("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
+                  {#if ["claude", "codex", "omp"].includes(openAgent ?? "")}
+                    <select aria-label={tt("open.effort")} bind:value={o.effort}>
+                      <option value="">{tt("set.acc.default.opt")}</option>{#each openEfforts as effort (effort)}<option value={effort}>{effort}</option>{/each}
+                    </select>
+                  {:else}
+                    <span>{tt("open.effortUnsupported", { agent: openAgent ?? o.profile })}</span>
+                  {/if}
+                </div>
+              {:else}
+                <span class="sub">{tt("open.modelUnsupported", { agent: openAgent ?? o.profile })}</span>
+              {/if}
               <span class="sub" title={o.cwd}>{tt("open.where", { cwd: short(o.cwd) })}</span>
               <span class="acts">
                 <button class="mini" onclick={() => call("open.reject", { id: o.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
@@ -3127,7 +3149,7 @@
       onsent={() => ((reportDraft = null), d.id && call("report.discard", { id: d.id }).then(refreshMsgs))} />
   {/if}
   {#if drawer}
-    <Messages data={msgData} {rows} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho} />
+    <Messages data={msgData} {rows} models={openModels} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho} />
   {/if}
   {#if compose}
     <div class="confirm compose" role="dialog" aria-label={tt("cmp.title")}>

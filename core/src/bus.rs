@@ -43,6 +43,8 @@ pub struct Open {
     pub profile: String,
     /// "" = the workspace default account (the UI picks it, like any new pane)
     pub account: String,
+    pub model: String,
+    pub effort: String,
     /// the requester's folder when it asked
     pub cwd: String,
     pub workspace: String,

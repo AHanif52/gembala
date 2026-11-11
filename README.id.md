@@ -183,7 +183,7 @@ Semua pintasan bisa diganti di Pengaturan > Pintasan atau bagian `[keys]` di con
 | Perintah | Fungsi |
 |---|---|
 | `gembala status` | Daftar agent lain di workspace ini |
-| `gembala send <pane> <pesan…>` | Kirim pesan (`--queue` untuk antre, `--reply-to <id>` untuk balasan) |
+| `gembala send <pane> <pesan…>` | Kirim pesan (`--queue` untuk antre, `--reply-to <id>` untuk balasan; `--model <id>` dan `--effort <level>` berlaku saat buka pane baru) |
 | `gembala wait [<pane>]` | Tunggu balasan, pola layar, atau timeout |
 | `gembala read <pane> [-n <baris>]` | Baca isi layar pane, rahasia disamarkan |
 | `gembala reply <msg_id> <teks…>` | Balas pesan yang masuk |

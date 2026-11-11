@@ -4,6 +4,7 @@
 
 ## 0.1.9
 
+- Agents can request a model and effort when asking you to open a new pane. Choose a listed model or enter an ID in the confirmation card; a setting doesn't change an agent pane that's already open.
 - Notifications say who needs you and why: the pane and its agent, what it waits for (a permission, an answer, a password, your OK, or a failure) or that it finished, and what to do next. One banner per pane; a banner goes away once you answer, and panes that finish together share one. Each kind has its own switch in Settings › General › Notifications.
 - Report a problem (⌘P › Report a problem): Gembala fills in the versions, you check the text, and it opens a new GitHub issue in your browser. Nothing is sent until you press Submit there. Agents can draft one with `gembala report`.
 - How much allowance is left per agent login (Claude, Codex, Oh My Pi, Gemini) shows in a rail beside the panes.

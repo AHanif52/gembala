@@ -12,7 +12,10 @@
     onclose,
     onopen,
     who,
-  }: { data: any; rows: Row[]; onchange: () => void; onclose: () => void; onopen: (o: any) => void; who: (o: any) => string } = $props();
+    models,
+    efforts,
+    agentOf,
+  }: { data: any; rows: Row[]; onchange: () => void; onclose: () => void; onopen: (o: any) => void; who: (o: any) => string; models: string[]; efforts: string[]; agentOf: (o: any) => string | undefined } = $props();
 
 
   const act = (method: string, params: object) => call(method, params).then(onchange, onchange);
@@ -79,6 +82,23 @@
           <div class="msg">
             <span>{t("open.ask", { from: o.from, who: who(o) })}</span>
             <pre>{o.body}</pre>
+          {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(agentOf(o) ?? "")}
+            <div class="sub"><span>{t("open.modelEffort")}</span>
+              <select aria-label={t("open.modelEffort")} value={models.includes(o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
+                <option value="">{t("set.acc.default.opt")}</option>{#each models as model (model)}<option value={model}>{model}</option>{/each}
+              </select>
+              <input aria-label={t("open.customModel")} value={o.model} placeholder={t("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
+              {#if ["claude", "codex", "omp"].includes(agentOf(o) ?? "")}
+                <select aria-label={t("open.effort")} bind:value={o.effort}>
+                  <option value="">{t("set.acc.default.opt")}</option>{#each efforts as effort (effort)}<option value={effort}>{effort}</option>{/each}
+                </select>
+              {:else}
+                <span>{t("open.effortUnsupported", { agent: agentOf(o) ?? o.profile })}</span>
+              {/if}
+            </div>
+          {:else}
+            <span>{t("open.modelUnsupported", { agent: agentOf(o) ?? o.profile })}</span>
+          {/if}
             <span class="acts">
               <button class="mini" onclick={() => act("open.reject", { id: o.id })}>{t("msg.reject")}</button>
               <button class="mini" onclick={() => onopen(o)}>{t("open.go")}</button>

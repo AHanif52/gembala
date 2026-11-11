@@ -1388,20 +1388,23 @@ fn fr75_buka_dan_kirim() {
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let minta = format!(
-        "g='{g}'; sleep 1; $g send nggakada-9 x; $g send cat TUGAS-A; r=$($g send cat TUGAS-B); \
+        "g='{g}'; sleep 1; $g send nggakada-9 x; $g send cat BAD --model 'bad model'; $g send cat BAD --effort nonsense; \
+         $g send cat TUGAS-A; $g send claude TUGAS-MODEL --model opus --effort high; r=$($g send cat TUGAS-B); \
          id=$(printf '%s' \"$r\" | sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p'); echo DIMINTA; $g wait --reply \"$id\"; echo SELESAI-75; sleep 30"
     );
     profiles(&d, &mut ui, &(sh_profile("cat", "stty raw -echo; cat -v") + &sh_profile("minta", &minta)), "SELESAI-75");
     let k = ui.call("pane.create", json!({"profile": "minta", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(k, &["DIMINTA"]);
-    assert!(out.contains("no_such_pane") && out.contains("needs_open"), "{out}");
+    assert!(out.contains("no_such_pane") && out.contains("bad_args") && out.contains("needs_open"), "{out}");
     let opens = ui.call("msg.list", json!({}))["result"]["opens"].clone();
-    assert_eq!(opens.as_array().unwrap().len(), 2, "{opens}");
+    assert_eq!(opens.as_array().unwrap().len(), 3, "{opens}");
     assert_eq!((opens[0]["profile"].as_str(), opens[0]["from_pane"].as_u64(), opens[0]["body"].as_str()), (Some("cat"), Some(k), Some("TUGAS-A")), "{opens}");
-    let (a, b) = (opens[0]["id"].as_str().unwrap().to_string(), opens[1]["id"].as_str().unwrap().to_string());
+    assert_eq!((opens[1]["model"].as_str(), opens[1]["effort"].as_str()), (Some("opus"), Some("high")), "{opens}");
+    let (a, model, b) = (opens[0]["id"].as_str().unwrap().to_string(), opens[1]["id"].as_str().unwrap().to_string(), opens[2]["id"].as_str().unwrap().to_string());
     let t = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     assert_eq!(ui.call("open.approve", json!({"id": a, "pane": t}))["result"]["result"], "queued");
     assert_eq!(ui.call("open.reject", json!({"id": b}))["result"]["reason"], "rejected_by_user");
+    assert_eq!(ui.call("open.reject", json!({"id": model}))["result"]["reason"], "rejected_by_user");
     assert_eq!(ui.call("msg.list", json!({}))["result"]["opens"], json!([]));
     let mut ui2 = Cli::ui(&d);
     let done = ui2.attach_until(k, &["SELESAI-75"]);

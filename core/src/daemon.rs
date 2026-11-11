@@ -703,7 +703,7 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 "pending": eng.pending.iter().map(|m| { let mut v = m.summary(); v["body"] = json!(m.body); v }).collect::<Vec<_>>(),
                 // FR-75: same exception, the open card shows the task as it will be sent
                 "opens": eng.opens.iter().map(|o| json!({"id": o.msg.id, "from": o.msg.from_name, "from_pane": o.msg.from, "target": o.msg.to_name, "profile": o.profile,
-                    "account": o.account, "cwd": o.cwd, "workspace": o.workspace, "body": o.msg.body})).collect::<Vec<_>>(),
+                    "account": o.account, "model": o.model, "effort": o.effort, "cwd": o.cwd, "workspace": o.workspace, "body": o.msg.body})).collect::<Vec<_>>(),
                 // FR-86: a close request waits for the user like an open card
                 "closes": closes,
                 "queued": queues,
@@ -1328,6 +1328,16 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
             None => String::new(),
         },
     };
+    let (model, effort) = model_effort(p)?;
+    validate_model_effort(model, effort)?;
+    if let Some(pr) = prof.as_ref() {
+        let supported = runner::supports(&pr.agent);
+        if !model.is_empty() && supported["model"] != true { return Err("unsupported_model"); }
+        if !effort.is_empty() && supported["effort"] != true { return Err("unsupported_effort"); }
+    }
+    if let Some(pr) = prof.as_mut() {
+        pr.args.extend(runner::flags(&pr.agent, model, effort, None));
+    }
     // FR-61: folders trusted in Utama become trusted in this account before its Claude runs
     if let Some(a) = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name && a.trust) {
         account::sync_trust(&a.dir);
@@ -1603,7 +1613,13 @@ fn open_target(st: &State, name: &str) -> Option<(String, String)> {
 /// FR-75: `send` to an agent not open yet = a card in the requester's pane, not an error. Max `HELPERS_MAX` helpers
 /// (alive + waiting cards) per requester, and a helper can't ask (depth 1). Counts to SEC-9 like a send.
 fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &Value) -> Res {
+    let (model, effort) = model_effort(p)?;
+    validate_model_effort(model, effort)?;
     let (profile, account) = open_target(st, target).ok_or("no_such_pane")?;
+    let agent = st.profiles.lock().unwrap().iter().find(|x| x.id == profile).map(|x| x.agent.clone()).ok_or("no_such_profile")?;
+    let supported = runner::supports(&agent);
+    if !model.is_empty() && supported["model"] != true { return Err("unsupported_model"); }
+    if !effort.is_empty() && supported["effort"] != true { return Err("unsupported_effort"); }
     let (helper, alive, cwd) = {
         let panes = st.panes.lock().unwrap();
         let alive = panes.values().filter(|x| *x.helper_of.lock().unwrap() == Some(me)).count();
@@ -1637,10 +1653,27 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
         return Ok(reject(st, &m, r));
     }
     eng.note_sent(me);
-    eng.opens.push(bus::Open { msg: m.clone(), profile, account, cwd, workspace: my_ws.to_string(), since: std::time::Instant::now() });
+    eng.opens.push(bus::Open { msg: m.clone(), profile, account, model: model.into(), effort: effort.into(), cwd, workspace: my_ws.to_string(), since: std::time::Instant::now() });
     drop(eng);
     record(st, "confirm", &m, Some("needs_open"));
     Ok(json!({"result": "queued", "reason": "needs_open", "id": m.id, "to": target}))
+}
+
+fn validate_model_effort(model: &str, effort: &str) -> Result<(), &'static str> {
+    if model.len() > 64 || !model.bytes().all(|c| c.is_ascii_alphanumeric() || b"._:/[]-".contains(&c))
+        || (!effort.is_empty() && !account::EFFORTS.contains(&effort)) {
+        return Err("bad_args");
+    }
+    Ok(())
+}
+
+fn model_effort(p: &Value) -> Result<(&str, &str), &'static str> {
+    let field = |key| match &p[key] {
+        Value::Null => Ok(""),
+        Value::String(value) => Ok(value.as_str()),
+        _ => Err("bad_args"),
+    };
+    Ok((field("model")?, field("effort")?))
 }
 
 /// Decision facts are re-read every time (SEC-28). `counted` = rate already counted on receipt.
@@ -1924,6 +1957,8 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
         }
         "send" => {
             let name = p["to"].as_str().ok_or("bad_params")?;
+            let (model, effort) = model_effort(p)?;
+            validate_model_effort(model, effort)?;
             let Some((to_id, to)) = st.by_name(name) else { return ask_open(st, me, &my_name, &my_ws, name, p) };
             if to_id == me {
                 return Err("bad_params");
@@ -1939,6 +1974,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             // FR-79: the current name goes in the answer, so a sender using an old name switches over
             let mut r = try_send(st, m, p["queue"].as_bool() == Some(true), false);
             r["to"] = json!(to_name);
+            if !model.is_empty() || !effort.is_empty() { r["note"] = json!("model_ignored"); }
             // FR-86: a new message restarts the quiet count of a helper that already replied
             let mut at = to.replied_at.lock().unwrap();
             if at.is_some() && r["result"] != "rejected" {
@@ -2845,6 +2881,15 @@ pub fn default_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_effort_are_validated_at_boundaries() {
+        assert_eq!(validate_model_effort("provider/model:v1[fast]", "high"), Ok(()));
+        assert_eq!(validate_model_effort(&"x".repeat(65), ""), Err("bad_args"));
+        assert_eq!(validate_model_effort("bad model", ""), Err("bad_args"));
+        assert_eq!(validate_model_effort("opus", "extreme"), Err("bad_args"));
+        assert_eq!(model_effort(&json!({"model": 3})), Err("bad_args"));
+    }
 
     #[test]
     fn helper_quiet_after_reply() {

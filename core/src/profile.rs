@@ -300,6 +300,7 @@ test result), longer only if the sender asked; label `[Gembala · from user]` = 
 answer on screen. The recipient cannot see your conversation: write every send as a full handover (goal, context and user decisions, \
 files/paths, what was tried or is forbidden, constraints, reply format), never a one-line summary; multi-line is fine. \
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. \
+Need a new pane with a chosen model? `gembala send <name> <task> --model <id> [--effort <level>]`; effort is supported by Claude Code, Codex and Oh My Pi; model and effort only affect a new pane. \
 Need an agent that is not open (or more panes)? `gembala send <name> <task>` with a name from `can_open` in `gembala status` \
 (e.g. `claude-utama`, `omp`) asks the user to open it: result `needs_open`, the task goes once they approve; max 4 per agent. \
 Done with a helper you opened? `gembala close <pane>`. Any pane in the workspace can be closed, but a pane you did not open asks the user first (`needs_review`). \
