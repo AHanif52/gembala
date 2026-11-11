@@ -11,6 +11,7 @@
 - The pane bar shrinks with its width; what doesn't fit moves into a "…" menu.
 - Lighter: the default scrollback is now 2,000 lines (each line costs memory in every live pane). Already set to more? Settings › Appearance.
 - Telegram: permission cards say what the agent asks for and why, with buttons right under the text (Oh My Pi, OpenCode, Claude, Codex). Codex's done card waits for its answer instead of showing its screen. Claude's web-fetch dialog now counts as "needs you".
+- Telegram: a "done" card now carries the agent's own answer for Claude, Codex and Oh My Pi (the pane's screen only when the agent has no answer hook). Claude's tool-call rows stay off the phone, and a screen showing a picker or dialog (Claude's `/model`, a permission list) is never sent: the card says the answer wasn't read and points at `/lihat`. A `/` command that isn't the bot's (`/exit`, `/compact`, `/clear`, `/model`) goes to the pane, reply-to-card included.
 - Telegram: phone text follows the last pane only while an agent still runs in it, so a reply to a card an agent posted through the bot itself (no pane name on its first line) no longer lands on the shell that pane became; a shell pane's refusal now names the pane.
 - Fixes: a Claude pane no longer stays on "needs permission" after the prompt is gone; a second click on "Open and send" no longer opens another pane.
 - A Claude pane whose session file reads idle no longer stays on "needs permission" when the prompt hook came from a background agent.
