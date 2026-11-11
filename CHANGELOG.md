@@ -11,6 +11,8 @@
 - `gembala wait` can wait up to 6 hours (`--timeout 21600`), so a long task given to another agent no longer looks like a failure after an hour.
 - A debug or development build of Gembala says "debug · <branch>" at the top of the window, so it can't be mistaken for the installed app.
 - Telegram: a Claude question where you can pick several answers now arrives as a poll; voting sends your picks to Claude (the buttons used to tick boxes with no way to submit). Question cards also show the question itself.
+- A Claude account added in Settings (`claude-<account>`) now works in shell panes that were already open, from their next prompt.
+- Telegram: a "asks for a password" card says to answer it on the Mac (passwords never go through the phone).
 
 ### Indonesia
 
@@ -19,6 +21,8 @@
 - `gembala wait` bisa nunggu sampai 6 jam (`--timeout 21600`), jadi tugas panjang ke agent lain nggak kelihatan gagal setelah sejam.
 - Build debug atau development Gembala nulis "debug · <branch>" di atas jendela, jadi nggak ketuker sama app yang terpasang.
 - Telegram: pertanyaan Claude yang jawabannya boleh lebih dari satu sekarang datang sebagai poll; vote = jawaban lu kekirim ke Claude (dulu tombolnya cuma nyentang tanpa bisa dikirim). Kartu pertanyaan juga nampilin pertanyaannya.
+- Akun Claude yang baru ditambah di Pengaturan (`claude-<akun>`) langsung kepake di pane shell yang udah kebuka, mulai prompt berikutnya.
+- Telegram: kartu "minta password" bilang jawabnya di Mac (password nggak pernah lewat HP).
 
 ## 0.1.9
 
