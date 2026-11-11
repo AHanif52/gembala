@@ -3,6 +3,7 @@ use super::*;
 use std::time::{Instant, SystemTime};
 
 const STOP_SETTLE: Duration = Duration::from_secs(2);
+const BLOCKED_SETTLE: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, PartialEq)]
 struct Session {
@@ -16,6 +17,7 @@ pub struct Cache {
     stamp: Option<(SystemTime, u64)>,
     data: Option<Session>,
     pending_done: Option<Instant>,
+    pending_blocked: Option<Instant>,
     pub shell: bool,
     pub reason: String,
 }
@@ -28,6 +30,7 @@ impl Cache {
         // Busy does not override hooks, but Stop needs it even when the file has not changed.
         self.data = self.data.take().filter(|d| d.status == "busy");
         self.pending_done = None;
+        self.pending_blocked = None;
     }
 
     fn apply(&mut self, status: &'static str) -> (&'static str, bool) {
@@ -45,6 +48,11 @@ impl Cache {
     }
 
     fn next(&mut self, hook: Option<&'static str>, current: &'static str, now: Instant) -> Option<(&'static str, bool)> {
+        if hook == Some("blocked") {
+            self.pending_blocked = Some(now);
+        } else if hook.is_some() {
+            self.pending_blocked = None;
+        }
         if hook == Some("done") && !self.shell && self.data.as_ref().is_some_and(|d| d.status == "busy") {
             // Stop precedes Claude's session-file update; don't publish an early done notice.
             self.pending_done.get_or_insert(now);
@@ -57,6 +65,11 @@ impl Cache {
             }
             self.pending_done = None;
             "done"
+        } else if hook.is_none() && self.pending_blocked.is_some_and(|start| now.duration_since(start) >= BLOCKED_SETTLE)
+            && self.data.as_ref().is_some_and(|d| d.status == "busy")
+        {
+            self.pending_blocked = None;
+            "working"
         } else {
             hook.unwrap_or(current)
         };
@@ -64,7 +77,7 @@ impl Cache {
     }
 
     pub fn overrides(&self) -> bool {
-        self.pending_done.is_some() || self.shell || self.data.as_ref().is_some_and(|d| d.status == "waiting")
+        self.pending_done.is_some() || self.pending_blocked.is_some() || self.shell || self.data.as_ref().is_some_and(|d| d.status == "waiting")
     }
 
     fn read(&mut self, path: PathBuf, pid: i32) {
@@ -253,6 +266,32 @@ mod tests {
         cache.clear(); // a new working/start hook cancels the pending Stop
         assert_eq!(cache.next(None, "working", now + STOP_SETTLE), Some(("working", false)));
         assert!(cache.pending_done.is_none());
+    }
+
+    #[test]
+    fn busy_session_releases_stale_permission_hook() {
+        let now = Instant::now();
+        let mut cache = Cache { data: Some(Session { status: "busy".into(), reason: String::new() }), ..Cache::default() };
+        assert_eq!(cache.next(Some("blocked"), "working", now), Some(("blocked", false)));
+        assert!(cache.overrides());
+        assert_eq!(cache.next(None, "blocked", now + Duration::from_secs(2)), Some(("blocked", false)));
+        assert_eq!(cache.next(None, "blocked", now + BLOCKED_SETTLE), Some(("working", false)));
+        assert!(cache.pending_blocked.is_none());
+
+        assert_eq!(cache.next(Some("blocked"), "working", now), Some(("blocked", false)));
+        cache.data = Some(Session { status: "waiting".into(), reason: "minta izin".into() });
+        assert_eq!(cache.next(None, "blocked", now + Duration::from_secs(1)), Some(("blocked", false)));
+        assert_eq!(cache.reason, "minta izin");
+        assert_eq!(cache.next(None, "blocked", now + BLOCKED_SETTLE), Some(("blocked", false)));
+
+        cache.data.as_mut().unwrap().status = "busy".into();
+        cache.clear(); // PostToolUse supersedes the permission notification.
+        assert_eq!(cache.next(Some("working"), "blocked", now + Duration::from_secs(1)), Some(("working", false)));
+        assert!(cache.pending_blocked.is_none());
+
+        cache.data = None;
+        assert_eq!(cache.next(Some("blocked"), "working", now), Some(("blocked", false)));
+        assert_eq!(cache.next(None, "blocked", now + BLOCKED_SETTLE), Some(("blocked", false)));
     }
 
     #[test]
