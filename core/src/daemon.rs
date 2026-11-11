@@ -729,7 +729,8 @@ fn ui_method(st: &Arc<State>, m: &str, p: &Value) -> Res {
                 // FR-100: drafts an agent made for the user to review; title = first line
                 "reports": eng.reports.iter().map(|r| {
                     let (title, text) = r.body.split_once('\n').unwrap_or((&r.body, ""));
-                    json!({"id": r.id, "from": r.from_name, "from_pane": r.from, "title": title, "body": text})
+                    let at = r.at.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    json!({"id": r.id, "from": r.from_name, "from_pane": r.from, "title": title, "body": text, "at": at})
                 }).collect::<Vec<_>>(),
                 "history": eng.history,
             }))

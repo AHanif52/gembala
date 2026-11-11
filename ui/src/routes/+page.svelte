@@ -541,6 +541,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// FR-99 P1: a sentence typed into the terminal by mistake. zsh answers 127 (command not found); three words or more,
   /// so a mistyped short command (`gti status`) doesn't get the offer. Shown in Simple and Full (user decision 10 Nov 2026).
   let offer = $state<Record<number, string>>({});
+  let offerAt = $state<Record<number, number>>({});
   /// FR-100: the report dialog (the user's own, or an agent's draft from `gembala report`)
   let reportDraft = $state<{ title: string; body: string; from?: string; id?: string } | null>(null);
   const reportsFor = (pane: number) => (msgData?.reports ?? []).filter((r: any) => r.from_pane === pane);
@@ -551,9 +552,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const cards: Card[] = [
       ...pendingFor(pane).map((m: any) => ({ id: `msg:${m.id}`, kind: "message" as const, at: (m.at ?? 0) * 1000, m })),
       ...opensFor(pane).map((o: any) => ({ id: `open:${o.id}`, kind: "open" as const, at: (o.at ?? 0) * 1000, o })),
-      ...reportsFor(pane).map((r: any) => ({ id: `rep:${r.id}`, kind: "report" as const, at: 0, r })),
+      ...reportsFor(pane).map((r: any) => ({ id: `rep:${r.id}`, kind: "report" as const, at: (r.at ?? now / 1000) * 1000, r })),
     ];
-    if (offer[pane]) cards.push({ id: "offer", kind: "offer", at: 0 });
+    if (offer[pane]) cards.push({ id: "offer", kind: "offer", at: offerAt[pane] ?? now });
     return cards;
   }
   /// a pane name from the message engine ("shell-11") as a person reads it: "OpenCode · Migrasi API"
@@ -585,10 +586,20 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// "Kirim": this terminal pane becomes the agent and the sentence is its first message (same wait as a manual task)
   async function sendOffer(pane: number) {
     const text = offer[pane];
-    delete offer[pane];
+    dismissOffer(pane);
     if (!offerAgent) return void (welcome = await call("agents.detect", {}).catch(() => []));
     const id = await swapToProfile(pane, offerAgent.id);
     if (id !== undefined) await firstMessage(id, text);
+  }
+  function setOffer(pane: number, cmd: string, code: number) {
+    const text = askOffer(cmd, code) ? cmd.trim() : "";
+    if (!text) return dismissOffer(pane);
+    offer[pane] = text;
+    offerAt[pane] = Date.now();
+  }
+  function dismissOffer(pane: number) {
+    delete offer[pane];
+    delete offerAt[pane];
   }
   async function firstMessage(id: number, task: string) {
     await new Promise((r) => setTimeout(r, 4000));
@@ -3107,7 +3118,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
                 onprompt={(on: boolean) => ((atPrompt[pane] = on), on || (ran[pane] = true))}
                 onused={() => (ran[pane] = true)}
-                ondone={(cmd: string, code: number) => (offer[pane] = askOffer(cmd, code) ? cmd.trim() : "")}
+                ondone={(cmd: string, code: number) => setOffer(pane, cmd, code)}
                 onblock={(kind: string, text: string) => {
                   if (kind === "output") return void (outputOf = pane);
                   // last session of an agent pane from a profile: rerun its pane (official hooks), not typed into the shell
@@ -3363,7 +3374,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <div class="card offer" role="alert">
                 <span>{offerAgent ? tt("offer.ask", { name: offerAgent.name }) : tt("offer.noAgent")}</span>
                 <span class="acts">
-                  <button class="mini" onclick={() => delete offer[pane]}>{offerAgent ? tt("offer.no") : tt("common.close")}</button>
+                  <button class="mini" onclick={() => dismissOffer(pane)}>{offerAgent ? tt("offer.no") : tt("common.close")}</button>
                   <button class="mini pri" onclick={() => sendOffer(pane)}>{offerAgent ? tt("offer.send") : tt("offer.install")}</button>
                 </span>
               </div>

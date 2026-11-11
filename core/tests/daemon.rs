@@ -1587,6 +1587,7 @@ fn fr100_lapor_masalah_cuma_draf() {
     assert!(out.contains("needs_review"), "{out}");
     let r = ui.call("msg.list", json!({}))["result"]["reports"][0].clone();
     assert_eq!(r["title"], "Kartu izin nggak muncul", "{r}");
+    assert!(r["at"].as_u64().is_some(), "{r}");
     let body = r["body"].as_str().unwrap();
     assert!(body.contains("~/x") && !body.contains("sk-ant-api03-abcdef"), "{body}");
     let env = ui.call("report.env", json!({}))["result"].clone();
