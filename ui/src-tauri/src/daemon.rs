@@ -162,6 +162,8 @@ fn connect_try(on_event: OnEvent, retry: bool) -> io::Result<Client> {
             return connect_try(on_event, false);
         }
         Err(e) if closing(&e) => return Err(e),
+        #[cfg(target_os = "linux")]
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
         Err(_) => {} // rejected: try the secret from the Keychain
     }
     let s = ui_stream(&dir)?;
@@ -314,6 +316,16 @@ fn peer_path(s: &UnixStream) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{}/exe", c.pid)).ok().and_then(|p| p.canonicalize().ok())
 }
 
+/// Authenticate the Linux server before sending hello: an agent can replace `ui.addr`.
+#[cfg(target_os = "linux")]
+fn verify_daemon(s: &UnixStream, exe: Option<&std::path::Path>) -> io::Result<()> {
+    let expected = exe.and_then(|p| p.canonicalize().ok());
+    if expected.is_none() || peer_path(s) != expected {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "UI connection refused: server is not this install's Gembala daemon"));
+    }
+    Ok(())
+}
+
 /// Old way (macOS without a helper): a direct child of the app, secret through descriptor 3.
 #[cfg(target_os = "macos")]
 fn spawn_child(exe: &std::path::Path) -> io::Result<String> {
@@ -349,6 +361,8 @@ fn spawn_child(exe: &std::path::Path) -> io::Result<String> {
 
 impl Client {
     fn open(s: UnixStream, secret: &str, on_event: OnEvent) -> io::Result<Client> {
+        #[cfg(target_os = "linux")]
+        verify_daemon(&s, daemon_exe().as_deref())?;
         let mut r = BufReader::new(s.try_clone()?);
         let mut w = s;
         let hello = json!({"id": 0, "method": "hello", "params": {"proto": 1, "client": "ui", "secret": secret}});
@@ -408,8 +422,25 @@ impl Client {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn daemon_peer_checked_before_secret() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let me = std::env::current_exe().unwrap();
+        assert!(verify_daemon(&a, Some(&me)).is_ok());
+        assert!(verify_daemon(&a, None).is_err());
+        assert!(verify_daemon(&a, Some(std::path::Path::new("/missing/gembala"))).is_err());
+        let e = Client::open(a, "must-not-leak", Arc::new(|_| {})).err().unwrap();
+        assert!(e.to_string().contains("server is not this install's Gembala daemon"), "{e}");
+        b.set_read_timeout(Some(std::time::Duration::from_secs(1))).unwrap();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut b, &mut bytes).unwrap();
+        assert!(bytes.is_empty(), "hello sent to an untrusted server");
+    }
+
     /// A stopping daemon closes the socket before answering hello: the error must be the kind that triggers a reconnect.
     #[test]
+    #[cfg(target_os = "macos")]
     fn hello_putus_bisa_diulang() {
         let (a, b) = UnixStream::pair().unwrap();
         let t = thread::spawn(move || {
