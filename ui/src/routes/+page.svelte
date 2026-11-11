@@ -2495,7 +2495,7 @@
           {@const ag = agentOf(q.p) || meta[q.p]?.agent || ""}
           <button class="tab" onclick={() => jumpTo(q.p)}>
             <span class="tt"><span class="dot blocked" aria-hidden="true"></span>{#if GLYPH[ag]}<span class="aico {ag}">{GLYPH[ag]}</span>{/if}{meta[q.p]?.name}{labels[q.p] || GLYPH[ag] ? ` · ${labels[q.p] || ag}` : ""}</span>
-            <span>{tt(wordKey(blockedKindOf(q.p)))}</span><span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
+            <span class="kind">{tt(wordKey(blockedKindOf(q.p)))}</span><span class="k">{ago(now - (blockedAt[q.p] ?? now))}</span>
             <span class="sub">{[title(q.t) !== labels[q.p] ? title(q.t) : "", wss.length > 1 ? q.w.name : ""].filter(Boolean).join(" · ")}</span>
           </button>
         {/each}
@@ -3784,6 +3784,18 @@
     padding: 2px 8px;
     color: var(--muted);
     font-size: 11px;
+  }
+  /* FR-87: the age sits next to the name and the kind word gets its own row, so a long kind
+     word no longer squeezes the name into "s…" or pushes the age onto another line */
+  .queue .tab .k {
+    grid-area: 1 / 2;
+    white-space: nowrap;
+  }
+  .queue .tab .kind {
+    grid-column: 1 / -1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* FR-82: update notice remains visible below the sidebar's workspace list. */
   .updbtn {
