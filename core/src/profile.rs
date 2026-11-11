@@ -313,7 +313,7 @@ A user prompt naming panes as `@<pane>` = send each of them that full handover y
 Pane names (`shell-N`, `@<pane>`, anything in `gembala status`) are Gembala panes, not sessions of your agent tool: reach them only with `gembala`, \
 never with built-in session messaging (ListAgents, SendMessage, cross-session messages). \
 Errors: `target_busy` = retry with `--queue`; `no_such_pane` = closed (old names of renamed panes still work), check `gembala status` and ask the user; \
-`acl_denied` = other workspace or the pane refuses messages, tell the user. `gembala wait` gives up after 10 minutes unless `--timeout <seconds>` (max 3600). \
+`acl_denied` = other workspace or the pane refuses messages, tell the user. `gembala wait` gives up after 10 minutes unless `--timeout <seconds>` (max 21600). \
 Do not look for processes via ps.";
 
 /// FR-56: manual agent command for the summary block, without the flags Gembala inserts (hint, hooks) that the

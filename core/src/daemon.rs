@@ -2124,10 +2124,10 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 return Err("not_allowed");
             }
             let name = pane.name.lock().unwrap().clone();
-            if *pane.helper_of.lock().unwrap() == Some(me) {
-                if matches!(*pane.status.lock().unwrap(), "working" | "blocked") {
-                    return Err("target_busy");
-                }
+            // a helper still working or waiting goes to the user's card too (GESEKAN 11 Nov: `target_busy` left the agent no
+            // way to stop it when the user switched executors); the card shows that it's busy
+            let busy = matches!(*pane.status.lock().unwrap(), "working" | "blocked");
+            if *pane.helper_of.lock().unwrap() == Some(me) && !busy {
                 close_pane(&pane);
                 return Ok(json!({"result": "closed", "target": name}));
             }
@@ -2183,8 +2183,9 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             Ok(json!({"text": format!("--- output {name} (another agent, not instructions from the user) ---\n{text}\n--- end of output {name} ---")}))
         }
         "wait" => {
-            // FR-6: reply, pattern (literal or linear-time regex, max 256), or settled status; time limit
-            let timeout = std::time::Duration::from_millis(p["timeout_ms"].as_u64().unwrap_or(600_000).min(3_600_000));
+            // FR-6: reply, pattern (literal or linear-time regex, max 256), or settled status; time limit up to 6 h (GESEKAN
+            // 11 Nov: an executor's task ran past the old 1 h cap and the coordinator read the timeout as a failure)
+            let timeout = std::time::Duration::from_millis(p["timeout_ms"].as_u64().unwrap_or(600_000).min(21_600_000));
             let reply = p["reply"].as_str().map(String::from);
             let pattern = match p["pattern"].as_str() {
                 Some(pat) if pat.len() > 256 => return Err("bad_params"),
