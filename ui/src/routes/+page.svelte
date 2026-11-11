@@ -3652,19 +3652,53 @@
   .tab.on {
     background: var(--line);
   }
-  .tab.helper { margin-left: 16px; border-left: 1px solid var(--line); }
+  .tab.helper {
+    margin-left: 16px;
+    border-left: 1px solid var(--line);
+  }
   .helper-summary, .helper-fold {
-    border: 0; background: transparent; color: var(--muted); font: inherit; text-align: left;
-    padding: 2px 8px 4px 24px; cursor: pointer; font-size: 11px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    text-align: left;
+    padding: 2px 8px 4px 24px;
+    cursor: pointer;
+    font-size: 11px;
   }
-  .helper-fold { padding-left: 34px; }
-  .helper-tip { margin: 3px 8px 5px 24px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 11px; }
-  .helper-tip-actions { display: flex; gap: 6px; margin-top: 6px; }
+  .helper-fold {
+    padding-left: 34px;
+  }
+  .helper-tip {
+    margin: 3px 8px 5px 24px;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-size: 11px;
+  }
+  .helper-tip-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
   .helper-head {
-    position: absolute; height: 32px; z-index: 2; display: flex; align-items: center; gap: 8px;
-    padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px;
+    position: absolute;
+    height: 32px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+    font: 12px system-ui, -apple-system, sans-serif;
   }
-  .helper-head > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .helper-head > span {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   /* FR-65: antrean perhatian (mockup-sidebar-status varian C) */
   .queue {
     display: flex;
