@@ -2,6 +2,7 @@
   // Warp-style changes panel (FR-22): read only, docked on the right (the terminal narrows). The diff is redacted by the daemon (SEC-12).
   import { invoke } from "@tauri-apps/api/core";
   import { errText, loc, t, tn } from "./i18n/state.svelte";
+  import { combo, keyText, mod } from "./keys.svelte";
   let {
     status,
     diff,
@@ -115,7 +116,7 @@
       <button class="mini" onclick={() => onact("commit", [...files.map((f) => f.path), ...(diff?.untracked ?? [])])}>{t("chg.commitAll")}</button>
     {/if}
     <button class="mini" onclick={onreload} title={t("chg.reload")} aria-label={t("chg.reloadAria")}>↻</button>
-    <button class="mini" onclick={onclose} title={t("chg.closeTip")} aria-label={t("chg.close")}>×</button>
+    <button class="mini" onclick={onclose} title={t("chg.closeTip", { key: combo("pane.diff.toggle") })} aria-label={t("chg.close")}>×</button>
   </header>
   {#if turns.length}
     <div class="turns">
@@ -165,7 +166,7 @@
         </div>
         <!-- svelte-ignore a11y_autofocus -->
         <textarea rows="3" placeholder={t("chg.message")} aria-label={t("chg.message")} bind:value={act.message} autofocus
-          onkeydown={(e) => e.key === "Enter" && e.metaKey && (e.preventDefault(), onactdo())}></textarea>
+          onkeydown={(e) => e.key === "Enter" && mod(e) && (e.preventDefault(), onactdo())}></textarea>
         <span class="m">{t("chg.commitSub")}</span>
       {/if}
       {#if act.others.length}<span class="warn">{t("chg.others", { names: act.others.join(", ") })}</span>{/if}
@@ -175,7 +176,7 @@
         {#if act.op === "restore"}
           <button class="mini undo" onclick={onactdo}>{t("chg.restore")}</button>
         {:else}
-          <button class="mini" disabled={!act.message.trim()} onclick={onactdo}>{t("chg.commit")} <span class="keys">⌘↩</span></button>
+          <button class="mini" disabled={!act.message.trim()} onclick={onactdo}>{t("chg.commit")} <span class="keys">{keyText("Cmd+Enter")}</span></button>
         {/if}
       </span>
     </div>

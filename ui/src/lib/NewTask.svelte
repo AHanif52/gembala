@@ -6,6 +6,7 @@
   import { call } from "./daemon";
   import { canStart, testCommand } from "./harness";
   import { errText, t, tOr } from "./i18n/state.svelte";
+  import { isMac, keyText, mod } from "./keys.svelte";
 
   type Row = { id: string; status: "approved" | "needs_approval" | "changed" | "broken"; hash?: string; recipe?: { name: string; steps: { id: string; name: string; shell: boolean }[] } | null; errors: any[]; warnings: any[] };
   let {
@@ -131,7 +132,7 @@
       e.stopPropagation();
       if (review) review = null;
       else onclose();
-    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) go();
+    } else if (e.key === "Enter" && (mod(e) || (isMac && e.ctrlKey))) go();
   }
 </script>
 
@@ -207,7 +208,7 @@
   {#if ontemplate}<button class="link" onclick={ontemplate}>{simple ? t("hn.teamS") : t("hn.team")}</button>{/if}
   <div class="acts">
     <button class="mini" onclick={onclose}>{t("hn.cancel")} <span class="k">Esc</span></button>
-    <button class="mini go" disabled={!ready || busy} onclick={go}>{t("hn.start")} <span class="k">⌘↩</span></button>
+    <button class="mini go" disabled={!ready || busy} onclick={go}>{t("hn.start")} <span class="k">{keyText("Cmd+Enter")}</span></button>
   </div>
 
   {#if review}

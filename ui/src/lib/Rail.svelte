@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { buildRings, orderRings, relativeTime, remaining, toneOf, validWindows, type UsageRing, type UsageRow, type UsageWindow } from "./usage";
   import { i18n, loc, t } from "./i18n/state.svelte";
+  import { combo, keyText } from "./keys.svelte";
 
   let {
     rows = [], installed = [], accounts = [], active = [], simple = false, full = false, tg = null,
@@ -95,10 +96,10 @@
 <nav class="usage-rail" class:full bind:this={railEl} aria-label={t("usage.rail")}>
   {#if !full}<div class="window-drag" data-tauri-drag-region></div>{/if}
   <div class="top-buttons">
-    <button class="rail-button" title={`${t("side.find")} ⌘P`} aria-label={t("side.find")} onclick={onsearch}>
+    <button class="rail-button" title={`${t("side.find")} ${combo("tab.search")}`} aria-label={t("side.find")} onclick={onsearch}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4" /><path d="M10.4 10.4 14 14" /></svg>
     </button>
-    <button class="rail-button" title={`${t("hn.newTask")} ⌘N`} aria-label={t("hn.newTask")} onclick={ontask}>
+    <button class="rail-button" title={`${t("hn.newTask")} ${combo("task.new")}`} aria-label={t("hn.newTask")} onclick={ontask}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" /></svg>
     </button>
   </div>
@@ -130,7 +131,7 @@
         <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="1.5" width="7" height="13" rx="1.5" /><path d="M7 12h2" /></svg>
       </button>
     {/if}
-    <button class="rail-button" title={t("side.settingsTip")} aria-label={t("set.title")} onclick={onsettings}>
+    <button class="rail-button" title={t("side.settingsTip", { key: keyText("Cmd+,") })} aria-label={t("set.title")} onclick={onsettings}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2" /><path d="M12.7 6.2l1.8.5v2.6l-1.8.5-.1.3.9 1.5-1.9 1.9-1.5-.9-.3.1-.5 1.8H6.7l-.5-1.8-.3-.1-1.5.9-1.9-1.9.9-1.5-.1-.3-1.8-.5V6.7l1.8-.5.1-.3-.9-1.5 1.9-1.9 1.5.9.3-.1.5-1.8h2.6l.5 1.8.3.1 1.5-.9 1.9 1.9-.9 1.5z" /></svg>
     </button>
   </div>

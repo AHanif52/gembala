@@ -87,22 +87,84 @@ const VIEW_KEYS: &[(&str, &str)] = &[
     ("term.zoom.pane_reset", "Alt+Cmd+0"),
 ];
 
-/// SEC-14: only http/https, no spaces or control characters; opened through `open`, not a shell.
+/// FR-98: Linux/Windows defaults that differ because `Cmd` becomes `Ctrl+Shift` and two combos would land on the same
+/// keys (Shift and the extra Ctrl are absorbed). Written in the macOS form, mapped by `platform_key`.
+const ALT_KEYS: &[(&str, &str)] = &[
+    ("pane.split.down", "Cmd+Alt+Shift+D"),   // Cmd+Shift+D would equal split.right
+    // arrows: focus = app key + arrow, resize = + Alt (the mac extra Ctrl would be absorbed), block jumps move to Page Up/Down
+    ("pane.focus.left", "Cmd+Left"),
+    ("pane.focus.right", "Cmd+Right"),
+    ("pane.focus.up", "Cmd+Up"),
+    ("pane.focus.down", "Cmd+Down"),
+    ("pane.resize.left", "Cmd+Alt+Left"),
+    ("pane.resize.right", "Cmd+Alt+Right"),
+    ("pane.resize.up", "Cmd+Alt+Up"),
+    ("pane.resize.down", "Cmd+Alt+Down"),
+    ("term.block.prev", "Cmd+PageUp"),
+    ("term.block.next", "Cmd+PageDown"),
+    // swap panes would equal focus (Alt+arrow): vim letters + Alt
+    ("pane.swap.left", "Cmd+Alt+Shift+H"),
+    ("pane.swap.right", "Cmd+Alt+Shift+L"),
+    ("pane.swap.up", "Cmd+Alt+Shift+K"),
+    ("pane.swap.down", "Cmd+Alt+Shift+J"),
+    // FR-101 helpers move off H/J/K (taken by swap): owner / next / prev / compare
+    ("tab.helper.owner", "Cmd+Alt+O"),
+    ("tab.helper.next", "Cmd+Alt+N"),
+    ("tab.helper.prev", "Cmd+Alt+B"),
+    ("tab.helper.compare", "Cmd+Alt+C"),
+    ("term.clear", "Cmd+L"),                   // Cmd+K would equal msg.compose
+    ("msg.stop", "Cmd+Alt+Shift+."),           // Cmd+Shift+. would equal pane.proc.kill
+    ("pane.diff.toggle", "Cmd+Alt+Shift+V"),   // Cmd+Shift+= would equal term.zoom.in (the same key on a US layout)
+];
+
+/// FR-98: the app key is `Cmd` (⌘) on macOS; on Linux/Windows it's `Ctrl+Shift`, because a plain Ctrl belongs to the
+/// terminal (FR-39). One mapping for the menu, the labels, and `[keys]` overrides.
+fn platform_key(canonical: &str) -> String {
+    if cfg!(target_os = "macos") || canonical.is_empty() {
+        return canonical.to_string();
+    }
+    let parts: Vec<&str> = canonical.split('+').collect();
+    let Some((key, mods)) = parts.split_last() else { return canonical.to_string() };
+    let mut out = vec!["Ctrl"];
+    if mods.contains(&"Alt") {
+        out.push("Alt");
+    }
+    out.push("Shift");
+    out.push(key);
+    out.join("+")
+}
+
+/// Default combo of an action for this system (`ALT_KEYS` only applies where the app key isn't `Cmd`).
+fn default_key(id: &str, mac: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        return mac;
+    }
+    ALT_KEYS.iter().find(|(a, _)| *a == id).map_or(mac, |(_, k)| *k)
+}
+
+/// Text shown for the app modifier in `[keys]` errors.
+fn app_mod() -> &'static str {
+    if cfg!(target_os = "macos") { "cmd" } else { "ctrl+shift" }
+}
+
+/// SEC-14: only http/https, no spaces or control characters; opened through the opener plugin, not a shell.
 fn url_ok(url: &str) -> bool {
     (url.starts_with("https://") || url.starts_with("http://")) && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 #[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
+fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
     if !url_ok(&url) {
         return Err("url_not_http".into());
     }
-    std::process::Command::new("/usr/bin/open").arg(&url).spawn().map(drop).map_err(|e| e.to_string())
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// FR-100: the user's own Gembala window to the clipboard for a GitHub issue (pressed by the user in the report dialog, never by
 /// an agent: the window shows panes an agent may not read, SEC-21). Nothing is saved; the user sees it when pasting into GitHub.
 /// macOS asks for Screen Recording the first time.
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn shot_window(window: tauri::WebviewWindow) -> Result<(), String> {
     let s = window.scale_factor().map_err(|e| e.to_string())?;
@@ -111,6 +173,14 @@ fn shot_window(window: tauri::WebviewWindow) -> Result<(), String> {
     let region = format!("{},{},{},{}", p.x.round(), p.y.round(), z.width.round(), z.height.round());
     let ok = std::process::Command::new("/usr/sbin/screencapture").args(["-c", "-x", "-R", &region]).status().map_err(|e| e.to_string())?.success();
     if ok { Ok(()) } else { Err("screencapture".into()) }
+}
+
+/// FR-100 on other systems: no window crop that behaves the same on X11 and Wayland yet; the dialog shows the message
+/// instead of a broken screenshot.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn shot_window() -> Result<(), String> {
+    Err("screenshot_unsupported".into())
 }
 
 /// Folders next to config.toml that may be opened in Finder (Settings > Security > audit log).
@@ -126,9 +196,10 @@ fn reveal_target(config: &str, sub: &str) -> Result<std::path::PathBuf, String> 
 }
 
 #[tauri::command]
-fn reveal_dir(config: String, sub: String) -> Result<(), String> {
+fn reveal_dir(app: tauri::AppHandle, config: String, sub: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
     let dir = reveal_target(&config, &sub)?;
-    std::process::Command::new("/usr/bin/open").arg(&dir).spawn().map(drop).map_err(|e| e.to_string())
+    app.opener().reveal_item_in_dir(&dir).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -189,11 +260,11 @@ fn attention(app: tauri::AppHandle) {
     }
 }
 
-/// FR-48: forget the UI channel secret in the Keychain (this app's items only).
+/// FR-48: forget the UI channel secret in the login store (this app's items only).
 #[tauri::command]
 fn forget_secret() {
     let account = format!("ui-secret:{}", daemon::rundir().display());
-    let _ = security_framework::passwords::delete_generic_password(daemon::KC_SERVICE, &account);
+    daemon::secret_forget(&account);
 }
 
 /// FR-54/SEC-34: pasted images are stored in `$TMPDIR/gembala/paste/` (`0700`), `0600` files with random names.
@@ -331,7 +402,9 @@ fn withdraw(titles: Vec<String>) {
 }
 
 /// FR-60: Gembala-owned processes for Settings > Processes: this UI, its WebKit, the daemon, and all daemon descendants.
-/// Read from `ps` without process arguments (other processes' arguments may hold secrets).
+/// macOS reads `ps` without process arguments (other processes' arguments may hold secrets); Linux reads the process
+/// table through `sysinfo` (no `ps`, no arguments either).
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn proc_list() -> Vec<Value> {
     let Ok(out) = std::process::Command::new("/bin/ps").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,comm="]).output() else {
@@ -341,12 +414,48 @@ fn proc_list() -> Vec<Value> {
     procs_of(&String::from_utf8_lossy(&out.stdout), std::process::id(), daemon.as_deref().unwrap_or(""))
 }
 
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn proc_list() -> Vec<Value> {
+    use sysinfo::{Pid, System};
+    let Ok(mut sys) = System::new_all() else { return vec![] };
+    // cpu_usage is a delta between two reads: the first one is 0
+    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let row = |p: &sysinfo::Process, role: &str| json!({"pid": p.pid().as_u32(), "ppid": p.parent().map(|x| x.as_u32()).unwrap_or(0),
+        "rss_kb": p.memory() / 1024, "cpu": p.cpu_usage(), "role": role, "name": p.name().to_string_lossy()});
+    let me = Pid::from_u32(std::process::id());
+    let mut rows = vec![];
+    let Some(ui) = sys.process(me) else { return rows };
+    rows.push(row(ui, "ui"));
+    // WebKitGTK helpers are children of the UI process (WebKitWebProcess, WebKitNetworkProcess)
+    for p in sys.processes().values().filter(|p| p.parent() == Some(me) && p.name().to_string_lossy().starts_with("WebKit")) {
+        rows.push(row(p, "webkit-content"));
+    }
+    let Some(dex) = daemon::daemon_exe().and_then(|p| p.canonicalize().ok()) else { return rows };
+    let mut tree: Vec<Pid> = sys.processes().values().filter(|p| p.exe() == Some(dex.as_path())).map(|p| p.pid()).collect();
+    let mut i = 0;
+    while i < tree.len() {
+        let parent = tree[i];
+        tree.extend(sys.processes().values().filter(|p| p.parent() == Some(parent)).map(|p| p.pid()));
+        i += 1;
+    }
+    for pid in tree {
+        if let Some(p) = sys.process(pid) {
+            rows.push(row(p, if p.exe() == Some(dex.as_path()) { "daemon" } else { "pane" }));
+        }
+    }
+    rows
+}
+
 /// `[[dd-]hh:]mm:ss` → detik
+#[cfg(target_os = "macos")]
 fn etime_secs(s: &str) -> u64 {
     let (days, rest) = s.split_once('-').map_or((0, s), |(d, r)| (d.parse().unwrap_or(0), r));
     rest.split(':').fold(0, |acc, p| acc * 60 + p.parse::<u64>().unwrap_or(0)) + days * 86400
 }
 
+#[cfg(target_os = "macos")]
 fn procs_of(ps: &str, me: u32, daemon_exe: &str) -> Vec<Value> {
     struct P<'a> { pid: u32, ppid: u32, rss: u64, cpu: f64, age: u64, comm: &'a str }
     let all: Vec<P> = ps
@@ -391,14 +500,12 @@ fn procs_of(ps: &str, me: u32, daemon_exe: &str) -> Vec<Value> {
     rows
 }
 
-/// FR-37/52: copy from the context menu (the user's selected text, tab folder) through pbcopy;
+/// FR-37/52: copy from the context menu (the user's selected text, tab folder) through the clipboard plugin;
 /// the web clipboard needs a gesture that doesn't exist in a native menu callback.
 #[tauri::command]
-fn copy_text(text: String) -> Result<(), String> {
-    use std::io::Write;
-    let mut c = std::process::Command::new("/usr/bin/pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(|e| e.to_string())?;
-    c.stdin.take().ok_or("stdin")?.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-    c.wait().map(drop).map_err(|e| e.to_string())
+fn copy_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard().write_text(text).map_err(|e| e.to_string())
 }
 
 /// FR-59 autocomplete: folder entries starting with `prefix` (name + is folder?), folders first, max 200.
@@ -425,7 +532,12 @@ fn list_commands(prefix: String) -> Vec<String> {
     use std::os::unix::fs::PermissionsExt;
     let home = std::env::var("HOME").unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
+    // an app started from the desktop gets a minimal PATH on both systems; `~/.local/bin` (below) is where the agent
+    // installers put user commands
+    #[cfg(target_os = "macos")]
     let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(String::from);
+    #[cfg(not(target_os = "macos"))]
+    let extra = ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(String::from);
     let mut out: Vec<String> = path
         .split(':')
         .map(String::from)
@@ -477,9 +589,9 @@ fn shell_history() -> Vec<String> {
 
 /// FR-37: Paste from the terminal context menu (text only; images still go through ⌘V, FR-54).
 #[tauri::command]
-fn paste_text() -> Result<String, String> {
-    let o = std::process::Command::new("/usr/bin/pbpaste").output().map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+fn paste_text(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard().read_text().map_err(|e| e.to_string())
 }
 
 /// TECH 20: macOS language list for `[ui] language = "system"`
@@ -515,8 +627,10 @@ fn canon_key(raw: &str, lang: &str) -> Result<String, String> {
     if mods.iter().any(|m| !MODS.iter().any(|(_, a)| a.contains(&m.as_str()))) {
         return Err(i18n::fmt(lang, "key.bad_mod", &[("raw", raw)]));
     }
-    if !out.contains(&"Cmd") {
-        return Err(i18n::fmt(lang, "key.need_cmd", &[("raw", raw)]));
+    // FR-98: where the app key isn't `Cmd`, `Ctrl+Shift` is the same thing (what the UI shows and the user types)
+    let app = out.contains(&"Cmd") || (!cfg!(target_os = "macos") && out.contains(&"Ctrl") && out.contains(&"Shift"));
+    if !app {
+        return Err(i18n::fmt(lang, "key.need_cmd", &[("raw", raw), ("app", app_mod())]));
     }
     let key = if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric() || ".,=-;'/[]\\`".contains(c)) {
         key.to_uppercase()
@@ -532,8 +646,16 @@ fn canon_key(raw: &str, lang: &str) -> Result<String, String> {
 /// Default shortcuts overridden by `[keys]` ("combo" = "action id"). Conflict: the overriding action wins,
 /// the other one loses its shortcut and gets flagged.
 fn resolve_keys(overrides: &serde_json::Map<String, Value>, lang: &str) -> (Vec<Shortcut>, Vec<String>) {
-    let mut items: Vec<(Shortcut, bool)> =
-        TAB_KEYS.iter().chain(PANE_KEYS).chain(VIEW_KEYS).chain(MSG_KEYS).map(|(id, key)| ((*id, i18n::tr(lang, id), canon_key(key, lang).unwrap_or_default()), false)).collect();
+    let mut items: Vec<(Shortcut, bool)> = TAB_KEYS
+        .iter()
+        .chain(PANE_KEYS)
+        .chain(VIEW_KEYS)
+        .chain(MSG_KEYS)
+        .map(|(id, key)| {
+            let key = default_key(id, key);
+            ((*id, i18n::tr(lang, id), platform_key(&canon_key(key, lang).unwrap_or_default())), false)
+        })
+        .collect();
     let mut errors = Vec::new();
     for (raw, action) in overrides {
         let Some(action) = action.as_str() else { continue };
@@ -542,7 +664,7 @@ fn resolve_keys(overrides: &serde_json::Map<String, Value>, lang: &str) -> (Vec<
             continue;
         };
         match canon_key(raw, lang) {
-            Ok(k) => *item = ((item.0.0, item.0.1, k), true),
+            Ok(k) => *item = ((item.0.0, item.0.1, platform_key(&k)), true),
             Err(why) => errors.push(format!("keys: {why}")),
         }
     }
@@ -572,16 +694,17 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, keys: &[Shortcut], l
         if key.is_empty() { b.build(app) } else { b.accelerator(key).build(app) }
     };
     // predefined items get our text so they follow the app language, not the macOS one (TECH 20)
+    let settings_key = platform_key(&canon_key("Cmd+,", lang).unwrap_or_default());
     let main = SubmenuBuilder::new(app, "Gembala")
         .about_with_text(tr("menu.about"), None)
         .separator()
-        .item(&MenuItemBuilder::with_id("app.settings", tr("menu.settings")).accelerator("Cmd+,").build(app)?)
-        .separator()
-        .hide_with_text(tr("menu.hide"))
-        .hide_others_with_text(tr("menu.hide_others"))
-        .show_all_with_text(tr("menu.show_all"))
-        .separator()
-        // FR-46: ⌘Q only closes the window; agents keep running in the daemon (FR-20)
+        .item(&MenuItemBuilder::with_id("app.settings", tr("menu.settings")).accelerator(settings_key).build(app)?)
+        .separator();
+    // hide/show are macOS app-menu items; other systems have no equivalent (dead entries)
+    #[cfg(target_os = "macos")]
+    let main = main.hide_with_text(tr("menu.hide")).hide_others_with_text(tr("menu.hide_others")).show_all_with_text(tr("menu.show_all")).separator();
+    let main = main
+        // FR-46: Quit only closes the window; agents keep running in the daemon (FR-20)
         .item(&MenuItemBuilder::with_id("app.quit_all", tr("menu.quit_all")).build(app)?)
         .quit_with_text(tr("menu.quit"))
         .build()?;
@@ -646,6 +769,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Daemon(Mutex::new(None)))
         // FR-40: clicking a banner = window shows + moves to its pane (notification id = pane id, see `notify_pane`).
         // ponytail: the plugin waits for clicks on one thread per banner until the banner leaves Notification Center
@@ -722,6 +847,7 @@ mod tests {
     use serde_json::json;
 
     /// FR-60: the UI, the WebKit started at the same time, the daemon, and its descendants; no other processes
+    #[cfg(target_os = "macos")]
     #[test]
     fn proses_milik_gembala() {
         let d = "/Apps/Gembala.app/Contents/MacOS/gembala";
@@ -806,6 +932,13 @@ mod tests {
         for bad in ["ctrl+c", "cmd+hyper+x", "cmd+foo", "", "shift+tab"] {
             assert!(super::canon_key(bad, "en").is_err(), "{bad}");
         }
+        // FR-98: `Ctrl+Shift` is the app key where `Cmd` doesn't exist
+        if cfg!(target_os = "macos") {
+            assert!(super::canon_key("ctrl+shift+t", "en").is_err());
+        } else {
+            assert_eq!(super::canon_key("ctrl+shift+t", "en").unwrap(), "Ctrl+Shift+T");
+            assert_eq!(super::platform_key("Shift+Cmd+T"), "Ctrl+Shift+T");
+        }
     }
 
     #[test]
@@ -813,13 +946,20 @@ mod tests {
         let o = json!({"cmd+t": "pane.split.right", "cmd+k": "pane.zoom.toggle", "cmd+y": "tidak.ada", "ctrl+x": "pane.proc.kill"});
         let (items, errors) = super::resolve_keys(o.as_object().unwrap(), "id");
         let key = |id: &str| items.iter().find(|i| i.0 == id).unwrap().2.clone();
-        assert_eq!(key("pane.split.right"), "Cmd+T");
-        assert_eq!(key("pane.zoom.toggle"), "Cmd+K"); // ditimpa = menang
-        assert_eq!(key("term.clear"), ""); // default Cmd+K loses
-        assert_eq!(key("pane.proc.kill"), "Cmd+."); // bad override = default stays
+        let app = |k: &str| super::platform_key(k);
+        assert_eq!(key("pane.split.right"), app("Cmd+T"));
+        assert_eq!(key("pane.zoom.toggle"), app("Cmd+K")); // ditimpa = menang
+        assert_eq!(key("pane.proc.kill"), app("Cmd+.")); // bad override = default stays
         let all = errors.join("\n");
-        for want in ["tidak.ada", "ctrl+x", "bentrok: Cmd+K"] {
+        for want in ["tidak.ada", "ctrl+x"] {
             assert!(all.contains(want), "{want}: {all}");
+        }
+        if cfg!(target_os = "macos") {
+            assert_eq!(key("term.clear"), ""); // default Cmd+K loses
+            assert!(all.contains(&format!("bentrok: {}", app("Cmd+K"))), "{all}");
+        } else {
+            // FR-98: clear has its own Linux default (Cmd+K is Messages compose there), so nothing clashes
+            assert_eq!(key("term.clear"), app("Cmd+L"), "{all}");
         }
     }
 

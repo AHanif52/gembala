@@ -101,11 +101,8 @@ export const UI_DEFAULT: Ui = {
   helper_idle_close: 15,
 };
 
-// show shortcuts with Mac symbols (`Cmd+Shift+[` → ⌘⇧[); config keys may be lowercase (`cmd+e` → ⌘E)
+// macOS shows symbols (`Cmd+Shift+[` → ⌘⇧[); other systems keep the words Rust sends (`Ctrl+Shift+[`, FR-98)
+const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 const SYM: Record<string, string> = { Cmd: "⌘", Shift: "⇧", Alt: "⌥", Ctrl: "⌃", Enter: "↩", Left: "←", Right: "→", Up: "↑", Down: "↓" };
 export const pretty = (k: string) =>
-  k
-    .split("+")
-    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-    .map((s) => SYM[s] ?? s)
-    .join("");
+  MAC && k.includes("Cmd") ? k.split("+").map((s) => SYM[s] ?? s).join("") : k;

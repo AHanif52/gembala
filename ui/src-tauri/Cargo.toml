@@ -18,13 +18,24 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.23.1"
+# peer pid of the socket (SEC-20): `LOCAL_PEERPID` on macOS, `SO_PEERCRED` on Linux — both from libc
 libc = "0.2.191"
-security-framework = "3.7.0"
 serde_json = "1.0.154"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
+# FR-98: one path for "open a URL/folder" and "copy/paste" on every system (`open`, `pbcopy`/`pbpaste` on macOS only)
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
 
 # FR-87: pull delivered banners out of Notification Center (the notification plugin can't on macOS, TECH 27.4)
+# SEC-20: the UI channel secret in the login Keychain (macOS only crate)
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = "0.3"
+security-framework = "3.7.0"
+
+# SEC-20: Secret Service on Linux (gnome-keyring and friends). Build needs libdbus-1-dev.
+# FR-60: process list (Settings > Processes) without `ps`.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
