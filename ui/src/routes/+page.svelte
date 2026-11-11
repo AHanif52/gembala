@@ -110,6 +110,7 @@
   let now = $state(Date.now()); // FR-65: time waiting in the queue, refreshed every poll
   let ack = $state<Record<number, true>>({});
   const readStatus = new Set<number>(); // FR-87: panes whose status was read once since the UI connected
+  let observingSince = 0; // FR-87: when this UI started reading pane status (unix ms)
   let labels = $state<Record<number, string>>({}); // FR-69: from the agent's terminal title; not in layout.json (SEC-13) // panes whose "done" status was already seen; cleared when the status changes
   let dead = $state<Record<number, true>>({}); // panes from another daemon run or already exited (negative id)
   let boot = $state(""); // state: the layout is saved again when a new daemon starts
@@ -2194,10 +2195,13 @@
   });
   function onStatus(pane: number, status: string, shell = false, reason = "", at?: number, last?: string | null) {
     if (!meta[pane]) return;
-    // FR-87: the first read after the UI connects (or reconnects) says what the pane already was, not something that
-    // just happened; a pane that finished while the app was closed must not open a bell entry or a banner
+    // FR-87: the first read after the UI connects says what the pane already was, not something that just happened; a
+    // pane that finished while the app was closed must not open a bell entry or a banner. The daemon's status time says
+    // whether it began before we started reading — a status from our own second may still be newer. Whole seconds, so a
+    // status one second or more old is stale; without a time (older daemon) the first read stays quiet.
     const firstRead = !readStatus.has(pane);
     readStatus.add(pane);
+    const stale = firstRead && (!at || at * 1000 + 1000 <= observingSince);
     if (at) statusAt[pane] = at * 1000;
     if (last !== undefined) previews[pane] = last ?? "";
     if (at && status === "blocked") blockedAt[pane] = at * 1000;
@@ -2217,8 +2221,8 @@
       refreshGit(pane); // toolbar refreshed per turn (TECH 7a)
       if (changes?.pane === pane) loadChanges(pane); // FR-22: the panel is refreshed too
     }
-    if (!firstRead && status === "blocked") alert(pane, "blocked", "alert.blocked");
-    if (!firstRead && status === "done" && !shell) alert(pane, "done", "alert.done");
+    if (!stale && status === "blocked") alert(pane, "blocked", "alert.blocked");
+    if (!stale && status === "done" && !shell) alert(pane, "done", "alert.done");
   }
 
   // save the layout half a second after the last change (SEC-13: no screen content)
@@ -2347,6 +2351,7 @@
         for (const p of Object.keys(meta).map(Number).filter((p) => !dead[p])) call("pane.workspace", { pane: p, workspace: wsIdOf(p) }).catch(() => {});
         refreshMsgs();
         for (const w of wss) call("harness.state", { workspace: w.id }).then((r) => r?.run && onRun(r)).catch(() => {});
+        observingSince = Date.now(); // FR-87: everything the daemon reports from here on can be an event
         poll();
         // FR-21: new app + old daemon = ask first; restarting the daemon stops every pane
         const [d, app] = await Promise.all([call("daemon.info"), getVersion()]);
