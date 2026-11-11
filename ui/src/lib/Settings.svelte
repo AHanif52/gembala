@@ -592,6 +592,9 @@
   {/if}
 {/snippet}
 
+<!-- Esc with the "add account" form open closes the form, not Settings; the page key handler leaves Settings alone while a field has focus -->
+<svelte:window onkeydown={(e) => e.key === "Escape" && accOpen && (e.preventDefault(), (accOpen = false))} />
+
 <div class="veil" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>
   <div class="modal" role="dialog" aria-label={t("set.title")}>
     <nav>
