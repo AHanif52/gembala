@@ -313,48 +313,66 @@ fn saver_on_only_when_the_switch_is_on() {
     assert_eq!(on.matches("SAMA-BARIS").count(), 1, "{on}");
 }
 
-/// A client that attaches but doesn't read is dropped when its queue fills; the pane keeps running to the end and the
-/// daemon never waits for it. Nothing here depends on how fast the runner is: a reply that timed out says nothing about
-/// the pane (ask again), and the wait is wide enough for a loaded machine to push the 8 MB through.
+/// A client that attaches but doesn't read stops receiving that pane's output when its queue fills, while the pane keeps
+/// running to the end and the daemon never waits for it. The connection itself stays: a UI client whose socket was shut
+/// down here read it as "the daemon stopped or was restarted" and marked every pane dead (a second Restart click then
+/// opened an agent twice). Its next request carries `pane.lag`, and a re-attach rebuilds the screen from the snapshot.
+/// Nothing depends on how fast the runner is: a reply that timed out says nothing about the pane (ask again).
 #[test]
 fn klien_lambat_diputus() {
     let d = start("lambat");
     let mut ui = Cli::ui(&d);
-    let pane = ui.call("pane.create", json!({"cmd": "yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | head -c 8000000; sleep 1", "rows": 24, "cols": 80}))["result"]["pane"].as_u64().unwrap();
+    let pane = ui.call("pane.create", json!({"cmd": "yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | head -c 8000000; echo SELESAI-LAMBAT; sleep 30", "rows": 24, "cols": 80}))["result"]["pane"].as_u64().unwrap();
     let mut lambat = Cli::ui(&d);
     lambat.call("pane.attach", json!({"pane": pane}));
+    // the pane reaches the end of the burst; a client that doesn't read doesn't hold it (a slow reply on a loaded runner
+    // says nothing about the pane: ask again)
     let t0 = Instant::now();
     loop {
-        let e = ui.call("pane.list", json!({}));
-        match e["result"].as_array() {
-            // pane finished; the daemon isn't held up by a slow client
-            Some(l) if !l.contains(&json!(pane)) => break,
-            // listed, or a reply that timed out (loaded runner): the pane hasn't finished yet
-            _ => assert!(t0.elapsed() < Duration::from_secs(120), "pane tertahan klien lambat: {e}"),
+        let a = ui.call("pane.attach", json!({"pane": pane}));
+        if String::from_utf8_lossy(&written(&a["result"])).contains("SELESAI-LAMBAT") {
+            break;
         }
+        assert!(t0.elapsed() < Duration::from_secs(120), "pane tertahan klien lambat: {a}");
         std::thread::sleep(Duration::from_millis(200));
     }
-    // the daemon shut the slow client down: its side reaches end-of-file without a single `pane.exit` (a client that was
-    // kept would have received one)
-    let mut exit_seen = false;
-    let t0 = Instant::now();
-    loop {
-        let mut l = String::new();
-        let n = lambat.r.read_line(&mut l);
-        exit_seen |= l.contains("pane.exit");
-        match n {
-            // the daemon closed its side: nothing more will arrive
-            Ok(0) => break,
-            Ok(_) => {}
-            // a read that timed out on a busy runner: ask again, the daemon closes its side by itself
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-                assert!(t0.elapsed() < Duration::from_secs(60), "klien lambat nggak diputus daemon");
-            }
-            // reset by the daemon
-            Err(_) => break,
+    // the same connection answers (no end-of-file) and says which pane it was cut from; the notice rides on the first
+    // request that finds room in the queue, so a client still draining its buffer gets it on the next one (the UI polls
+    // every 2 seconds)
+    let lag_of = |c: &Cli| c.events.iter().any(|e| e["event"] == "pane.lag" && e["params"]["pane"] == pane);
+    let boot = ui.call("daemon.info", json!({}))["result"]["boot"].clone();
+    let mut info = lambat.call("daemon.info", json!({}));
+    for _ in 0..4 {
+        if lag_of(&lambat) {
+            break;
         }
+        info = lambat.call("daemon.info", json!({}));
     }
-    assert!(!exit_seen, "klien lambat seharusnya sudah diputus sebelum pane keluar");
+    assert_eq!(info["result"]["boot"], boot, "sambungan klien lambat diputus: {info}");
+    assert!(lag_of(&lambat), "klien lambat nggak dapat pane.lag: {} events", lambat.events.len());
+    // re-attach (what the UI does on pane.lag) works on that connection: the burst went through the pane's screen
+    let a = lambat.call("pane.attach", json!({"pane": pane}));
+    assert_eq!(a["result"]["sync"], json!(true), "{a}");
+    assert!(!written(&a["result"]).is_empty(), "snapshot kosong setelah sambung ulang");
+}
+
+/// Criterion 17: a UI that reconnects to the same daemon (same boot id) finds its panes still there and re-attaches them
+/// with the output printed while it was away. The page does exactly that instead of marking every pane dead, so a dropped
+/// socket doesn't become a second agent (see `onLost` in the page).
+#[test]
+fn ui_sambung_ulang_pane_masih_hidup() {
+    let d = start("sambung");
+    let mut ui = Cli::ui(&d);
+    let pane = ui.call("pane.create", json!({"cmd": "sleep 1; echo LEWAT-SAMBUNG; sleep 30", "rows": 24, "cols": 80}))["result"]["pane"].as_u64().unwrap();
+    let boot = ui.call("daemon.info", json!({}))["result"]["boot"].clone();
+    // the connection goes away mid-session; the daemon and its panes don't
+    drop(ui);
+    std::thread::sleep(Duration::from_millis(2000));
+    let mut baru = Cli::ui(&d);
+    assert_eq!(baru.call("daemon.info", json!({}))["result"]["boot"], boot, "boot id berubah");
+    assert!(baru.call("pane.list", json!({}))["result"].as_array().unwrap().contains(&json!(pane)), "pane hilang");
+    let a = baru.call("pane.attach", json!({"pane": pane}));
+    assert!(String::from_utf8_lossy(&written(&a["result"])).contains("LEWAT-SAMBUNG"), "output selama putus nggak ikut");
 }
 
 /// SEC-35: pane env doesn't carry agent session markers from the process that launched the daemon.

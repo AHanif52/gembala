@@ -157,9 +157,10 @@ impl Pane {
 
 struct Sub {
     tx: SyncSender<String>,
-    sock: UnixStream,
     /// connection id: one subscription per connection per pane (re-attach doesn't duplicate events)
     conn: u64,
+    /// panes this client fell behind on (`send_all`): its next request carries a `pane.lag` and it re-attaches
+    lagging: Arc<Mutex<Vec<u64>>>,
 }
 
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
@@ -345,9 +346,10 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     // SEC-20: a UI signed like the daemon is recognized from the audit token at connect, no secret
     let signed = chan == Chan::Ui && st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r));
     let (tx, rx) = sync_channel::<String>(QUEUE);
+    // panes whose output this connection stopped receiving because it fell behind (filled in by `send_all`)
+    let lagging: Arc<Mutex<Vec<u64>>> = Arc::default();
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let mut w = s.try_clone()?;
-    let sock = s.try_clone()?;
     // one writer per connection: replies and events don't cut into each other
     thread::spawn(move || {
         for l in rx {
@@ -393,6 +395,16 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                 return Ok(());
             }
             continue;
+        }
+        // panes whose feed this client fell behind on: this request shows it reads again, so it can re-attach them.
+        // `try_send`: one still behind keeps the notice for its next request instead of holding this thread
+        if chan == Chan::Ui {
+            let due: Vec<u64> = lagging.lock().unwrap().clone();
+            for p in due {
+                if tx.try_send(line(json!({"event": "pane.lag", "params": {"pane": p}}))).is_ok() {
+                    lagging.lock().unwrap().retain(|q| *q != p);
+                }
+            }
         }
         if chan == Chan::Pane {
             // identity from hello (getsid or token), not from message content (SEC-3); a closed pane = invalid
@@ -488,9 +500,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     let _ = tx.try_send(line(json!({"event": "pane.attached", "params": {"pane": p["pane"]}})));
                     // re-attach from the same connection (tab moved to another workspace) replaces the old subscription, doesn't add one
                     v.1.retain(|s| s.conn != conn);
-                    if let Ok(sock) = sock.try_clone() {
-                        v.1.push(Sub { tx: tx.clone(), sock, conn });
-                    }
+                    v.1.push(Sub { tx: tx.clone(), conn, lagging: lagging.clone() });
                 }
                 Err(e) => reply(&tx, id, Err(e)),
             }
@@ -2422,11 +2432,19 @@ fn idle_exit(st: Arc<State>) {
 
 type View = (Grid, Vec<Sub>);
 
-fn send_all(v: &mut View, ev: String) {
+fn send_all(v: &mut View, id: u64, ev: String) {
     v.1.retain(|sub| match sub.tx.try_send(ev.clone()) {
         Ok(()) => true,
+        // This client is behind: it stops receiving this pane's output instead of losing the whole connection. The same
+        // socket carries every call (`pane.attach`, `msg.list`, `daemon.info`), so shutting it down read as "the daemon
+        // stopped or restarted" and marked every pane dead; now its next request carries `pane.lag` and it re-attaches
+        // (screen rebuilt from the snapshot). The queue is still the memory bound: a client that never asks back gets
+        // nothing more.
         Err(TrySendError::Full(_)) => {
-            let _ = sub.sock.shutdown(std::net::Shutdown::Both);
+            let mut q = sub.lagging.lock().unwrap();
+            if !q.contains(&id) {
+                q.push(id);
+            }
             false
         }
         Err(TrySendError::Disconnected(_)) => false,
@@ -2467,7 +2485,7 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
         let over = log.len().saturating_sub(AGENT_LOG_MAX);
         log.drain(..over); // keep only the last part
     }
-    send_all(v, line(json!({"event": "pane.output", "params": {"pane": id, "data": B64.encode(bytes)}})));
+    send_all(v, id, line(json!({"event": "pane.output", "params": {"pane": id, "data": B64.encode(bytes)}})));
 }
 
 const AGENT_LOG_MAX: usize = 4 << 20;
@@ -2622,7 +2640,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let segs: Vec<_> = segs.iter().map(|s| json!({"rows": s.rows, "cols": s.cols, "data": B64.encode(&s.data)})).collect();
     // FR-87: the agent's own exit code (the pane process is the shell after it, so pane.exit never carries it)
     let ev = json!({"event": "pane.replace", "params": {"pane": id, "segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "resume": resume, "code": code.parse::<i32>().ok()}});
-    send_all(v, line(ev));
+    send_all(v, id, line(ev));
 }
 
 /// FR-56: session id from the line the agent prints itself on exit: `claude --resume <uuid>` (Claude Code)
