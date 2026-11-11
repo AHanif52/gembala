@@ -3194,17 +3194,6 @@
   {/if}
   <!-- with the Start panel showing, the card sits above it inside the pane (pen 01) -->
   {#if welcome && !askMode && startHere === null}{@render welcomeCard("confirm")}{/if}
-  {#if quitAsk}
-    <!-- also opened from Settings > General (z-index 10): sits above it (9 Nov: covered, Esc first to see it) -->
-    <div class="confirm ask over" role="alertdialog" aria-label={tt("quit.aria")}>
-      <b class="ctitle">{tt("quit.title")}</b>
-      <span>{ttn("quit.busy", quitAsk)}</span>
-      <span class="acts">
-        <button class="mini" onclick={() => (quitAsk = 0)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
-        <button class="mini danger" onclick={quitAll}>{tt("set.general.quit")} <span class="keys">Enter</span></button>
-      </span>
-    </div>
-  {/if}
   {#if linkAsk}
     <div class="confirm ask" role="alertdialog" aria-label={tt("link.aria")}>
       <b class="ctitle">{tt("link.title")}</b>
@@ -3333,16 +3322,28 @@
       <span class="keys">{tt("pick.hint")}</span>
     </div>
   {/if}
-  {#if settingsOpen && cfg}
-    <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
-      onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
-      oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)}
-      onresetHints={() => { helperTip = true; hintReset += 1; try { localStorage.removeItem(TIP_KEY); } catch {} }} />
-  {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />
   <div class="toast" class:show={!!toast} role="status" aria-live="polite">{toast}</div>
 </div>
+<!-- outside .grid: a fixed .grid is its own stacking layer, so inside it Settings (z-index 10) lost to the sidebar grip (4) and the rail (6) -->
+{#if settingsOpen && cfg}
+  <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
+    onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
+    oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)}
+    onresetHints={() => { helperTip = true; hintReset += 1; try { localStorage.removeItem(TIP_KEY); } catch {} }} />
+{/if}
+{#if quitAsk}
+  <!-- also opened from Settings > General (z-index 10): sits above it (9 Nov: covered, Esc first to see it) -->
+  <div class="confirm ask over" role="alertdialog" aria-label={tt("quit.aria")}>
+    <b class="ctitle">{tt("quit.title")}</b>
+    <span>{ttn("quit.busy", quitAsk)}</span>
+    <span class="acts">
+      <button class="mini" onclick={() => (quitAsk = 0)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
+      <button class="mini danger" onclick={quitAll}>{tt("set.general.quit")} <span class="keys">Enter</span></button>
+    </span>
+  </div>
+{/if}
 
 <style>
   /* FR-34: fallback icon font (Nerd Fonts v3.4.0, MIT); loaded only when there are PUA glyphs missing from the main font */
