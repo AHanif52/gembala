@@ -26,6 +26,17 @@ jobs:
         run: |
           v=$(python3 -c "import json;print(json.load(open('ui/src-tauri/tauri.conf.json'))['version'])")
           [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "tag $GITHUB_REF_NAME != v$v in tauri.conf.json"; exit 1; }
+      # scripts/rilis.sh on the owner's Mac creates the release and its tag, which starts this run too: then only the
+      # signing secrets are checked and nothing is built or published twice (11 Nov 2026, v0.1.9 went red here)
+      - name: Already released
+        id: done
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$GITHUB_REF_NAME is already released (scripts/rilis.sh): checking the signing secrets only"
+          fi
       - name: Signing keychain
         env:
           P12: ${{ secrets.GEMBALA_DEV_P12 }}
@@ -46,10 +57,14 @@ jobs:
           sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/id.pem"
           security find-identity -v -p codesigning "$kc" | grep -q '"Gembala Dev"'
       - name: Test
+        if: steps.done.outputs.skip != 'true'
+        env:
+          SHELL: /bin/zsh # the pane hooks under test are zsh (FR-58), same as ci.yml; the runner's own is bash
         run: |
           cargo test -q -p gembala
           cd ui && npm ci --ignore-scripts && npm run check && npm test
       - name: Release
+        if: steps.done.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
