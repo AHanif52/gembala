@@ -52,6 +52,7 @@ penyedianya. Gembala nggak jadi proxy, nggak baca token, dan nggak ngubah config
 | **Agent yang diketik sendiri** | Ngetik `claude` atau `codex` di shell biasa? Tetap dikenali dan statusnya kelihatan. |
 | **Status per agent** | Kerja, selesai, diam, atau butuh izin, tampil di tab dan sidebar. |
 | **Antrean "Butuh lu"** | Semua pane yang nunggu izin dikumpulin di atas sidebar. Cmd+Shift+U lompat ke sana. |
+| **Notifikasi yang jelas** | Tiap banner bilang pane mana, kenapa (butuh izin, nunggu jawaban, gagal, selesai…), dan harus ngapain. Yang udah dijawab hilang sendiri; saklar per jenis. |
 | **Tetap jalan saat ditutup** | Cmd+Q nutup jendela, agent tetap kerja. Buka lagi, semua masih di tempatnya. |
 | **Lanjutkan sesi** | Agent keluar jadi satu blok ringkas dengan tombol Lanjutkan. Sesi lama bisa dipilih lagi. |
 | **Worktree** | Jalankan agent di git worktree baru biar nggak saling tabrak. |

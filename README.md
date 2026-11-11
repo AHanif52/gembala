@@ -52,6 +52,7 @@ providers. Gembala isn't a proxy, doesn't read tokens, and doesn't touch your ag
 | **Agents you type yourself** | Typing `claude` or `codex` in a plain shell? Still recognized, and the status shows. |
 | **Per-agent status** | Working, done, idle, or needs permission, shown on the tab and in the sidebar. |
 | **"Needs you" queue** | Every pane waiting for permission is collected at the top of the sidebar. Cmd+Shift+U jumps there. |
+| **Clear notifications** | Each banner says which pane, why (needs permission, waiting for an answer, failed, done…), and what to do. Answered ones go away; one switch per kind. |
 | **Keeps running when closed** | Cmd+Q closes the window, agents keep working. Open it again and everything's where you left it. |
 | **Resume sessions** | When an agent exits it collapses into one compact block with a Resume button. Old sessions can be picked again. |
 | **Worktrees** | Run an agent in a fresh git worktree so agents don't step on each other. |

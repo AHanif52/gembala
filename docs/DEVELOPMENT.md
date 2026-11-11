@@ -77,6 +77,11 @@ Always install npm packages with `--ignore-scripts` (SEC-16).
 
 ## Gotchas we've already hit
 
+- tauri-plugin-notification can't remove or replace a delivered banner on macOS (`remove_active` is a no-op there, its
+  backend is the old `NSUserNotificationCenter` without identifiers). The `withdraw` command in `lib.rs` talks to that
+  center directly and matches banners by title, which is unique per pane (FR-87).
+- A profile launch ends in `exec "$SHELL" -l`, so `pane.exit`'s code belongs to the shell after the agent. The agent's own
+  exit code arrives in `pane.replace` (`code`), sent from `agent_done`.
 - WKWebView doesn't forward many Cmd combinations to JS keydown: all shortcuts go through the native menu;
   Cmd+Shift+Enter is swallowed by WebKit before the menu, so it's caught by keydown instead (with a 150 ms guard).
 - Release builds are signed "Gembala Dev" (`bundle.macOS.signingIdentity`, a self-signed certificate in the login
