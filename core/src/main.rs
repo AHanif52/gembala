@@ -104,7 +104,9 @@ fn daemon(args: &[String]) -> ExitCode {
 fn hook(args: &[String]) -> ExitCode {
     let (Some(agent), Some(event)) = (args.first(), args.get(1)) else { return ExitCode::SUCCESS };
     let mut payload = args.get(2).cloned().unwrap_or_default();
-    if agent == "claude" {
+    // Claude's hook input is on stdin; omp's plugin passes a lone `-` for the same reason (its answer would otherwise
+    // sit in the process arguments)
+    if agent == "claude" || payload == "-" {
         use std::io::Read;
         let _ = std::io::stdin().take(64 * 1024).read_to_string(&mut payload);
     }
@@ -126,15 +128,8 @@ fn hook(args: &[String]) -> ExitCode {
         _ => None,
     };
     let source = json()["source"].as_str().map(String::from);
-    // FR-80: the turn's last answer for the Telegram "done" message, from the hook input (Claude Stop
-    // `last_assistant_message`, Codex notify), never from the transcript file (SEC-15)
-    let last = match agent.as_str() {
-        "claude" => json()["last_assistant_message"].as_str().map(String::from),
-        "codex" => json()["last-assistant-message"].as_str().map(String::from),
-        _ => None,
-    }
-    .map(|m| m.chars().take(4000).collect::<String>())
-    .filter(|m| !m.trim().is_empty());
+    // FR-80: the turn's last answer for the Telegram "done" message, from the hook input itself (see `hook_last`)
+    let last = profile::hook_last(agent, &payload);
     let dir = std::env::var("CLAUDE_CONFIG_DIR").ok().filter(|_| agent == "claude");
     let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else { return ExitCode::SUCCESS };
     let send = || -> std::io::Result<()> {

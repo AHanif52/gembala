@@ -232,6 +232,20 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
     })
 }
 
+/// FR-80: the turn's last answer for the Telegram "done" card, from the hook input itself: Claude's Stop
+/// `last_assistant_message`, Codex's notify `last-assistant-message`, omp's `agent_end` text (its plugin sends the last
+/// assistant message on stdin, see `OMP_HOOK`). Never from a transcript file (SEC-15). `None` = no answer in the hook.
+pub fn hook_last(agent: &str, payload: &str) -> Option<String> {
+    let json = || serde_json::from_str::<Value>(payload).unwrap_or_default();
+    let text = match agent {
+        "claude" => json()["last_assistant_message"].as_str().map(String::from),
+        "codex" => json()["last-assistant-message"].as_str().map(String::from),
+        "omp" => Some(payload.to_string()),
+        _ => None,
+    };
+    text.map(|t| t.chars().take(4000).collect::<String>()).filter(|t| !t.trim().is_empty())
+}
+
 fn claude_permission(payload: &str) -> bool {
     let v: Value = serde_json::from_str(payload).unwrap_or_default();
     match v["notification_type"].as_str() {
@@ -288,7 +302,7 @@ files/paths, what was tried or is forbidden, constraints, reply format), never a
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. \
 Need an agent that is not open (or more panes)? `gembala send <name> <task>` with a name from `can_open` in `gembala status` \
 (e.g. `claude-utama`, `omp`) asks the user to open it: result `needs_open`, the task goes once they approve; max 4 per agent. \
-Done with a helper you opened? `gembala close <pane>`. \
+Done with a helper you opened? `gembala close <pane>`. Any pane in the workspace can be closed, but one you didn't open asks the user first (`needs_review`). \
 Found a bug in Gembala itself? `gembala report <title> <what happened, steps>` (quote each) drafts a GitHub issue the user reviews and sends; you cannot send it. \
 A user prompt naming panes as `@<pane>` = send each of them that full handover yourself with `gembala send`; never the prompt verbatim. \
 Pane names (`shell-N`, `@<pane>`, anything in `gembala status`) are Gembala panes, not sessions of your agent tool: reach them only with `gembala`, \
@@ -516,15 +530,34 @@ export const Gembala = async () => ({
 /// omp hook: pane status (FR-4) and message tool (FR-67). Hook tools don't go through bash, so the user's bash patterns
 /// (e.g. `*psql*` = prompt) don't hold a message that happens to mention that word.
 const OMP_HOOK: &str = r#"// made by Gembala; pane status (FR-4) and message tools without bash (FR-67)
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 const exe = __EXE__;
 const hook = (s: string) => execFile(exe, ["hook", "omp", s], () => {});
+// FR-80: the turn's last answer goes on stdin (`-`), so it never shows in the process arguments
+const answer = (s: string, last: string) => {
+  const c = spawn(exe, ["hook", "omp", s, "-"], { stdio: ["pipe", "ignore", "ignore"] });
+  c.on("error", () => {});
+  c.stdin.on("error", () => {});
+  c.stdin.end(last);
+};
+const text_of = (m: any) => {
+  const c = m?.content;
+  return (typeof c === "string" ? c : Array.isArray(c) ? c.filter((p: any) => p?.type === "text").map((p: any) => p.text ?? "").join("\n") : "").trim();
+};
 const run = (args: string[], signal?: AbortSignal) =>
   new Promise<string>((ok) => execFile(exe, args, { signal, maxBuffer: 1 << 20 }, (e, out, err) => ok(String(out || err || (e ? e.message : "")).trim())));
 export default function (pi: any) {
   pi.on("agent_start", async () => hook("start"));
   // omp retries automatically (willContinue) = turn not done yet; without this a false "done", then working again
-  pi.on("agent_end", async (e: any) => { if (e?.willContinue !== true) hook("end"); });
+  // FR-80: agent_end carries the conversation (`messages`), so the card gets the assistant's own answer
+  pi.on("agent_end", async (e: any) => {
+    if (e?.willContinue === true) return;
+    const msgs = Array.isArray(e?.messages) ? [...e.messages].reverse() : [];
+    const m = msgs.find((x: any) => x?.role === "assistant" && text_of(x));
+    const last = m ? text_of(m).slice(0, 4000) : "";
+    if (last) answer("end", last);
+    else hook("end");
+  });
   // `ask` tool = agent waiting for a human answer
   pi.on("tool_execution_start", async (e: any) => { if (e?.toolName === "ask") hook("approval"); });
   pi.on("tool_execution_end", async (e: any) => { if (e?.toolName === "ask") hook("resolved"); });
@@ -949,6 +982,25 @@ mod tests {
         let bad = Session { id: Some("x; rm -rf /".into()), resume: false };
         assert!(!launch(&by("claude"), None, Some(&bad), false).unwrap().contains("rm"));
         assert!(valid_uuid(id) && !valid_uuid("0b6f2a1e"));
+    }
+
+    /// FR-80: the turn's answer comes from the hook input; omp's text arrives on stdin (its plugin), so a bare payload
+    /// that isn't JSON is the answer, an empty one is no answer.
+    #[test]
+    fn jawaban_dari_hook_per_agent() {
+        let claude = r#"{"session_id":"s","last_assistant_message":"Tabel 7 task siap diuji."}"#;
+        assert_eq!(hook_last("claude", claude).as_deref(), Some("Tabel 7 task siap diuji."));
+        let codex = r#"{"type":"agent-turn-complete","last-assistant-message":"File sudah dibuat."}"#;
+        assert_eq!(hook_last("codex", codex).as_deref(), Some("File sudah dibuat."));
+        assert_eq!(hook_last("omp", "Jawaban agent omp.").as_deref(), Some("Jawaban agent omp."));
+        // nobody else carries one, and an empty or blank payload never becomes an answer
+        assert_eq!(hook_last("opencode", "ses_4Ab-9"), None);
+        assert_eq!(hook_last("omp", ""), None);
+        assert_eq!(hook_last("omp", "   \n"), None);
+        assert_eq!(hook_last("claude", r#"{"session_id":"s"}"#), None);
+        assert_eq!(hook_last("codex", "not json"), None);
+        // a long omp answer is cut at the 4.000 the daemon stores
+        assert_eq!(hook_last("omp", &"x".repeat(5000)).map(|t| t.chars().count()), Some(4000));
     }
 
     #[test]

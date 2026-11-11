@@ -22,9 +22,9 @@ const MAX_ANSWER: usize = 3500;
 const MAP_MAX: usize = 500;
 /// a hook can say "blocked" a moment before the dialog is drawn: the screen is read this long after the event
 const SETTLE: Duration = Duration::from_secs(1);
-/// Codex's notify hook can land a moment after its screen goes quiet (the screen watcher calls it done first): a done
-/// card waits this long for the turn's last message instead of going out with no answer (11 Nov).
-const CODEX_ANSWER_WAIT: Duration = Duration::from_secs(3);
+/// An agent's hook can land a moment after its status (Codex's screen watcher calls it done before the notify hook
+/// arrives): a done card waits this long for the turn's last message instead of going out with no answer (11 Nov).
+const ANSWER_WAIT: Duration = Duration::from_secs(3);
 
 pub type Slot = Mutex<Option<Arc<Bot>>>;
 
@@ -257,8 +257,8 @@ fn snippet(screen: &str, lines: usize) -> String {
     text.chars().skip(n.saturating_sub(MAX_SNIPPET)).collect()
 }
 
-/// under a card: the agent's own answer from its stop hook (Claude, Codex), else the screen for agents without one (omp,
-/// OpenCode). Codex's screen is its TUI transcript, never the answer (11 Nov: the done card held the process log, "Viewed
+/// under a card: the agent's own answer from its stop hook (Claude, Codex, omp), else the screen for agents without one
+/// (OpenCode). Codex's screen is its TUI transcript, never the answer (11 Nov: the done card held the process log, "Viewed
 /// image", the 5h-limit warning and the input box).
 fn turn_body(done: bool, agent: &str, answer: Option<&str>, screen: impl FnOnce() -> String) -> String {
     match answer {
@@ -271,6 +271,31 @@ fn turn_body(done: bool, agent: &str, answer: Option<&str>, screen: impl FnOnce(
     }
 }
 
+/// agents whose stop hook carries the turn's own answer (`gembala hook` → `last`): their done card can wait for it
+fn answers_from_hook(agent: &str) -> bool {
+    matches!(agent, "claude" | "codex" | "omp")
+}
+
+/// A picker or a dialog on screen is the user's business on the Mac, never the answer: numbered options under a cursor
+/// row (`❯ 1. Fable 5.1`) or the dialog's own footer. Read from the snippet that would have gone out, so scrollback above
+/// the turn can't trip it.
+fn picker_screen(snip: &str) -> bool {
+    const FOOTERS: &[&str] = &["enter to set as default", "enter to confirm", "enter to select", "enter continue", "esc to cancel", "esc back"];
+    let (mut numbered, mut cursor) = (false, false);
+    for row in snip.lines() {
+        let low = row.to_lowercase();
+        if FOOTERS.iter().any(|f| low.contains(f)) {
+            return true;
+        }
+        if choice(row).is_some() {
+            numbered = true;
+            let t = row.trim_start_matches(|c: char| c.is_whitespace() || c == '│');
+            cursor |= t.starts_with('❯') || t.starts_with('›');
+        }
+    }
+    numbered && cursor
+}
+
 /// agent TUI chrome that must not reach the phone: status/footer rows above the
 /// input box (build status `Build · …`, model line, progress bars, quota and
 /// key-hint footers). Dropped before the line budget, so chrome can't push the
@@ -279,11 +304,21 @@ fn chrome_row(t: &str) -> bool {
     if t.is_empty() {
         return false;
     }
-    if t.contains("Build ·") || t.contains("ctrl+") || t.starts_with("Quota") {
+    if t.contains("Build ·") || t.contains("ctrl+") || t.starts_with("Quota") || tool_call_row(t) {
         return true;
     }
     let bars = t.chars().filter(|c| matches!(c, '█' | '▓' | '▒' | '░' | '▄' | '▀' | '■' | '□' | '▪' | '▫')).count();
     bars >= 8 && bars * 2 >= t.chars().count()
+}
+
+/// Claude Code draws each tool call as `⏺ Bash(cd …)`, its result under `⎿`, plus the permission note and the cwd reset
+/// (9 Nov: those rows buried the answer and the links inside them arrived as code). The `⏺` of a spoken answer stays:
+/// only `⏺ ToolName(` is a call.
+fn tool_call_row(t: &str) -> bool {
+    let row = t.trim_start();
+    let rest = row.strip_prefix('⏺').unwrap_or(row).trim_start();
+    let call = rest.split_once('(').is_some_and(|(name, _)| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    row.starts_with('⎿') || (row.starts_with('⏺') && call) || t.contains("Allowed by auto mode classifier") || row.starts_with("Shell cwd was reset")
 }
 
 /// baris judul dialog konfirmasi OpenCode 1.19.5 (`△` + judul), bukan baris
@@ -807,6 +842,10 @@ fn t(id: bool, k: &str) -> &'static str {
         "bad" => ("Teksnya kosong setelah dibersihin.", "Nothing left after cleaning the text."),
         "old_reply" => ("Pane pesan itu udah nggak ada. Ketik biasa buat ke pane aktif, atau /ke <pane>.", "That message's pane is gone. Type plainly for the active pane, or /to <pane>."),
         "snip_off" => ("Potongan layar dimatiin buat workspace ini.", "Screen snippets are off for this workspace."),
+        "unread" => (
+            "jawaban belum kebaca — layarnya lagi nampilin pilihan/dialog. Lihat: /lihat {pane}",
+            "the answer wasn't read — the screen is showing a picker or dialog. Look: /look {pane}",
+        ),
         "pick" => ("Ke pane mana?", "Which pane?"),
         "p_now" => ("lagi ngerjain", "is working"),
         "p_ran" => ("udah jalan", "running"),
@@ -819,8 +858,8 @@ fn t(id: bool, k: &str) -> &'static str {
         "dl_fail" => ("Gagal ngunduh filenya (maks 20 MB).", "Couldn't download the file (20 MB max)."),
         "none" => ("Belum ada pane.", "No panes yet."),
         _ => (
-            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif (caption /ke <pane> buat pane lain).\n/ke <pane> [teks] — ganti pane aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah agent (/exit, /compact, /model) diteruskan ke pane aktif\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
-            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane (caption /to <pane> for another).\n/to <pane> [text] — switch the active pane (and send the text); /to alone = pick from buttons\nAgent commands (/exit, /compact, /model) go to the active pane\n/open <agent> [pane] — start claude/codex/omp/opencode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
+            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif (caption /ke <pane> buat pane lain).\n/ke <pane> [teks] — ganti pane aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah / yang bukan milik bot (/exit, /compact, /clear, /model) diteruskan ke pane aktif\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
+            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane (caption /to <pane> for another).\n/to <pane> [text] — switch the active pane (and send the text); /to alone = pick from buttons\nA / command that isn't the bot's (/exit, /compact, /clear, /model) goes to the active pane\n/open <agent> [pane] — start claude/codex/omp/opencode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
         ),
     };
     if id { i } else { e }
@@ -1460,10 +1499,10 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
             text += &format!("\n{}", esc(&l));
         }
         let done = matches!(kind, Kind::Done(_));
-        // Codex's screen watcher reports done before its notify hook delivers the turn's last message, so the card used
-        // to go out with no answer. Hold it a moment for the answer; a turn that started meanwhile drops it.
-        if done && agent == "codex" && pane.last_msg.lock().unwrap().is_none() {
-            let end = Instant::now() + CODEX_ANSWER_WAIT;
+        // The done status can come a moment before the hook that carries the turn's answer, so the card waits for it;
+        // a turn that started meanwhile drops it. Only agents whose answer comes from their own hook can be waited on.
+        if done && answers_from_hook(&agent) && pane.last_msg.lock().unwrap().is_none() {
+            let end = Instant::now() + ANSWER_WAIT;
             while Instant::now() < end && *pane.status.lock().unwrap() == "done" && pane.last_msg.lock().unwrap().is_none() {
                 thread::sleep(Duration::from_millis(100));
             }
@@ -1473,7 +1512,14 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
         }
         let answer = done.then(|| pane.last_msg.lock().unwrap().take()).flatten();
         let lines = v["telegram"]["lines"].as_u64().unwrap_or(30).min(30) as usize;
-        text += &turn_body(done, &agent, answer.as_deref(), || screen_snip(&pane, lines));
+        let snip = screen_snip(&pane, lines);
+        // A picker or dialog is not an answer (9 Nov: the done card held Claude's `/model` list). Say the answer wasn't
+        // read instead of sending the dialog's numbered options.
+        text += &if done && answer.is_none() && picker_screen(&snip) {
+            format!("\n{}", esc(&t(id_l, "unread").replace("{pane}", &name)))
+        } else {
+            turn_body(done, &agent, answer.as_deref(), || snip)
+        };
     }
     let mut body = json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML"});
     if let Kind::Blocked(seq) = kind {
@@ -2162,6 +2208,30 @@ mod tests {
         assert_eq!(snippet("build ok\nctrl is a key", 30), "build ok\nctrl is a key");
         // bare quota footers read as TUI chrome and drop (rare prose tradeoff)
         assert_eq!(snippet("Quota unavailable", 30), "");
+        // Claude's tool calls and their output are not the turn (9 Nov: answer buried under "Bash(cd …)")
+        let turn = "● 7 task siap diuji.\n⏺ Bash(cd /x && python3 lapor.py laporan.md)\n  ⎿ Allowed by auto mode classifier\n  ⎿ Shell cwd was reset to /Users/x\n⏺ Read(laporan.md)\nSelesai.";
+        assert_eq!(snippet(turn, 30), "● 7 task siap diuji.\nSelesai.");
+        // a spoken answer keeps its `⏺`: no tool name before the parenthesis
+        assert_eq!(snippet("⏺ Hasilnya (7 task) siap.", 30), "⏺ Hasilnya (7 task) siap.");
+    }
+
+    /// 9 Nov: the done card held Claude's `/model` picker instead of the answer. A picker or a dialog is never sent.
+    #[test]
+    fn layar_pemilih_bukan_jawaban() {
+        let model = "❯ /model\n  1. Default (recommended)\n❯ 2. Fable 5.1\n  3. Sonnet 5.5\nEnter to set as default · Esc to cancel";
+        assert!(picker_screen(&snippet(model, 30)));
+        assert!(!picker_screen("● 7 task siap diuji.\n152347 · [BE] Kolom Result"));
+        // an ordinary numbered list from an answer (no cursor row) stays
+        assert!(!picker_screen("Hasil:\n1. perbaiki A\n2. perbaiki B"));
+        // the dialog footer alone is enough (the options may be above the snippet's line budget)
+        assert!(picker_screen("  2. Opus\nEnter to confirm"));
+    }
+
+    #[test]
+    fn penahanan_jawaban_per_agent() {
+        assert!(answers_from_hook("claude") && answers_from_hook("codex") && answers_from_hook("omp"));
+        // OpenCode's plugin has no answer text: no reason to make its card wait
+        assert!(!answers_from_hook("opencode") && !answers_from_hook("shell"));
     }
 
     #[test]
@@ -2206,6 +2276,13 @@ mod tests {
         assert_eq!(parse(&msg(42, 7, "/to shell-25 cek ini", n), Some(&l), n), In::Type { to: Some(To::Name("shell-25".into())), text: "cek ini".into(), msg: 5 });
         // the agent's own commands go to the active pane; the bot's own without arguments = help
         assert_eq!(parse(&msg(42, 7, "/exit", n), Some(&l), n), In::Type { to: None, text: "/exit".into(), msg: 5 });
+        assert_eq!(parse(&msg(42, 7, "/model", n), Some(&l), n), In::Type { to: None, text: "/model".into(), msg: 5 });
+        assert_eq!(parse(&msg(42, 7, "/compact", n), Some(&l), n), In::Type { to: None, text: "/compact".into(), msg: 5 });
+        assert_eq!(parse(&msg(42, 7, "/clear", n), Some(&l), n), In::Type { to: None, text: "/clear".into(), msg: 5 });
+        // ... and as a reply: the command goes to the pane whose card was answered
+        let mut ex = msg(42, 7, "/exit", n);
+        ex["message"]["reply_to_message"] = json!({"message_id": 77, "text": "claude-1 · gembala kelar\n● Oke."});
+        assert_eq!(parse(&ex, Some(&l), n), In::Type { to: Some(To::Reply(77, "claude-1".into())), text: "/exit".into(), msg: 5 });
         assert_eq!(parse(&msg(42, 7, "/help", n), Some(&l), n), In::Help);
         assert_eq!(parse(&msg(42, 7, "/buka", n), Some(&l), n), In::Help);
     }
