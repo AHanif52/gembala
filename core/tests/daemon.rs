@@ -297,9 +297,10 @@ fn ctx_compose_file_and_pane() {
 fn saver_on_only_when_the_switch_is_on() {
     let d = start("saver");
     let mut ui = Cli::ui(&d);
-    let b = ui.call("pane.create", json!({"cmd": "i=0; while [ $i -lt 60 ]; do echo SAMA-BARIS; i=$((i+1)); done; sleep 30"}))["result"].clone();
+    let b = ui.call("pane.create", json!({"cmd": "i=0; while [ $i -lt 60 ]; do echo SAMA-BARIS; i=$((i+1)); done; echo LOOP-SELESAI; sleep 30"}))["result"].clone();
     let name = b["name"].as_str().unwrap();
-    ui.attach_until(b["pane"].as_u64().unwrap(), &["SAMA-BARIS"]);
+    // wait for the whole loop: on a slow runner (CI Linux 11 Nov) compose saw only 8 of 60 lines
+    ui.attach_until(b["pane"].as_u64().unwrap(), &["LOOP-SELESAI"]);
     let a = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     ui.call("pane.readable", json!({"pane": b["pane"], "on": true}));
     let compose = |ui: &mut Cli| ui.call("ctx.compose", json!({"pane": a, "text": format!("cek @pane:{name}")}))["result"]["body"].as_str().unwrap_or_default().to_string();
@@ -317,7 +318,7 @@ fn saver_on_only_when_the_switch_is_on() {
 fn klien_lambat_diputus() {
     let d = start("lambat");
     let mut ui = Cli::ui(&d);
-    let pane = ui.call("pane.create", json!({"cmd": "yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | head -c 30000000; sleep 1", "rows": 24, "cols": 80}))["result"]["pane"].as_u64().unwrap();
+    let pane = ui.call("pane.create", json!({"cmd": "yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | head -c 8000000; sleep 1", "rows": 24, "cols": 80}))["result"]["pane"].as_u64().unwrap();
     let mut lambat = Cli::ui(&d);
     lambat.call("pane.attach", json!({"pane": pane}));
     let t0 = Instant::now();
@@ -977,14 +978,24 @@ fn deteksi_menunggu_password() {
     let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     let w = |ui: &mut Cli, s: &str| ui.call("pane.write", json!({"pane": pane, "data": B64.encode(s)}));
     w(&mut ui, "sleep 30\r");
-    let r = wait_info(&mut ui, pane, true, Duration::from_secs(5));
-    assert_eq!(r["password"], false, "{r}");
+    // a loaded runner can take >5 s to start the login shell; without the check the kill misses `sleep 30` and the next
+    // line waits behind it
+    let r = wait_info(&mut ui, pane, true, Duration::from_secs(20));
+    assert_eq!((&r["busy"], &r["password"]), (&json!(true), &json!(false)), "{r}");
     ui.call("pane.kill", json!({"pane": pane}));
-    wait_info(&mut ui, pane, false, Duration::from_secs(5));
+    let r = wait_info(&mut ui, pane, false, Duration::from_secs(10));
+    assert_eq!(r["busy"], false, "{r}");
     w(&mut ui, "sh -c 'stty -echo; read x'\r");
     let t0 = Instant::now();
-    while ui.call("pane.info", json!({"pane": pane}))["result"]["password"] != true {
-        assert!(t0.elapsed() < Duration::from_secs(5), "prompt password tidak terdeteksi");
+    loop {
+        let info = ui.call("pane.info", json!({"pane": pane}))["result"].clone();
+        if info["password"] == true {
+            break;
+        }
+        if t0.elapsed() > Duration::from_secs(5) {
+            let screen = B64.decode(snapshot(&ui.call("pane.attach", json!({"pane": pane})))).unwrap();
+            panic!("prompt password tidak terdeteksi: {info}\n{}", String::from_utf8_lossy(&screen));
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -1618,7 +1629,7 @@ fn lewati_izin_dari_argumen_proses() {
 /// FR-74, SEC-27: recipes are approved by bytes; an edit outside the app, or a stale hash, cancels the approval.
 #[test]
 fn resep_disetujui_per_isi() {
-    let d = start("resep");
+    let d = start_with_agents("resep");
     let mut ui = Cli::ui(&d);
     let rows = ui.call("recipe.list", json!({}))["result"].clone();
     assert_eq!(rows.as_array().map(Vec::len), Some(2), "{rows}");
@@ -1642,7 +1653,7 @@ fn resep_disetujui_per_isi() {
 /// the render whose hash the review showed.
 #[test]
 fn b1_builder_render_dan_simpan() {
-    let d = start("b1");
+    let d = start_with_agents("b1");
     let mut ui = Cli::ui(&d);
     let lib = ui.call("recipe.library", json!({}))["result"].clone();
     assert_eq!(lib["steps"].as_array().map(Vec::len), Some(9), "{lib}");

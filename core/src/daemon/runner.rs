@@ -590,22 +590,23 @@ fn feed(st: &Arc<State>, l: &mut Live, ev: Event) {
     if terminal(&l.run.state) {
         close_shell(l);
         l.outbox = None;
-        // the workspace is free again as soon as the run ends
-        if !l.released {
-            l.released = true;
-            let mut reg = st.harness.lock().unwrap();
-            reg.runs.remove(&l.workspace);
-            reg.from_ws.remove(&l.from);
-            if !matches!(l.run.state, Hs::Done) {
-                reg.ended.insert(l.id.clone(), l.opened.clone());
-            }
-        }
     }
     let sig = (l.run.trace.len(), state_code(&l.run.state), l.panes.len(), l.msgs.len(), l.outbox.is_some());
     if sig != l.sig {
         l.sig = sig;
         save(st, l);
         ui_event(st, "harness.state", snapshot(st, l));
+    }
+    // the workspace is free again as soon as the run ends; after the save, or `harness.state` in between reads the
+    // stale run.json and marks it daemon_restart (CI Linux 10-11 Nov)
+    if terminal(&l.run.state) && !l.released {
+        l.released = true;
+        let mut reg = st.harness.lock().unwrap();
+        reg.runs.remove(&l.workspace);
+        reg.from_ws.remove(&l.from);
+        if !matches!(l.run.state, Hs::Done) {
+            reg.ended.insert(l.id.clone(), l.opened.clone());
+        }
     }
     // FR-86: a run that went all the way frees its agents; after the snapshot, so the UI has the panes before they exit
     if matches!(l.run.state, Hs::Done) && !l.opened.is_empty() {
