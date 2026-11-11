@@ -1155,6 +1155,22 @@ fn fr99_bar_izin_dan_jawaban() {
     assert_eq!(idle.call("pane.answer", json!({"pane": shell, "key": "1", "seq": 0}))["result"]["reason"], "shell");
     assert_eq!(idle.call("pane.answer", json!({"pane": shell, "text": "x", "seq": 0}))["result"]["reason"], "shell");
     assert_eq!(idle.call("pane.dialogs", json!({"panes": [shell]}))["result"]["panes"][shell.to_string().as_str()]["waiting"], false);
+    // A password prompt inside an agent pane also rejects both answer forms before checking the dialog generation.
+    use std::os::unix::fs::PermissionsExt;
+    let d = start("p2-password");
+    let run = d.dir.join("password.sh");
+    std::fs::write(&run, "#!/bin/sh\nstty -echo\nprintf 'Password: '\nread x\n").unwrap();
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut password_ui = Cli::ui(&d);
+    profiles(&d, &mut password_ui, &format!("[[profile]]\nid = \"codex\"\ncommand = {}\n", json!(run.to_string_lossy())), "password.sh");
+    let password_pane = password_ui.call("pane.create", json!({"profile": "codex"}))["result"]["pane"].as_u64().unwrap();
+    let started = Instant::now();
+    while password_ui.call("pane.info", json!({"pane": password_pane}))["result"]["password"] != true {
+        assert!(started.elapsed() < Duration::from_secs(5), "password prompt not detected");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(password_ui.call("pane.answer", json!({"pane": password_pane, "key": "1", "seq": 0}))["result"]["reason"], "password");
+    assert_eq!(password_ui.call("pane.answer", json!({"pane": password_pane, "text": "secret", "seq": 0}))["result"]["reason"], "password");
     // no pane at all: the UI gets an empty map, never an error that breaks the strip
     assert_eq!(idle.call("pane.dialogs", json!({"panes": [9999]}))["result"]["panes"], json!({}));
 }
