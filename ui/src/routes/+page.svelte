@@ -3,6 +3,7 @@
   import { onMount, tick, untrack } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
+  import Rail from "$lib/Rail.svelte";
   import Changes from "$lib/Changes.svelte";
   import OutputView from "$lib/OutputView.svelte";
   import Messages from "$lib/Messages.svelte";
@@ -26,6 +27,7 @@
   import { safeResume } from "$lib/resume";
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
+  import type { UsageRow } from "$lib/usage";
   import { subtabRows } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
   import { errText, i18n, loc, t as tt, tn as ttn, tOr } from "$lib/i18n/state.svelte";
@@ -118,6 +120,8 @@
   let settingsOpen = $state(false);
   let settingsSec = $state("umum"); // section Settings opens on (the phone icon opens Telegram)
   let tg = $state<any>({ state: "off" }); // FR-80: Telegram bot status from the daemon
+  let usageRows = $state<UsageRow[]>([]); // FR-102: daemon-owned usage readings; old daemons return no rows
+  let hintReset = $state(0);
   // FR-82: newer release on GitHub (daemon checks); "Lewatin versi ini" remembers one version on this Mac
   let upd = $state<Upd | null>(null);
   let appVer = $state("");
@@ -319,6 +323,7 @@
   // FR-59: "Start" panel in a shell pane that hasn't run anything yet
   let ran = $state<Record<number, boolean>>({});
   let installed = $state<string[]>([]); // installed agents (agents.detect), filled when the app opens
+  const usageActive = $derived(Object.entries(meta).filter(([id]) => !dead[+id]).map(([, m]) => ({ agent: AGENTS.includes(m.busy ?? "") ? m.busy! : m.agent, login: m.acct || m.accountId || "utama" })));
   /// focused pane that shows the FR-59 Start panel (the welcome card joins it); null = none
   const startHere = $derived(tab && editorShown(tab.focus) && !ran[tab.focus] && !draft[tab.focus] ? tab.focus : null);
   // FR-61: one button per account when that agent has accounts besides Utama (like the palette)
@@ -1664,7 +1669,7 @@
 
   /// FR-52: lebar sidebar diseret
   function dragSide(e: PointerEvent) {
-    const move = (m: PointerEvent) => (sideW = Math.min(480, Math.max(160, m.clientX)));
+    const move = (m: PointerEvent) => (sideW = Math.min(480, Math.max(160, m.clientX - 44)));
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
@@ -2307,10 +2312,12 @@
       if (payload.event === "harness.state") onRun(payload.params);
       if (payload.event === "harness.notice") runNotice(payload.params);
       if (payload.event === "telegram.changed") tg = payload.params ?? { state: "off" };
+      if (payload.event === "usage.changed") usageRows = Array.isArray(payload.params?.rows) ? payload.params.rows : [];
       if (payload.event === "update.changed") upd = payload.params;
     });
     // an older daemon has no telegram.* (unknown_method): stays off
     call("telegram.status").then((r) => (tg = r ?? { state: "off" })).catch(() => {});
+    call("usage.list").then((r) => (usageRows = Array.isArray(r?.rows) ? r.rows : [])).catch(() => {});
     // an older daemon has no update.* either: no update badge
     call("update.status").then((r) => (upd = r)).catch(() => {});
     getVersion().then((v) => (appVer = v)).catch(() => {});
@@ -2397,8 +2404,12 @@
   {/if}
 {/snippet}
 
+<Rail rows={usageRows} {installed} accounts={cfg?.values.accounts ?? []} active={usageActive} {simple} full={fullscreen} {tg} {unseen} {bell}
+  showHint={!confirm && !picker && !askMode && !linkAsk && !settingsOpen && meta[tab?.focus ?? 0]?.status !== "blocked"} resetHints={hintReset}
+  onsearch={openPalette} ontask={() => (newTask = true)} onbell={() => (bell = !bell)}
+  ontelegram={() => ((settingsSec = "telegram"), (settingsOpen = true))} onsettings={() => (settingsOpen = true)} />
 {#if sidebar}
-  <aside class="side" aria-label={tt("menu.tab")} style:width="{sideW}px" class:dragging={!!dragging} class:full={fullscreen}>
+  <aside class="side" aria-label={tt("menu.tab")} style:width="{sideW}px" style:left="44px" class:dragging={!!dragging} class:full={fullscreen}>
     <!-- transparent title bar: window button area + window drag -->
     <div class="drag" data-tauri-drag-region></div>
     <button class="add find" onclick={openPalette}>
@@ -2513,21 +2524,8 @@
     <!-- FR-99 P1: used rarely, so it sits quietly under the list -->
     <button class="add wsnew" onclick={addWorkspace}>+ {simple ? tt("side.addProject") : "Workspace"}</button>
     {#if dragging}<div class="dropline" style:top="{dragging.line.top}px" style:left="{dragging.line.left}px" style:width="{dragging.line.width}px"></div>{/if}
-    <!-- pen 02/11: Settings + bell pinned to the sidebar foot -->
-    <div class="sidefoot">
-      <button class="footbtn" title={tt("side.settingsTip")} aria-label={tt("set.title")} onclick={() => (settingsOpen = true)}>{@render icon("gear")}</button>
-      <button class="footbtn bellbtn" class:on={bell} title={tt("bell.title")} aria-label={unseen ? tt("bell.ariaUnseen", { n: unseen }) : tt("bell.title")} aria-expanded={bell}
-        onclick={() => (bell = !bell)}>{@render icon("bell")}{#if unseen}<span class="badge">{unseen}</span>{/if}</button>
-      <!-- FR-80 (pen 40): Telegram bot bound; green = connected, amber = offline or stopped -->
-      {#if tg?.name && tg.state !== "off"}
-        {@const tip = tg.state === "on" ? tt("side.tgOn", { bot: tg.bot || "bot" }) : tt("side.tgOff")}
-        <button class="footbtn tgbtn" class:warn={tg.state !== "on"} title={tip} aria-label={tip} onclick={() => ((settingsSec = "telegram"), (settingsOpen = true))}>{@render icon("phone")}</button>
-      {/if}
-      <!-- FR-82 (mockup-update A): newer release, green until updated or skipped -->
-      {#if updNew}
-        <button class="updbtn" aria-expanded={updOpen} onclick={() => (updOpen = !updOpen)}><i aria-hidden="true"></i>{tt("upd.pill", { v: upd?.latest ?? "" })}</button>
-      {/if}
-    </div>
+    <!-- FR-82: update notice stays in the sidebar; daily controls live in the rail. -->
+    {#if updNew}<button class="updbtn" aria-expanded={updOpen} onclick={() => (updOpen = !updOpen)}><i aria-hidden="true"></i>{tt("upd.pill", { v: upd?.latest ?? "" })}</button>{/if}
   </aside>
   {#if updOpen && updNew && upd}
     {@const lines = noteLines(upd.notes)}
@@ -2545,9 +2543,11 @@
       </span>
     </div>
   {/if}
-  {#if bell}
-    <!-- FR-76: event history from every workspace; click = jump to the pane -->
-    <div class="notes" role="dialog" aria-label={tt("bell.title")}>
+  <div class="sidegrip" style:left="{sideW + 41}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label={tt("side.width")}></div>
+{/if}
+{#if bell}
+  <!-- FR-76: bell stays available even when the sidebar is hidden. -->
+  <div class="notes" role="dialog" aria-label={tt("bell.title")}>
       <div class="nhead"><b>{tt("bell.title")}</b>{#if unseen}<button class="nlink" onclick={() => notes.forEach((n) => (n.seen = true))}>{tt("bell.markAll")}</button>{/if}</div>
       <div class="nlist">
         {#each groups as g, i (g[0].pane)}
@@ -2575,12 +2575,10 @@
         {/each}
       </div>
       <div class="nfoot">{tt("bell.foot")}</div>
-    </div>
-  {/if}
-  <div class="sidegrip" style:left="{sideW - 3}px" onpointerdown={dragSide} role="separator" aria-orientation="vertical" aria-label={tt("side.width")}></div>
+  </div>
 {/if}
 
-{#if !sidebar}<div class="drag top" data-tauri-drag-region></div>{/if}
+{#if !sidebar}<div class="drag top" style:left="44px" data-tauri-drag-region></div>{/if}
 
 {#if paneDrag?.zone}
   {@const z = paneDrag.zone}
@@ -2590,14 +2588,14 @@
   {@const parent = compareOwner ?? owner}
   {@const helper = compareHelper ?? tab}
   {#if parent && helper}
-    <div class="helper-head" style:left={sidebar ? `${sideW}px` : "0"} style:top={sidebar ? "0" : "28px"} style:right={changes ? `${panelW}px` : "0"}>
+    <div class="helper-head" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right={changes ? `${panelW}px` : "0"}>
       <button class="mini" onclick={() => openTab(at.ws, parent)}>← {title(parent)}</button>
       <span>› {simple ? tt("helper.simple", { name: title(parent) }) : title(helper)}</span>
       <button class="mini" onclick={toggleCompare}>{compareId ? tt("helper.unsplit") : simple ? tt("helper.compareSimple", { name: title(parent) }) : tt("helper.compare")}</button>
     </div>
   {/if}
 {/if}
-<div class="grid" style:left={sidebar ? `${sideW}px` : "0"} style:top={sidebar ? (owner || compareHelper ? "32px" : "0") : (owner || compareHelper ? "60px" : "28px")} style:right={changes ? `${panelW}px` : "0"} bind:this={box}>
+<div class="grid" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? (owner || compareHelper ? "32px" : "0") : (owner || compareHelper ? "60px" : "28px")} style:right={changes ? `${panelW}px` : "0"} bind:this={box}>
   {#if ws && !tab}
     <div class="empty">
       <span>{tt("main.wsEmpty", { name: ws.name })}</span>
@@ -3272,7 +3270,7 @@
     <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
       onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
       oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)}
-      onresetHints={() => { helperTip = true; try { localStorage.removeItem(TIP_KEY); } catch {} }} />
+      onresetHints={() => { helperTip = true; hintReset += 1; try { localStorage.removeItem(TIP_KEY); } catch {} }} />
   {/if}
   {#if zoomed}<span class="zoom">{tt("main.zoomed")}</span>{/if}
   <ContextMenu bind:menu />
@@ -3722,41 +3720,13 @@
     color: var(--muted);
     font-size: 11px;
   }
-  /* pen 02: foot icons stay put while the tab list scrolls */
-  .sidefoot {
-    position: sticky;
-    bottom: -10px; /* sticky stops at .side's 10px padding edge; without this the tab list shows below the foot */
-    display: flex;
-    gap: 2px;
-    margin: auto -8px -10px;
-    padding: 6px 8px 8px;
-    border-top: 1px solid var(--line);
-    background: var(--side);
-  }
-  .footbtn {
-    position: relative;
-    display: flex;
-    padding: 4px;
-    border: 0;
-    border-radius: 4px;
-    background: none;
-    color: var(--muted);
-  }
-  .footbtn .ic {
-    width: 14px;
-    height: 14px;
-  }
-  .footbtn:hover,
-  .footbtn.on {
-    background: var(--line);
-    color: var(--fg);
-  }
-  /* FR-82: pushed to the right end of the foot */
+  /* FR-82: update notice remains visible below the sidebar's workspace list. */
   .updbtn {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    margin-left: auto;
+    align-self: flex-end;
+    margin-top: 4px;
     padding: 2px 8px;
     border: 1px solid #14532d;
     border-radius: 999px;
@@ -3773,7 +3743,7 @@
   }
   .updcard {
     position: fixed;
-    left: 8px;
+    left: 52px;
     bottom: 40px;
     z-index: 7;
     display: flex;
@@ -3806,37 +3776,16 @@
     background: var(--bg);
     font: 12px "SF Mono", Menlo, monospace;
   }
-  .footbtn.tgbtn {
-    color: var(--green, #16a34a);
-  }
-  .footbtn.tgbtn.warn {
-    color: var(--amber, #d97706);
-  }
-  .badge {
-    position: absolute;
-    top: 9px;
-    left: 13px;
-    min-width: 13px;
-    padding: 0 3px;
-    box-sizing: border-box;
-    border-radius: 7px;
-    background: #d97706;
-    color: #fff;
-    font-size: 9px;
-    font-weight: 600;
-    line-height: 13px;
-    text-align: center;
-  }
-  /* FR-76 / pen 11: bell panel over the sidebar foot */
+  /* FR-76: bell panel stays beside the rail when the sidebar is hidden. */
   .notes {
     position: fixed;
-    left: 8px;
+    left: 52px;
     bottom: 40px;
     z-index: 7;
     display: flex;
     flex-direction: column;
     width: 380px;
-    max-width: calc(100vw - 16px);
+    max-width: calc(100vw - 60px);
     max-height: min(560px, calc(100vh - 80px));
     border: 1px solid var(--line);
     border-radius: 8px;
