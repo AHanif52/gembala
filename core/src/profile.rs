@@ -502,12 +502,14 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
     // FR-4, FR-61: typed Claude = same hooks as the profile (status, session id + owning account); the daemon doesn't read its screen
     let start = q(&claude_hooks(exe, false).to_string());
+    let jail = if cfg!(target_os = "linux") { "gembala jail -- " } else { "" };
+    let gemini = if cfg!(target_os = "linux") { "function gemini { command gembala jail -- gemini \"$@\" }\n" } else { "" };
     format!(
-        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command gembala jail -- claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
-         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command gembala jail -- omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
-         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command gembala jail -- codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
-         function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command gembala jail -- opencode \"$@\" }}\n\
-         function gemini {{ command gembala jail -- gemini \"$@\" }}\n\
+        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command {jail}claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
+         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command {jail}omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
+         function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command {jail}codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
+         function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command {jail}opencode \"$@\" }}\n\
+         {gemini}\
          zmodload -F zsh/stat b:zstat\n\
          __gembala_accounts() {{\n\
            local -A info\n\
@@ -784,8 +786,8 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
         s += "export GEMBALA_SPOOL=\"$(gembala token 2>/dev/null)\"; ";
     }
     // SEC-20: the agent (never a plain pane shell) runs inside a Landlock domain so its scripts can't reach the UI
-    // channel; on macOS and old kernels `jail` just execs the command (TECH 21.8)
-    if let Some(h) = h {
+    // channel (Linux only; TECH 21.8).
+    if cfg!(target_os = "linux") && let Some(h) = h {
         s += &q(&h.exe);
         s += " jail -- ";
     }
@@ -806,6 +808,10 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
     // FR-58/59: zsh reads the hook folder again through `.zlogin`/ZDOTDIR; bash has no ZDOTDIR, so the pane shell
     // is started with the hook `--rcfile` again (same markers and input editor as a new shell pane)
     match h {
+        Some(h) if !cfg!(target_os = "linux") => s += &format!(
+            "case \"$SHELL\" in */zsh) exec env ZDOTDIR={} GEMBALA_USER_ZDOTDIR=\"${{ZDOTDIR:-$HOME}}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac",
+            q(&h.dir.to_string_lossy())
+        ),
         Some(h) => {
             let dir = h.dir.to_string_lossy();
             s += &format!(
@@ -1047,7 +1053,8 @@ mod tests {
         assert!(claude.contains("hook claude stop"), "{claude}");
         // zsh after the agent exits loads the hooks again (input editor + blocks), the user's ZDOTDIR carried along;
         // bash has no ZDOTDIR, so its pane shell gets the hook `--rcfile` again
-        assert!(claude.contains("*/zsh) exec env ZDOTDIR='/cfg/hooks' GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; */bash) exec \"$SHELL\" --rcfile '/cfg/hooks/.bashrc' -i ;; *) exec \"$SHELL\" -l ;; esac"), "{claude}");
+        let tail = if cfg!(target_os = "linux") { "*/zsh) exec env ZDOTDIR='/cfg/hooks' GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; */bash) exec \"$SHELL\" --rcfile '/cfg/hooks/.bashrc' -i ;; *) exec \"$SHELL\" -l ;; esac" } else { "*/zsh) exec env ZDOTDIR='/cfg/hooks' GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac" };
+        assert!(claude.contains(tail), "{claude}");
         let tail = "case \"$SHELL\" in */zsh) exec env ZDOTDIR=/h GEMBALA_USER_ZDOTDIR=\"${ZDOTDIR:-$HOME}\" \"$SHELL\" -l ;; *) exec \"$SHELL\" -l ;; esac";
         let out = std::process::Command::new("/bin/sh").args(["-c", &tail.replace("\"$SHELL\" -l ;; *)", "sh -c 'echo $ZDOTDIR $GEMBALA_USER_ZDOTDIR' ;; *)")]).env("SHELL", "/bin/zsh").env("ZDOTDIR", "/u").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/h /u");
@@ -1095,8 +1102,13 @@ mod tests {
         // FR-4: a typed claude carries the same hooks (status from hooks, not the screen)
         assert!(rc.contains(&q(&settings.to_string())), "{rc}");
         // SEC-20: the agent launch and both wrapper sets run through `gembala jail --`
-        assert!(claude.contains("'/Apps/Gem bala/gembala' jail -- 'claude'"), "{claude}");
-        assert!(rc.contains("command gembala jail -- claude") && rc.contains("command gembala jail -- codex") && rc.contains("command gembala jail -- omp") && rc.contains("command gembala jail -- opencode") && rc.contains("command gembala jail -- gemini"), "{rc}");
+        assert_eq!(claude.contains("'/Apps/Gem bala/gembala' jail -- 'claude'"), cfg!(target_os = "linux"), "{claude}");
+        for agent in ["claude", "codex", "omp", "opencode"] {
+            let prefix = if cfg!(target_os = "linux") { "gembala jail -- " } else { "" };
+            assert!(rc.contains(&format!("command {prefix}{agent}")), "{rc}");
+        }
+        assert_eq!(rc.contains("gembala jail --"), cfg!(target_os = "linux"));
+        assert_eq!(rc.contains("function gemini"), cfg!(target_os = "linux"));
         let bashrc = &files.iter().find(|f| f.0 == ".bashrc").unwrap().1;
         assert!(bashrc.contains("function claude") && bashrc.contains("command gembala jail -- claude"), "{bashrc}");
         assert!(bashrc.contains("command gembala jail -- codex") && bashrc.contains("command gembala jail -- gemini"), "{bashrc}");
