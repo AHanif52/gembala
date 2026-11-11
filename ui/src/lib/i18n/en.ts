@@ -92,6 +92,7 @@ export default {
   "set.nav.keamanan": "Security",
   "set.nav.proses": "Processes",
   "set.nav.diagnostik": "Diagnostics",
+  "set.nav.versi": "Version",
   "set.cfgErrors": "Part of config.toml isn't used",
   // Settings > General
   "set.general.language": "Language",
@@ -764,6 +765,8 @@ export default {
   "set.tg.riskOn": "Bot chats are stored on Telegram's servers, not end-to-end encrypted. The token sits in telegram.json: agents in panes can read that file, like with any self-hosted bot. If the file changes from outside while Gembala runs, the bot stops and asks to be paired again.",
   "set.sec.off": "off",
   "set.diag.versions": "App, daemon, protocol",
+  "set.diag.whatsNew": "What's new",
+  "whatsnew.title": "What's new in {version}",
   "set.diag.release": "Updates",
   "set.diag.releaseBtn": "Releases page",
   "set.upd.via": "Installed with",

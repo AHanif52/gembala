@@ -31,6 +31,7 @@
     onguide,
     onreport = () => {},
     onresetHints = () => {},
+    onwhatsnew = () => {},
   }: {
     cfg: Config;
     workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
@@ -50,6 +51,7 @@
     onguide?: (agent: string) => (() => void) | undefined; // FR-99 P1: the agent's official guide, when there is one
     onreport?: () => void; // FR-100: open the report dialog
     onresetHints?: () => void; // FR-101: show the one-time helper hint again
+    onwhatsnew?: () => void; // FR-103: reopen bundled release notes
   } = $props();
 
   // FR-61: Claude Code accounts (own config folder through CLAUDE_CONFIG_DIR); Utama is always there
@@ -213,7 +215,7 @@
     await invoke("quit");
   }
 
-  const SECTIONS = ["umum", "tampilan", "agent", "pintasan", "toolbar", "harness", "telegram", "keamanan", "proses", "diagnostik"] as const;
+  const SECTIONS = ["umum", "tampilan", "agent", "pintasan", "toolbar", "harness", "telegram", "keamanan", "proses", "versi", "diagnostik"] as const;
   // FR-60: Gembala-owned processes, refreshed every 2 seconds while this section is open
   type Proc = { pid: number; ppid: number; rss_kb: number; cpu: number; role: string; name: string };
   // label: set.proc.role.<role>, keterangan: set.proc.role.<role>Sub
@@ -1382,11 +1384,10 @@
           <div class="row"><span>{t("set.sec.links")}<small>{t("set.sec.linksSub")}</small></span><span class="m">{t("set.sec.askFirst")}</span></div>
           <div class="row"><span>{t("set.sec.net")}<small>{t("set.sec.netSub")}</small></span><span class="m">{[tg?.state === "on" ? "Telegram" : "", cfg.values.update?.check !== false ? "GitHub" : ""].filter(Boolean).join(" · ") || t("set.sec.off")}</span></div>
         </section>
-      {:else}
+      {:else if sec === "versi"}
         <section>
           <div class="row"><span>{t("set.diag.versions")}</span><span class="m">{version} · {daemon?.daemon ?? "?"} · {daemon?.proto ?? "?"}</span></div>
           <div class="row"><span>{t("set.upd.via")}</span><span class="m">{upd?.brew ? "Homebrew" : t("set.upd.source")}</span></div>
-          <!-- FR-82 (mockup-update B): status, check now, release page -->
           <div class="row">
             <span>{t("set.diag.release")}<small>{updLine}</small></span>
             <span class="acts">
@@ -1394,10 +1395,11 @@
               <button class="mini" onclick={() => invoke("open_url", { url: "https://github.com/AHanif52/gembala/releases" })}>{t("set.diag.releaseBtn")}</button>
             </span>
           </div>
-          <div class="row">
-            <span>{t("set.upd.auto")}<small>{t("set.upd.autoSub")}</small></span>
-            <input type="checkbox" role="switch" aria-label={t("set.upd.auto")} checked={cfg.values.update?.check !== false} onchange={(e) => set("check" as keyof Ui, e.currentTarget.checked as never, "update")} />
-          </div>
+          <div class="row"><span>{t("set.upd.auto")}<small>{t("set.upd.autoSub")}</small></span><input type="checkbox" role="switch" aria-label={t("set.upd.auto")} checked={cfg.values.update?.check !== false} onchange={(e) => set("check" as keyof Ui, e.currentTarget.checked as never, "update")} /></div>
+          <div class="row"><span>{t("set.diag.whatsNew")}</span><button class="mini" onclick={onwhatsnew}>{t("set.diag.whatsNew")}</button></div>
+        </section>
+      {:else}
+        <section>
           <div class="row"><span>{t("set.diag.cfgFile")}</span><span class="m">{cfg.path}</span></div>
           <div class="row"><span>{t("set.diag.cfgState")}</span><span class="m">{cfg.errors.length ? tn("set.diag.problems", cfg.errors.length) : t("set.sec.clean")}</span></div>
           <div class="row"><span>{t("set.diag.sock")}<small>{t("set.diag.sockSub")}</small></span><span class="m">$TMPDIR/gembala</span></div>

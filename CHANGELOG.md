@@ -4,6 +4,8 @@
 
 ## 0.1.9
 
+### English
+
 - Agents can request a model and effort when asking you to open a new pane. Choose a listed model or enter an ID in the confirmation card; a setting doesn't change an agent pane that's already open.
 - Notifications say who needs you and why: the pane and its agent, what it waits for (a permission, an answer, a password, your OK, or a failure) or that it finished, and what to do next. One banner per pane; a banner goes away once you answer, and panes that finish together share one. Each kind has its own switch in Settings › General › Notifications.
 - Report a problem (⌘P › Report a problem): Gembala fills in the versions, you check the text, and it opens a new GitHub issue in your browser. Nothing is sent until you press Submit there. Agents can draft one with `gembala report`.
@@ -21,6 +23,26 @@
 - Settings: Esc closes the add-account form without closing Settings; the form stays closed until "+ Add account" is pressed.
 - Settings covers the whole window again: the sidebar's resize line no longer cuts through it, and the usage rail dims behind it.
 - The bell starts empty after opening the app: a pane that finished while Gembala was closed no longer opens a bell entry or a banner, and a pane on screen in the front window never adds to the badge.
+
+### Indonesia
+
+- Agent bisa minta model dan effort waktu minta lu buka pane baru. Pilih model dari daftar atau isi ID-nya sendiri di kartu konfirmasi; pane agent yang udah kebuka nggak ikut berubah.
+- Notifikasi sekarang bilang siapa yang butuh lu dan kenapa: pane dan agent-nya, apa yang ditunggu (izin, jawaban, password, persetujuan lu, atau kegagalan), atau bahwa tugasnya selesai, plus apa yang perlu lu lakukan. Satu banner per pane; banner hilang setelah lu menjawab, dan pane yang selesai barengan berbagi satu banner. Tiap jenis punya saklar sendiri di Pengaturan › Umum › Notifikasi.
+- Laporkan masalah (⌘P › Laporkan masalah): Gembala isi versi buat lu, lu cek teksnya, lalu Gembala buka issue GitHub baru di browser. Belum ada yang dikirim sampai lu menekan Submit di sana. Agent juga bisa nyiapin laporan lewat `gembala report`.
+- Sisa jatah per login agent (Claude, Codex, Oh My Pi, Gemini) sekarang tampil di sisi pane.
+- Pane helper yang dibuka agent tampil sebagai sub-tab di bawah tab-nya, lengkap dengan tahap dan status.
+- Bar pane menyesuaikan lebar; yang nggak muat pindah ke menu "…".
+- Lebih ringan: scrollback bawaan sekarang 2.000 baris (tiap baris memakai memori di setiap pane aktif). Kalau sebelumnya lu sudah mengatur angka lebih besar, pengaturan itu tetap dipakai. Lihat Pengaturan › Tampilan.
+- Telegram: kartu izin menjelaskan apa yang diminta agent dan alasannya, dengan tombol tepat di bawah teks (Oh My Pi, OpenCode, Claude, Codex). Kartu selesai Codex menunggu jawaban agent, bukan menampilkan layarnya. Dialog ambil web Claude sekarang dihitung sebagai "butuh lu".
+- Telegram: kartu "selesai" sekarang membawa jawaban agent untuk Claude, Codex, dan Oh My Pi (layar pane cuma dipakai kalau agent belum punya hook jawaban). Baris pemanggilan tool Claude tidak dikirim ke ponsel. Layar yang menampilkan pemilih atau dialog (misalnya `/model` Claude atau daftar izin) tidak dikirim; kartu bilang jawabannya belum dibaca dan mengarahkan lu ke `/lihat`. Perintah `/` selain milik bot (`/exit`, `/compact`, `/clear`, `/model`) diteruskan ke pane, termasuk saat membalas kartu.
+- Agent sekarang bisa minta pane mana pun di workspace-nya ditutup, bukan cuma helper yang dia buka: permintaannya jadi kartu di pane yang meminta (tutup atau biarkan), lalu jawaban lu dikirim lewat `gembala wait`.
+- Koneksi putus tidak lagi membuat semua pane abu-abu dengan pesan "This pane stopped because the daemon stopped or was restarted": Gembala menanyakan daemon mana yang aktif, lalu menyambungkan kembali pane kalau prosesnya sama dan membangun ulang layarnya dari daemon. Lu nggak perlu menekan Restart, jadi agent tidak terbuka dua kali. Pane yang tertinggal setelah banyak output juga disambungkan ulang, bukan diputus.
+- Telegram: teks ponsel sekarang mengikuti pane terakhir hanya selama agent masih berjalan di sana. Jadi balasan ke kartu dari bot itu sendiri (baris pertama tanpa nama pane) nggak nyasar ke shell yang sudah menggantikan pane tadi; penolakan shell juga sekarang menyebut nama pane.
+- Perbaikan: pane Claude tidak lagi terus menampilkan "butuh izin" setelah dialognya hilang; klik kedua "Buka dan kirim" tidak lagi membuka pane tambahan.
+- Pane Claude yang file sesinya terbaca idle sekarang tidak lagi terus "butuh izin" saat prompt hook berasal dari agent latar.
+- Pengaturan: Esc menutup formulir tambah akun tanpa ikut menutup Pengaturan; formulir tetap tertutup sampai lu menekan "+ Tambah akun".
+- Pengaturan kembali menutupi seluruh jendela: garis ubah ukuran sidebar tidak lagi menembusnya, dan panel penggunaan meredup di belakang.
+- Lonceng sekarang kosong setelah app dibuka: pane yang selesai saat Gembala tertutup tidak lagi membuat entri lonceng atau banner, dan pane yang tampil di jendela depan tidak menambah badge.
 
 ## 0.1.8
 

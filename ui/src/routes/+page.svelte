@@ -3,6 +3,8 @@
   import { onMount, tick, untrack } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import Settings from "$lib/Settings.svelte";
+import changelog from "../../../CHANGELOG.md?raw";
+import { inline, sections, type ReleaseNotes } from "$lib/whatsnew";
   import Rail from "$lib/Rail.svelte";
   import Changes from "$lib/Changes.svelte";
   import OutputView from "$lib/OutputView.svelte";
@@ -133,6 +135,15 @@
   // FR-82: newer release on GitHub (daemon checks); "Lewatin versi ini" remembers one version on this Mac
   let upd = $state<Upd | null>(null);
   let appVer = $state("");
+  let whatsNew = $state<ReleaseNotes[] | null>(null);
+  const SEEN_VERSION = "gembala.seen_version";
+  let seenVersion = $state((() => { try { return localStorage.getItem(SEEN_VERSION) ?? ""; } catch { return ""; } })());
+  let restored = $state(false);
+  function saveSeenVersion(version: string) {
+    seenVersion = version;
+    try { localStorage.setItem(SEEN_VERSION, version); } catch {}
+  }
+  function openWhatsNew() { whatsNew = sections(changelog, "", appVer, ui.language === "en" ? "en" : "id"); }
   let updOpen = $state(false);
   const SKIP = "gembala.update.lewati";
   let skipped = $state((() => {
@@ -239,6 +250,7 @@
   const opensFor = (pane: number) => (msgData?.opens ?? []).filter((o: any) => o.from_pane === pane);
   /// FR-86: an agent asked to close another pane; the card sits in the asking pane too
   const closesFor = (pane: number) => (msgData?.closes ?? []).filter((c: any) => c.from_pane === pane);
+  const whatsNewBlocked = $derived(askMode || Object.values(meta).some((m) => m.status === "blocked") || !!confirm || !!linkAsk || !!quitAsk || !!wsAsk || !!(msgData?.pending?.length || msgData?.opens?.length || msgData?.closes?.length));
   const openWho = (o: any) => {
     const p = cfg?.values.profiles.find((x) => x.id === o.profile);
     const accs = cfg?.values.accounts ?? [];
@@ -1412,6 +1424,7 @@
       { label: tt("act.renameTab"), hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
       { label: tt("act.renameWs"), hint: "", kind: "action", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
       { label: tt("set.title"), hint: "⌘,", kind: "action", go: () => (settingsOpen = true) },
+      { label: tt("set.diag.whatsNew"), hint: "", kind: "action", go: openWhatsNew },
       // FR-77: Atur pakai AI from the palette (recipe, Gembala settings or agent instructions)
       { label: `${tt("hn.set.aiTitle")}…`, hint: "", kind: "action", go: () => ((aiOpen = ""), (settingsSec = "harness"), (settingsOpen = true)) },
       { label: tt("act.quitAll"), hint: "", kind: "action", go: askQuitAll },
@@ -2457,6 +2470,7 @@
         call("agents.detect", {}).then((a: Agent[]) => (installed = a.filter((x) => x.installed).map((x) => x.agent))).catch(() => {});
         invoke<string[]>("shell_history").then((h) => (zhist = h)).catch(() => {});
         await restore();
+        restored = true;
         // panes alive from the previous run: the daemon is told their workspace (access rules SEC-4/21)
         for (const p of Object.keys(meta).map(Number).filter((p) => !dead[p])) call("pane.workspace", { pane: p, workspace: wsIdOf(p) }).catch(() => {});
         refreshMsgs();
@@ -2482,6 +2496,15 @@
       unlistenCfg.then((f) => f());
       unlistenDrop.then((f) => f());
     };
+  });
+  $effect(() => {
+    if (!restored || !appVer) return;
+    if (!seenVersion) {
+      if (welcome) saveSeenVersion(appVer); // a fresh install already has its welcome card
+      else whatsNew = sections(changelog, "", appVer, ui.language === "en" ? "en" : "id").slice(0, 1);
+    } else if (newer(appVer, seenVersion)) {
+      whatsNew = sections(changelog, seenVersion, appVer, ui.language === "en" ? "en" : "id");
+    }
   });
 </script>
 
@@ -3413,7 +3436,7 @@
   <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
     onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
     oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)}
-    onresetHints={() => { helperTip = true; hintReset += 1; try { localStorage.removeItem(TIP_KEY); } catch {} }} />
+    onresetHints={() => { helperTip = true; hintReset += 1; try { localStorage.removeItem(TIP_KEY); } catch {} }} onwhatsnew={() => (settingsOpen = false, openWhatsNew())} />
 {/if}
 {#if quitAsk}
   <!-- also opened from Settings > General (z-index 10): sits above it (9 Nov: covered, Esc first to see it) -->
@@ -3424,6 +3447,18 @@
       <button class="mini" onclick={() => (quitAsk = 0)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
       <button class="mini danger" onclick={quitAll}>{tt("set.general.quit")} <span class="keys">Enter</span></button>
     </span>
+  </div>
+{/if}
+{#if whatsNew && !whatsNewBlocked}
+  <div class="confirm whatsnew" role="dialog" aria-label={tt("set.diag.whatsNew")}>
+    <b class="ctitle">{tt("whatsnew.title", { version: whatsNew[0]?.version ?? appVer })}</b>
+    <div class="wnbody">
+      {#each whatsNew as release (release.version)}
+        {#if release !== whatsNew[0]}<h3>{release.version}</h3>{/if}
+        <ul>{#each release.bullets as bullet (bullet)}<li>{#each inline(bullet) as part}<span class:bold={part.kind === "bold"} class:code={part.kind === "code"}>{part.text}</span>{/each}</li>{/each}</ul>
+      {/each}
+    </div>
+    <span class="acts"><button class="mini pri" onclick={() => (saveSeenVersion(appVer), (whatsNew = null))}>{tt("common.ok")}</button></span>
   </div>
 {/if}
 
@@ -5378,6 +5413,26 @@
     gap: 10px;
     padding: 14px 16px;
   }
+  .confirm.whatsnew {
+    width: min(620px, 90vw);
+    max-height: 70vh;
+    box-sizing: border-box;
+    padding: 16px 20px;
+    gap: 12px;
+  }
+  .wnbody {
+    overflow: auto;
+    min-height: 0;
+    line-height: 1.5;
+  }
+  .wnbody ul {
+    margin: 8px 0 16px;
+    padding-left: 22px;
+  }
+  .wnbody li + li { margin-top: 6px; }
+  .wnbody h3 { margin: 14px 0 0; font-size: 13px; }
+  .wnbody .bold { font-weight: 700; }
+  .wnbody .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .ctitle {
     font-size: 14px;
   }
