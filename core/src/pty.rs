@@ -27,7 +27,10 @@ fn cloexec(fd: libc::c_int) -> io::Result<()> {
 
 // ponytail: fixed list from the observed Claude Code 2.1 session env; add a prefix when another agent turns out to pass down markers
 // FR-61: `CLAUDE_CONFIG_DIR` of an app opened from another account's session must not become the pane account; accounts only come from the profile/`claude-<account>`
-const INHERITED_DROP: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CONFIG_DIR", "CODEX_", "OPENCODE_", "GEMBALA_"];
+// Color switches too: Oh My Pi's shell tool sets `NO_COLOR=1`, so a daemon started from an agent turned every pane's
+// Claude Code black and white (11 Nov). A user's own setting comes back from their rc files, panes run `$SHELL -l`.
+const INHERITED_DROP: &[&str] =
+    &["CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CONFIG_DIR", "CODEX_", "OPENCODE_", "GEMBALA_", "NO_COLOR", "FORCE_COLOR", "CLICOLOR"];
 
 /// SEC-35: session markers of the agent running Gembala (including its message socket + token) don't reach panes.
 pub fn scrub_env(c: &mut Command) {

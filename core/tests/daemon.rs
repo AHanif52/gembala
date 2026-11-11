@@ -64,6 +64,7 @@ fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> D
         .env("CLAUDE_CODE_MESSAGING_TOKEN", "token-bocor-uji")
         .env("CODEX_THREAD_ID", "thread-bocor-uji")
         .env("CLAUDE_CONFIG_DIR", "/akun-bocor-uji")
+        .env("NO_COLOR", "1") // Oh My Pi's shell tool sets it
         .envs(extra.iter().map(|(k, v)| (*k, *v)));
     unsafe {
         c.pre_exec(move || {
@@ -385,7 +386,7 @@ fn env_pane_bersih() {
     assert!(out.contains("GEMBALA_SOCKET="), "{out}");
     // daemon launched from cwd `/` (like an app from Finder), the pane still starts in home
     assert!(out.contains(&format!("CWD={}", std::env::var("HOME").unwrap())), "{out}");
-    for bocor in ["CLAUDECODE=", "token-bocor-uji", "thread-bocor-uji", "akun-bocor-uji", "GEMBALA_RUNDIR="] {
+    for bocor in ["CLAUDECODE=", "token-bocor-uji", "thread-bocor-uji", "akun-bocor-uji", "GEMBALA_RUNDIR=", "NO_COLOR="] {
         assert!(!out.contains(bocor), "{bocor} bocor ke pane");
     }
 }
