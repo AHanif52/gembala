@@ -19,3 +19,12 @@ export function subtabRows<T extends NestedTab>(tabs: T[], quiet: (tab: T) => bo
   }
   return rows;
 }
+
+/// FR-101 item 1 (TECH 29, Orca pattern): a tab split by hand lists its agents as rows under the title. Shells running
+/// something (a command, a password prompt) keep a row too; idle shells fold into "+N shell". `null` = the tab stays one
+/// row as before (a single pane, or only shells).
+export function splitRows(panes: number[], agent: (p: number) => boolean, busy: (p: number) => boolean): { rows: number[]; folded: number[] } | null {
+  if (panes.length < 2 || !panes.some(agent)) return null;
+  const rows = panes.filter((p) => agent(p) || busy(p));
+  return { rows, folded: panes.filter((p) => !rows.includes(p)) };
+}

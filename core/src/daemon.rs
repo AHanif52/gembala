@@ -129,6 +129,8 @@ struct Pane {
     last_msg: Mutex<Option<String>>,
     /// FR-101: latest hook answer for the sidebar; RAM only (SEC-13).
     last_preview: Mutex<Option<String>>,
+    /// FR-101 item 1 (TECH 29): subagents running, counted from Claude's SubagentStart/SubagentStop hooks only
+    subagents: AtomicUsize,
     /// FR-16: when the agent's own hook last said its turn ended; the harness waits for it on Codex (see `runner::stage_status`)
     hook_done: Mutex<Option<std::time::Instant>>,
     readable: std::sync::atomic::AtomicBool,
@@ -419,7 +421,19 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                 }
                 ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage", Some(me)) => pane_method(&st, me, method, p),
                 // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
-                ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start"].into_iter().find(|s| *s == x)) {
+                ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start", "substart", "substop"].into_iter().find(|s| *s == x)) {
+                    // FR-101 item 1: a subagent started or ended; only the count changes, not the pane status
+                    Some(status @ ("substart" | "substop")) => {
+                        if let Some(pane) = st.panes.lock().unwrap().get(&me) {
+                            let n = &pane.subagents;
+                            if status == "substart" {
+                                n.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                let _ = n.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
+                            }
+                        }
+                        Ok(json!({}))
+                    }
                     Some(status) => {
                         // FR-66: last message of a sandboxed agent's turn = reply to the waiting message
                         if let Some(text) = p["reply"].as_str() {
@@ -456,6 +470,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                             }
                             if status == "start" {
                                 *pane.last_preview.lock().unwrap() = None;
+                                pane.subagents.store(0, Ordering::Relaxed);
                             } else if matches!(p["agent"].as_str(), Some("claude" | "codex"))
                                 && let Some(last) = p["last"].as_str()
                             {
@@ -1222,6 +1237,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "status_at": history::now().saturating_sub(pane.status_at.lock().unwrap().elapsed().as_secs()),
                 "last": *pane.last_preview.lock().unwrap(),
+                "subagents": pane.subagents.load(Ordering::Relaxed),
                 "waiting_shell": waiting_shell, "reason": reason,
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "session": *pane.session.lock().unwrap(), // FR-68: resume card even if the daemon stopped
@@ -1465,6 +1481,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         tg_text: Mutex::new(None),
         last_msg: Mutex::new(None),
         last_preview: Mutex::new(None),
+        subagents: AtomicUsize::new(0),
         hook_done: Mutex::new(None),
         claude: Mutex::default(),
         readable: std::sync::atomic::AtomicBool::new(false),
@@ -2622,6 +2639,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     // the next agent typed in this pane (e.g. Codex without full hooks) is judged again
     pane.hooked.store(false, Ordering::Relaxed);
     *pane.last_preview.lock().unwrap() = None;
+    pane.subagents.store(0, Ordering::Relaxed);
     *pane.claude.lock().unwrap() = claude::Cache::default();
     let Some((started, log)) = pane.agent_log.lock().unwrap().take() else { return };
     // agent exited = nobody reads messages anymore: status empty, `gembala send` to this pane is rejected

@@ -188,6 +188,8 @@ export default {
   "helper.count": "{n} helpers",
   "helper.waiting": "{n} need you",
   "helper.done": "+{n} done",
+  "split.subagents": "{n} subagents working",
+  "split.shells": "+{n} shell",
   "helper.doneSimple": "{n} finished",
   "helper.simple": "Helper for {name}",
   "helper.branch": "branch {name}",

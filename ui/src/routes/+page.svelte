@@ -31,12 +31,12 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { cleanTitle } from "$lib/label";
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
   import type { UsageRow } from "$lib/usage";
-  import { subtabRows } from "$lib/subtabs";
+  import { splitRows, subtabRows } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
   import { errText, i18n, loc, t as tt, tn as ttn, tOr } from "$lib/i18n/state.svelte";
   import type { Key } from "$lib/i18n";
 
-  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string; parent?: string; helpersOpen?: boolean; doneOpen?: boolean };
+  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string; parent?: string; helpersOpen?: boolean; doneOpen?: boolean; shellsOpen?: boolean };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: default account per agent; FR-44: block color; FR-13: brief
   /// Per-pane data to restore (FR-45): profile and folder, no screen content (SEC-13).
   type Meta = {
@@ -70,6 +70,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     owner?: { name: string; id: string }; // FR-61: the running Claude session belongs to another account (Resume uses that account)
     login?: string; // FR-61: "log in to account …" card after the Login button
     saver?: boolean; // FR-27: the token saver is on for this pane (badge in the head)
+    subagents?: number; // FR-101 item 1: subagents running, from Claude's SubagentStart/SubagentStop hooks (daemon count)
   };
   const AGENTS = ["claude", "codex", "opencode", "omp"];
   // FR-4/52: status dot + text label, not color alone (BRD section 11)
@@ -86,6 +87,17 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇" };
   /// agent running in the pane (from a profile or typed by hand); "" = none
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
+  /// the agent running in a pane by its profile name, also one typed in a shell pane ("shell-2 · Claude Code", not
+  /// "· Shell"); the pane's own profile first when it is that agent (FR-87 banner, FR-101 split rows)
+  /// agent of a pane: typed in a shell or the pane's own agent profile
+  const paneAgent = (p: number) => agentOf(p) || (AGENTS.includes(meta[p]?.agent ?? "") ? meta[p].agent : "");
+  const agentLabel = (p: number) => {
+    const m = meta[p];
+    if (!m) return "";
+    const own = cfg?.values.profiles.find((x) => x.id === m.profile);
+    const running = agentOf(p);
+    return (running && own?.agent !== running && cfg?.values.profiles.find((x) => x.agent === running)?.name) || own?.name || m.profile;
+  };
   /// FR-61: Claude account name of a pane running Claude; once another account exists, Utama gets a label too
   /// FR-78: by current config; a pane launched before a change keeps its old flags until it is restarted
   const addonsOf = (p: number) => activeAddons(cfg?.values.addons, agentOf(p), wsIdOf(p) ?? "", { none: tt("pane.addonNone"), only: tt("pane.addonOnly") });
@@ -2234,11 +2246,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const w = t && wss.find((w) => w.tabs.includes(t));
     // SEC-33: the tab name only when a person gave it (`t.title`); `title()` falls back to the agent's task label (FR-69)
     const at = whereOf(w?.name ?? "", t?.title ?? "");
-    // the agent running there, also one typed in a shell pane ("shell-2 · Claude Code", not "· Shell"); the pane's own
-    // profile first when it is that agent
-    const own = m && cfg?.values.profiles.find((p) => p.id === m.profile);
-    const running = pane === undefined ? "" : agentOf(pane);
-    const agent = m ? ((running && own?.agent !== running && cfg?.values.profiles.find((p) => p.agent === running)?.name) || own?.name || m.profile) : "";
+    const agent = pane === undefined ? "" : agentLabel(pane);
     const title = m ? tt("notice.title", { name: m.name || m.profile, agent }) : (o.run ?? "Gembala");
     const what = tt(wordKey(kind));
     const e: NoticeEvent = {
@@ -2434,6 +2442,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       if (meta[p].readable !== i.readable) meta[p].readable = i.readable;
       if (i.session && meta[p].session !== i.session) meta[p].session = i.session; // FR-68
       if ((i.account ?? "") !== (meta[p].accountName ?? "")) meta[p].accountName = i.account || undefined; // FR-61
+      if ((i.subagents ?? 0) !== (meta[p].subagents ?? 0)) meta[p].subagents = i.subagents || undefined; // FR-101 item 1
       if ((i.account_id ?? "") !== (meta[p].accountId ?? "")) meta[p].accountId = i.account_id || undefined; // FR-68
       if ((i.owner_id ?? "") !== (meta[p].owner?.id ?? "")) meta[p].owner = i.owner_id ? { name: i.owner, id: i.owner_id } : undefined;
     }
@@ -2668,6 +2677,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
         {@const st = row.child ? (meta[t.focus]?.status ?? "") : tabStatus(t)}
+        <!-- FR-101 item 1 (TECH 29): a tab split by hand lists its agents as rows below the title, like helpers -->
+        {@const sp = row.child ? null : splitRows(panes(t.tree), (p) => !!paneAgent(p), (p) => !!meta[p]?.busy || meta[p]?.status === "blocked")}
         <button class="tab {t.color ?? ''}" class:helper={!!row.child} class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} data-wi={wi} data-ti={ti}
           class:lift={(dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti) || (dragging?.kind === "ws" && dragging.wi === wi)}
           data-k={t.id} title={row.child ? tt("helper.shortcut") : undefined}
@@ -2679,7 +2690,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label={tt("side.tabName")} />
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
-            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
+            {#if sp}<span class="tt">{title(t)}</span>{:else}
+            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>{/if}
             <span class="n"><span class="k">{!row.child && n >= 0 && n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
@@ -2687,12 +2699,25 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             <!-- agents already show as an icon; other processes (npm, vim) are still named -->
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
             {@const rest = [g?.repo ? (simple ? tt("helper.branch", { name: g.branch }) : g.branch) : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
-            {#if row.child || ag || stText(st) || rest}
+            {#if !sp && (row.child || ag || stText(st) || rest)}
               <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {helperStatus(p)}"></span>{/each}{/if}{#if row.child || ag || stText(st)}<span class="st {st}">{helperStatus(t.focus)}</span>{/if}{st === "blocked" ? ` · ${tt("helper.open")}` : ""}{#if rest}{row.child || ag || stText(st) || panes(t.tree).length > 1 ? " · " : ""}{rest}{/if}</span>
             {/if}
-            {#if previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
+            {#if !sp && previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
           {/if}
         </button>
+        {#if sp}
+          {#each [...sp.rows, ...(t.shellsOpen ? sp.folded : [])] as p (p)}
+            {@const ps = meta[p]?.status ?? ""}
+            {@const pa = paneAgent(p)}
+            <button class="tab helper" class:blocked={ps === "blocked"} class:on={at.ws === wi && at.tab === ti && t.focus === p} onclick={() => jumpTo(p)}>
+              <span class="tt"><span class="dot {ps || 'idle'}" aria-hidden="true"></span>{#if pa}<span class="aico {pa}" title={pa}>{GLYPH[pa]}</span>{/if}{meta[p]?.name}{pa ? ` · ${agentLabel(p)}` : meta[p]?.busy ? ` · ${meta[p].busy}` : ""}</span>
+              <span class="sub"><span class="st {ps}">{!pa && meta[p]?.busy && ps !== "blocked" ? tt("helper.workingFor", { time: ago(now - (meta[p].since ?? now)) }) : helperStatus(p)}</span>{ps === "blocked" ? ` · ${tt("helper.open")}` : ""}{acctOf(p) ? ` · ${acctOf(p)}` : ""}</span>
+              {#if meta[p]?.subagents}<span class="sub">└ {tt("split.subagents", { n: meta[p].subagents ?? 0 })}</span>{/if}
+              {#if previews[p] && ps !== "blocked"}<span class="sub">{previews[p]}</span>{/if}
+            </button>
+          {/each}
+          {#if sp.folded.length}<button class="helper-fold" aria-expanded={!!t.shellsOpen} onclick={() => (t.shellsOpen = !t.shellsOpen)}>{t.shellsOpen ? "▾" : "▸"} {tt("split.shells", { n: sp.folded.length })}</button>{/if}
+        {/if}
         {/if}
       {/each}
       </div>

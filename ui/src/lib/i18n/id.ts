@@ -185,6 +185,8 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "helper.count": "{n} pembantu",
   "helper.waiting": "{n} nunggu lu",
   "helper.done": "+{n} selesai",
+  "split.subagents": "{n} subagent kerja",
+  "split.shells": "+{n} shell",
   "helper.doneSimple": "{n} udah selesai",
   "helper.simple": "Pembantu {name}",
   "helper.branch": "cabang {name}",

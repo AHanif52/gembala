@@ -720,6 +720,50 @@ fn status_dari_hook() {
     assert_eq!(outsider.call("hello", json!({"proto": 1}))["error"]["code"], "not_a_pane");
 }
 
+/// FR-101 item 1: Claude's SubagentStart/SubagentStop hooks count the pane's subagents (never below zero) without
+/// touching its status; a new session starts the count over.
+#[test]
+fn subagent_dari_hook() {
+    let d = start("subagent");
+    let mut ui = Cli::ui(&d);
+    let exe = env!("CARGO_BIN_EXE_gembala");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let fake = cfg.join("sub-claude.sh");
+    let h = |ev: &str| format!("'{exe}' hook claude {ev} </dev/null\n");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\n{}{}{}{}{}{}sleep 1\n{}{}sleep 1\n{}sleep 30\n", h("prompt"), h("substart"), h("substart"), h("substart"), h("substop"), h("substop"), h("substop"), h("substop"), h("substart")),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(cfg.join("config.toml"), format!("[[profile]]\nid = \"claude\"\ncommand = {}\n", json!(fake))).unwrap();
+    let t0 = Instant::now();
+    while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("sub-claude") {
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let pane = ui.call("pane.create", json!({"profile": "claude"}))["result"]["pane"].as_u64().unwrap();
+    // 3 started, 2 ended = 1; one more stop = 0 and a stop below zero stays 0; one start = 1 again; status stays "working"
+    let t0 = Instant::now();
+    let mut seen = vec![];
+    loop {
+        let info = &ui.call("pane.info", json!({"pane": pane}))["result"];
+        let n = info["subagents"].as_u64().unwrap();
+        if seen.last() != Some(&n) {
+            seen.push(n);
+        }
+        if seen.windows(3).any(|w| w == [1, 0, 1]) {
+            assert_eq!(info["status"], "working", "{info}");
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "hitungan subagent: {seen:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(seen.iter().all(|n| *n <= 3), "{seen:?}");
+}
+
 /// FR-48: reset deletes only Gembala-owned files, then the daemon exits; other files in that folder aren't touched.
 #[test]
 fn reset_hanya_data_gembala() {

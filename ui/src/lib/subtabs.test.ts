@@ -1,7 +1,7 @@
 // @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { subtabRows } from "./subtabs.ts";
+import { splitRows, subtabRows } from "./subtabs.ts";
 
 test("helpers stay below owner, quiet helpers fold, blocked helper opens list", () => {
   const owner = { id: "owner", helpersOpen: false, doneOpen: false };
@@ -28,4 +28,13 @@ test("harness stages appear as separate rows under their owner", () => {
   assert.deepEqual(subtabRows(tabs, () => false, () => false).filter((r) => r.kind === "tab").map((r) => [r.tab.id, !!r.child]), [
     ["owner", false], ["stage-work", true], ["stage-review", true], ["unowned-stage", false],
   ]);
+});
+
+test("split tab: agents get rows, idle shells fold, only-shells stays one row", () => {
+  const agent = (p) => p === 1 || p === 7;
+  const busy = (p) => p === 9;
+  assert.deepEqual(splitRows([1, 6], agent, busy), { rows: [1], folded: [6] });
+  assert.deepEqual(splitRows([1, 9, 6, 7], agent, busy), { rows: [1, 9, 7], folded: [6] });
+  assert.equal(splitRows([6, 9], agent, busy), null); // no agent: unchanged
+  assert.equal(splitRows([1], agent, busy), null); // not split
 });

@@ -217,6 +217,9 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
         ("claude", "stop") => "done",
         // FR-61: SessionStart = session id + owning account, status unchanged
         ("claude", "start") => "start",
+        // FR-101 item 1: subagent count only (TECH 29)
+        ("claude", "substart") => "substart",
+        ("claude", "substop") => "substop",
         // Claude Code Notification: tool permission = blocked; "waiting for input" = ready for a task
         // read from `notification_type`/`message` only: the payload always holds `permission_mode`, so waiting for input would read as "needs permission"
         ("claude", "notify") if claude_permission(payload) => "blocked",
@@ -368,6 +371,8 @@ fn claude_hooks(exe: &str, rtk: bool) -> Value {
     json!({"hooks": {
         "UserPromptSubmit": one("prompt"), "PreToolUse": pre, "PostToolUse": one("tool"), "Stop": one("stop"), "StopFailure": one("stop"),
         "Notification": one("notify"), "SessionStart": one("start"),
+        // FR-101 item 1: subagent rows in the sidebar count these (TECH 29)
+        "SubagentStart": one("substart"), "SubagentStop": one("substop"),
     }, "statusLine": {"type": "command", "command": format!("{} statusline", q(exe))}})
 }
 
@@ -1007,6 +1012,8 @@ mod tests {
     #[test]
     fn status_dari_event_hook() {
         assert_eq!(hook_status("claude", "prompt", ""), Some("working"));
+        assert_eq!(hook_status("claude", "substart", ""), Some("substart"));
+        assert_eq!(hook_status("omp", "substart", ""), None); // omp's event isn't proven yet (TECH 29)
         assert_eq!(hook_status("omp", "approval", ""), Some("blocked"));
         assert_eq!(hook_status("omp", "resolved", ""), Some("working"));
         assert_eq!(hook_status("claude", "notify", r#"{"message":"Claude needs your permission to use Bash"}"#), Some("blocked"));
