@@ -1181,13 +1181,34 @@ fn turn_start(rows: &[&str], typed: Option<&str>) -> usize {
 /// agent panes: the latest turn above the input box; shell panes: the screen as is (a `❯` zsh prompt isn't a turn)
 fn screen_snip(pane: &Pane, lines: usize) -> String {
     let text = pane.view.lock().unwrap().0.text();
-    if pane.agent_name().is_none() {
+    let agent = pane.agent_name();
+    if agent.is_none() {
         return snippet(&text, lines);
     }
     let rows: Vec<&str> = text.lines().collect();
-    let rows = &rows[..above_input(&rows)];
+    let end = if agent.as_deref() == Some("codex") {
+        codex_above_input(&rows)
+    } else {
+        above_input(&rows)
+    };
+    let rows = &rows[..end];
     let typed = pane.tg_text.lock().unwrap().clone();
-    snippet(&rows[turn_start(rows, typed.as_deref())..].join("\n"), lines)
+    let rows = &rows[turn_start(rows, typed.as_deref())..];
+    let rows = rows.iter().copied().filter(|r| !codex_chrome_row(r, agent.as_deref())).collect::<Vec<_>>();
+    snippet(&rows.join("\n"), lines)
+}
+
+fn codex_above_input(rows: &[&str]) -> usize {
+    rows.iter().rposition(|r| r.trim_start().starts_with("› Ask Codex to do anything")).unwrap_or(rows.len())
+}
+
+fn codex_chrome_row(row: &str, agent: Option<&str>) -> bool {
+    agent == Some("codex") && {
+        let row = row.trim();
+        row.starts_with("Worked for ") || row.starts_with("⚠ Heads up, you have less than 25% of your 5h limit")
+            || row.starts_with("⚠ 5h limit:") || (row.contains("Context ") && row.contains(" window"))
+            || row.contains("← for agents · ? for shortcuts") || row.contains("warnings · f2 to view") || row == "+ Show details"
+    }
 }
 
 /// `screen_watch`, once a second per pane: password prompt (rising edge) and long shell commands that finished
@@ -1297,13 +1318,14 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<Value> {
         let answer = matches!(kind, Kind::Done(_)).then(|| pane.last_msg.lock().unwrap().take()).flatten();
         match answer {
             Some(a) => text += &format!("\n\n{}", md_html(&mask_secrets(&a), MAX_ANSWER)),
-            None => {
+            None if agent != "codex" || !matches!(kind, Kind::Done(_)) => {
                 let lines = v["telegram"]["lines"].as_u64().unwrap_or(30).min(30) as usize;
                 let snip = screen_snip(&pane, lines);
                 if !snip.is_empty() {
                     text += &format!("\n<pre>{}</pre>", esc(&snip));
                 }
             }
+            None => {} // Codex's screen watcher can report done before notify; its TUI transcript is not a final answer.
         }
     }
     let mut body = json!({"chat_id": b.chat(), "text": text, "parse_mode": "HTML"});
@@ -2144,6 +2166,28 @@ mod tests {
         assert!(!stats_row("2026-11-08 tanpa jam"));
         assert_eq!(label("π > Check tasks", "omp").as_deref(), Some("Check tasks"));
         assert_eq!(label("✳ Claude Code", "claude"), None);
+    }
+
+    #[test]
+    fn codex_screen_ke_hp_tanpa_footer() {
+        let screen = [
+            "› Jujur gw gatau lu butuh apa",
+            "• Viewed image b51d474b.jpg",
+            "  + Show details",
+            "• Lu nggak perlu ngapa-ngapain.",
+            "  Worked for 12s • 12:34",
+            "⚠ 5h limit: 18% left · resets at 16:20 · /status",
+            "› Ask Codex to do anything",
+            "GPT-6-Sol high · Context 81% left · 258K window · weekly 53% left",
+            "  ← for agents · ? for shortcuts",
+            "⚠ 3 warnings · f2 to view",
+        ];
+        let end = codex_above_input(&screen);
+        assert_eq!(end, 6);
+        let kept = screen[..end].iter().copied().filter(|r| !codex_chrome_row(r, Some("codex"))).collect::<Vec<_>>().join("\n");
+        assert_eq!(snippet(&kept, 30), "› Jujur gw gatau lu butuh apa\n• Viewed image b51d474b.jpg\n• Lu nggak perlu ngapa-ngapain.");
+        assert!(codex_chrome_row("⚠ Heads up, you have less than 25% of your 5h limit left. Run /status for a breakdown.", Some("codex")));
+        assert!(!codex_chrome_row("  Worked for 12s • 12:34", Some("claude")));
     }
 
     #[test]
