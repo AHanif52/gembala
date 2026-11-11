@@ -191,14 +191,26 @@
     return [p?.name ?? o.profile, name].filter(Boolean).join(" · ");
   };
   /// FR-75: new pane in the asker's tab (its folder, the workspace default account), then the daemon queues the task for it
+  /// FR-75 requests being opened right now: a second click (card, drawer, double click) must not open a second pane
+  const opening = new Set<string>();
   async function approveOpen(o: any) {
     const t = wss.flatMap((w) => w.tabs).find((x) => panes(x.tree).includes(o.from_pane));
-    if (!t) return;
-    const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd: o.cwd || undefined });
-    const ps = panes(t.tree);
-    t.tree = split(t.tree, ps[ps.length - 1], ps.length % 2 ? "row" : "col", id);
-    await call("open.approve", { id: o.id, pane: id }).catch(() => {});
-    refreshMsgs();
+    if (!t || opening.has(o.id) || !(msgData?.opens ?? []).some((x: any) => x.id === o.id)) return;
+    opening.add(o.id);
+    try {
+      const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd: o.cwd || undefined });
+      const ps = panes(t.tree);
+      t.tree = split(t.tree, ps[ps.length - 1], ps.length % 2 ? "row" : "col", id);
+      const r = await call("open.approve", { id: o.id, pane: id }).catch((e) => ({ error: String(e) }));
+      // refused (already answered, gone): the pane would sit there unowned, so it goes again
+      if (r?.error) {
+        t.tree = remove(t.tree, id) ?? t.tree;
+        call("pane.close", { pane: id }).catch(() => {});
+      }
+    } finally {
+      opening.delete(o.id);
+      refreshMsgs();
+    }
   }
   const wsIdOf = (pane: number) => wss.find((w) => w.tabs.some((t) => panes(t.tree).includes(pane)))?.id ?? ws?.id;
   /// status panel (FR-10): every pane in the active workspace
