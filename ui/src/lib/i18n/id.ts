@@ -176,6 +176,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "helper.open": "Buka buat jawab",
   "helper.workingFor": "kerja {time}",
   "helper.finishedAt": "selesai {time}",
+  "helper.finishedYesterday": "selesai kemarin",
   "helper.idleFor": "nganggur {time}",
   "helper.compare": "Sandingkan sama pemilik",
   "helper.compareSimple": "Lihat berdampingan sama {name}",

@@ -104,7 +104,8 @@
   let at = $state({ ws: 0, tab: 0 });
   let meta = $state<Record<number, Meta>>({});
   let blockedAt = $state<Record<number, number>>({}); // FR-65: sejak kapan pane butuh izin
-  let statusAt = $state<Record<number, number>>({}); // FR-101: UI-observed status transition; daemon currently sends no timestamp
+  let statusAt = $state<Record<number, number>>({}); // FR-101: daemon status time, milliseconds in the UI
+  let previews = $state<Record<number, string>>({}); // hook answer, RAM only (SEC-13)
   let quietAt = $state<Record<number, number>>({}); // FR-101: keep a new completion visible for one minute
   let now = $state(Date.now()); // FR-65: time waiting in the queue, refreshed every poll
   let ack = $state<Record<number, true>>({});
@@ -195,7 +196,7 @@
     const s = meta[p]?.status;
     if (s === "blocked") return `${paneStatusText(p) || tt("status.blocked")} · ${ago(now - (blockedAt[p] ?? now))}`;
     if (s === "working" && statusAt[p]) return tt("helper.workingFor", { time: ago(now - statusAt[p]) });
-    if (s === "done" && quietAt[p]) return tt("helper.finishedAt", { time: new Date(quietAt[p]).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" }) });
+    if (s === "done" && quietAt[p]) return now - quietAt[p] >= 86_400_000 ? tt("helper.finishedYesterday") : tt("helper.finishedAt", { time: new Date(quietAt[p]).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) });
     if (s === "idle" && quietAt[p]) return tt("helper.idleFor", { time: ago(now - quietAt[p]) });
     return s === "done" ? tt("status.done") : paneStatusText(p) || tt("status.idle");
   };
@@ -214,7 +215,7 @@
   let newTask = $state(false);
   let flow = $state(false);
   let runs = $state<Record<string, Snap>>({});
-  const runTab: Record<string, string> = {}; // run id -> tab id
+  const runOwner: Record<string, string> = {}; // run id -> owner tab id, for stages opened after the first
   let msgData = $state<any>(null);
   let compose = $state<{ to: number | null; body: string; force: boolean; error: string } | null>(null);
   async function refreshMsgs() {
@@ -1022,37 +1023,29 @@
     zoomed = false;
   }
 
-  /// FR-16: the daemon opens the panes of a harness run; each gets a tile in one tab per run, in recipe order
-  function adoptRun(snap: Snap, select = false) {
+  /// FR-101: harness stages are separate helper tabs under the tab that started the run.
+  function adoptRun(snap: Snap) {
     const wi = wss.findIndex((w) => w.id === snap.workspace);
     // FR-86: a finished run's panes are closing; a late snapshot (the gate reply) must not bring them back
     if (wi < 0 || snap.state === "done") return;
     const w = wss[wi];
     const placed = new Set(wss.flatMap((x) => x.tabs.flatMap((t) => panes(t.tree))));
-    let tb = w.tabs.find((t) => t.id === runTab[snap.run]);
-    for (const sp of stagePanes(snap)) {
+    const stages = stagePanes(snap);
+    const found = w.tabs.find((t) => stages.some((s) => panes(t.tree).includes(s.pane)))?.parent;
+    const parent = [runOwner[snap.run], found, newTask && wi === at.ws ? (owner ?? tab)?.id : undefined].find((id) => id && w.tabs.some((t) => t.id === id && !t.parent));
+    if (parent) runOwner[snap.run] = parent;
+    for (const sp of stages) {
       if (placed.has(sp.pane) || dead[sp.pane]) continue;
       const agent = sp.agent || "shell";
       meta[sp.pane] ??= { profile: agent, cwd: snap.cwd, agent, name: sp.name, status: "idle", saver: snap.saver };
-      if (!tb) {
-        tb = { id: uid(), title: tt("hn.tabTitle", { name: snap.name }), tree: { pane: sp.pane }, focus: sp.pane };
-        runTab[snap.run] = tb.id;
-        w.tabs.push(tb);
-      } else {
-        const ps = panes(tb.tree);
-        tb.tree = split(tb.tree, ps[ps.length - 1], ps.length % 2 ? "row" : "col", sp.pane);
-      }
+      const child: Tab = { id: uid(), title: sp.name, tree: { pane: sp.pane }, focus: sp.pane, parent };
+      w.tabs.push(child);
       placed.add(sp.pane);
     }
-    if (select && tb) {
-      const id = tb.id;
-      at = { ws: wi, tab: w.tabs.findIndex((t) => t.id === id) };
-      zoomed = false;
-    }
   }
-  function onRun(snap: Snap, select = false) {
+  function onRun(snap: Snap) {
     runs[snap.workspace] = snap;
-    adoptRun(snap, select);
+    adoptRun(snap);
   }
   /// banner for the moments that need you (a stage waiting on a permission already has one from its pane's status)
   function runNotice(p: { run?: string; workspace: string; notice: string; step: number | null }) {
@@ -2203,16 +2196,21 @@
   $effect(() => {
     invoke("badge", { count: seen ? 0 : attention }).catch(() => {});
   });
-  function onStatus(pane: number, status: string, shell = false, reason = "") {
+  function onStatus(pane: number, status: string, shell = false, reason = "", at?: number, last?: string | null) {
     if (!meta[pane]) return;
+    if (at) statusAt[pane] = at * 1000;
+    if (last !== undefined) previews[pane] = last ?? "";
+    if (at && status === "blocked") blockedAt[pane] = at * 1000;
+    if (at && (status === "done" || status === "idle")) quietAt[pane] = at * 1000;
     const previous = meta[pane];
     const changed = previous.status !== status || previous.waitingShell !== shell || (previous.reason ?? "") !== reason;
     meta[pane].status = status;
     meta[pane].waitingShell = shell;
     meta[pane].reason = reason;
     if (!changed) return;
-    statusAt[pane] = Date.now();
-    if (status === "done" || status === "idle") quietAt[pane] = Date.now();
+    if (!at) statusAt[pane] = Date.now();
+    if (status === "blocked") blockedAt[pane] = statusAt[pane];
+    if (status === "done" || status === "idle") quietAt[pane] = statusAt[pane];
     else delete quietAt[pane];
     delete ack[pane];
     if (status === "done" || status === "idle") {
@@ -2251,7 +2249,7 @@
       // exits is used too, so "done" doesn't get stuck after its agent died
       if (AGENTS.includes(m.agent) || m.agent === "custom" || i.status || AGENTS.includes(m.busy ?? "")) {
         // status from the daemon: official hooks, or screen patterns for custom profiles and agents typed by hand (FR-4)
-        onStatus(p, i.status, i.waiting_shell, i.reason);
+        onStatus(p, i.status, i.waiting_shell, i.reason, i.status_at, i.last);
       } else {
         // FR-40 for shell panes: a command longer than 30 seconds that finishes = done; waiting for a password = blocked
         if (busy && !m.busy) m.since = Date.now();
@@ -2301,12 +2299,14 @@
     });
     const unlistenCfg = listen<any>("daemon", ({ payload }) => {
       if (payload.event === "config.changed") cfg = payload.params;
-      if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status, payload.params.shell, payload.params.reason);
+      if (payload.event === "pane.status") onStatus(payload.params.pane, payload.params.status, payload.params.shell, payload.params.reason, payload.params.status_at, payload.params.last);
       // a tab whose xterm is detached has no Tile listening for pane.exit
       if (payload.event === "pane.exit" && !tiles[payload.params.pane]) onexit(payload.params.pane);
-      if (payload.event === "pane.replace" && meta[payload.params.pane])
+      if (payload.event === "pane.replace" && meta[payload.params.pane]) {
         // agent exits = empty status (the daemon clears it without a pane.status event; without this it stays "working")
+        previews[payload.params.pane] = "";
         Object.assign(meta[payload.params.pane], { output: true, status: "", ended: { resume: payload.params.resume ?? null } });
+      }
       if (payload.event === "daemon.lost") onLost();
       if (payload.event === "msg.event") refreshMsgs();
       if (payload.event === "harness.state") onRun(payload.params);
@@ -2504,7 +2504,7 @@
             <input class="edit" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label={tt("side.tabName")} />
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
-            <span class="tt">{#if row.child || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
+            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>
             <span class="n"><span class="k">{!row.child && n >= 0 && n < 9 ? `⌘${n + 1}` : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
@@ -2512,9 +2512,10 @@
             <!-- agents already show as an icon; other processes (npm, vim) are still named -->
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
             {@const rest = [g?.repo ? (simple ? tt("helper.branch", { name: g.branch }) : g.branch) : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
-            {#if row.child || stText(st) || rest}
-              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {paneStatusText(p) || tt('status.idle')}"></span>{/each}{:else if row.child}<span class="st {st}">{helperStatus(t.focus)}</span>{st === "blocked" ? ` · ${tt("helper.open")}` : rest ? " · " : ""}{:else if stText(st)}<span class="st {st}">{paneStatusText(t.focus)}</span>{rest ? " · " : ""}{/if}{rest}</span>
+            {#if row.child || ag || stText(st) || rest}
+              <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {helperStatus(p)}"></span>{/each}{/if}{#if row.child || ag || stText(st)}<span class="st {st}">{helperStatus(t.focus)}</span>{/if}{#if st === "blocked"} · {tt("helper.open")}{/if}{#if rest}{row.child || ag || stText(st) || panes(t.tree).length > 1 ? " · " : ""}{rest}{/if}</span>
             {/if}
+            {#if previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
           {/if}
         </button>
         {/if}
@@ -2999,9 +3000,10 @@
       ontemplate={() => ((newTask = false), openTemplate())}
       onclose={() => (newTask = false)}
       onstarted={(s: Snap) => {
+        if (ws.id === s.workspace && (owner ?? tab)) runOwner[s.run] = (owner ?? tab)!.id;
         newTask = false;
         drawer = false;
-        onRun(s, true);
+        onRun(s);
         flow = true;
       }}
       onmanual={startManual}

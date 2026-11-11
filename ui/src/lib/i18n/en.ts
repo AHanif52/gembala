@@ -179,6 +179,7 @@ export default {
   "helper.open": "Open to answer",
   "helper.workingFor": "working {time}",
   "helper.finishedAt": "done {time}",
+  "helper.finishedYesterday": "done yesterday",
   "helper.idleFor": "idle {time}",
   "helper.compare": "View beside owner",
   "helper.compareSimple": "View beside {name}",

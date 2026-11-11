@@ -17,3 +17,15 @@ test("collapsed owner keeps its selected helper reachable", () => {
   assert.deepEqual(subtabRows(tabs, () => true, () => false).map((r) => r.kind), ["tab", "summary"]);
   assert.deepEqual(subtabRows(tabs, () => true, () => false, "done").map((r) => r.kind), ["tab", "summary", "fold", "tab"]);
 });
+
+test("harness stages appear as separate rows under their owner", () => {
+  const tabs = [
+    { id: "owner", helpersOpen: true },
+    { id: "stage-work", parent: "owner" },
+    { id: "stage-review", parent: "owner" },
+    { id: "unowned-stage" },
+  ];
+  assert.deepEqual(subtabRows(tabs, () => false, () => false).filter((r) => r.kind === "tab").map((r) => [r.tab.id, !!r.child]), [
+    ["owner", false], ["stage-work", true], ["stage-review", true], ["unowned-stage", false],
+  ]);
+});

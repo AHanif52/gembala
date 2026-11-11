@@ -669,10 +669,16 @@ fn status_dari_hook() {
     }
     let pane = ui.call("pane.create", json!({"profile": "claude"}))["result"]["pane"].as_u64().unwrap();
     let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
-    assert_eq!(e["params"], json!({"pane": pane, "status": "working", "shell": false, "reason": ""}), "{e}");
+    assert_eq!(e["params"]["pane"], pane);
+    assert_eq!(e["params"]["status"], "working");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    assert!(e["params"]["status_at"].as_u64().is_some_and(|at| at <= now && now - at < 8), "{e}");
+    assert!(e["params"]["last"].is_null(), "{e}");
     let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
     assert_eq!(e["params"]["status"], "blocked", "{e}");
-    assert_eq!(ui.call("pane.info", json!({"pane": pane}))["result"]["status"], "blocked");
+    let info = &ui.call("pane.info", json!({"pane": pane}))["result"];
+    assert_eq!(info["status"], "blocked");
+    assert_eq!(info["status_at"], e["params"]["status_at"]);
     // a process outside a pane can't change anyone's status
     let mut outsider = Cli::connect(&d, "pane.sock");
     assert_eq!(outsider.call("hello", json!({"proto": 1}))["error"]["code"], "not_a_pane");
@@ -950,7 +956,12 @@ fn agent_manual_berhook_tidak_dibaca_dari_layar() {
     let cmd = format!("'{g}' hook claude start </dev/null; (while :; do echo tik; sleep 2; done) & '{}' watch\r", claude.display());
     ui.call("pane.write", json!({"pane": pane, "data": B64.encode(cmd)}));
     let e = next_event(&mut ui, "pane.status", Duration::from_secs(8));
-    assert_eq!(e["params"], json!({"pane": pane, "status": "idle", "shell": false, "reason": ""}), "{e}");
+    assert_eq!(e["params"]["pane"], pane);
+    assert_eq!(e["params"]["status"], "idle");
+    assert_eq!(e["params"]["shell"], false);
+    assert_eq!(e["params"]["reason"], "");
+    assert!(e["params"]["status_at"].is_number(), "{e}");
+    assert!(e["params"]["last"].is_null(), "{e}");
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(6) {
         assert_eq!(ui.call("pane.info", json!({"pane": pane}))["result"]["status"], "idle", "status berubah karena output layar");
@@ -1058,7 +1069,7 @@ fn fr66_balasan_akhir_giliran_dan_spool() {
     // the recipient doesn't call `reply`: only the Codex notify hook with the turn's last message
     let terima = format!(
         "'{g}' token > '{}'; IFS= read -r l; IFS= read -r b; \
-         '{g}' hook codex notify '{{\"type\":\"agent-turn-complete\",\"last-assistant-message\":\"JAWABAN-OTOMATIS\"}}'; sleep 30",
+         '{g}' hook codex notify '{{\"type\":\"agent-turn-complete\",\"last-assistant-message\":\"JAWABAN-OTOMATIS   selesai\"}}'; sleep 30",
         tok.display()
     );
     let kirim = format!(
@@ -1066,10 +1077,11 @@ fn fr66_balasan_akhir_giliran_dan_spool() {
          '{g}' wait --reply \"$id\" --timeout 20; echo SELESAI-66; sleep 30"
     );
     profiles(&d, &mut ui, &(sh_profile("terima", &terima) + &sh_profile("kirim", &kirim)), "SELESAI-66");
-    ui.call("pane.create", json!({"profile": "terima", "workspace": "w"}));
+    let recipient = ui.call("pane.create", json!({"profile": "terima", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let a = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(a, &["SELESAI-66"]);
     assert!(out.contains("JAWABAN-OTOMATIS"), "{out}");
+    assert_eq!(ui.call("pane.info", json!({"pane": recipient}))["result"]["last"], "JAWABAN-OTOMATIS selesai");
     // spool: the recipient pane's token, the request as a file like from inside the sandbox
     let token = std::fs::read_to_string(&tok).unwrap().trim().to_string();
     assert_eq!(token.len(), 32, "{token}");
