@@ -80,6 +80,7 @@ pub fn builtin() -> Vec<Profile> {
         name: name.to_string(),
         agent: agent.to_string(),
         command: cmd.to_string(),
+        permission: if *agent == "omp" { "auto" } else { "default" }.into(),
         ..shell.clone()
     });
     std::iter::once(shell.clone()).chain(agents).collect()
@@ -450,7 +451,7 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let start = q(&claude_hooks(exe, false).to_string());
     format!(
         "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
-         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
+         function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
          function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
          function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command opencode \"$@\" }}\n\
          [[ -f {acc} ]] && builtin source {acc}\n",
@@ -872,10 +873,14 @@ mod tests {
         assert_eq!(auto("omp"), "--approval-mode=yolo");
         assert_eq!(auto("codex"), "--approve-for-me");
         assert!(permission_flags("opencode", "auto").is_empty() && permission_flags("claude", "default").is_empty());
-        let p = Profile { permission: "auto".into(), ..builtin()[4].clone() };
+        let p = builtin()[4].clone();
+        assert_eq!(p.permission, "auto");
         assert!(launch(&p, None, None, false).unwrap().contains("'omp' '--approval-mode=yolo' );"));
         let (ps, errs) = parse("[[profile]]\nid = \"omp\"\npermission = \"yolo\"\n");
-        assert!(errs.iter().any(|e| e.contains("opts=default, auto")) && ps.iter().all(|x| x.permission == "default"));
+        assert!(errs.iter().any(|e| e.contains("opts=default, auto")) && ps.iter().find(|p| p.id == "omp").unwrap().permission == "auto");
+        let (ps, errs) = parse("[[profile]]\nid = \"omp\"\npermission = \"default\"\n");
+        assert!(errs.is_empty());
+        assert!(!launch(ps.iter().find(|p| p.id == "omp").unwrap(), None, None, false).unwrap().contains("--approval-mode=yolo"));
     }
 
     #[test]
@@ -1135,5 +1140,20 @@ mod tests {
         let rc = zsh_agents(std::path::Path::new("/cfg/hooks"), "/Apps/Gem bala/gembala");
         assert!(rc.contains("--settings '{\"hooks\":{") && rc.contains("\"SessionStart\"") && rc.contains("hook claude start") && rc.contains("hook claude stop"), "{rc}");
         assert_eq!(hook_status("claude", "start", "{}"), Some("start"));
+    }
+
+    #[test]
+    fn omp_diketik_default_auto() {
+        let dir = std::env::temp_dir().join(format!("gembala-omp-auto-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cmd = dir.join("omp");
+        std::fs::write(&cmd, "#!/bin/sh\nprintf '<%s>' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&cmd, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("gembala.md.omp"), "hint").unwrap();
+        let script = format!("{}omp --model x", zsh_agents(&dir, "/x/gembala"));
+        let out = Command::new("zsh").args(["-f", "-c", &script]).env("PATH", format!("{}:/usr/bin:/bin", dir.display())).output().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        let args = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && args.starts_with("<--approval-mode=yolo><--hook=") && args.ends_with("<--model><x>"), "{args}");
     }
 }
