@@ -499,7 +499,15 @@ fn info_dan_hentikan_proses() {
     assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], false);
 
     w(&mut ui, "sleep 60\r");
-    let r = wait_info(&mut ui, pane, true, Duration::from_secs(5));
+    // a bash pane can still be starting (its rc files run in a child `bash`): the first busy reading isn't the command yet
+    let t0 = Instant::now();
+    let r = loop {
+        let r = wait_info(&mut ui, pane, true, Duration::from_secs(5));
+        if r["name"] == "sleep" || t0.elapsed() > Duration::from_secs(5) {
+            break r;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     assert_eq!(r["name"], "sleep", "{r}");
     assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], true);
     // under 3 s = TERM did it, not the KILL that follows at 3 s; 2 s was too tight on a loaded machine
