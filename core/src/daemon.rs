@@ -202,6 +202,7 @@ struct State {
     update: Mutex<Value>,
     /// FR-102: allowance left per agent login (usage.rs)
     usage: Mutex<usage::Store>,
+    models: Mutex<models::Store>,
     /// FR-100: the last report draft asked for a window screenshot (the user takes it; the agent never sees it)
     report_shot: Mutex<bool>,
 }
@@ -220,6 +221,7 @@ mod telegram;
 mod claude;
 mod update;
 mod usage;
+mod models;
 
 type Res = Result<Value, &'static str>;
 /// FR-62: (running block + its start time, manual agent block waiting for its resume command)
@@ -264,6 +266,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         tg: Mutex::default(),
         update: Mutex::default(),
         usage: Mutex::default(),
+        models: Mutex::default(),
         report_shot: Mutex::default(),
     });
     let st7 = st.clone();
@@ -1169,6 +1172,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         "telegram.status" => Ok(telegram::status(st)),
         // FR-102: allowance left per agent login; new numbers arrive as `usage.changed`
         "usage.list" => Ok(usage::status(st)),
+        "models.list" => models::list(st, p),
         // FR-82: version check; "check" answers at once, the result comes as `update.changed`
         "update.status" => Ok(update::status(st)),
         "update.check" => {

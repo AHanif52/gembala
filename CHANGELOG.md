@@ -7,6 +7,7 @@
 ### English
 
 - Agents can request a model and effort when asking you to open a new pane. Choose a listed model or enter an ID in the confirmation card; a setting doesn't change an agent pane that's already open.
+- The Open and send card lists models from the destination agent and login (Codex, Oh My Pi, OpenCode, Gemini). Claude keeps its latest-model aliases; entering a model ID always works, including when the CLI cannot list models.
 - Notifications say who needs you and why: the pane and its agent, what it waits for (a permission, an answer, a password, your OK, or a failure) or that it finished, and what to do next. One banner per pane; a banner goes away once you answer, and panes that finish together share one. Each kind has its own switch in Settings › General › Notifications.
 - Report a problem (⌘P › Report a problem): Gembala fills in the versions, you check the text, and it opens a new GitHub issue in your browser. Nothing is sent until you press Submit there. Agents can draft one with `gembala report`.
 - How much allowance is left per agent login (Claude, Codex, Oh My Pi, Gemini) shows in a rail beside the panes.
@@ -27,6 +28,7 @@
 ### Indonesia
 
 - Agent bisa minta model dan effort waktu minta lu buka pane baru. Pilih model dari daftar atau isi ID-nya sendiri di kartu konfirmasi; pane agent yang udah kebuka nggak ikut berubah.
+- Kartu Buka dan kirim sekarang nampilin model dari agent dan login tujuan (Codex, Oh My Pi, OpenCode, Gemini). Claude tetap pakai alias model terbaru; ngetik ID model sendiri selalu bisa, termasuk kalau CLI-nya nggak bisa ngasih daftar.
 - Notifikasi sekarang bilang siapa yang butuh lu dan kenapa: pane dan agent-nya, apa yang ditunggu (izin, jawaban, password, persetujuan lu, atau kegagalan), atau bahwa tugasnya selesai, plus apa yang perlu lu lakukan. Satu banner per pane; banner hilang setelah lu menjawab, dan pane yang selesai barengan berbagi satu banner. Tiap jenis punya saklar sendiri di Pengaturan › Umum › Notifikasi.
 - Laporkan masalah (⌘P › Laporkan masalah): Gembala isi versi buat lu, lu cek teksnya, lalu Gembala buka issue GitHub baru di browser. Belum ada yang dikirim sampai lu menekan Submit di sana. Agent juga bisa nyiapin laporan lewat `gembala report`.
 - Sisa jatah per login agent (Claude, Codex, Oh My Pi, Gemini) sekarang tampil di sisi pane.

@@ -994,6 +994,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "open.ask": "{from} mau ngirim tugas ke {who}. Bukain pane baru terus kirim?",
   "open.modelEffort": "Model · effort",
   "open.customModel": "Atau isi ID model",
+  "open.latestModel": "{model} (terbaru)",
   "open.effort": "Effort",
   "open.effortUnsupported": "{agent} belum mendukung pilihan effort.",
   "open.modelUnsupported": "{agent} belum mendukung pilihan model.",

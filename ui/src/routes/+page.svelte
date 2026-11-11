@@ -273,7 +273,27 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// FR-101: a helper gets its own tab under the asker's tab; the asker's focus stays put.
   /// FR-75 requests being opened right now: a second click (card, drawer, double click) must not open a second pane
   const opening = new Set<string>();
-  let openModels = $state<string[]>([]);
+  type ModelChoices = { models: { id: string; label: string }[]; source: string };
+  let openModels = $state<Record<string, ModelChoices>>({});
+  const modelLogin = (o: any) => {
+    const p = cfg?.values.profiles.find((x) => x.id === o.profile);
+    return o.account || wss.find((w) => w.id === o.workspace)?.accounts?.[p?.agent ?? ""] || p?.account || "utama";
+  };
+  const modelKey = (o: any) => JSON.stringify([agentForOpen(o), modelLogin(o)]);
+  const modelsForOpen = (o: any) => {
+    const choices = openModels[modelKey(o)];
+    return (choices?.models ?? []).map((m) => ({ ...m, label: choices.source === "alias" ? tt("open.latestModel", { model: m.label.charAt(0).toUpperCase() + m.label.slice(1) }) : m.label }));
+  };
+  async function refreshOpenModels(key: string) {
+    const [agent, account] = JSON.parse(key);
+    if (!agent) return;
+    const result = await call("models.list", { agent, account }).catch(() => null);
+    if (result) openModels[key] = result;
+  }
+  $effect(() => {
+    const keys = new Set<string>((msgData?.opens ?? []).map(modelKey));
+    untrack(() => { for (const key of keys) void refreshOpenModels(key); });
+  });
   let openEfforts = $state<string[]>([]);
   async function approveOpen(o: any) {
     const w = wss.find((w) => w.tabs.some((x) => panes(x.tree).includes(o.from_pane)));
@@ -2424,7 +2444,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   let fullscreen = $state(false); // full screen: macOS window buttons disappear, their space in the sidebar goes too
 
   onMount(() => {
-    call("account.list", {}).then((r) => { openModels = r.models ?? []; openEfforts = r.efforts ?? []; }).catch(() => {});
+    call("account.list", {}).then((r) => { openEfforts = r.efforts ?? []; }).catch(() => {});
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("keydown", keepFullscreen);
     const win = getCurrentWindow();
@@ -2457,6 +2477,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       if (payload.event === "harness.notice") runNotice(payload.params);
       if (payload.event === "telegram.changed") tg = payload.params ?? { state: "off" };
       if (payload.event === "usage.changed") usageRows = Array.isArray(payload.params?.rows) ? payload.params.rows : [];
+      if (payload.event === "models.changed") void refreshOpenModels(JSON.stringify([payload.params.agent, payload.params.account]));
       if (payload.event === "update.changed") upd = payload.params;
     });
     // an older daemon has no telegram.* (unknown_method): stays off
@@ -3092,9 +3113,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <pre>{o.body}</pre>
               {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(openAgent ?? "")}
                 <div class="sub"><span>{tt("open.modelEffort")}</span>
-                  <select aria-label={tt("open.modelEffort")} value={openModels.includes(o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
-                    <option value="">{tt("set.acc.default.opt")}</option>{#each openModels as model (model)}<option value={model}>{model}</option>{/each}
-                  </select>
+                  {#if modelsForOpen(o).length}
+                    <select aria-label={tt("open.modelEffort")} value={modelsForOpen(o).some((m) => m.id === o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
+                      <option value="">{tt("set.acc.default.opt")}</option>{#each modelsForOpen(o) as model (model.id)}<option value={model.id}>{model.label}</option>{/each}
+                    </select>
+                  {/if}
                   <input aria-label={tt("set.acc.modelAria", { name: openWho(o) })} value={o.model} placeholder={tt("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
                   {#if ["claude", "codex", "omp"].includes(openAgent ?? "")}
                     <select aria-label={tt("open.effort")} bind:value={o.effort}>
@@ -3201,7 +3224,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       onsent={() => ((reportDraft = null), d.id && call("report.discard", { id: d.id }).then(refreshMsgs))} />
   {/if}
   {#if drawer}
-    <Messages data={msgData} {rows} models={openModels} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho} />
+    <Messages data={msgData} {rows} models={modelsForOpen} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho} />
   {/if}
   {#if compose}
     <div class="confirm compose" role="dialog" aria-label={tt("cmp.title")}>

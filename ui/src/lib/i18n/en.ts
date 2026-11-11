@@ -1008,6 +1008,7 @@ export default {
   "open.ask": "{from} wants to send a task to {who}. Open a new pane and send it?",
   "open.modelEffort": "Model · effort",
   "open.customModel": "Or enter a model ID",
+  "open.latestModel": "{model} (latest)",
   "open.effort": "Effort",
   "open.effortUnsupported": "{agent} doesn't support effort selection.",
   "open.modelUnsupported": "{agent} doesn't support model selection.",

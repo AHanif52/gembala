@@ -1383,6 +1383,49 @@ fn h5_config_dan_instruksi_agent() {
 /// FR-75: `send` to an agent not open yet = a card on the UI channel; approve = the task reaches the pane the UI opened,
 /// reject = the requester's `wait --reply` gets the refusal. Unknown names stay `no_such_pane`.
 #[test]
+fn fr75_models_cache_and_event() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = std::env::temp_dir().join(format!("gbl-{}-models-bin", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let count = bin.join("calls");
+    let release = bin.join("release");
+    // Version detection must not count as a model request.
+    let body = format!("#!/bin/sh\nif [ \"$1\" = models ]; then\nprintf x >> '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s' '[{{\"id\":\"--yolo\"}},{{\"id\":\"gemini-safe\",\"displayName\":\"Gemini safe\"}}]'\nelse\nprintf '0.67.0'\nfi\n", count.display(), release.display());
+    std::fs::write(bin.join("gemini"), body).unwrap();
+    std::fs::set_permissions(bin.join("gemini"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = PathBuf::from(format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
+    let d = start_env("models", 3600, &[("PATH", &path)]);
+    let mut ui = Cli::ui(&d);
+    let params = json!({"agent":"gemini", "account":"utama"});
+    let first = ui.call("models.list", params.clone())["result"].clone();
+    assert_eq!(first["pending"], true);
+    assert_eq!(first["models"], json!([]));
+    assert_eq!(ui.call("models.list", params.clone())["result"]["pending"], true);
+    std::fs::write(release, "").unwrap();
+    loop {
+        let event = ui.recv();
+        assert!(!event.is_null(), "models.changed never arrived");
+        if event["event"] == "models.changed" {
+            assert_eq!(event["params"], params);
+            break;
+        }
+    }
+    let cached = ui.call("models.list", params.clone())["result"].clone();
+    assert_eq!(cached["source"], "cli");
+    assert_eq!(cached["pending"], false);
+    assert_eq!(cached["models"], json!([{"id":"gemini-safe", "label":"Gemini safe"}]));
+    assert!(cached["at"].as_u64().unwrap() > 0);
+    assert_eq!(ui.call("models.list", params)["result"], cached);
+    assert_eq!(std::fs::read_to_string(&count).unwrap(), "x");
+    assert_eq!(ui.call("models.list", json!({"agent":"shell"}))["error"]["code"], "bad_args");
+    assert_eq!(ui.call("models.list", json!({"agent":"gemini", "account":"unknown"}))["error"]["code"], "no_such_account");
+    assert_eq!(ui.call("models.list", json!({"agent":"claude"}))["result"]["source"], "alias");
+    drop(d);
+    std::fs::remove_dir_all(bin).unwrap();
+}
+
+#[test]
 fn fr75_buka_dan_kirim() {
     let d = start("fr75");
     let mut ui = Cli::ui(&d);

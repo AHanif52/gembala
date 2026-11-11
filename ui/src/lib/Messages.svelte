@@ -15,7 +15,7 @@
     models,
     efforts,
     agentOf,
-  }: { data: any; rows: Row[]; onchange: () => void; onclose: () => void; onopen: (o: any) => void; who: (o: any) => string; models: string[]; efforts: string[]; agentOf: (o: any) => string | undefined } = $props();
+  }: { data: any; rows: Row[]; onchange: () => void; onclose: () => void; onopen: (o: any) => void; who: (o: any) => string; models: (o: any) => { id: string; label: string }[]; efforts: string[]; agentOf: (o: any) => string | undefined } = $props();
 
 
   const act = (method: string, params: object) => call(method, params).then(onchange, onchange);
@@ -84,9 +84,11 @@
             <pre>{o.body}</pre>
           {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(agentOf(o) ?? "")}
             <div class="sub"><span>{t("open.modelEffort")}</span>
-              <select aria-label={t("open.modelEffort")} value={models.includes(o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
-                <option value="">{t("set.acc.default.opt")}</option>{#each models as model (model)}<option value={model}>{model}</option>{/each}
-              </select>
+              {#if models(o).length}
+                <select aria-label={t("open.modelEffort")} value={models(o).some((m) => m.id === o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
+                  <option value="">{t("set.acc.default.opt")}</option>{#each models(o) as model (model.id)}<option value={model.id}>{model.label}</option>{/each}
+                </select>
+              {/if}
               <input aria-label={t("open.customModel")} value={o.model} placeholder={t("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
               {#if ["claude", "codex", "omp"].includes(agentOf(o) ?? "")}
                 <select aria-label={t("open.effort")} bind:value={o.effort}>
