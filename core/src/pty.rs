@@ -153,8 +153,9 @@ pub fn proc_name(pid: i32) -> Option<String> {
 }
 
 // npm's Command Code runs under node; match its entry point, never arbitrary node processes.
+// It also sets `process.title`, which overwrites argv: a running session shows only `["command-code"]`.
 fn interpreted_agent(name: &str, args: &[String]) -> String {
-    if matches!(name, "node" | "bun") && args.get(1).is_some_and(|a| a.ends_with("/command-code/dist/index.mjs") || a.ends_with("/bin/commandcode") || a.ends_with("/bin/cmdc") || a.ends_with("/bin/cmd")) {
+    if matches!(name, "node" | "bun") && (args == ["command-code"] || args.get(1).is_some_and(|a| a.ends_with("/command-code/dist/index.mjs") || a.ends_with("/bin/commandcode") || a.ends_with("/bin/cmdc") || a.ends_with("/bin/cmd"))) {
         "commandcode".into()
     } else {
         name.into()
@@ -307,6 +308,7 @@ mod tests {
         }
         assert_eq!(interpreted_agent("node", &args("/tmp/other/index.mjs")), "node");
         assert_eq!(interpreted_agent("node", &["node".into(), "other.mjs".into(), "/opt/homebrew/bin/cmd".into()]), "node");
+        assert_eq!(interpreted_agent("node", &["command-code".into()]), "commandcode");
         assert_eq!(interpreted_agent("sh", &args("/opt/homebrew/bin/commandcode")), "sh");
     }
 

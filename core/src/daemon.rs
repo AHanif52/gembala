@@ -2903,7 +2903,8 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
         }
         "codex" => Some(printed_resume(&log).or_else(|| pane.session.lock().unwrap().clone()).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
         "opencode" => Some(pane.session.lock().unwrap().clone().map_or("opencode --continue".into(), |s| format!("opencode --session {s}"))),
-        "commandcode" => Some(pane.session.lock().unwrap().clone().map_or("commandcode --continue".into(), |s| format!("commandcode --resume {s}"))),
+        // no prompt sent = no session id: `--continue` would reopen another conversation of the folder, so no resume line
+        "commandcode" => pane.session.lock().unwrap().clone().map(|s| format!("commandcode --resume {s}")),
         "omp" => Some(agent_dir.or(dir).and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),
         _ => None,
     };
