@@ -48,6 +48,8 @@ test("perintah lanjut dari daemon lolos", () => {
     "opencode --continue",
     "opencode --session ses_4Ab-9",
     "omp --continue",
+    "commandcode --continue",
+    "commandcode --resume 12345678-1234-5678-1234-567812345678",
     "omp --resume 01a19b03-01a0-709b-87c6-c94faead61ab",
   ])
     assert.equal(safeResume(c), c);
@@ -58,6 +60,9 @@ test("perintah lain dari layout.json ditolak", () => {
     "claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb; rm -rf ~",
     "claude --resume x",
     "omp --resume a$(id)",
+    "commandcode --resume a$(id)",
+    "commandcode --resume x;id",
+    "commandcode --resume --yolo",
     "opencode --session x;id",
     "codex resume --last\nrm -rf ~",
     "bash -c id",

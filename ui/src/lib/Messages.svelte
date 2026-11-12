@@ -107,7 +107,7 @@
           <div class="msg">
             <span>{simple ? tOr("open.askSimple", "", { from: person(o.from), who: who(o) }) : tOr("open.ask", "", { from: o.from, who: who(o) })}</span>
             <blockquote>{o.body}</blockquote>
-          {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(agentOf(o) ?? "")}
+          {#if ["claude", "codex", "omp", "opencode", "gemini", "commandcode"].includes(agentOf(o) ?? "")}
             <div class="sub"><span>{t("open.modelEffort")}</span>
               {#if models(o).length}
                 <select aria-label={t("open.modelEffort")} value={models(o).some((m) => m.id === o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
@@ -115,7 +115,7 @@
                 </select>
               {/if}
               <input aria-label={t("open.customModel")} value={o.model} placeholder={t("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
-              {#if ["claude", "codex", "omp"].includes(agentOf(o) ?? "")}
+              {#if ["claude", "codex", "omp", "commandcode"].includes(agentOf(o) ?? "")}
                 <select aria-label={t("open.effort")} bind:value={o.effort}>
                   <option value="">{t("set.acc.default.opt")}</option>{#each efforts as effort (effort)}<option value={effort}>{effort}</option>{/each}
                 </select>

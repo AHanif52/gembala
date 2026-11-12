@@ -75,7 +75,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     saver?: boolean; // FR-27: the token saver is on for this pane (badge in the head)
     subagents?: number; // FR-101 item 1: subagents running, from Claude's SubagentStart/SubagentStop hooks (daemon count)
   };
-  const AGENTS = ["claude", "codex", "opencode", "omp"];
+  const AGENTS = ["claude", "codex", "opencode", "omp", "commandcode"];
   // FR-4/52: status dot + text label, not color alone (BRD section 11)
   const stText = (s?: string) => (s === "approve" ? tt(wordKey("approve")) : s === "blocked" || s === "done" || s === "working" ? tt(`status.${s}`) : "");
   // FR-52: tab color picked by the user (thin line on the left)
@@ -87,7 +87,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     return COLORS.reduce<string>((best, c) => (used(c) < used(best) ? c : best), FIRST);
   };
   // FR-52: mark per agent (not a brand logo), color close to the agent's signature color
-  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦" };
+  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦", commandcode: "⌘" };
   /// agent running in the pane (from a profile or typed by hand); "" = none
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
   /// the agent running in a pane by its profile name, also one typed in a shell pane ("shell-2 · Claude Code", not
@@ -423,7 +423,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       }),
   );
   // FR-72: agents with their own session picker (OpenCode has none from the command line)
-  const pickable = $derived(startProfiles.filter((p) => ["claude", "codex", "omp"].includes(p.agent)));
+  const pickable = $derived(startProfiles.filter((p) => ["claude", "codex", "omp", "commandcode"].includes(p.agent)));
   // FR-71: agent in a new worktree (pen screen 07): name, folder (default `<repo>.<name>`), profile
   let wt = $state<{ pane: number; wi: number; root: string; name: string; dir: string; dirSet: boolean; prof: number; err: string } | null>(null);
   // worktree errors have their own wording (wt.err.<code>), anything else goes through errText
@@ -631,6 +631,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     codex: "https://github.com/openai/codex",
     omp: "https://github.com/can1357/oh-my-pi",
     opencode: "https://opencode.ai/docs",
+    commandcode: "https://commandcode.ai/docs",
   };
   let installing = $state(false);
   async function redetect() {
@@ -1277,7 +1278,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     else if (shell && m && !AGENTS.includes(m.agent) && m.busy && m.session) {
       // same as the daemon (FR-61): session owned by another account = `claude-<owner>`, otherwise the process account; plain `claude` = shell account
       const who = m.owner?.id ?? m.accountId;
-      const cmd = { claude: `${who ? `claude-${who}` : "claude"} --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}` }[m.busy];
+      const cmd = { claude: `${who ? `claude-${who}` : "claude"} --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}`, commandcode: `commandcode --resume ${m.session}` }[m.busy];
       if (safeResume(cmd)) meta[id].ended = { resume: cmd ?? null };
     }
     for (const w of wss)
@@ -3400,7 +3401,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <div class="card" role="alertdialog" aria-label={tt("open.title", { who: openWho(o) })}>
                 <span>{simple ? tt("open.askSimple", { from: whoOf(o.from), who: openWho(o) }) : tt("open.ask", { from: o.from, who: openWho(o) })}</span>
                 <blockquote>{o.body}</blockquote>
-                {#if ["claude", "codex", "omp", "opencode", "gemini"].includes(openAgent ?? "")}
+                {#if ["claude", "codex", "omp", "opencode", "gemini", "commandcode"].includes(openAgent ?? "")}
                   <div class="sub"><span>{tt("open.modelEffort")}</span>
                     {#if modelsForOpen(o).length}
                       <select aria-label={tt("open.modelEffort")} value={modelsForOpen(o).some((m) => m.id === o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
@@ -3408,7 +3409,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                       </select>
                     {/if}
                     <input aria-label={tt("set.acc.modelAria", { name: openWho(o) })} value={o.model} placeholder={tt("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
-                    {#if ["claude", "codex", "omp"].includes(openAgent ?? "")}
+                    {#if ["claude", "codex", "omp", "commandcode"].includes(openAgent ?? "")}
                       <select aria-label={tt("open.effort")} bind:value={o.effort}>
                         <option value="">{tt("set.acc.default.opt")}</option>{#each openEfforts as effort (effort)}<option value={effort}>{effort}</option>{/each}
                       </select>
@@ -4560,6 +4561,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   .aico.opencode {
     color: var(--tx-blue, #3b82f6);
+  }
+  .aico.commandcode {
+    color: var(--tx-commandcode, #ca8a04);
   }
   .st.blocked {
     color: var(--tx-amber, #d97706);

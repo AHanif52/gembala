@@ -78,7 +78,14 @@ fn parse(agent: &str, text: &str) -> Option<Vec<Value>> {
             out.push(json!({"id": id, "label": if label.is_empty() { id } else { &label }}));
         }
     };
-    if agent == "opencode" {
+    if agent == "commandcode" {
+        // v1.88 --list-models: id, two or more spaces, description; ignore headings and CLI examples.
+        for row in text.lines().take_while(|s| !s.starts_with("Pass the full id")) {
+            if let Some((id, _)) = row.trim().split_once("  ") {
+                add(id, id);
+            }
+        }
+    } else if agent == "opencode" {
         for id in text.lines().map(str::trim).filter(|s| s.contains('/')) {
             add(id, id);
         }
@@ -112,6 +119,7 @@ fn probe(path: &str, agent: &str, home: Option<&std::path::Path>, limit: Duratio
         "omp" => { c.args(["models", "--json"]); }
         "opencode" => { c.arg("models"); }
         "gemini" => { c.args(["models", "-o", "json"]); }
+        "commandcode" => { c.arg("--list-models"); }
         _ => return None,
     }
     pty::scrub_env(&mut c);
@@ -179,6 +187,16 @@ mod tests {
     const CODEX: &str = include_str!("../../tests/fixtures/models/codex.json");
     const OMP: &str = include_str!("../../tests/fixtures/models/omp.json");
     const OPENCODE: &str = include_str!("../../tests/fixtures/models/opencode.txt");
+    const COMMANDCODE: &str = include_str!("../../tests/fixtures/models/commandcode.txt");
+
+    #[test]
+    fn commandcode_models_ignore_headings_and_examples() {
+        assert_eq!(parse("commandcode", COMMANDCODE).unwrap(), vec![
+            json!({"id":"deepseek/deepseek-v4-pro", "label":"deepseek/deepseek-v4-pro"}),
+            json!({"id":"gpt-6.1-sol", "label":"gpt-6.1-sol"}),
+        ]);
+        assert!(parse("commandcode", "--yolo  injected\ngpt-good  valid\ngpt-good  duplicate").unwrap().len() == 1);
+    }
     const GEMINI: &str = include_str!("../../tests/fixtures/models/gemini.json");
 
     #[test]
@@ -225,7 +243,7 @@ mod tests {
 
     #[test]
     fn fake_clis_follow_protocol_and_filter_ids() {
-        for (agent, fixture, args) in [("codex", CODEX, ""), ("omp", OMP, "models --json"), ("opencode", OPENCODE, "models"), ("gemini", GEMINI, "models -o json")] {
+        for (agent, fixture, args) in [("codex", CODEX, ""), ("omp", OMP, "models --json"), ("opencode", OPENCODE, "models"), ("gemini", GEMINI, "models -o json"), ("commandcode", COMMANDCODE, "--list-models")] {
             let handshake = if agent == "codex" {
                 "test \"$CODEX_HOME\" = /tmp/gbl-models-home || exit 2\nread -r init\ncase $init in *initialize*) ;; *) exit 3;; esac\nprintf '%s\\n' '{\"id\":1,\"result\":{}}'\nread -r ready\ncase $ready in *initialized*) ;; *) exit 4;; esac\nread -r request\ncase $request in *model/list*) ;; *) exit 5;; esac\n".to_owned()
             } else { format!("test \"$*\" = '{args}' || exit 6\n") };

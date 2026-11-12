@@ -58,8 +58,8 @@
   const selectedRing = $derived(rings.find((r) => r.key === selected));
   const firstData = $derived(rings.some((r) => r.row && !r.stale && r.window));
   const shade = (tone: UsageRing["tone"]) => tone === "red" ? "#ef4444" : tone === "yellow" ? "#eab308" : tone === "green" ? "#22c55e" : "#737373";
-  const icon = (agent: string) => ({ claude: "✳", codex: "◎", omp: "π", opencode: "◇", gemini: "✦" })[agent as UsageRow["agent"]] ?? "•";
-  const name = (agent: string) => ({ claude: "Claude Code", codex: "Codex", omp: "Oh My Pi", opencode: "OpenCode", gemini: "Gemini CLI" })[agent as UsageRow["agent"]] ?? agent;
+  const icon = (agent: string) => ({ claude: "✳", codex: "◎", omp: "π", opencode: "◇", gemini: "✦", commandcode: "⌘" })[agent as UsageRow["agent"]] ?? "•";
+  const name = (agent: string) => ({ claude: "Claude Code", codex: "Codex", omp: "Oh My Pi", opencode: "OpenCode", gemini: "Gemini CLI", commandcode: "Command Code" })[agent as UsageRow["agent"]] ?? agent;
   const windowName = (kind: UsageWindow["kind"]) => kind === "5h" ? t("usage.fiveHours") : kind === "week" ? t("usage.week") : kind === "month" ? t("usage.month") : t("usage.day");
   const sourceName = (source: UsageRow["source"]) => source === "claude_statusline" ? t(simple ? "usage.sourceClaudeSimple" : "usage.sourceClaude") : source === "codex_footer" ? t("usage.sourceCodex") : source === "codex_app_server" ? t(simple ? "usage.sourceCodex" : "usage.sourceCodexServer") : source === "omp_cli" ? t("usage.sourceOmp") : t("usage.sourceGemini");
   const clock = (at: number) => new Date(at * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -74,7 +74,7 @@
     const secs = Math.max(0, now - at);
     return secs < 60 ? t("usage.secondsAgo", { n: secs }) : secs < 3600 ? t("usage.minutesAgo", { n: Math.floor(secs / 60) }) : t("usage.hoursAgo", { n: Math.floor(secs / 3600) });
   };
-  const fallback = (agent: string) => agent === "opencode" ? t("usage.noOpenCode") : agent === "gemini" ? t("usage.noGemini") : agent === "omp" ? t("usage.noOmp") : t("usage.noData");
+  const fallback = (agent: string) => agent === "commandcode" ? t("usage.noCommandCode") : agent === "opencode" ? t("usage.noOpenCode") : agent === "gemini" ? t("usage.noGemini") : agent === "omp" ? t("usage.noOmp") : t("usage.noData");
   const badge = (ring: UsageRing) => rings.filter((r) => r.agent === ring.agent).length > 1 ? ring.loginName.charAt(0).toUpperCase() : "";
   const limitReset = (ring: UsageRing) => ring.window?.resets_at ? clock(ring.window.resets_at) : "";
   function show(key: string, el: HTMLElement) {

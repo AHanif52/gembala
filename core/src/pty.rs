@@ -148,7 +148,17 @@ pub fn signal((pid, group): (i32, bool), sig: libc::c_int) -> bool {
 
 #[cfg(target_os = "macos")]
 pub fn proc_name(pid: i32) -> Option<String> {
-    proc_path(pid)?.file_name()?.to_str().map(bare)
+    let name = bare(proc_path(pid)?.file_name()?.to_str()?);
+    Some(if matches!(name.as_str(), "node" | "bun") { interpreted_agent(&name, &args_of(pid)) } else { name })
+}
+
+// npm's Command Code runs under node; match its entry point, never arbitrary node processes.
+fn interpreted_agent(name: &str, args: &[String]) -> String {
+    if matches!(name, "node" | "bun") && args.get(1).is_some_and(|a| a.ends_with("/command-code/dist/index.mjs") || a.ends_with("/bin/commandcode") || a.ends_with("/bin/cmdc") || a.ends_with("/bin/cmd")) {
+        "commandcode".into()
+    } else {
+        name.into()
+    }
 }
 
 /// OpenCode from npm (`opencode-ai`) runs as `opencode.exe` on macOS too (9 Nov, another user's Mac: the pane wasn't an
@@ -258,7 +268,8 @@ pub fn proc_path(pid: i32) -> Option<std::path::PathBuf> {
 
 #[cfg(target_os = "linux")]
 pub fn proc_name(pid: i32) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| bare(s.trim()))
+    let name = bare(std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?.trim());
+    Some(if matches!(name.as_str(), "node" | "bun") { interpreted_agent(&name, &args_of(pid)) } else { name })
 }
 
 #[cfg(target_os = "linux")]
@@ -287,6 +298,17 @@ pub fn read_to_end(mut r: impl io::Read) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn commandcode_node_entry_point() {
+        let args = |path: &str| vec!["node".into(), path.into()];
+        for path in ["/opt/homebrew/lib/node_modules/command-code/dist/index.mjs", "/opt/homebrew/bin/commandcode", "/usr/local/bin/cmd", "/usr/local/bin/cmdc"] {
+            assert_eq!(interpreted_agent("node", &args(path)), "commandcode");
+        }
+        assert_eq!(interpreted_agent("node", &args("/tmp/other/index.mjs")), "node");
+        assert_eq!(interpreted_agent("node", &["node".into(), "other.mjs".into(), "/opt/homebrew/bin/cmd".into()]), "node");
+        assert_eq!(interpreted_agent("sh", &args("/opt/homebrew/bin/commandcode")), "sh");
+    }
 
     #[test]
     fn nama_proses_tanpa_exe() {

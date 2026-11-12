@@ -2,7 +2,7 @@ import { translate } from "./i18n/index.ts";
 
 export type UsageWindow = { kind: "5h" | "week" | "month" | "day"; used_pct: number; resets_at: number | null; model: string | null };
 export type UsageRow = {
-  agent: "claude" | "codex" | "omp" | "opencode" | "gemini";
+  agent: "claude" | "codex" | "omp" | "opencode" | "gemini" | "commandcode";
   login: string;
   login_name: string;
   windows: UsageWindow[];
@@ -14,7 +14,7 @@ export type UsageRing = { key: string; agent: UsageRow["agent"]; login: string; 
 type Account = { id: string; agent: string; name: string };
 type Active = { agent: string; login: string };
 
-const AGENTS = ["claude", "codex", "omp", "opencode", "gemini"] as const;
+const AGENTS = ["claude", "codex", "omp", "opencode", "gemini", "commandcode"] as const;
 const index = (agent: string) => AGENTS.indexOf(agent as UsageRow["agent"]);
 export const remaining = (w: UsageWindow) => Math.max(0, Math.min(100, 100 - w.used_pct));
 export const validWindows = (row: UsageRow, now: number) => (Array.isArray(row.windows) ? row.windows : [])

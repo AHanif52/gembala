@@ -1,0 +1,14 @@
+Available models  ·  96 models
+
+Open Source
+
+deepseek/deepseek-v4-pro                hybrid-attention long-context reasoning
+
+OpenAI
+
+gpt-6.1-sol                             near-Astra performance for complex work at a lower cost
+
+Pass the full id, or just the short name after the last "/":
+cmd --model moonshotai/kimi-k2.5
+Decision models (headless only)
+typesafe/jev  typed questions in, probabilities out

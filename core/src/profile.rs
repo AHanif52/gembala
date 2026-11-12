@@ -49,6 +49,7 @@ const AGENTS: &[(&str, &str, &str, &str, &str)] = &[
     ("codex", "Codex", "codex", "npm install -g @openai/codex", "0.167"),
     ("opencode", "OpenCode", "opencode", "brew install anomalyco/tap/opencode", "1.19"),
     ("omp", "Oh My Pi", "omp", "brew install can1357/tap/omp", "18.18"),
+    ("commandcode", "Command Code", "commandcode", "npm i -g command-code", "1.88"),
 ];
 
 /// agent kinds Gembala knows (recipes name agents by these)
@@ -233,6 +234,10 @@ pub fn hook_status(agent: &str, event: &str, payload: &str) -> Option<&'static s
         ("opencode", "busy") | ("omp", "start" | "resolved") => "working",
         ("opencode", "idle") | ("omp", "end") => "done",
         ("opencode", "permission") => "blocked",
+        ("commandcode", "start") => "start",
+        ("commandcode", "busy") => "working",
+        ("commandcode", "end") => "done",
+        ("commandcode", "permission") => "blocked",
         _ => return None,
     })
 }
@@ -246,6 +251,7 @@ pub fn hook_last(agent: &str, payload: &str) -> Option<String> {
         "claude" => json()["last_assistant_message"].as_str().map(String::from),
         "codex" => json()["last-assistant-message"].as_str().map(String::from),
         "omp" => Some(payload.to_string()),
+        "commandcode" => json()["last_assistant_message"].as_str().map(String::from),
         _ => None,
     };
     text.map(|t| t.chars().take(4000).collect::<String>()).filter(|t| !t.trim().is_empty())
@@ -322,7 +328,7 @@ Do not look for processes via ps.";
 /// The hint is matched by its opening sentence, not the whole text: the hook file can come from another daemon build.
 /// `--session-id` is added by Gembala's zsh function too; the session card already shows `claude --resume <id>`.
 pub fn shown_args(args: &[String]) -> String {
-    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"") || a.starts_with("mcp_servers.") || a.starts_with("tui.status_line=") || a == "--strict-mcp-config";
+    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.ends_with("/commandcode-gembala.mjs") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"") || a.starts_with("mcp_servers.") || a.starts_with("tui.status_line=") || a == "--strict-mcp-config";
     let mut out: Vec<&str> = vec![];
     let mut skip = false;
     for a in args {
@@ -403,6 +409,7 @@ fn hook_flags(p: &Profile, h: &Hooks, saver: bool) -> (Vec<String>, Vec<(String,
         ),
         "opencode" => (vec![], vec![("OPENCODE_CONFIG".into(), file("opencode.json"))]),
         "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={petunjuk} {OMP_TOOLS}")], vec![]),
+        "commandcode" => (vec!["--mod".into(), file("commandcode-gembala.mjs")], vec![("GEMBALA_COMMANDCODE_HINT".into(), petunjuk.into())]),
         _ => (vec![], vec![]),
     }
 }
@@ -498,6 +505,7 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     // FR-68: typed Codex = same notify hook as the profile; typed OpenCode = Gembala config (hint + plugin)
     let notify = q(&format!("notify={}", json!([exe, "hook", "codex", "notify"])));
     let oc = q(&dir.join("opencode.json").to_string_lossy());
+    let cc = q(&dir.join("commandcode-gembala.mjs").to_string_lossy());
     // FR-67: manual omp gets hooks too (status + message tool) and the omp-specific hint
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
     // FR-4, FR-61: typed Claude = same hooks as the profile (status, session id + owning account); the daemon doesn't read its screen
@@ -509,6 +517,9 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command {jail}omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
          function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command {jail}codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
          function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command {jail}opencode \"$@\" }}\n\
+         function commandcode {{ command {jail}commandcode --mod {cc} \"$@\" }}\n\
+         function cmd {{ commandcode \"$@\" }}\n\
+         function cmdc {{ commandcode \"$@\" }}\n\
          {gemini}\
          zmodload -F zsh/stat b:zstat\n\
          __gembala_accounts() {{\n\
@@ -531,6 +542,7 @@ fn bash_agents(dir: &std::path::Path, exe: &str) -> String {
     let f = q(&dir.join("gembala.md").to_string_lossy());
     let notify = q(&format!("notify={}", json!([exe, "hook", "codex", "notify"])));
     let oc = q(&dir.join("opencode.json").to_string_lossy());
+    let cc = q(&dir.join("commandcode-gembala.mjs").to_string_lossy());
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
     let start = q(&claude_hooks(exe, false).to_string());
     format!(
@@ -554,6 +566,9 @@ fn bash_agents(dir: &std::path::Path, exe: &str) -> String {
            GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command gembala jail -- codex -c {notify} -c \"$(cat {f}.codex)\" \"${{a[@]}}\" \"$@\"\n\
          }}\n\
          function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command gembala jail -- opencode \"$@\"; }}\n\
+         function commandcode {{ command gembala jail -- commandcode --mod {cc} \"$@\"; }}\n\
+         function cmd {{ commandcode \"$@\"; }}\n\
+         function cmdc {{ commandcode \"$@\"; }}\n\
          function gemini {{ command gembala jail -- gemini \"$@\"; }}\n\
          [ -f {acc} ] && . {acc}\n",
         acc = q(&dir.join("accounts.bash").to_string_lossy())
@@ -617,6 +632,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
             OPENCODE_HOOK.replace("__EXE__", &exe.to_string()),
         ),
         ("omp-gembala.ts", OMP_HOOK.replace("__EXE__", &exe.to_string())),
+        ("commandcode-gembala.mjs", include_str!("commandcode.mjs").replace("__EXE__", &exe.to_string()).replace("__HINT__", &json!(PETUNJUK).to_string())),
     ]
 }
 
@@ -705,6 +721,10 @@ pub struct Session {
 /// FR-68: session ids allowed for that agent (written into a shell command): UUID for Claude/Codex,
 /// letters, digits, `_`, `-` for OpenCode/omp.
 pub fn valid_session(agent: &str, s: &str) -> bool {
+    // --resume takes an optional value: a leading dash would become another CLI flag.
+    if agent == "commandcode" && s.starts_with('-') {
+        return false;
+    }
     match agent {
         "claude" | "codex" => valid_uuid(s),
         _ => (1..=80).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'),
@@ -724,6 +744,8 @@ fn session_flags(agent: &str, s: &Session) -> Vec<String> {
         // FR-68: the exact id, not the last session in the folder
         ("codex", true, Some(id)) => vec!["resume".into(), id.into()],
         ("opencode", true, Some(id)) => vec!["--session".into(), id.into()],
+        ("commandcode", true, Some(id)) => vec!["--resume".into(), id.into()],
+        ("commandcode", true, None) => vec!["--continue".into()],
         ("claude", true, None) | ("opencode" | "omp", true, _) => vec!["--continue".into()],
         ("codex", true, _) => vec!["resume".into(), "--last".into()],
         _ => vec![],
@@ -733,7 +755,7 @@ fn session_flags(agent: &str, s: &Session) -> Vec<String> {
 /// FR-72: the agent's own session picker (`--help` 3 Nov 2026); OpenCode has no picker from the command line
 pub fn picker_flags(agent: &str) -> &'static [&'static str] {
     match agent {
-        "claude" | "omp" => &["--resume"],
+        "claude" | "omp" | "commandcode" => &["--resume"],
         "codex" => &["resume"],
         _ => &[],
     }
@@ -747,6 +769,7 @@ pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
         ("claude", "auto") => &["--permission-mode", "auto"],
         ("omp", "auto") => &["--approval-mode=yolo"],
         ("codex", "auto") => &["--approve-for-me"],
+        ("commandcode", "auto") => &["--permission-mode", "accept-edits"],
         _ => &[],
     };
     f.iter().map(|s| s.to_string()).collect()
@@ -1119,7 +1142,7 @@ mod tests {
         assert!(rc.contains(&q(&settings.to_string())), "{rc}");
         // SEC-20: the agent launch and both wrapper sets run through `gembala jail --`
         assert_eq!(claude.contains("'/Apps/Gem bala/gembala' jail -- 'claude'"), cfg!(target_os = "linux"), "{claude}");
-        for agent in ["claude", "codex", "omp", "opencode"] {
+        for agent in ["claude", "codex", "omp", "opencode", "commandcode"] {
             let prefix = if cfg!(target_os = "linux") { "gembala jail -- " } else { "" };
             assert!(rc.contains(&format!("command {prefix}{agent}")), "{rc}");
         }
@@ -1184,6 +1207,39 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains(&exe.to_string_lossy().to_string()) && text.contains("BASH_ENV=kosong"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn commandcode_launch_resume_and_status() {
+        let mut p = builtin().into_iter().find(|p| p.id == "commandcode").unwrap();
+        assert_eq!(p.command, "commandcode");
+        assert_eq!(p.permission, "default");
+        let hooks = Hooks { exe: "/x/gembala".into(), dir: "/cfg/hooks".into() };
+        let launch_cmd = launch(&p, Some(&hooks), None, false).unwrap();
+        assert!(launch_cmd.contains("'commandcode' '--mod' '/cfg/hooks/commandcode-gembala.mjs'"), "{launch_cmd}");
+        assert!(!launch_cmd.contains("--permission-mode"));
+        assert_eq!(permission_flags("commandcode", "auto"), ["--permission-mode", "accept-edits"]);
+        p.permission = "auto".into();
+        let id = "12345678-1234-5678-1234-567812345678";
+        let resume = Session { id: Some(id.into()), resume: true };
+        assert!(launch(&p, Some(&hooks), Some(&resume), false).unwrap().contains(&format!("'--resume' '{id}'")));
+        assert_eq!(session_flags("commandcode", &Session { id: None, resume: true }), ["--continue"]);
+        assert_eq!(session_flags("commandcode", &Session { id: Some("x;id".into()), resume: true }), ["--continue"]);
+        assert_eq!(session_flags("commandcode", &Session { id: Some("--yolo".into()), resume: true }), ["--continue"]);
+        assert!(session_flags("commandcode", &Session { id: Some(id.into()), resume: false }).is_empty());
+        assert_eq!(picker_flags("commandcode"), ["--resume"]);
+        for (event, status) in [("start", "start"), ("busy", "working"), ("permission", "blocked"), ("end", "done")] {
+            assert_eq!(hook_status("commandcode", event, "{}"), Some(status));
+        }
+        assert_eq!(hook_status("commandcode", "notify", "permission"), None);
+        assert_eq!(hook_last("commandcode", r#"{"last_assistant_message":"Done"}"#).as_deref(), Some("Done"));
+        assert_eq!(hook_last("commandcode", "{}"), None);
+        let files = hook_files(&hooks);
+        let module = &files.iter().find(|f| f.0 == "commandcode-gembala.mjs").unwrap().1;
+        assert!(!module.contains("__EXE__") && !module.contains("__HINT__"));
+        for wrapper in [zsh_agents(&hooks.dir, &hooks.exe), bash_agents(&hooks.dir, &hooks.exe)] {
+            assert!(wrapper.contains("function commandcode") && wrapper.contains("function cmd ") && wrapper.contains("function cmdc "));
+        }
     }
 
     #[test]

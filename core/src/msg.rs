@@ -111,10 +111,10 @@ pub fn file_block(cwd: &std::path::Path, arg: &str) -> Result<String, &'static s
 
 /// SEC-5: an agent running with a skip-permission flag is forced to `confirm`.
 pub const SKIP_PERMISSION_FLAGS: &[&str] =
-    &["--dangerously-skip-permissions", "--yolo", "--dangerously-bypass-approvals-and-sandbox", "--full-auto", "--approval-mode=yolo"];
+    &["--dangerously-skip-permissions", "--yolo", "--dangerously-bypass-approvals-and-sandbox", "--full-auto", "--approval-mode=yolo", "--permission-mode=yolo"];
 
 pub fn effective_policy(set: Policy, args: &[String]) -> Policy {
-    if set == Policy::Auto && args.windows(2).any(|w| w[0] == "--ask-for-approval" && w[1] == "never") || set == Policy::Auto && args.iter().any(|a| SKIP_PERMISSION_FLAGS.contains(&a.as_str())) { Policy::Confirm } else { set }
+    if set == Policy::Auto && args.windows(2).any(|w| (w[0] == "--ask-for-approval" && w[1] == "never") || (w[0] == "--permission-mode" && w[1] == "yolo")) || set == Policy::Auto && args.iter().any(|a| SKIP_PERMISSION_FLAGS.contains(&a.as_str())) { Policy::Confirm } else { set }
 }
 
 /// Facts the send decision needs. Filled by the daemon right before deciding (SEC-28: also when the queue is sent).
@@ -297,12 +297,13 @@ mod tests {
         assert_eq!(effective_policy(Policy::Auto, &args), Policy::Confirm);
         assert_eq!(effective_policy(Policy::Deny, &args), Policy::Deny);
         assert_eq!(effective_policy(Policy::Auto, &[]), Policy::Auto);
-        for a in [vec!["--approval-mode=yolo"], vec!["--ask-for-approval", "never", "--sandbox", "workspace-write"]] {
+        for a in [vec!["--approval-mode=yolo"], vec!["--ask-for-approval", "never", "--sandbox", "workspace-write"], vec!["--permission-mode=yolo"], vec!["--permission-mode", "yolo"]] {
             let a: Vec<String> = a.into_iter().map(String::from).collect();
             assert_eq!(effective_policy(Policy::Auto, &a), Policy::Confirm, "{a:?}");
         }
         // Codex auto mode (FR-64) is reviewer-gated like Claude's, so it keeps the set policy
         assert_eq!(effective_policy(Policy::Auto, &["--approve-for-me".to_string()]), Policy::Auto);
+        assert_eq!(effective_policy(Policy::Auto, &["--permission-mode".into(), "accept-edits".into()]), Policy::Auto);
     }
 
     #[test]

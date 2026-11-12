@@ -126,6 +126,9 @@ Found a security hole? Don't open a public issue, send it through
 | [Codex](https://github.com/openai/codex) | `npm install -g @openai/codex` |
 | [OpenCode](https://opencode.ai) | `brew install anomalyco/tap/opencode` |
 | Oh My Pi | `brew install can1357/tap/omp` |
+| [Command Code](https://commandcode.ai/docs) (1.88+) | `npm i -g command-code` |
+
+Command Code supports `commandcode`, `cmd`, and `cmdc` in panes, its own session picker, exact resume, and model/effort flags. A session-only mod reports status; auto mode accepts edits, while shell commands still ask. Check `/usage` in its terminal for allowance.
 
 ### Homebrew
 
@@ -206,7 +209,7 @@ Output is one JSON line. Exit code 0 = accepted, 1 = rejected/timeout, 2 = misus
 Gembala.app (Tauri 2 + Svelte 5 + xterm.js)
       │  Unix socket, UI channel (recognized by code signature)
       ▼
-gembala daemon (Rust) ── holds the PTYs ──► zsh, claude, codex, opencode, omp
+gembala daemon (Rust) ── holds the PTYs ──► zsh, claude, codex, opencode, omp, commandcode
       ▲
       │  Unix socket, pane channel
 gembala CLI inside the pane (send / wait / read / reply)

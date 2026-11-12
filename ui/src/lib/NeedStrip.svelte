@@ -16,7 +16,7 @@
     onneed: (row: NeedRow) => void;
   } = $props();
 
-  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦" };
+  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦", commandcode: "⌘" };
 </script>
 
 {#if rows.length}
@@ -132,6 +132,7 @@
   .aico.codex { color: var(--tx-codex, #10a37f); }
   .aico.opencode { color: var(--tx-blue, #3b82f6); }
   .aico.gemini { color: var(--tx-gemini, #4285f4); }
+  .aico.commandcode { color: var(--tx-commandcode, #ca8a04); }
   .need .nmain {
     display: flex;
     flex-direction: column;

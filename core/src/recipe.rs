@@ -41,7 +41,7 @@ pub struct Step {
     /// the user's own words (custom stages), kept so the stage can be rephrased later
     pub need: String,
     pub instruction: String,
-    /// agent kinds (claude, codex, omp, opencode); order = fallback order
+    /// agent kinds (claude, codex, omp, opencode, commandcode); order = fallback order
     pub agents: Vec<String>,
     /// for the first agent only; a fallback uses its own default unless `models` names it
     pub model: String,
@@ -957,7 +957,7 @@ Do not edit any other file, do not run the recipe, do not approve anything: the 
 approves it there. When the file is written, say \"draft written\" in one line.\n\n\
 Schema. Top level keys: {}. Step (`[[step]]`) keys: {}.\n\
 - kind: `work` (an agent changes things) or `check` (an agent or the shell checks; a failed check sends the work back)\n\
-- agents: agent kinds in fallback order, from claude, codex, omp, opencode (max {MAX_AGENTS})\n\
+- agents: agent kinds in fallback order, from claude, codex, omp, opencode, commandcode (max {MAX_AGENTS})\n\
 - effort: {}; pass: {}; shell = true runs the workspace test command (no agent)\n\
 - timeout and total: durations like \"15m\", \"2h\"; output/inputs: artifact file names (`{REQUEST_FILE}` is the task)\n\
 - the last step is Ship: `human = true`, always the user's gate; a check needs an agent different from the work it checks\n\

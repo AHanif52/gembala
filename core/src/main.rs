@@ -113,6 +113,7 @@ fn hook(args: &[String]) -> ExitCode {
     // sit in the process arguments)
     if agent == "claude" || payload == "-" {
         use std::io::Read;
+        payload.clear();
         let _ = std::io::stdin().take(64 * 1024).read_to_string(&mut payload);
     }
     let Some(status) = profile::hook_status(agent, event, &payload) else { return ExitCode::SUCCESS };
@@ -129,7 +130,7 @@ fn hook(args: &[String]) -> ExitCode {
         "codex" => json()["thread-id"].as_str().map(String::from),
         "opencode" => Some(payload.trim().to_string()).filter(|p| !p.is_empty()),
         // FR-61: Claude `session_id` in every event, `source` in SessionStart; account folder from the hook process env
-        "claude" => json()["session_id"].as_str().map(String::from),
+        "claude" | "commandcode" => json()["session_id"].as_str().map(String::from),
         _ => None,
     };
     let source = json()["source"].as_str().map(String::from);

@@ -20,7 +20,7 @@ const PROBE: Duration = Duration::from_secs(6);
 const OMP: Duration = Duration::from_secs(15);
 
 /// Order the rows are listed in, also what the UI shows first.
-pub const AGENTS: &[&str] = &["claude", "codex", "omp", "opencode", "gemini"];
+pub const AGENTS: &[&str] = &["claude", "codex", "omp", "opencode", "gemini", "commandcode"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Window {

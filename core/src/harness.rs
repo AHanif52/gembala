@@ -520,7 +520,7 @@ mod tests {
     }
 
     fn all() -> Vec<String> {
-        ["claude", "codex", "omp", "opencode"].map(String::from).to_vec()
+        crate::profile::agent_ids().map(String::from).collect()
     }
 
     const FEATURE: &str = r#"

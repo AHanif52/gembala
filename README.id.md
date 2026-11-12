@@ -126,6 +126,9 @@ Nemu celah keamanan? Jangan buka issue publik, kirim lewat
 | [Codex](https://github.com/openai/codex) | `npm install -g @openai/codex` |
 | [OpenCode](https://opencode.ai) | `brew install anomalyco/tap/opencode` |
 | Oh My Pi | `brew install can1357/tap/omp` |
+| [Command Code](https://commandcode.ai/docs) (1.88+) | `npm i -g command-code` |
+
+Command Code bisa dipanggil lewat `commandcode`, `cmd`, atau `cmdc` di pane, pilih sesi lama, lanjut sesi persis, dan pilih model/effort. Mod per sesi ngabarin status; mode auto langsung menerima edit, perintah shell tetap nanya. Cek `/usage` di terminalnya buat jatah.
 
 ### Homebrew
 
@@ -206,7 +209,7 @@ Keluarannya satu baris JSON. Kode keluar 0 = diterima, 1 = ditolak/timeout, 2 = 
 Gembala.app (Tauri 2 + Svelte 5 + xterm.js)
       │  socket Unix, kanal UI (dikenali dari tanda tangan kode)
       ▼
-gembala daemon (Rust) ── memegang PTY ──► zsh, claude, codex, opencode, omp
+gembala daemon (Rust) ── memegang PTY ──► zsh, claude, codex, opencode, omp, commandcode
       ▲
       │  socket Unix, kanal pane
 CLI gembala di dalam pane (send / wait / read / reply)

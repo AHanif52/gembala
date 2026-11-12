@@ -7,6 +7,14 @@ const now = 1_700_000_000;
 const window = (kind, used_pct, resets_at = now + 3600) => ({ kind, used_pct, resets_at, model: null });
 const row = (agent, login, windows, limited = false) => ({ agent, login, login_name: login, windows, limited, source: "codex_footer", read_at: now });
 
+test("Command Code without allowance data shows an unknown ring", () => {
+  const rings = buildRings(["commandcode"], [], [], [], now);
+  assert.equal(rings.length, 1);
+  assert.equal(rings[0].key, "commandcode:utama");
+  assert.equal(rings[0].tone, "unknown");
+  assert.equal(rings[0].left, null);
+});
+
 test("tightest live window sets ring color; expired data stays gray", () => {
   const codex = row("codex", "utama", [window("5h", 34), window("week", 96)]);
   assert.equal(tightest(codex, now).kind, "week");

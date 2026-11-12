@@ -744,7 +744,7 @@ fn deteksi_agent() {
     let mut ui = Cli::ui(&d);
     let r = ui.call("agents.detect", json!({"refresh": true}))["result"].clone();
     let names: Vec<&str> = r.as_array().unwrap().iter().map(|a| a["agent"].as_str().unwrap()).collect();
-    assert_eq!(names, ["claude", "codex", "opencode", "omp"]);
+    assert_eq!(names, ["claude", "codex", "opencode", "omp", "commandcode"]);
     for a in r.as_array().unwrap() {
         assert!(a["installed"].is_boolean() && a["install"].is_string(), "{a}");
     }
@@ -1445,6 +1445,21 @@ fn fr68_id_sesi_dari_hook() {
     let p = ui.call("pane.create", json!({"profile": "sesi", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     ui.attach_until(p, &["SELESAI-68"]);
     assert_eq!(ui.call("pane.info", json!({"pane": p}))["result"]["session"], "01a19b1c-2cfb-7290-b33f-af39083bb39b");
+}
+
+/// The stdin sentinel is not part of the JSON: session and answer reach the daemon intact.
+#[test]
+fn commandcode_hook_stdin_session() {
+    let d = start("commandcode-hook");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = format!(
+        "printf '%s' '{{\"session_id\":\"12345678-abcd\",\"last_assistant_message\":\"Done\"}}' | '{g}' hook commandcode end -; echo COMMANDCODE-HOOK; sleep 30"
+    );
+    profiles(&d, &mut ui, &sh_profile("commandcode-test", &script), "COMMANDCODE-HOOK");
+    let p = ui.call("pane.create", json!({"profile": "commandcode-test", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    ui.attach_until(p, &["COMMANDCODE-HOOK"]);
+    assert_eq!(ui.call("pane.info", json!({"pane": p}))["result"]["session"], "12345678-abcd");
 }
 
 /// FR-61: account created in a temp HOME: folder 0700, links from Utama, existing files aren't overwritten,

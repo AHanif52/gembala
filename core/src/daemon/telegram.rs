@@ -285,7 +285,7 @@ fn turn_body(done: bool, agent: &str, answer: Option<&str>, screen: impl FnOnce(
 
 /// agents whose stop hook carries the turn's own answer (`gembala hook` → `last`): their done card can wait for it
 fn answers_from_hook(agent: &str) -> bool {
-    matches!(agent, "claude" | "codex" | "omp")
+    matches!(agent, "claude" | "codex" | "omp" | "commandcode")
 }
 
 /// A picker or a dialog on screen is the user's business on the Mac, never the answer: numbered options under a cursor
@@ -384,8 +384,8 @@ fn flat_tables<'a>(rows: impl Iterator<Item = &'a str>) -> Vec<String> {
 /// FR-69 label without the spinner and generic titles (agent name)
 fn label(title: &str, agent: &str) -> Option<String> {
     // spinner (braille), Claude's ✳, omp's `π >` prefix
-    let t = title.trim_start_matches(|c: char| ('\u{2800}'..='\u{28ff}').contains(&c) || matches!(c, '✳' | '✻' | 'π' | '>') || c.is_whitespace()).trim();
-    let generic = t.eq_ignore_ascii_case(agent) || t.eq_ignore_ascii_case("claude code");
+    let t = title.trim_start_matches(|c: char| ('\u{2800}'..='\u{28ff}').contains(&c) || matches!(c, '✳' | '✻' | 'π' | '⌘' | '>') || c.is_whitespace()).trim();
+    let generic = t.eq_ignore_ascii_case(agent) || t.eq_ignore_ascii_case("claude code") || t.eq_ignore_ascii_case("command code");
     (!t.is_empty() && !generic).then(|| mask_secrets(t).chars().take(120).collect())
 }
 
@@ -1115,8 +1115,8 @@ fn t(id: bool, k: &str) -> &'static str {
         "dl_fail" => ("Gagal ngunduh filenya (maks 20 MB).", "Couldn't download the file (20 MB max)."),
         "none" => ("Belum ada pane.", "No panes yet."),
         _ => (
-            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif (caption /ke <pane> buat pane lain).\n/ke <pane> [teks] — ganti pane aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah / yang bukan milik bot (/exit, /compact, /clear, /model) diteruskan ke pane aktif\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
-            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane (caption /to <pane> for another).\n/to <pane> [text] — switch the active pane (and send the text); /to alone = pick from buttons\nA / command that isn't the bot's (/exit, /compact, /clear, /model) goes to the active pane\n/open <agent> [pane] — start claude/codex/omp/opencode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
+            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif (caption /ke <pane> buat pane lain).\n/ke <pane> [teks] — ganti pane aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah / yang bukan milik bot (/exit, /compact, /clear, /model) diteruskan ke pane aktif\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode/commandcode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
+            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane (caption /to <pane> for another).\n/to <pane> [text] — switch the active pane (and send the text); /to alone = pick from buttons\nA / command that isn't the bot's (/exit, /compact, /clear, /model) goes to the active pane\n/open <agent> [pane] — start claude/codex/omp/opencode/commandcode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
         ),
     };
     if id { i } else { e }
@@ -1856,10 +1856,10 @@ fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'sta
     st.panes.lock().unwrap().get(&id).map(|p| (id, p.clone())).ok_or("no_pane")
 }
 
-/// What `/buka` may type: the four agents plus the Claude account commands Gembala writes to accounts.zsh (FR-61,
+/// What `/buka` may type: the built-in agents plus the Claude account commands Gembala writes to accounts.zsh (FR-61,
 /// `claude-utama` + `claude-<id>`). The command is typed as is, never text from the phone (SEC-36).
 fn openable(claude_accounts: &[String]) -> Vec<String> {
-    let mut v: Vec<String> = ["claude", "codex", "omp", "opencode"].map(String::from).to_vec();
+    let mut v: Vec<String> = ["claude", "codex", "omp", "opencode", "commandcode"].map(String::from).to_vec();
     if !claude_accounts.is_empty() {
         v.push("claude-utama".into());
     }
@@ -2863,8 +2863,8 @@ mod tests {
         assert_eq!(parse(&q, Some(&l), 0), In::OpenPick { pane: 11, agent: "claude-kantor".into(), cb: "c1".into(), msg: 9 });
         let q = json!({"callback_query": {"id": "c1", "from": {"id": 7}, "data": "w|ap2mf4uo|claude", "message": {"message_id": 9, "chat": {"id": 42}}}});
         assert_eq!(parse(&q, Some(&l), 0), In::OpenWs { ws: "ap2mf4uo".into(), agent: "claude".into(), cb: "c1".into(), msg: 9 });
-        assert_eq!(openable(&[]), ["claude", "codex", "omp", "opencode"]);
-        assert_eq!(openable(&["kantor".into()]), ["claude", "codex", "omp", "opencode", "claude-utama", "claude-kantor"]);
+        assert_eq!(openable(&[]), ["claude", "codex", "omp", "opencode", "commandcode"]);
+        assert_eq!(openable(&["kantor".into()]), ["claude", "codex", "omp", "opencode", "commandcode", "claude-utama", "claude-kantor"]);
         // free text is never an agent: "rm -rf ~" isn't in the list, so nothing is typed
         assert!(!openable(&[]).contains(&"rm".to_string()));
     }

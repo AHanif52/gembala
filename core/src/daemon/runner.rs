@@ -154,8 +154,8 @@ fn step_flags(s: &recipe::Step, agent: &str) -> Vec<String> {
 /// B1 `recipe.library`: which card fields mean something for an agent (`flags` below sets nothing for the others)
 pub fn supports(agent: &str) -> Value {
     json!({
-        "model": matches!(agent, "claude" | "codex" | "omp" | "opencode" | "gemini"),
-        "effort": matches!(agent, "claude" | "codex" | "omp"),
+        "model": matches!(agent, "claude" | "codex" | "omp" | "opencode" | "gemini" | "commandcode"),
+        "effort": matches!(agent, "claude" | "codex" | "omp" | "commandcode"),
         "cost": agent == "omp"
     })
 }
@@ -164,7 +164,7 @@ pub fn flags(agent: &str, model: &str, effort: &str, cost: Option<f64>) -> Vec<S
     let mut v = Vec::new();
     let mut add = |a: String| v.push(a);
     match agent {
-        "claude" => {
+        "claude" | "commandcode" => {
             if !model.is_empty() {
                 add("--model".into());
                 add(model.into());
@@ -981,6 +981,8 @@ mod tests {
     #[test]
     fn launch_flags_per_agent() {
         assert_eq!(flags("claude", "opus", "high", None), ["--model", "opus", "--effort", "high"]);
+        assert_eq!(flags("commandcode", "gpt-6.1-sol", "high", None), ["--model", "gpt-6.1-sol", "--effort", "high"]);
+        assert_eq!(supports("commandcode")["effort"], true);
         assert_eq!(flags("claude", "", "", None), Vec::<String>::new());
         assert_eq!(flags("codex", "gpt-5", "max", None), ["-m", "gpt-5", "-c", "model_reasoning_effort=\"high\""]);
         assert_eq!(flags("omp", "x", "low", Some(2.5)), ["--model=x", "--thinking=low", "--max-cost=2.5", "--warn-cost=2"]);

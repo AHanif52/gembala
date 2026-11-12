@@ -1648,7 +1648,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         trust: std::sync::atomic::AtomicBool::new(false),
         trust_off: Mutex::new(None),
         // FR-68: Codex only has the `notify` hook (done); working and needs-permission come from the screen
-        screen: agent == "custom" || agent == "codex",
+        screen: agent == "custom" || agent == "codex" || agent == "commandcode",
         started: std::time::Instant::now(),
         workspace: Mutex::new(p["workspace"].as_str().unwrap_or_default().chars().take(64).collect()),
         policy: Mutex::new(prof.as_ref().map_or(msg::Policy::Auto, |x| {
@@ -1670,7 +1670,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         replied_at: Mutex::new(None),
         typed_at: Mutex::new(None),
         token: Mutex::new(token),
-        status: Mutex::new(if ["claude", "codex", "opencode", "omp", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
+        status: Mutex::new(if ["claude", "codex", "opencode", "omp", "commandcode", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
         agent,
         view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
     });
@@ -2353,7 +2353,7 @@ fn ours(name: &str, args: &[String], opencode_cfg: Option<&str>) -> bool {
 
 /// FR-4 fallback every 1 second: `custom` profiles, and agents typed by hand in a shell pane (no hooks).
 fn screen_watch(st: Arc<State>) {
-    const AGENTS: &[&str] = &["claude", "codex", "opencode", "omp"];
+    const AGENTS: &[&str] = &["claude", "codex", "opencode", "omp", "commandcode"];
     loop {
         thread::sleep(Duration::from_secs(1));
         let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.clone())).collect();
@@ -2430,7 +2430,7 @@ fn screen_watch(st: Arc<State>) {
             let cur = *pane.status.lock().unwrap();
             // an exited pane isn't judged from the screen: the relaunched zsh prompt would read as an agent again
             // (11 Nov 2026: a Codex pane stayed `done`, so `send` was accepted and typed into zsh)
-            let next = if manual && pane.hooked.load(Ordering::Relaxed) {
+            let next = if (manual || pane.agent == "commandcode") && pane.hooked.load(Ordering::Relaxed) {
                 // a hook (e.g. SessionStart) can arrive before the agent is recognized: initial status = waiting for a task
                 if !cur.is_empty() {
                     continue;
@@ -2903,6 +2903,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
         }
         "codex" => Some(printed_resume(&log).or_else(|| pane.session.lock().unwrap().clone()).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
         "opencode" => Some(pane.session.lock().unwrap().clone().map_or("opencode --continue".into(), |s| format!("opencode --session {s}"))),
+        "commandcode" => Some(pane.session.lock().unwrap().clone().map_or("commandcode --continue".into(), |s| format!("commandcode --resume {s}"))),
         "omp" => Some(agent_dir.or(dir).and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),
         _ => None,
     };

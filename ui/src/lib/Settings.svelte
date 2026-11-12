@@ -131,7 +131,7 @@
     isNew: boolean;
   };
   let form = $state<Form | null>(null);
-  const BUILTIN = ["shell", "claude", "codex", "opencode", "omp"];
+  const BUILTIN = ["shell", "claude", "codex", "opencode", "omp", "commandcode"];
 
   function edit(p: Profile, copy = false) {
     let id = p.id;
@@ -244,7 +244,7 @@
   const mb = (kb: number) => `${Math.round(kb / 1024)} MB`;
   // one row per pane (total RAM/CPU of all its processes), details open per pane; panes with only a shell at the bottom
   const SHELLS = ["zsh", "bash", "fish", "sh", "login"];
-  const AGENT_BIN = ["claude", "codex", "opencode", "omp"];
+  const AGENT_BIN = ["claude", "codex", "opencode", "omp", "commandcode"];
   const paneGroups = $derived.by(() => {
     const g = new Map<string, Proc[]>();
     for (const p of procs.filter((p) => p.role === "pane")) {
@@ -352,6 +352,7 @@
     codex: "hook notify",
     omp: "hook omp-gembala.ts",
     opencode: "plugin opencode-gembala.js",
+    commandcode: "mod commandcode-gembala.mjs",
   }; // claude's label is translated (tOr), the rest are file names
   /// The Account row shows for profiles that run Claude: agent claude, or its command is claude.
   const runsClaude = (f: Form) => f.agent === "claude" || /^claude(\s|-|$)/.test(f.command.trim());
@@ -1419,7 +1420,7 @@
         <section>
           {#each Object.values(meta) as m}
             <div class="row">
-              <span>{m.name || m.profile}<small>{["claude", "codex", "opencode", "omp"].includes(m.agent) ? t("set.diag.byHook") : m.agent === "custom" ? t("set.diag.byScreen") : t("set.diag.byShell")}</small></span>
+              <span>{m.name || m.profile}<small>{["claude", "codex", "opencode", "omp", "commandcode"].includes(m.agent) ? t("set.diag.byHook") : m.agent === "custom" ? t("set.diag.byScreen") : t("set.diag.byShell")}</small></span>
               <span class="m">{m.status ? tOr(`status.${m.status}`, m.status) : "-"}</span>
             </div>
           {:else}
