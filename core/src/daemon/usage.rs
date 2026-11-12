@@ -3,6 +3,7 @@
 //! login), `omp usage --json`, the `quota` item of the Gemini footer, and the `rate_limits` Claude sends to its status
 //! line through the wrapper Gembala installs per launch. No token, `auth.json`, Keychain, or provider API is read
 //! (SEC-15, SEC-32), and nothing from a login is logged.
+//! FR-104: Command Code stays unknown: `/usage` is interactive; `status --json` reports authentication, not allowance.
 
 use super::*;
 use std::io::{BufRead, BufReader};

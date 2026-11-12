@@ -6,7 +6,7 @@
 
 ### English
 
-- Command Code (1.88+) joins the built-in agents, with session-local status hooks, resume/picker, model/effort, and `cmd`/`cmdc` shell aliases; allowance stays in its `/usage` screen.
+- FR-104: Command Code (1.88+) joins the built-in agents, with session-local status hooks, resume/picker, model/effort, and `cmd`/`cmdc` shell aliases; its gold ⌘ sits in a dashed allowance ring until usage data is available (check `/usage`).
 - A helper pane is no longer closed for being idle while a message to it is still waiting for your approval or in its queue (the card used to disappear with it).
 - An agent asking to close a helper it opened that is still working or waiting now shows you the close card (with its status) instead of being refused.
 - `gembala wait` can wait up to 6 hours (`--timeout 21600`), so a long task given to another agent no longer looks like a failure after an hour.
@@ -17,7 +17,7 @@
 
 ### Indonesia
 
-- Command Code (1.88+) jadi agent bawaan, lengkap dengan hook status per sesi, lanjut/pilih sesi, model/effort, dan alias shell `cmd`/`cmdc`; jatah tetap dicek lewat `/usage`.
+- FR-104: Command Code (1.88+) jadi agent bawaan, lengkap dengan hook status per sesi, lanjut/pilih sesi, model/effort, dan alias shell `cmd`/`cmdc`; ikon ⌘ emas tampil dalam cincin jatah putus-putus selama datanya belum tersedia (cek `/usage`).
 - Pane helper nggak lagi ditutup karena nganggur selama masih ada pesan buat dia yang nunggu persetujuan lu atau masih antre (dulu kartunya ikut hilang).
 - Agent yang minta nutup helper yang dia buka sendiri tapi masih kerja atau nunggu sekarang nampilin kartu tutup ke lu (lengkap dengan statusnya), bukan ditolak.
 - `gembala wait` bisa nunggu sampai 6 jam (`--timeout 21600`), jadi tugas panjang ke agent lain nggak kelihatan gagal setelah sejam.

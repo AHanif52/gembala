@@ -1,4 +1,4 @@
-// Loaded only for this session; the user's Command Code settings stay untouched.
+// FR-104: loaded only for this session; the user's Command Code settings stay untouched.
 import { execFile } from "node:child_process";
 
 export default function (cmd) {

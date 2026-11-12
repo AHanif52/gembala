@@ -58,6 +58,8 @@
   const selectedRing = $derived(rings.find((r) => r.key === selected));
   const firstData = $derived(rings.some((r) => r.row && !r.stale && r.window));
   const shade = (tone: UsageRing["tone"]) => tone === "red" ? "#ef4444" : tone === "yellow" ? "#eab308" : tone === "green" ? "#22c55e" : "#737373";
+  // FR-104: the agent keeps its own glyph color; the ring still describes its allowance.
+  const iconShade = (agent: string, fallback: string) => agent === "commandcode" ? "var(--tx-commandcode, #ca8a04)" : fallback;
   const icon = (agent: string) => ({ claude: "✳", codex: "◎", omp: "π", opencode: "◇", gemini: "✦", commandcode: "⌘" })[agent as UsageRow["agent"]] ?? "•";
   const name = (agent: string) => ({ claude: "Claude Code", codex: "Codex", omp: "Oh My Pi", opencode: "OpenCode", gemini: "Gemini CLI", commandcode: "Command Code" })[agent as UsageRow["agent"]] ?? agent;
   const windowName = (kind: UsageWindow["kind"]) => kind === "5h" ? t("usage.fiveHours") : kind === "week" ? t("usage.week") : kind === "month" ? t("usage.month") : t("usage.day");
@@ -111,7 +113,7 @@
           onpointerenter={(e) => show(ring.key, e.currentTarget)} onpointerleave={leave}
           onclick={(e) => { show(ring.key, e.currentTarget); pinned = pinned === ring.key ? "" : ring.key; }}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle class="track" cx="12" cy="12" r="10" class:unknown={ring.tone === "unknown"} /><circle class="amount" cx="12" cy="12" r="10" stroke={shade(ring.tone)} stroke-dasharray={`${(ring.left ?? (ring.row?.limited && !ring.stale ? 5 : 0)) * 0.628} 62.8`} /></svg>
-          <span class="agent" style:color={ring.tone === "unknown" ? "var(--muted)" : shade(ring.tone)}>{icon(ring.agent)}</span>
+          <span class="agent" style:color={iconShade(ring.agent, ring.tone === "unknown" ? "var(--muted)" : shade(ring.tone))}>{icon(ring.agent)}</span>
           {#if badge(ring)}<span class="login-badge">{badge(ring)}</span>{/if}
         </button>
         {#if ring.row?.limited && !ring.stale && limitReset(ring)}<small class="limit-time">{limitReset(ring)}</small>{/if}
@@ -145,7 +147,7 @@
   </div>
 {:else if selectedRing}
   <div class="usage-card" style:top={`${cardY}px`} onpointerenter={() => clearTimeout(leaveTimer)} onpointerleave={leave} role="dialog" tabindex="-1" aria-label={t("usage.cardTitle", { name: name(selectedRing.agent) })}>
-    <b class="card-title"><span style:color={shade(selectedRing.tone)}>{icon(selectedRing.agent)}</span> {t("usage.cardTitle", { name: name(selectedRing.agent) })}{#if !simple || badge(selectedRing)}<small>{simple ? selectedRing.loginName : t("usage.login", { name: selectedRing.loginName })}</small>{/if}</b>
+    <b class="card-title"><span style:color={iconShade(selectedRing.agent, shade(selectedRing.tone))}>{icon(selectedRing.agent)}</span> {t("usage.cardTitle", { name: name(selectedRing.agent) })}{#if !simple || badge(selectedRing)}<small>{simple ? selectedRing.loginName : t("usage.login", { name: selectedRing.loginName })}</small>{/if}</b>
     {#if selectedRing.row?.limited && !selectedRing.stale}<p class="limit">{t("usage.limited", { time: selectedRing.window?.resets_at ? resetAt(selectedRing.window.resets_at) : t("usage.resetUnknown") })}</p>{/if}
     {#if selectedRing.stale}<p class="quiet">{t(simple ? "usage.staleBodySimple" : "usage.staleBody", { name: name(selectedRing.agent) })}</p>
     {:else if !selectedRing.window}<p class="quiet">{fallback(selectedRing.agent)}</p>
@@ -160,7 +162,7 @@
 {:else if selected === "more"}
   <div class="usage-card" style:top={`${cardY}px`} onpointerenter={() => clearTimeout(leaveTimer)} onpointerleave={leave} role="dialog" tabindex="-1" aria-label={t("usage.moreTitle")}>
     <b>{t("usage.moreTitle")}</b>
-    {#each hidden as ring (ring.key)}<button class="more-row" onpointerenter={(e) => show(ring.key, e.currentTarget)} onclick={(e) => { show(ring.key, e.currentTarget); pinned = ring.key; }}><span style:color={shade(ring.tone)}>{icon(ring.agent)}</span> {name(ring.agent)}{ring.login !== "utama" ? ` · ${ring.loginName}` : ""}<small>{ring.left === null ? t(ring.stale ? "usage.stale" : "usage.noDataShort") : t("usage.left", { n: Math.round(ring.left) })}</small></button>{/each}
+    {#each hidden as ring (ring.key)}<button class="more-row" onpointerenter={(e) => show(ring.key, e.currentTarget)} onclick={(e) => { show(ring.key, e.currentTarget); pinned = ring.key; }}><span style:color={iconShade(ring.agent, shade(ring.tone))}>{icon(ring.agent)}</span> {name(ring.agent)}{ring.login !== "utama" ? ` · ${ring.loginName}` : ""}<small>{ring.left === null ? t(ring.stale ? "usage.stale" : "usage.noDataShort") : t("usage.left", { n: Math.round(ring.left) })}</small></button>{/each}
   </div>
 {/if}
 
