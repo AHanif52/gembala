@@ -1,6 +1,6 @@
 [package]
 name = "ui"
-version = "0.1.9"
+version = "0.1.10"
 description = "Gembala GUI (klien daemon)"
 edition = "2024"
 
