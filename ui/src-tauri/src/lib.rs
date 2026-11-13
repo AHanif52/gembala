@@ -15,7 +15,9 @@ const ALLOWED: &[&str] =
       "addon.plugin", "addon.mcp.get", "addon.mcp.set", "addon.status",
       "recipe.list", "recipe.get", "recipe.approve", "recipe.delete", "recipe.duplicate", "recipe.draft_new", "recipe.draft_get", "recipe.draft_apply", "config.draft_new", "config.draft_get", "config.draft_apply", "agent_file.brief", "recipe.validate", "recipe.library", "recipe.render", "recipe.save",
       "harness.preflight", "harness.start", "harness.state", "harness.stop", "harness.gate", "harness.takeover", "harness.release", "harness.close_panes",
-      "telegram.status", "telegram.pair", "telegram.unpair", "usage.list", "models.list", "pane.dialogs", "pane.answer"];
+      "telegram.status", "telegram.pair", "telegram.unpair", "usage.list", "models.list", "pane.dialogs", "pane.answer",
+      // PLAN-CC-PANE: structured Command Code pane (UI channel only; the daemon guards kind and access itself)
+      "cc.create", "cc.run", "cc.attach", "cc.detach", "cc.cancel", "cc.sessions", "cc.resume", "cc.access"];
 
 /// Pane shortcuts (FR-37, 38, 39, 50), Warp-style defaults. Id = action the webview runs; labels in i18n.rs.
 const PANE_KEYS: &[(&str, &str)] = &[

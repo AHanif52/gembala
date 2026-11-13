@@ -1,6 +1,7 @@
 mod account;
 mod addon;
 mod bus;
+mod commandcode;
 mod config;
 mod daemon;
 mod diag;

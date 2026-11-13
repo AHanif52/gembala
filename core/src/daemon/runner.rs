@@ -624,11 +624,11 @@ fn feed(st: &Arc<State>, l: &mut Live, ev: Event) {
 
 /// FR-86: same as the user's × on each pane still open (history and the session card stay)
 fn close_panes(st: &State, ids: &[u64]) -> usize {
-    let open: Vec<Arc<Pane>> = {
+    let open: Vec<(u64, Arc<Pane>)> = {
         let panes = st.panes.lock().unwrap();
-        ids.iter().filter_map(|id| panes.get(id).cloned()).collect()
+        ids.iter().filter_map(|id| panes.get(id).cloned().map(|p| (*id, p))).collect()
     };
-    open.iter().for_each(|p| close_pane(p));
+    open.iter().for_each(|(id, p)| close_pane(st, *id, p));
     open.len()
 }
 
@@ -667,7 +667,7 @@ fn tick(st: &Arc<State>, l: &mut Live) {
             // B2: the agent's own folder-trust dialog reads as idle and would take the message (Claude's default is
             // "No, exit", Codex spends the Enter on "Trust and continue"). Answering it is the user's call (C-4,
             // FR-64): hold the message and report a dialog; once it is gone the agent gets a fresh grace period.
-            if first && profile::trust_prompt(&p.view.lock().unwrap().0.tail(20)) {
+            if first && p.terminal().is_ok_and(|t| profile::trust_prompt(&t.view.lock().unwrap().0.tail(20))) {
                 l.born = Instant::now();
                 if l.seen != Some(Status::Blocked) {
                     l.seen = Some(Status::Blocked);
@@ -782,8 +782,8 @@ fn pane_cwd(st: &State, p: &Value) -> Option<PathBuf> {
         return Some(PathBuf::from(c));
     }
     let f = st.pane(&json!({"pane": p["from_pane"]})).ok()?;
-    let pid = pty::busy(&f.master, f.sid).map_or(f.sid, |(pid, _)| pid);
-    pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid))
+    let pid = pty::busy(&f.terminal().ok()?.master, f.terminal().ok()?.sid).map_or(f.terminal().ok()?.sid, |(pid, _)| pid);
+    pty::cwd_of(pid).or_else(|| pty::cwd_of(f.terminal().ok()?.sid))
 }
 
 fn item(check: &str, ok: bool, blocking: bool, detail: impl ToString) -> Value {
@@ -830,6 +830,11 @@ pub fn preflight(st: &State, p: &Value) -> Result<(Vec<Value>, Option<recipe::Re
 }
 
 pub fn method(st: &Arc<State>, m: &str, p: &Value) -> Res {
+    for field in ["pane", "from_pane"] {
+        if let Some(id) = p[field].as_u64() {
+            st.pane(&json!({"pane":id}))?.messaging()?;
+        }
+    }
     match m {
         "harness.preflight" => {
             let (items, _) = preflight(st, p)?;

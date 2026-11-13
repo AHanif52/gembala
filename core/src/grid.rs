@@ -15,6 +15,8 @@ pub struct Ring {
     alt: bool,
     /// bytes ever kept; a mark (FR-56) is this count at one moment, so it stays valid while the front is trimmed
     total: u64,
+    /// this pane's ceiling (see `RING_MAX`): follows the configured scrollback, never grows without bound
+    cap: usize,
 }
 
 /// Bytes written while the pane had this size. Replaying them at that size, then resizing, gives what an xterm that
@@ -25,8 +27,9 @@ pub struct Seg {
     pub data: Vec<u8>,
 }
 
-/// ~7,000 coloured lines; trimmed back to this once it is a quarter over, so the copy runs rarely.
-const RING_MAX: usize = 1 << 20;
+/// Default replay budget: ~7,000 coloured lines, trimmed back to this once it is a quarter over so the copy runs rarely.
+/// The daemon sizes each pane from the configured scrollback between this floor and its own ceiling (`daemon::ring_cap`).
+pub const RING_MAX: usize = 1 << 20;
 const ALT_ON: [&[u8]; 3] = [b"\x1b[?1049h", b"\x1b[?1047h", b"\x1b[?47h"];
 const ALT_OFF: [&[u8]; 3] = [b"\x1b[?1049l", b"\x1b[?1047l", b"\x1b[?47l"];
 
@@ -36,8 +39,8 @@ fn find_any(b: &[u8], seqs: &[&[u8]]) -> Option<(usize, usize)> {
 }
 
 impl Ring {
-    fn new(rows: u16, cols: u16) -> Ring {
-        Ring { segs: vec![Seg { rows, cols, data: Vec::new() }], len: 0, alt: false, total: 0 }
+    fn new(rows: u16, cols: u16, cap: usize) -> Ring {
+        Ring { segs: vec![Seg { rows, cols, data: Vec::new() }], len: 0, alt: false, total: 0, cap: cap.max(1) }
     }
 
     /// The first `n` kept bytes, segment by segment (empty segments keep their size).
@@ -80,7 +83,7 @@ impl Ring {
         self.segs.last_mut().unwrap().data.extend_from_slice(b);
         self.len += b.len();
         self.total += b.len() as u64;
-        if self.len > RING_MAX + RING_MAX / 4 {
+        if self.len > self.cap + self.cap / 4 {
             self.trim();
         }
     }
@@ -88,7 +91,7 @@ impl Ring {
     /// Drops the oldest bytes down to `RING_MAX`, cutting after a newline and resetting attributes so the first kept
     /// line does not start mid sequence. An enter/exit pair has no newline between them, so it goes as a whole.
     fn trim(&mut self) {
-        let mut over = self.len - RING_MAX;
+        let mut over = self.len - self.cap;
         while over > 0 {
             let n = self.segs[0].data.len();
             if over >= n && self.segs.len() > 1 {
@@ -176,14 +179,21 @@ fn nz(n: u16) -> NonZeroU16 {
 }
 
 impl Grid {
+    #[cfg(test)]
     pub fn new(rows: u16, cols: u16, scrollback: usize) -> Grid {
-        Grid(vt100::Parser::new(nz(rows), nz(cols), scrollback), Vec::new(), Ring::new(rows.max(1), cols.max(1)), scrollback)
+        Grid::with_ring(rows, cols, scrollback, RING_MAX)
+    }
+
+    /// `ring` = raw byte ceiling of the attach replay history (see `RING_MAX`); the daemon sizes it from the configured
+    /// scrollback so a pane that was left behind keeps more of its screen history, within a hard per-pane budget.
+    pub fn with_ring(rows: u16, cols: u16, scrollback: usize, ring: usize) -> Grid {
+        Grid(vt100::Parser::new(nz(rows), nz(cols), scrollback), Vec::new(), Ring::new(rows.max(1), cols.max(1), ring), scrollback)
     }
 
     /// Grid rebuilt from ring bytes (each segment at its size), then at `size`.
-    fn from_ring(head: &[(u16, u16, &[u8])], size: (u16, u16), scrollback: usize) -> Grid {
+    fn from_ring(head: &[(u16, u16, &[u8])], size: (u16, u16), scrollback: usize, cap: usize) -> Grid {
         let first = head.first().map_or(size, |s| (s.0, s.1));
-        let mut g = Grid::new(first.0, first.1, scrollback);
+        let mut g = Grid::with_ring(first.0, first.1, scrollback, cap);
         for (rows, cols, data) in head {
             g.resize(*rows, *cols);
             g.feed(data);
@@ -201,7 +211,7 @@ impl Grid {
     /// block summary written next lands right under it. What came after (the agent's own output) is dropped.
     pub fn rewind(&mut self, mark: Option<u64>) {
         let keep = mark.map_or(0, |m| self.2.before(m));
-        *self = Grid::from_ring(&self.2.head(keep), self.size(), self.3);
+        *self = Grid::from_ring(&self.2.head(keep), self.size(), self.3, self.2.cap);
     }
 
     /// FR-62: main-screen lines (coloured, oldest first) before `mark` (none = up to now), at most `lines`, rebuilt
@@ -211,7 +221,7 @@ impl Grid {
             return Vec::new();
         }
         let keep = mark.map_or(self.2.len, |m| self.2.before(m));
-        let mut g = Grid::from_ring(&self.2.head(keep), self.size(), lines);
+        let mut g = Grid::from_ring(&self.2.head(keep), self.size(), lines, self.2.cap);
         let at = g.position();
         g.before(at)
     }
@@ -445,6 +455,19 @@ mod tests {
         assert_eq!(b.0.screen().contents(), g.0.screen().contents());
         g.feed(b"\x1b[?1049lx");
         b.feed(b"\x1b[?1049lx");
+        assert_eq!(b.0.screen().contents(), g.0.screen().contents());
+        assert_eq!(b.0.screen().cursor_position(), g.0.screen().cursor_position());
+    }
+
+    /// The daemon sizes the ring from the configured scrollback; a smaller budget still trims at a line and replays right.
+    #[test]
+    fn ring_mengikuti_batas_pane() {
+        let mut g = Grid::with_ring(4, 30, 0, 400);
+        for i in 0..40 {
+            g.feed(format!("{i:04} baris yang agak panjang\r\n").as_bytes());
+        }
+        assert!(g.2.len <= 400 + 100, "ring {} melampaui batas", g.2.len);
+        let b = replayed(&g, 100);
         assert_eq!(b.0.screen().contents(), g.0.screen().contents());
         assert_eq!(b.0.screen().cursor_position(), g.0.screen().cursor_position());
     }

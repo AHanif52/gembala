@@ -153,9 +153,9 @@ pub fn proc_name(pid: i32) -> Option<String> {
 }
 
 // npm's Command Code runs under node; match its entry point, never arbitrary node processes.
-// It also sets `process.title`, which overwrites argv: a running session shows only `["command-code"]`.
+// It also sets `process.title = "command-code"`, which rewrites argv[0] and empties the slots behind it.
 fn interpreted_agent(name: &str, args: &[String]) -> String {
-    if matches!(name, "node" | "bun") && (args == ["command-code"] || args.get(1).is_some_and(|a| a.ends_with("/command-code/dist/index.mjs") || a.ends_with("/bin/commandcode") || a.ends_with("/bin/cmdc") || a.ends_with("/bin/cmd"))) {
+    if matches!(name, "node" | "bun") && (args.first().is_some_and(|a| a == "command-code") || args.get(1).is_some_and(|a| a.ends_with("/command-code/dist/index.mjs") || a.ends_with("/bin/commandcode") || a.ends_with("/bin/cmdc") || a.ends_with("/bin/cmd"))) {
         "commandcode".into()
     } else {
         name.into()
@@ -212,7 +212,8 @@ pub fn cwd_of(pid: i32) -> Option<std::path::PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
-/// Process arguments (SEC-5: skip-permission flags on an agent typed by hand in a shell pane).
+/// Process arguments (SEC-5: skip-permission flags on an agent typed by hand in a shell pane). A process that rewrote its
+/// title (Command Code: `process.title = "command-code"`) only reports that title here; its real flags are gone.
 #[cfg(target_os = "macos")]
 pub fn args_of(pid: i32) -> Vec<String> {
     procargs(pid).0
@@ -234,13 +235,26 @@ fn procargs(pid: i32) -> (Vec<String>, Vec<String>) {
     if rc != 0 || len < 4 {
         return (vec![], vec![]);
     }
-    // layout: argc (i32), exec path, NUL padding, then argv[0..argc], then env
     let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]).max(0) as usize;
-    let rest = &buf[4..len];
-    let mut parts = rest.split(|&b| b == 0).filter(|p| !p.is_empty()).skip(1); // lewati path exec
+    split_procargs(&buf[4..len], argc)
+}
+
+/// argv and env of a KERN_PROCARGS2 tail, counted by position: argc (already read), exec path, NUL padding, then exactly
+/// `argc` argv slots, then env. Slots are counted, not filtered: `process.title` empties the argv slots behind argv[0], and
+/// dropping those empties first shifted the env variables into argv (a running Command Code read as plain `node` and got no
+/// resume block).
+#[cfg(any(target_os = "macos", test))]
+fn split_procargs(rest: &[u8], argc: usize) -> (Vec<String>, Vec<String>) {
     let s = |p: &[u8]| String::from_utf8_lossy(p).into_owned();
-    let argv = (0..argc).filter_map(|_| parts.next()).map(s).collect();
-    (argv, parts.map(s).collect())
+    let mut parts = rest.split(|&b| b == 0);
+    parts.next(); // exec path
+    if argc == 0 {
+        return (Vec::new(), parts.filter(|p| !p.is_empty()).map(s).collect());
+    }
+    // the NUL padding between the exec path and argv: argv[0] (the program or its title) is never empty
+    let mut argv: Vec<String> = parts.find(|p| !p.is_empty()).map(s).into_iter().collect();
+    argv.extend(parts.by_ref().take(argc - 1).filter(|p| !p.is_empty()).map(s));
+    (argv, parts.filter(|p| !p.is_empty()).map(s).collect())
 }
 
 #[cfg(target_os = "linux")]
@@ -309,7 +323,58 @@ mod tests {
         assert_eq!(interpreted_agent("node", &args("/tmp/other/index.mjs")), "node");
         assert_eq!(interpreted_agent("node", &["node".into(), "other.mjs".into(), "/opt/homebrew/bin/cmd".into()]), "node");
         assert_eq!(interpreted_agent("node", &["command-code".into()]), "commandcode");
+        assert_eq!(interpreted_agent("bun", &["command-code".into()]), "commandcode");
         assert_eq!(interpreted_agent("sh", &args("/opt/homebrew/bin/commandcode")), "sh");
+    }
+
+    /// `process.title` rewrites argv[0] and empties the slots behind it (read from a live node, 12 Nov 2026). Slots are
+    /// counted by position, so the env variables can't become arguments.
+    #[test]
+    fn argv_dihitung_posisional() {
+        let (argv, env) = split_procargs(b"/opt/homebrew/bin/node\0\0command-code\0\0\0GEMBALA_EDITOR=1\0TERM=xterm-256color\0", 3);
+        assert_eq!(argv, ["command-code"]);
+        assert_eq!(env, ["GEMBALA_EDITOR=1", "TERM=xterm-256color"]);
+        // an ordinary node keeps its script and flags
+        let (argv, env) = split_procargs(b"/opt/homebrew/bin/node\0\0node\0-e\0sleep 5\0TERM=xterm\0", 3);
+        assert_eq!(argv, ["node", "-e", "sleep 5"]);
+        assert_eq!(env, ["TERM=xterm"]);
+        // no arguments: everything after the padding is env
+        let (argv, env) = split_procargs(b"/bin/zsh\0\0PATH=/bin\0", 0);
+        assert!(argv.is_empty());
+        assert_eq!(env, ["PATH=/bin"]);
+    }
+
+    /// The real shape, not only the synthetic one: node's `process.title` empties the argv slots, and the process must
+    /// still read as Command Code (12 Nov 2026: it read as `node`, so no resume block and no status).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nama_commandcode_dari_proses_nyata() {
+        let node = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+            .map(|d| d.join("node"))
+            .find(|c| c.is_file());
+        let Some(node) = node else {
+            eprintln!("lewati: node tidak ada di PATH");
+            return;
+        };
+        let mut c = std::process::Command::new(node)
+            .args(["-e", "process.title = 'command-code'; setTimeout(() => {}, 5000)"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = c.id() as i32;
+        let mut name = None;
+        for _ in 0..60 {
+            name = proc_name(pid);
+            if name.as_deref() == Some("commandcode") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(name.as_deref(), Some("commandcode"));
     }
 
     #[test]

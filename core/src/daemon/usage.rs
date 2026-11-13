@@ -179,6 +179,7 @@ pub fn start(st: &Arc<State>) {
 
 /// FR-102: Codex and Gemini numbers from the footer the agent already drew on the pane (no account data is read).
 pub fn tick(st: &State, pane: &Pane) {
+    let Ok(terminal) = pane.terminal() else { return };
     match pane.agent_name().as_deref() {
         Some("codex") => {
             note_codex(st);
@@ -191,7 +192,7 @@ pub fn tick(st: &State, pane: &Pane) {
         }
         // FR-88 isn't in this branch: a Gemini through a custom profile is found by the process name in front of the pane.
         Some("gemini") => gemini(st, pane),
-        Some("custom") if pty::busy(&pane.master, pane.sid).and_then(|(pid, _)| pty::proc_name(pid)).as_deref() == Some("gemini") => gemini(st, pane),
+        Some("custom") if pty::busy(&terminal.master, terminal.sid).and_then(|(pid, _)| pty::proc_name(pid)).as_deref() == Some("gemini") => gemini(st, pane),
         _ => {}
     }
 }
@@ -207,7 +208,8 @@ fn gemini(st: &State, pane: &Pane) {
 
 /// Bottom screen rows, last line first (a footer is the bottom of the screen).
 fn footer_lines(pane: &Pane) -> Vec<String> {
-    pane.view.lock().unwrap().0.tail(3).lines().rev().map(str::to_string).collect()
+    let Ok(terminal) = pane.terminal() else { return Vec::new() };
+    terminal.view.lock().unwrap().0.tail(3).lines().rev().map(str::to_string).collect()
 }
 
 fn poll(st: &Arc<State>) {

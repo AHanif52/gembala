@@ -12,7 +12,7 @@ use crate::msg;
 use crate::git;
 use crate::profile;
 use crate::recipe;
-use crate::grid::Grid;
+use crate::grid::{Grid, RING_MAX};
 use crate::history;
 use crate::ipc::{peer_pid, peer_uid};
 use crate::snap;
@@ -37,6 +37,13 @@ const MAX_LINE: u64 = 64 * 1024;
 /// vt100 scrollback of the daemon grid: attach history, FR-56 and the FR-62 log come from the raw byte ring (`Grid::mark`,
 /// `rewind`, `history`), `read`/`wait` only see the visible screen. One vt100 row is ~5 KB, hence no scrollback.
 const SCROLLBACK: usize = 0;
+/// Attach replay budget per pane: the raw byte ring keeps the configured scrollback (~200 bytes for a coloured line),
+/// between the old 1 MiB and 8 MiB. Dozens of panes live at once, so this stays a budget and never follows the setting
+/// upwards without a ceiling.
+fn ring_cap(st: &State) -> usize {
+    let lines = st.config.lock().unwrap()["values"]["ui"]["scrollback_lines"].as_u64().unwrap_or(2_000) as usize;
+    (lines * 200).clamp(RING_MAX, 8 << 20)
+}
 /// FR-62 / SEC-13: main screen log on disk = last 1,000 rows (user decision 3 Nov 2026)
 const LOG_LINES: usize = 1_000;
 /// Queue per connection. Full = client too slow: its connection is dropped (re-attach gets a snapshot)
@@ -56,10 +63,21 @@ enum Chan {
     Pane,
 }
 
-struct Pane {
+enum PaneKind {
+    Terminal(Box<Terminal>),
+    CommandCode(Box<commandcode::Pane>),
+}
+
+struct Terminal {
     master: File,
     /// Pane shell PID = session id of all its processes (the shell runs under `setsid`).
     sid: i32,
+    /// Grid and subscribers share a lock so attach cannot miss output.
+    view: Mutex<(Grid, Vec<Sub>)>,
+}
+
+struct Pane {
+    kind: PaneKind,
     /// Automatic name `<agent>-<n>` (FR-30), renamable, unique per daemon (FR-3); the profile's agent ("shell" without a profile).
     name: Mutex<String>,
     /// FR-79: old names of this pane (oldest first, max `ALIAS_MAX`), still addresses for `send`/`wait`/`read`
@@ -146,11 +164,29 @@ struct Pane {
     /// SEC-3 fallback: 128-bit token for processes detached from the pane session (e.g. a tmux server, profile `token = true`)
     /// or that can't use sockets (FR-66: sandboxed Codex, created through `gembala token`)
     token: Mutex<Option<String>>,
-    /// Grid and subscribers are locked together: attach never loses or duplicates output.
-    view: Mutex<(Grid, Vec<Sub>)>,
 }
 
 impl Pane {
+    fn cwd(&self) -> Option<PathBuf> {
+        match &self.kind {
+            PaneKind::Terminal(t) => {
+                let pid = pty::busy(&t.master, t.sid).map_or(t.sid, |(pid, _)| pid);
+                pty::cwd_of(pid).or_else(|| pty::cwd_of(t.sid))
+            }
+            PaneKind::CommandCode(cc) => Some(cc.cwd.clone()),
+        }
+    }
+    fn terminal(&self) -> Result<&Terminal, &'static str> {
+        match &self.kind {
+            PaneKind::Terminal(t) => Ok(t),
+            PaneKind::CommandCode(_) => Err("wrong_kind"),
+        }
+    }
+
+    fn messaging(&self) -> Result<&Terminal, &'static str> {
+        self.terminal().map_err(|_| "unsupported_kind")
+    }
+
     /// Agent from a profile, or an agent typed by hand in a shell pane (FR-56): shows in `status`, can be messaged
     /// and read like any other agent. A plain shell pane still falls under SEC-21. None once the agent exited
     /// (`exited`): the pane is a shell again, so `status` doesn't list it and `send` is rejected (target_unknown).
@@ -232,6 +268,7 @@ mod claude;
 mod update;
 mod usage;
 mod models;
+mod commandcode;
 
 type Res = Result<Value, &'static str>;
 /// FR-62: (running block + its start time, manual agent block waiting for its resume command)
@@ -368,6 +405,12 @@ fn reply(tx: &SyncSender<String>, id: &Value, r: Res) {
 /// the socket both ways. The client doesn't wait forever and the last reply still arrives.
 struct CloseAfterFlush(SyncSender<String>, UnixStream);
 
+struct CcSubscriptions(Arc<State>, u64);
+
+impl Drop for CcSubscriptions {
+    fn drop(&mut self) { commandcode::unsubscribe(&self.0, self.1); }
+}
+
 impl Drop for CloseAfterFlush {
     fn drop(&mut self) {
         if self.0.try_send(String::new()).is_err() {
@@ -392,6 +435,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     // panes whose output this connection stopped receiving because it fell behind (filled in by `send_all`)
     let lagging: Arc<Mutex<Vec<u64>>> = Arc::default();
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
+    let _cc_subscriptions = CcSubscriptions(st.clone(), conn);
     let mut w = s.try_clone()?;
     // one writer per connection: replies and events don't cut into each other
     thread::spawn(move || {
@@ -452,6 +496,10 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         if chan == Chan::Pane {
             // identity from hello (getsid or token), not from message content (SEC-3); a closed pane = invalid
             let me = ident.filter(|id| st.panes.lock().unwrap().contains_key(id));
+            if me.is_some_and(|id| st.panes.lock().unwrap().get(&id).is_some_and(|pane| pane.messaging().is_err())) {
+                reply(&tx, id, Err("unsupported_kind"));
+                continue;
+            }
             let r = match (method, me) {
                 ("subscribe", Some(me)) => {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
@@ -543,7 +591,8 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         if method == "pane.attach" {
             match st.pane(p) {
                 Ok(pane) => {
-                    let mut v = pane.view.lock().unwrap();
+                    let Ok(terminal) = pane.terminal() else { reply(&tx, id, Err("wrong_kind")); continue };
+                    let mut v = terminal.view.lock().unwrap();
                     let (rows, cols) = v.0.size();
                     let prompt = pane.at_prompt.load(Ordering::Relaxed);
                     // FR-2: raw history per size (UI writes each at its size, then resizes), snapshot = tail at rows/cols
@@ -560,6 +609,14 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                 }
                 Err(e) => reply(&tx, id, Err(e)),
             }
+            continue;
+        }
+        if method == "cc.attach" {
+            reply(&tx, id, commandcode::attach(&st, p, conn, &tx, &lagging));
+            continue;
+        }
+        if method == "cc.detach" {
+            reply(&tx, id, commandcode::detach(&st, p, conn));
             continue;
         }
         reply(&tx, id, ui_method(&st, peer, method, p));
@@ -664,6 +721,12 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         return Err("not_authorized");
     }
     match m {
+        "cc.create" => commandcode::create(st, p),
+        "cc.run" => commandcode::run(st, p),
+        "cc.cancel" => commandcode::cancel(st, p),
+        "cc.access" => commandcode::access(st, p),
+        "cc.sessions" => commandcode::sessions(st, p),
+        "cc.resume" => commandcode::resume(st, p),
         "pane.list" => {
             let panes = st.panes.lock().unwrap();
             let mut ids: Vec<_> = panes.keys().copied().collect();
@@ -687,8 +750,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         "git.status" | "git.diff" => {
             // the pane's own working folder (foreground process or shell), not from a parameter
             let pane = st.pane(p)?;
-            let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
-            let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
+            let cwd = pane.cwd().ok_or("io")?;
             Ok(if m == "git.status" { git::status(&cwd) } else { git::diff(&cwd) })
         }
         // FR-15: Rich Input text with `@file:` / `@pane:` attachments appended as labeled blocks. Files must sit inside
@@ -698,11 +760,11 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             let me = p["pane"].as_u64().ok_or("bad_params")?;
             let pane = st.pane(p)?;
             let text = p["text"].as_str().ok_or("bad_params")?;
-            let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
+            let pid = pty::busy(&pane.terminal()?.master, pane.terminal()?.sid).map_or(pane.terminal()?.sid, |(pid, _)| pid);
             let mut body = text.trim_end().to_string();
             for (kind, arg) in msg::ctx_tokens(text) {
                 let block = if kind == "file" {
-                    let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
+                    let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.terminal().ok()?.sid)).ok_or("io")?;
                     msg::file_block(&cwd, arg).map(|mut b| {
                         for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.lock().unwrap().clone()) {
                             b = b.replace(&t, "[disamarkan]");
@@ -723,8 +785,8 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         // The preview names other panes working in the same repo, for the confirmation card's warning.
         "git.file_preview" | "git.file_restore" | "git.file_commit" => {
             let pane = st.pane(p)?;
-            let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
-            let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)).ok_or("io")?;
+            let pid = pty::busy(&pane.terminal()?.master, pane.terminal()?.sid).map_or(pane.terminal()?.sid, |(pid, _)| pid);
+            let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.terminal().ok()?.sid)).ok_or("io")?;
             let paths: Vec<String> = p["paths"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
             match m {
                 "git.file_restore" => git::restore_file(&cwd, p["path"].as_str().unwrap_or_default()),
@@ -734,8 +796,8 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                     let root = git::git(&cwd, &["rev-parse", "--show-toplevel"]).and_then(|s| std::path::PathBuf::from(s.trim()).canonicalize().ok()).ok_or("not_repo")?;
                     let me = p["pane"].as_u64().unwrap_or_default();
                     let others: Vec<String> = st.panes.lock().unwrap().iter().filter(|(k, _)| **k != me).filter_map(|(_, q)| {
-                        let pid = pty::busy(&q.master, q.sid).map_or(q.sid, |(pid, _)| pid);
-                        let hit = [pty::cwd_of(pid), pty::cwd_of(q.sid)].into_iter().flatten().any(|c| c.canonicalize().is_ok_and(|c| c.starts_with(&root)));
+                        let pid = pty::busy(&q.terminal().ok()?.master, q.terminal().ok()?.sid).map_or(q.terminal().ok()?.sid, |(pid, _)| pid);
+                        let hit = [pty::cwd_of(pid), pty::cwd_of(q.terminal().ok()?.sid)].into_iter().flatten().any(|c| c.canonicalize().is_ok_and(|c| c.starts_with(&root)));
                         hit.then(|| q.name.lock().unwrap().clone())
                     }).collect();
                     Ok(json!({"files": files, "others": others}))
@@ -745,15 +807,20 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         // FR-71: worktrees only through the UI channel (SEC-20); repo folder from the pane, not a parameter
         "git.worktree_add" => {
             let pane = st.pane(p)?;
-            let cwd = pty::cwd_of(pane.sid).ok_or("io")?;
+            let cwd = pty::cwd_of(pane.terminal()?.sid).ok_or("io")?;
             git::worktree_add(&cwd, p["name"].as_str().unwrap_or_default(), p["dir"].as_str())
         }
         "git.worktree_remove" => {
             let dir = std::path::PathBuf::from(p["dir"].as_str().filter(|d| d.starts_with('/')).ok_or("bad_dir")?);
             let me = dir.canonicalize().map_err(|_| "io")?;
             let used = st.panes.lock().unwrap().values().any(|q| {
-                let pid = pty::busy(&q.master, q.sid).map_or(q.sid, |(pid, _)| pid);
-                [pty::cwd_of(pid), pty::cwd_of(q.sid)].into_iter().flatten().any(|c| c.canonicalize().is_ok_and(|c| c.starts_with(&me)))
+                match &q.kind {
+                    PaneKind::Terminal(t) => {
+                        let pid = pty::busy(&t.master, t.sid).map_or(t.sid, |(pid, _)| pid);
+                        [pty::cwd_of(pid), pty::cwd_of(t.sid)].into_iter().flatten().any(|c| c.canonicalize().is_ok_and(|c| c.starts_with(&me)))
+                    }
+                    PaneKind::CommandCode(cc) => cc.cwd.starts_with(&me),
+                }
             });
             if used {
                 return Err("pane_in_worktree");
@@ -763,6 +830,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         // FR-70: a pane's turn list, the diff of one turn, restore to before a turn (UI channel only, SEC-20)
         "git.turns" => {
             let pane = st.pane(p)?;
+            pane.terminal()?;
             let done = pane.turns.lock().unwrap().done.clone();
             Ok(json!(done.iter().enumerate().rev().map(|(i, t)| {
                 let (files, add, del) = snap::stat(t);
@@ -771,6 +839,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         }
         "git.turn_diff" | "git.turn_preview" | "git.turn_restore" => {
             let pane = st.pane(p)?;
+            pane.terminal()?;
             let i = p["i"].as_u64().ok_or("bad_params")? as usize;
             let t = pane.turns.lock().unwrap().done.get(i).cloned().ok_or("no_such_turn")?;
             if m == "git.turn_diff" {
@@ -886,6 +955,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             let ws = st.engine.lock().unwrap().opens.iter().find(|o| o.msg.id == id).map(|o| o.workspace.clone()).ok_or("no_such_msg")?;
             let target = if m == "open.approve" {
                 let pane = st.pane(p)?;
+                pane.messaging()?;
                 if pane.agent_name().is_none() || *pane.workspace.lock().unwrap() != ws || pane.helper_of.lock().unwrap().is_some() {
                     return Err("bad_params");
                 }
@@ -927,7 +997,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             let Some(pane) = st.panes.lock().unwrap().get(&c.msg.to).cloned() else {
                 return Ok(close_refused(st, &c.msg, "target_gone"));
             };
-            close_pane(&pane);
+            close_pane(st, c.msg.to, &pane);
             close_answer(st, &c.msg, format!("{} was closed by the user", c.msg.to_name));
             record(st, "closed", &c.msg, Some("closed_by_user"));
             Ok(json!({"result": "closed", "target": c.msg.to_name}))
@@ -947,6 +1017,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         "msg.send" => {
             // human send from the UI: label "user"; may force to `unknown`, never to `blocked`
             let to = st.pane(&json!({"pane": p["to"]}))?;
+            to.messaging()?;
             let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
             let status = *to.status.lock().unwrap();
             if p["to"].as_u64().is_some_and(|id| st.harness.lock().unwrap().is_locked(id)) {
@@ -960,7 +1031,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 return Err("target_busy");
             }
             let id = st.engine.lock().unwrap().new_id(&st.boot);
-            (&to.master).write_all(&msg::wrap("user", "", &body)).map_err(|_| "io")?;
+            (&to.terminal()?.master).write_all(&msg::wrap("user", "", &body)).map_err(|_| "io")?;
             Ok(json!({"result": "accepted", "id": id}))
         }
         "pane.policy" => {
@@ -1178,7 +1249,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                     let draft = new_secret().map_err(|_| "io")?[..16].to_string();
                     let path = drafts_dir(st).join(format!("{draft}.toml"));
                     fs::create_dir_all(drafts_dir(st)).map_err(|_| "io")?;
-                    queue_user(st, pane_id, &pane, recipe::brief(&ask, rid, current.as_deref(), &path));
+                    queue_user(st, pane_id, &pane, recipe::brief(&ask, rid, current.as_deref(), &path))?;
                     Ok(json!({"draft": draft, "path": path}))
                 }
                 // what the agent wrote so far + the rules applied to it + the recipe now, for the diff (layar 21)
@@ -1234,7 +1305,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             let draft = new_secret().map_err(|_| "io")?[..16].to_string();
             let path = drafts_dir(st).join(format!("{draft}.toml"));
             fs::create_dir_all(drafts_dir(st)).map_err(|_| "io")?;
-            queue_user(st, pane_id, &pane, config::ai_brief(&ask, &section, &current, &path));
+            queue_user(st, pane_id, &pane, config::ai_brief(&ask, &section, &current, &path))?;
             Ok(json!({"draft": draft, "path": path}))
         }
         "config.draft_get" => {
@@ -1283,12 +1354,13 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 "Gembala \"Atur pakai AI\": update the agent instructions file `{file}` in this folder (create it if missing) as the user asks.\n\n\
 Request from the user, as written:\n{ask}\n\n\
 Read the file first, change only what the request asks, keep its structure and language. Edit only `{file}`. \
-The user reviews the change in Gembala's changes panel. When done, summarize the change in 1-2 sentences."));
+The user reviews the change in Gembala's changes panel. When done, summarize the change in 1-2 sentences."))?;
             Ok(json!({}))
         }
         "pane.create" => create_pane(st, p, &[]),
         "pane.write" => {
             let pane = st.pane(p)?;
+            pane.terminal()?;
             let data = p["data"].as_str().and_then(|d| B64.decode(d).ok()).ok_or("bad_params")?;
             type_into(st, p["pane"].as_u64().unwrap_or_default(), &pane, &data)?;
             Ok(json!({}))
@@ -1307,18 +1379,20 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         "telegram.unpair" => Ok(telegram::unpair(st)),
         "pane.resize" => {
             let pane = st.pane(p)?;
+            let terminal = pane.terminal()?;
             let (rows, cols) = (dim(&p["rows"], 0), dim(&p["cols"], 0));
             if rows == 0 || cols == 0 {
                 return Err("bad_params");
             }
-            let mut v = pane.view.lock().unwrap();
-            pty::resize(&pane.master, rows, cols).map_err(|_| "io")?;
+            let mut v = terminal.view.lock().unwrap();
+            pty::resize(&terminal.master, rows, cols).map_err(|_| "io")?;
             v.0.resize(rows, cols);
             Ok(json!({}))
         }
         "pane.agent_output" => {
             // FR-56: full output of the last agent session, while the pane lives
             let pane = st.pane(p)?;
+            pane.terminal()?;
             let data = pane.last_output.lock().unwrap().clone();
             Ok(json!({"data": B64.encode(&data), "bytes": data.len()}))
         }
@@ -1342,6 +1416,10 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             let mut out = serde_json::Map::new();
             for id in p["panes"].as_array().into_iter().flatten().filter_map(Value::as_u64) {
                 let Some(pane) = st.panes.lock().unwrap().get(&id).cloned() else { continue };
+                if pane.terminal().is_err() {
+                    out.insert(id.to_string(), json!({"waiting":false, "error":"wrong_kind"}));
+                    continue;
+                }
                 let (blocked, seq) = {
                     let status = pane.status.lock().unwrap();
                     (*status == "blocked", pane.status_seq.load(std::sync::atomic::Ordering::Relaxed))
@@ -1349,13 +1427,13 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 let mut v = if blocked {
                     let agent = pane.agent_name().unwrap_or_default();
                     let reason = pane.claude.lock().unwrap().reason.clone();
-                    let screen = pane.view.lock().unwrap().0.text();
+                    let screen = pane.terminal()?.view.lock().unwrap().0.text();
                     telegram::dialog_view(&agent, &screen, &reason, id_l)
                 } else {
                     json!({})
                 };
                 // same termios signal as the FR-80 sender refusal: a plain shell waiting for a password
-                let password = blocked && pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master);
+                let password = blocked && pty::busy(&pane.terminal()?.master, pane.terminal()?.sid).is_some() && pty::wants_password(&pane.terminal()?.master);
                 let status = pane.status.lock().unwrap();
                 let waiting = blocked && *status == "blocked" && seq == pane.status_seq.load(std::sync::atomic::Ordering::Relaxed);
                 if blocked && !waiting { v["options"] = json!([]); }
@@ -1375,7 +1453,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             if pane.agent_name().is_none() {
                 return Ok(json!({"sent": false, "reason": "shell"}));
             }
-            if pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master) {
+            if pty::busy(&pane.terminal()?.master, pane.terminal()?.sid).is_some() && pty::wants_password(&pane.terminal()?.master) {
                 return Ok(json!({"sent": false, "reason": "password"}));
             }
             let status = pane.status.lock().unwrap();
@@ -1405,12 +1483,13 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         }
         "pane.info" => {
             let pane = st.pane(p)?;
-            let busy = pty::busy(&pane.master, pane.sid);
+            if pane.terminal().is_err() { return commandcode::info(&pane); }
+            let busy = pty::busy(&pane.terminal()?.master, pane.terminal()?.sid);
             let (waiting_shell, reason) = { let c = pane.claude.lock().unwrap(); (c.shell, c.reason.clone()) };
             Ok(json!({
-                "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)), "pid": pane.sid, // FR-60
-                "shell": pty::proc_name(pane.sid), // Gembala.pen 02: subjudul tab shell diam (`zsh`)
-                "password": busy.is_some() && pty::wants_password(&pane.master),
+                "busy": busy.is_some(), "name": busy.and_then(|(pid, _)| pty::proc_name(pid)), "pid": pane.terminal()?.sid, // FR-60
+                "shell": pty::proc_name(pane.terminal()?.sid), // Gembala.pen 02: subjudul tab shell diam (`zsh`)
+                "password": busy.is_some() && pty::wants_password(&pane.terminal()?.master),
                 "pane_name": *pane.name.lock().unwrap(), "agent": pane.agent, "status": *pane.status.lock().unwrap(),
                 "status_at": history::now().saturating_sub(pane.status_at.lock().unwrap().elapsed().as_secs()),
                 "last": *pane.last_preview.lock().unwrap(),
@@ -1424,13 +1503,13 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 // FR-61: session owned by another account: name for the label, id for Resume ("utama" = Utama)
                 "owner": pane.owner.lock().unwrap().as_ref().map(|o| if o.is_empty() { "Utama".into() } else { acct_label(st, o) }),
                 "owner_id": pane.owner.lock().unwrap().as_ref().map(|o| if o.is_empty() { "utama" } else { o.as_str() }.to_string()),
-                "cwd": pty::cwd_of(busy.map_or(pane.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.sid)),
+                "cwd": pty::cwd_of(busy.map_or(pane.terminal()?.sid, |(pid, _)| pid)).or_else(|| pty::cwd_of(pane.terminal().ok()?.sid)),
             }))
         }
         "pane.kill" => {
             // FR-50: SIGTERM to the running process, SIGKILL if it's still alive after 3 seconds; the pane shell stays
             let pane = st.pane(p)?;
-            let Some(target) = pty::busy(&pane.master, pane.sid) else {
+            let Some(target) = pty::busy(&pane.terminal()?.master, pane.terminal()?.sid) else {
                 return Ok(json!({"stopped": false}));
             };
             pty::signal(target, libc::SIGTERM);
@@ -1459,8 +1538,10 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             let _ = std::fs::remove_dir(&hooks);
             let _ = std::fs::remove_dir(dir);
             eprintln!("daemon exit: daemon.reset");
-            thread::spawn(|| {
+            let st = Arc::clone(st);
+            thread::spawn(move || {
                 thread::sleep(Duration::from_millis(200));
+                commandcode::shutdown(&st);
                 std::process::exit(0);
             });
             Ok(json!({}))
@@ -1470,15 +1551,17 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             // PTY masters close with the process = the kernel sends SIGHUP to every pane session
             eprintln!("daemon exit: daemon.stop");
             save_logs(st, &mut HashMap::new());
-            thread::spawn(|| {
+            let st = Arc::clone(st);
+            thread::spawn(move || {
                 thread::sleep(Duration::from_millis(200));
+                commandcode::shutdown(&st);
                 std::process::exit(0);
             });
             Ok(json!({}))
         }
         "pane.close" => {
             let pane = st.pane(p)?;
-            close_pane(&pane);
+            close_pane(st, p["pane"].as_u64().ok_or("bad_params")?, &pane);
             Ok(json!({}))
         }
         _ => Err("unknown_method"),
@@ -1490,6 +1573,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
 /// FR-30 and friends: open a pane from `pane.create` style params. `extra_args` are appended to the profile's
 /// arguments and never come from the wire (the harness runner passes model and effort flags this way).
 fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
+    if p["kind"].as_str().is_some_and(|kind| kind != "terminal") { return Err("wrong_kind"); }
     // limit from BRD section 11, adjustable through [limits] max_panes
     let max = st.config.lock().unwrap()["values"]["limits"]["max_panes"].as_u64().unwrap_or(32) as usize;
     if st.panes.lock().unwrap().len() >= max {
@@ -1567,10 +1651,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
             let c = c.to_string_lossy();
             Some(std::path::PathBuf::from(c.replacen('~', &home, usize::from(c.starts_with('~')))))
         }
-        None => st.pane(&json!({"pane": p["from_pane"]})).ok().and_then(|f| {
-            let pid = pty::busy(&f.master, f.sid).map(|(pid, _)| pid).unwrap_or(f.sid);
-            pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid))
-        }),
+        None => st.pane(&json!({"pane": p["from_pane"]})).ok().and_then(|f| f.cwd()),
     };
     let token = if prof.as_ref().is_some_and(|x| x.token) { Some(new_secret().map_err(|_| "io")?[..32].to_string()) } else { None };
     // FR-9: the `gembala` command can be called straight from a pane (daemon binary folder on PATH;
@@ -1609,11 +1690,53 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     };
     let pty = Pty::spawn(cmd, rows, cols, &env, cwd.as_deref(), bash.then_some(st.hooks.dir.as_path())).map_err(|_| "spawn_failed")?;
     let id = st.next.fetch_add(1, Ordering::Relaxed);
-    let pane = Arc::new(Pane {
+    let pane = Arc::new(make_pane(st, p, PaneKind::Terminal(Box::new(Terminal {
         master: pty.master.try_clone().map_err(|_| "spawn_failed")?,
         sid: pty.child.id() as i32,
+        view: Mutex::new((Grid::with_ring(rows, cols, SCROLLBACK, ring_cap(st)), Vec::new())),
+    })), agent.clone(), key.clone()));
+    *pane.session.lock().unwrap() = session.id.clone().filter(|s| profile::valid_session(&agent, s));
+    *pane.account.lock().unwrap() = st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name).map(|a| a.id.clone()).unwrap_or_default();
+    *pane.policy.lock().unwrap() = prof.as_ref().map_or(msg::Policy::Auto, |x| {
+        msg::effective_policy(msg::Policy::parse(&x.policy).unwrap_or(msg::Policy::Auto), &[x.args.clone(), profile::permission_flags(&x.agent, &x.permission)].concat())
+    });
+    *pane.token.lock().unwrap() = token;
+    // FR-62: old pane blocks (after the daemon stopped) show above the new shell and continue in the pane's file
+    let prev = src.as_deref().map(history::load).unwrap_or_default();
+    if !prev.is_empty() {
+        history::rewrite(&pane.hist, &prev);
+    }
+    // the old screen log already holds those blocks; without a log the summary blocks are enough. The log file itself is
+    // only replaced by the next save, which holds this old log too: a daemon stopping before that loses nothing
+    match src.as_deref().and_then(history::load_log) {
+        Some((log, t)) => {
+            let mut v = pane.terminal()?.view.lock().unwrap();
+            v.0.feed(&log);
+            v.0.feed(&history::separator(t));
+        }
+        None => pane.terminal()?.view.lock().unwrap().0.feed(&history::render(&prev)),
+    }
+    st.panes.lock().unwrap().insert(id, pane.clone());
+    // FR-79: a replacement pane (rerun, daemon restart) brings its name and aliases from the layout (untrusted);
+    // a name another pane is using becomes an alias, the newest one
+    let name = pane.name.lock().unwrap().clone();
+    st.release(&name);
+    let old = p["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).take(ALIAS_MAX);
+    for a in old.chain(p["name"].as_str()).filter(|a| valid_name(a)) {
+        st.add_alias(&pane, a);
+    }
+    let aliases = pane.aliases.lock().unwrap().clone();
+    let st = st.clone();
+    thread::spawn(move || pump(st, id, pane, pty));
+    Ok(json!({"pane": id, "name": name, "aliases": aliases, "hist": key, "saver": saver}))
+}
+
+/// Common identity; backend state is supplied without allocating a terminal.
+fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) -> Pane {
+    Pane {
+        kind,
         name: {
-            let label = prof.as_ref().map_or("shell", |x| if x.agent == "custom" { x.id.as_str() } else { x.agent.as_str() });
+            let label = if agent == "custom" { p["profile"].as_str().unwrap_or("custom") } else { &agent };
             let names: Vec<String> = st.panes.lock().unwrap().values().map(|q| q.name.lock().unwrap().clone()).collect();
             // FR-79: a replacement pane uses its old name as long as no other pane uses it (current names win)
             match p["name"].as_str().filter(|n| valid_name(n) && !names.iter().any(|x| x == n)) {
@@ -1627,7 +1750,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
             }
         },
         aliases: Mutex::default(),
-        session: Mutex::new(session.id.clone().filter(|s| profile::valid_session(&agent, s))),
+        session: Mutex::new(None),
         agent_log: Mutex::new(None),
         last_output: Mutex::new(Vec::new()),
         prompt_at: Mutex::new(None),
@@ -1637,7 +1760,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         key: key.clone(),
         title: Mutex::new(String::new()),
         turns: Arc::default(),
-        account: Mutex::new(st.accounts.lock().unwrap().iter().find(|a| !acct_name.is_empty() && a.name == acct_name).map(|a| a.id.clone()).unwrap_or_default()),
+        account: Mutex::new(String::new()),
         owner: Mutex::new(None),
         block: Mutex::new((None, None)),
         manual: Mutex::new(None),
@@ -1651,9 +1774,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         screen: agent == "custom" || agent == "codex" || agent == "commandcode",
         started: std::time::Instant::now(),
         workspace: Mutex::new(p["workspace"].as_str().unwrap_or_default().chars().take(64).collect()),
-        policy: Mutex::new(prof.as_ref().map_or(msg::Policy::Auto, |x| {
-            msg::effective_policy(msg::Policy::parse(&x.policy).unwrap_or(msg::Policy::Auto), &[x.args.clone(), profile::permission_flags(&x.agent, &x.permission)].concat())
-        })),
+        policy: Mutex::new(msg::Policy::Auto),
         status_at: Mutex::new(std::time::Instant::now()),
         status_seq: AtomicU64::new(0),
         asked_pw: std::sync::atomic::AtomicBool::new(false),
@@ -1669,39 +1790,10 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         helper_of: Mutex::new(None),
         replied_at: Mutex::new(None),
         typed_at: Mutex::new(None),
-        token: Mutex::new(token),
+        token: Mutex::new(None),
         status: Mutex::new(if ["claude", "codex", "opencode", "omp", "commandcode", "custom"].contains(&agent.as_str()) { "idle" } else { "" }),
         agent,
-        view: Mutex::new((Grid::new(rows, cols, SCROLLBACK), Vec::new())),
-    });
-    // FR-62: old pane blocks (after the daemon stopped) show above the new shell and continue in the pane's file
-    let prev = src.as_deref().map(history::load).unwrap_or_default();
-    if !prev.is_empty() {
-        history::rewrite(&pane.hist, &prev);
     }
-    // the old screen log already holds those blocks; without a log the summary blocks are enough. The log file itself is
-    // only replaced by the next save, which holds this old log too: a daemon stopping before that loses nothing
-    match src.as_deref().and_then(history::load_log) {
-        Some((log, t)) => {
-            let mut v = pane.view.lock().unwrap();
-            v.0.feed(&log);
-            v.0.feed(&history::separator(t));
-        }
-        None => pane.view.lock().unwrap().0.feed(&history::render(&prev)),
-    }
-    st.panes.lock().unwrap().insert(id, pane.clone());
-    // FR-79: a replacement pane (rerun, daemon restart) brings its name and aliases from the layout (untrusted);
-    // a name another pane is using becomes an alias, the newest one
-    let name = pane.name.lock().unwrap().clone();
-    st.release(&name);
-    let old = p["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).take(ALIAS_MAX);
-    for a in old.chain(p["name"].as_str()).filter(|a| valid_name(a)) {
-        st.add_alias(&pane, a);
-    }
-    let aliases = pane.aliases.lock().unwrap().clone();
-    let st = st.clone();
-    thread::spawn(move || pump(st, id, pane, pty));
-    Ok(json!({"pane": id, "name": name, "aliases": aliases, "hist": key, "saver": saver}))
 }
 
 fn bus_event(st: &State, ev: Value) {
@@ -1738,9 +1830,11 @@ fn drafts_dir(st: &State) -> std::path::PathBuf {
 
 /// FR-77: a brief from Atur pakai AI, typed into the agent pane as the user's own message (no reply id); it waits in the
 /// queue while the freshly opened agent starts (`deliver_loop` opening rule)
-fn queue_user(st: &State, pane_id: u64, pane: &Pane, body: String) {
+fn queue_user(st: &State, pane_id: u64, pane: &Pane, body: String) -> Result<(), &'static str> {
+    pane.messaging()?;
     let m = bus::Msg { id: String::new(), from: pane_id, from_name: "user".into(), to: pane_id, to_name: pane.name.lock().unwrap().clone(), body, reply_to: None, hop: 0, at: std::time::SystemTime::now() };
     st.engine.lock().unwrap().queues.entry(pane_id).or_default().push_back(bus::Queued { msg: m, since: std::time::Instant::now(), approved: true });
+    Ok(())
 }
 
 /// draft id from the UI = 16 hex characters, nothing that walks out of the drafts folder
@@ -1826,8 +1920,8 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
         let panes = st.panes.lock().unwrap();
         let alive = panes.values().filter(|x| *x.helper_of.lock().unwrap() == Some(me)).count();
         let f = panes.get(&me).ok_or("not_a_pane")?;
-        let pid = pty::busy(&f.master, f.sid).map(|(pid, _)| pid).unwrap_or(f.sid);
-        let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(f.sid)).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+        let pid = pty::busy(&f.terminal()?.master, f.terminal()?.sid).map(|(pid, _)| pid).unwrap_or(f.terminal()?.sid);
+        let cwd = pty::cwd_of(pid).or_else(|| pty::cwd_of(f.terminal().ok()?.sid)).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
         (f.helper_of.lock().unwrap().is_some(), alive, cwd)
     };
     if helper {
@@ -1880,7 +1974,8 @@ fn model_effort(p: &Value) -> Result<(&str, &str), &'static str> {
 }
 
 /// Decision facts are re-read every time (SEC-28). `counted` = rate already counted on receipt.
-fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_queue: bool, approved: bool, counted: bool) -> msg::Facts<'a> {
+fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_queue: bool, approved: bool, counted: bool) -> Result<msg::Facts<'a>, &'static str> {
+    let terminal = to.messaging()?;
     // SEC-5 exceptions to "confirm" (BRD 11 Nov 2026): the harness to a pane it drives (the recipe was approved, SEC-27),
     // and an owner to the helper it opened through an approved card (FR-75). Rate, hop, deny and pause still apply.
     // Read before the engine lock: the registry is never taken while the engine is held.
@@ -1890,11 +1985,11 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
     };
     let mut eng = st.engine.lock().unwrap();
     let typing = to.typed_at.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
-    msg::Facts {
+    Ok(msg::Facts {
         target_status: if to.status.lock().unwrap().is_empty() { "unknown" } else { *to.status.lock().unwrap() },
         stable_for: to.status_at.lock().unwrap().elapsed(),
         // SEC-5: skip-permission flags from the profile are set when the pane is created; one typed in the pane is read from the process arguments
-        policy: msg::effective_policy(*to.policy.lock().unwrap(), &pty::busy(&to.master, to.sid).map(|(pid, _)| pty::args_of(pid)).unwrap_or_default()),
+        policy: msg::effective_policy(*to.policy.lock().unwrap(), &pty::busy(&terminal.master, terminal.sid).map(|(pid, _)| pty::args_of(pid)).unwrap_or_default()),
         same_workspace: *to.workspace.lock().unwrap() == from_ws,
         paused: eng.paused,
         muted: eng.muted.contains(&m.to),
@@ -1904,7 +1999,7 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
         want_queue,
         queue_len: eng.queue_len(m.to),
         approved: approved || trusted,
-    }
+    })
 }
 
 /// FR-66: the last message of a sandboxed agent's turn answers the incoming message still waiting (the normal `reply` path:
@@ -1981,7 +2076,12 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
     let Some(to) = to else {
         return reject(st, &m, "target_gone");
     };
-    let d = msg::decide(&facts_for(st, &m, &to, &from_ws, want_queue, approved, approved));
+    if to.messaging().is_err() { return reject(st, &m, "unsupported_kind"); }
+    let facts = match facts_for(st, &m, &to, &from_ws, want_queue, approved, approved) {
+        Ok(facts) => facts,
+        Err(reason) => return reject(st, &m, reason),
+    };
+    let d = msg::decide(&facts);
     st.engine.lock().unwrap().remember(&m);
     match d {
         msg::Decision::Reject(r) => reject(st, &m, r),
@@ -2008,7 +2108,8 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
 
 /// SEC-7/8: origin label + bracketed paste + one Enter, written to the target PTY.
 fn deliver(st: &State, m: &bus::Msg, to: &Pane) {
-    if (&to.master).write_all(&msg::wrap(&m.from_name, &m.id, &m.body)).is_ok() {
+    let Ok(terminal) = to.terminal() else { return record(st, "rejected", m, Some("unsupported_kind")) };
+    if (&terminal.master).write_all(&msg::wrap(&m.from_name, &m.id, &m.body)).is_ok() {
         record(st, "sent", m, None);
     } else {
         record(st, "rejected", m, Some("io"));
@@ -2043,7 +2144,10 @@ fn deliver_loop(st: Arc<State>) {
             }
             let from_ws = st.workspace_of(q.msg.from);
             // queue len 0: this message already holds its place
-            let mut f = facts_for(&st, &q.msg, &to, &from_ws, true, q.approved, true);
+            let mut f = match facts_for(&st, &q.msg, &to, &from_ws, true, q.approved, true) {
+                Ok(facts) => facts,
+                Err(reason) => { reject(&st, &q.msg, reason); continue; },
+            };
             f.queue_len = 0;
             match msg::decide(&f) {
                 msg::Decision::Send => deliver(&st, &q.msg, &to),
@@ -2082,13 +2186,14 @@ fn deliver_loop(st: Arc<State>) {
 
 /// like closing a terminal window: SIGHUP to the foreground job and the pane session (FR-38 ×, FR-86); the pane's
 /// pump then sends `pane.exit` and the UI drops it from its tab
-fn close_pane(pane: &Pane) {
+fn close_pane(st: &State, id: u64, pane: &Pane) {
+    let Ok(terminal) = pane.terminal() else { return commandcode::close(st, id, pane) };
     unsafe {
-        let fg = libc::tcgetpgrp(pane.master.as_raw_fd());
+        let fg = libc::tcgetpgrp(terminal.master.as_raw_fd());
         if fg > 0 {
             libc::killpg(fg, libc::SIGHUP);
         }
-        libc::killpg(pane.sid, libc::SIGHUP);
+        libc::killpg(terminal.sid, libc::SIGHUP);
     }
 }
 
@@ -2115,11 +2220,13 @@ fn token_saver(st: &State, reader: u64) -> bool {
 
 /// Pane channel (SEC-3): `me` = the calling pane from kernel identity, not from message content.
 fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
+    st.panes.lock().unwrap().get(&me).ok_or("not_a_pane")?.messaging()?;
     let my_name = st.panes.lock().unwrap().get(&me).map(|x| x.name.lock().unwrap().clone()).ok_or("not_a_pane")?;
     let my_ws = st.workspace_of(me);
     // SEC-21: read/wait only within the same workspace; shell panes only when the user allows it
     let visible = |name: &str| -> Result<(u64, Arc<Pane>), &'static str> {
         let (id, pane) = st.by_name(name).ok_or("no_such_pane")?;
+        pane.messaging()?;
         if *pane.workspace.lock().unwrap() != my_ws || (pane.agent_name().is_none() && !pane.readable.load(Ordering::Relaxed)) {
             return Err("acl_denied");
         }
@@ -2170,6 +2277,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             let (model, effort) = model_effort(p)?;
             validate_model_effort(model, effort)?;
             let Some((to_id, to)) = st.by_name(name) else { return ask_open(st, me, &my_name, &my_ws, name, p) };
+            to.messaging()?;
             if to_id == me {
                 return Err("bad_params");
             }
@@ -2231,7 +2339,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             // way to stop it when the user switched executors); the card shows that it's busy
             let busy = matches!(*pane.status.lock().unwrap(), "working" | "blocked");
             if *pane.helper_of.lock().unwrap() == Some(me) && !busy {
-                close_pane(&pane);
+                close_pane(st, tid, &pane);
                 return Ok(json!({"result": "closed", "target": name}));
             }
             ask_close(st, me, &my_name, tid, &name)
@@ -2273,7 +2381,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             // FR-7, SEC-12, SEC-17: plain text, redacted, wrapped in labeled delimiters
             let (_, pane) = visible(p["target"].as_str().ok_or("bad_params")?)?;
             let n = p["lines"].as_u64().unwrap_or(40).clamp(1, 500) as usize;
-            let mut text = git::redact(&pane.view.lock().unwrap().0.tail(n));
+            let mut text = git::redact(&pane.terminal()?.view.lock().unwrap().0.tail(n));
             // SEC-12: the active GEMBALA_TOKEN value is redacted too
             for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.lock().unwrap().clone()) {
                 text = text.replace(&t, "[disamarkan]");
@@ -2321,7 +2429,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                     }
                 } else if let Some((_, pane)) = &target {
                     if let Some(re) = &pattern {
-                        if re.is_match(&pane.view.lock().unwrap().0.text()) {
+                        if re.is_match(&pane.terminal()?.view.lock().unwrap().0.text()) {
                             return done(json!({"matched": true}));
                         }
                     } else {
@@ -2359,6 +2467,7 @@ fn screen_watch(st: Arc<State>) {
         let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.clone())).collect();
         let idle_mins = st.config.lock().unwrap()["values"]["ui"]["helper_idle_close"].as_u64().unwrap_or(15);
         for (id, pane) in panes {
+            let Ok(terminal) = pane.terminal() else { continue };
             telegram::tick(&st, id, &pane);
             // FR-102: Codex/Gemini allowance from the footer the agent drew (numbers only)
             usage::tick(&st, &pane);
@@ -2372,14 +2481,14 @@ fn screen_watch(st: Arc<State>) {
             };
             if pane.helper_of.lock().unwrap().is_some() && !incoming && helper_quiet(*pane.status.lock().unwrap(), replied, pane.status_at.lock().unwrap().elapsed(), idle_mins) {
                 *pane.replied_at.lock().unwrap() = None;
-                close_pane(&pane);
+                close_pane(&st, id, &pane);
             }
             // an exited pane (profile agent gone) is watched like a shell pane: an agent typed there (Resume,
             // FR-56's resume command) is detected by hand again; an active manual agent keeps `fg` fresh, so its
             // exit below is seen from a real empty foreground, not from a pane whose foreground was never read
             let active = pane.manual.lock().unwrap().is_some();
             let exited = pane.exited.load(Ordering::Relaxed);
-            let fg = (pane.agent == "shell" || exited || active).then(|| pty::busy(&pane.master, pane.sid)).flatten();
+            let fg = (pane.agent == "shell" || exited || active).then(|| pty::busy(&terminal.master, terminal.sid)).flatten();
             let found = fg.and_then(|(pid, _)| Some((pid, pty::proc_name(pid)?))).filter(|(_, n)| AGENTS.contains(&n.as_str()));
             // FR-56: manual agent starts = record the session log. Exit is usually handled by `pump` as soon as the shell writes its prompt;
             // this is the fallback when the shell is quiet, the prompt already shown is written again below the block.
@@ -2389,7 +2498,7 @@ fn screen_watch(st: Arc<State>) {
                 (false, Some((pid, name)), _) => {
                     // an agent runs in front again (typed in a shell pane, or Resume in a pane whose agent exited)
                     pane.exited.store(false, Ordering::Relaxed);
-                    let v = pane.view.lock().unwrap();
+                    let v = terminal.view.lock().unwrap();
                     // no C marker (shell without integration): start of the last prompt
                     let pre = pane.pre_cmd.lock().unwrap().take().or(*pane.prompt_at.lock().unwrap());
                     *pane.pre_agent.lock().unwrap() = pre;
@@ -2412,14 +2521,14 @@ fn screen_watch(st: Arc<State>) {
                 }
                 // exited = the shell is back in front (same check as in `pump`)
                 (true, None, None) => {
-                    let mut v = pane.view.lock().unwrap();
+                    let mut v = terminal.view.lock().unwrap();
                     let prompt = v.0.cursor_line();
                     manual_done(&mut v, &pane, id, &prompt, None);
                 }
                 _ => {}
             }
             // FR-84: an agent's folder-trust dialog, for every agent pane (profile, harness stage, typed in a shell pane)
-            let on = (manual || pane.agent != "shell") && profile::trust_prompt(&pane.view.lock().unwrap().0.tail(20));
+            let on = (manual || pane.agent != "shell") && profile::trust_prompt(&terminal.view.lock().unwrap().0.tail(20));
             if trust_watch(&st, id, &pane, on) {
                 continue;
             }
@@ -2437,7 +2546,7 @@ fn screen_watch(st: Arc<State>) {
                 }
                 "idle"
             } else if (pane.screen || manual) && !pane.exited.load(Ordering::Relaxed) {
-                let tail = pane.view.lock().unwrap().0.tail(12);
+                let tail = terminal.view.lock().unwrap().0.tail(12);
                 profile::screen_status(&tail, pane.last_out.lock().unwrap().elapsed(), cur)
             } else if pane.agent == "shell" || pane.exited.load(Ordering::Relaxed) {
                 "" // manual agent has exited (or the profile agent left): the pane goes back to untracked
@@ -2496,7 +2605,7 @@ fn trust_watch(st: &State, id: u64, pane: &Pane, on: bool) -> bool {
 
 /// The user typing into a pane (UI keyboard, Telegram FR-80): a "done" result counts as read (BRD section 8)
 fn type_into(st: &State, id: u64, pane: &Pane, data: &[u8]) -> Result<(), &'static str> {
-    (&pane.master).write_all(data).map_err(|_| "io")?;
+    (&pane.terminal()?.master).write_all(data).map_err(|_| "io")?;
     *pane.typed_at.lock().unwrap() = Some(std::time::Instant::now());
     set_status(st, id, pane, "idle", Some("done"));
     Ok(())
@@ -2508,7 +2617,7 @@ fn type_into_blocked(st: &State, id: u64, pane: &Pane, seq: u64, data: &[u8]) ->
     if *status != "blocked" || pane.status_seq.load(Ordering::Relaxed) != seq {
         return Err("changed");
     }
-    (&pane.master).write_all(data).map_err(|_| "io")?;
+    (&pane.terminal()?.master).write_all(data).map_err(|_| "io")?;
     drop(status);
     *pane.typed_at.lock().unwrap() = Some(std::time::Instant::now());
     set_status(st, id, pane, "idle", Some("done"));
@@ -2531,11 +2640,12 @@ fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from:
 
 /// FR-70: turn start (working) and end (idle/done) = snapshot of the agent's working folder, in the queue
 fn turn_edge(pane: &Pane, prev: &str, status: &str) {
+    let Ok(terminal) = pane.terminal() else { return };
     let busy = |s: &str| matches!(s, "working" | "blocked");
     let turns = pane.turns.clone();
     if status == "working" && !busy(prev) {
-        let pid = pty::busy(&pane.master, pane.sid).map_or(pane.sid, |(pid, _)| pid);
-        let Some(cwd) = pty::cwd_of(pid).or_else(|| pty::cwd_of(pane.sid)) else { return };
+        let pid = pty::busy(&terminal.master, terminal.sid).map_or(terminal.sid, |(pid, _)| pid);
+        let Some(cwd) = pty::cwd_of(pid).or_else(|| pty::cwd_of(terminal.sid)) else { return };
         snap::queue(move || {
             let Some(root) = snap::root_of(&cwd) else { return };
             if let Some((before, _)) = snap::take(&root) {
@@ -2653,12 +2763,13 @@ fn save_logs(st: &State, saved: &mut HashMap<u64, std::time::Instant>) {
     let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(k, v)| (*k, v.clone())).collect();
     saved.retain(|id, _| panes.iter().any(|(k, _)| k == id));
     for (id, pane) in panes {
+            let Ok(terminal) = pane.terminal() else { continue };
         let at = *pane.last_out.lock().unwrap();
         if saved.get(&id) == Some(&at) {
             continue;
         }
         let log = {
-            let v = pane.view.lock().unwrap();
+            let v = terminal.view.lock().unwrap();
             if pane.agent_log.lock().unwrap().is_some() {
                 // agent still running: its TUI view isn't saved, the pane content before the agent started is enough
                 let name = pane.agent_name().unwrap_or_else(|| "agent".into());
@@ -2695,6 +2806,7 @@ fn on_sigterm(st: Arc<State>, set: libc::sigset_t) {
     if unsafe { libc::sigwait(&set, &mut sig) } == 0 {
         eprintln!("daemon exit: SIGTERM");
         save_logs(&st, &mut HashMap::new());
+        commandcode::shutdown(&st);
         std::process::exit(0);
     }
 }
@@ -2704,7 +2816,7 @@ fn idle_exit(st: Arc<State>) {
     let mut strikes = 0;
     loop {
         thread::sleep(Duration::from_secs(every));
-        let busy = st.panes.lock().unwrap().values().any(|p| pty::busy(&p.master, p.sid).is_some()) || !st.harness.lock().unwrap().is_empty();
+        let busy = st.panes.lock().unwrap().values().any(|p| match &p.kind { PaneKind::Terminal(t) => pty::busy(&t.master, t.sid).is_some(), PaneKind::CommandCode(cc) => cc.pid.load(Ordering::Acquire) > 0 }) || !st.harness.lock().unwrap().is_empty();
         strikes = if st.ui_clients.load(Ordering::Relaxed) == 0 && !busy { strikes + 1 } else { 0 };
         if strikes >= 2 {
             eprintln!("daemon exit: no UI and every pane idle");
@@ -2716,8 +2828,8 @@ fn idle_exit(st: Arc<State>) {
 
 type View = (Grid, Vec<Sub>);
 
-fn send_all(v: &mut View, id: u64, ev: String) {
-    v.1.retain(|sub| match sub.tx.try_send(ev.clone()) {
+fn send_all(subscribers: &mut Vec<Sub>, id: u64, ev: String) {
+    subscribers.retain(|sub| match sub.tx.try_send(ev.clone()) {
         Ok(()) => true,
         // This client is behind: it stops receiving this pane's output instead of losing the whole connection. The same
         // socket carries every call (`pane.attach`, `msg.list`, `daemon.info`), so shutting it down read as "the daemon
@@ -2769,7 +2881,7 @@ fn emit(v: &mut View, pane: &Pane, id: u64, bytes: &[u8]) {
         let over = log.len().saturating_sub(AGENT_LOG_MAX);
         log.drain(..over); // keep only the last part
     }
-    send_all(v, id, line(json!({"event": "pane.output", "params": {"pane": id, "data": B64.encode(bytes)}})));
+    send_all(&mut v.1, id, line(json!({"event": "pane.output", "params": {"pane": id, "data": B64.encode(bytes)}})));
 }
 
 const AGENT_LOG_MAX: usize = 4 << 20;
@@ -2828,6 +2940,7 @@ fn prompt_mark(b: &[u8]) -> Option<bool> {
 /// FR-62: shell command block to the history file. Finished while a manual agent is still recorded = wait for `agent_done`
 /// so its resume command comes along; a pending block is written as is if the next command starts first.
 fn on_block(pane: &Pane, m: history::Mark) {
+    let Ok(terminal) = pane.terminal() else { return };
     let mut b = pane.block.lock().unwrap();
     match m {
         history::Mark::Start(cmd) => {
@@ -2835,7 +2948,7 @@ fn on_block(pane: &Pane, m: history::Mark) {
                 history::append(&pane.hist, &done);
             }
             let home = std::env::var("HOME").unwrap_or_default();
-            let cwd = pty::cwd_of(pane.sid).map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
+            let cwd = pty::cwd_of(terminal.sid).map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
             let blk = history::Block { t: history::now(), cwd, cmd, code: 0, secs: 0, resume: None };
             b.0 = Some((blk, std::time::Instant::now()));
         }
@@ -2864,6 +2977,7 @@ fn manual_done(v: &mut View, pane: &Pane, id: u64, prompt: &[u8], code: Option<i
 /// `prompt` = shell prompt line already shown (manual agent), written again below the block.
 #[allow(clippy::too_many_arguments)]
 fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_dir: Option<std::path::PathBuf>, code: &str, prompt: &[u8]) {
+    let Ok(terminal) = pane.terminal() else { return };
     // the next agent typed in this pane (e.g. Codex without full hooks) is judged again
     pane.hooked.store(false, Ordering::Relaxed);
     // the agent is gone: the pane is a plain shell again for status/read/send until an agent runs again
@@ -2882,7 +2996,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     // diagnosis of agents exiting on their own (GESEKAN 3 Nov): when and code only, no screen content (SEC-13)
     eprintln!("{} pane {id}: {agent} exited, code {code}, {secs} s", history::now());
     let home = std::env::var("HOME").unwrap_or_default();
-    let dir = pty::cwd_of(pane.sid);
+    let dir = pty::cwd_of(terminal.sid);
     let cwd = dir.as_ref().map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
     let omp = |d: std::path::PathBuf| omp_session(std::path::Path::new(&home), &d, since);
     let resume = match agent {
@@ -2932,7 +3046,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let segs: Vec<_> = segs.iter().map(|s| json!({"rows": s.rows, "cols": s.cols, "data": B64.encode(&s.data)})).collect();
     // FR-87: the agent's own exit code (the pane process is the shell after it, so pane.exit never carries it)
     let ev = json!({"event": "pane.replace", "params": {"pane": id, "segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "resume": resume, "code": code.parse::<i32>().ok()}});
-    send_all(v, id, line(ev));
+    send_all(&mut v.1, id, line(ev));
 }
 
 /// FR-56: session id from the line the agent prints itself on exit: `claude --resume <uuid>` (Claude Code)
@@ -2978,6 +3092,7 @@ fn claude_saved(home: &std::path::Path, id: &str) -> bool {
 
 /// PTY output → grid + every subscriber. Ends when the pane shell exits.
 fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
+    let Ok(terminal) = pane.terminal() else { return };
     let mut buf = [0u8; 16 * 1024];
     loop {
         let n = match (&pty.master).read(&mut buf) {
@@ -2986,10 +3101,10 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => break, // EIO: slave tertutup
         };
-        let mut v = pane.view.lock().unwrap();
+        let mut v = terminal.view.lock().unwrap();
         // FR-56: manual agent has exited = summary block first, then the shell output (prompt) shows below it
         // ponytail: the agent's last output read together with the prompt in one read doesn't reach the session log
-        if pane.manual.lock().unwrap().is_some() && pty::busy(&pane.master, pane.sid).is_none() {
+        if pane.manual.lock().unwrap().is_some() && pty::busy(&terminal.master, terminal.sid).is_none() {
             let code = history::marks(&buf[..n]).into_iter().find_map(|m| if let history::Mark::End(c) = m { Some(c) } else { None });
             manual_done(&mut v, &pane, id, &[], code);
         }
@@ -3008,7 +3123,7 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
     st.engine.lock().unwrap().opens.retain(|o| o.msg.from != id);
     st.engine.lock().unwrap().closes.retain(|c| c.msg.from != id && c.msg.to != id);
     let ev = line(json!({"event": "pane.exit", "params": {"pane": id, "code": code}}));
-    for sub in pane.view.lock().unwrap().1.drain(..) {
+    for sub in terminal.view.lock().unwrap().1.drain(..) {
         let _ = sub.tx.try_send(ev.clone());
     }
     // a tab whose xterm is detached (LIVE_TABS) has no subscriber here: without this its tab keeps a pane that's gone
@@ -3075,7 +3190,7 @@ impl State {
                 return None;
             }
             let sid = unsafe { libc::getsid(pid) };
-            if let Some((id, _)) = panes.iter().find(|(_, p)| sid > 0 && p.sid == sid) {
+            if let Some((id, _)) = panes.iter().find(|(_, p)| sid > 0 && match &p.kind { PaneKind::Terminal(t) => t.sid == sid, PaneKind::CommandCode(cc) => cc.pid.load(Ordering::Acquire) == sid }) {
                 return Some(*id);
             }
             pid = pty::ppid(pid)?;

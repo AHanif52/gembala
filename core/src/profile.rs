@@ -273,6 +273,10 @@ const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you wan
     "do you want to allow", "would you like to run", "would you like to make", "allow once", "allow tool:",
     // Codex dialog footer, always on the bottom line: a long "Reason:" pushes "Would you like to run" out of the 12-line tail
     "press enter to confirm or esc to cancel",
+    // Command Code permission prompt (12 Nov 2026): the deny option and the footer's bypass hint, both only drawn by that
+    // dialog. Without them the prompt read as working, then done, so no permission card ever came. Not the "Command Code
+    // needs to …" line: an answer quoting it would read as a prompt.
+    "tell command code what to do differently", "run cmd --yolo to bypass",
     // OpenCode's "△ Always allow" confirmation stage (Right+Enter on Allow always): the agent still waits for Enter
     "△ always allow"];
 

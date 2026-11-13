@@ -45,6 +45,8 @@
   let pinned = $state("");
   let leaveTimer: ReturnType<typeof setTimeout> | undefined;
   let cardY = $state(0);
+  let anchorY = $state(0); // top of the ring the open card belongs to
+  let cardEl = $state<HTMLElement | null>(null);
   let previous: string[] = [];
   const rings = $derived.by(() => {
     const ordered = orderRings(buildRings(installed, accounts, active, rows, now), previous);
@@ -82,8 +84,21 @@
   function show(key: string, el: HTMLElement) {
     clearTimeout(leaveTimer);
     hovered = key;
-    cardY = Math.max(8, Math.min(el.getBoundingClientRect().top - 12, window.innerHeight - 260));
+    anchorY = el.getBoundingClientRect().top;
   }
+  // The card's height follows the login's data (windows, limit banner, stale note), so the bottom edge is measured after
+  // render instead of guessed: the old fixed 260 px let a taller card hang off the bottom of the window.
+  $effect(() => {
+    const el = cardEl;
+    void selected;
+    void anchorY;
+    if (!el) return;
+    const fit = () => (cardY = Math.max(8, Math.min(anchorY - 12, window.innerHeight - el.getBoundingClientRect().height - 8)));
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
   const leave = () => { leaveTimer = setTimeout(() => (hovered = ""), 160); };
   onMount(() => {
     const timer = setInterval(() => (now = Math.floor(Date.now() / 1000)), 30_000);
@@ -146,7 +161,7 @@
     <button onclick={dismissHint}>{t("helper.gotIt")}</button>
   </div>
 {:else if selectedRing}
-  <div class="usage-card" style:top={`${cardY}px`} onpointerenter={() => clearTimeout(leaveTimer)} onpointerleave={leave} role="dialog" tabindex="-1" aria-label={t("usage.cardTitle", { name: name(selectedRing.agent) })}>
+  <div class="usage-card" bind:this={cardEl} style:top={`${cardY}px`} onpointerenter={() => clearTimeout(leaveTimer)} onpointerleave={leave} role="dialog" tabindex="-1" aria-label={t("usage.cardTitle", { name: name(selectedRing.agent) })}>
     <b class="card-title"><span style:color={iconShade(selectedRing.agent, shade(selectedRing.tone))}>{icon(selectedRing.agent)}</span> {t("usage.cardTitle", { name: name(selectedRing.agent) })}{#if !simple || badge(selectedRing)}<small>{simple ? selectedRing.loginName : t("usage.login", { name: selectedRing.loginName })}</small>{/if}</b>
     {#if selectedRing.row?.limited && !selectedRing.stale}<p class="limit">{t("usage.limited", { time: selectedRing.window?.resets_at ? resetAt(selectedRing.window.resets_at) : t("usage.resetUnknown") })}</p>{/if}
     {#if selectedRing.stale}<p class="quiet">{t(simple ? "usage.staleBodySimple" : "usage.staleBody", { name: name(selectedRing.agent) })}</p>
@@ -160,7 +175,7 @@
     <div class="source">{selectedRing.row ? `${simple ? t("usage.readFrom") : t("usage.source")}: ${sourceName(selectedRing.row.source)} · ${readAgo(selectedRing.row.read_at)}` : t("usage.sourceUnknown")}</div>
   </div>
 {:else if selected === "more"}
-  <div class="usage-card" style:top={`${cardY}px`} onpointerenter={() => clearTimeout(leaveTimer)} onpointerleave={leave} role="dialog" tabindex="-1" aria-label={t("usage.moreTitle")}>
+  <div class="usage-card" bind:this={cardEl} style:top={`${cardY}px`} onpointerenter={() => clearTimeout(leaveTimer)} onpointerleave={leave} role="dialog" tabindex="-1" aria-label={t("usage.moreTitle")}>
     <b>{t("usage.moreTitle")}</b>
     {#each hidden as ring (ring.key)}<button class="more-row" onpointerenter={(e) => show(ring.key, e.currentTarget)} onclick={(e) => { show(ring.key, e.currentTarget); pinned = ring.key; }}><span style:color={iconShade(ring.agent, shade(ring.tone))}>{icon(ring.agent)}</span> {name(ring.agent)}{ring.login !== "utama" ? ` · ${ring.loginName}` : ""}<small>{ring.left === null ? t(ring.stale ? "usage.stale" : "usage.noDataShort") : t("usage.left", { n: Math.round(ring.left) })}</small></button>{/each}
   </div>
@@ -337,6 +352,9 @@
     box-sizing: border-box;
     width: 272px;
     max-width: calc(100vw - 56px);
+    /* a very short window: the card scrolls instead of running past the bottom edge */
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
     padding: 10px 12px;
     border: 1px solid var(--line);
     border-radius: 10px;

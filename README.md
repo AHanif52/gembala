@@ -54,6 +54,7 @@ providers. Gembala isn't a proxy, doesn't read tokens, and doesn't touch your ag
 | **"Needs you" queue** | Every pane waiting for permission is collected at the top of the sidebar. Cmd+Shift+U jumps there. |
 | **Clear notifications** | Each banner says which pane, why (needs permission, waiting for an answer, failed, done…), and what to do. Answered ones go away; one switch per kind. |
 | **Keeps running when closed** | Cmd+Q closes the window, agents keep working. Open it again and everything's where you left it. |
+| **Structured Command Code pane** | Messages, thinking, tool cards, and proposed diffs instead of a terminal, with a status line for model, effort, context, and usage. Starts with restricted access (no file writes or shell); broad access only for one session after you confirm it in the app, and it ends on revoke, restart, or a folder/session change. Slash commands and per-action approval stay in the terminal. Agent messages, Telegram, and the harness can't reach it yet. |
 | **Resume sessions** | When an agent exits it collapses into one compact block with a Resume button. Old sessions can be picked again. |
 | **Worktrees** | Run an agent in a fresh git worktree so agents don't step on each other. |
 | **Multiple Claude accounts** | Personal and work accounts on one machine, with each pane clearly showing which account it uses. |
@@ -105,7 +106,7 @@ never answers that permission prompt on its own.
 | **No network ports** | The daemon only opens Unix sockets in a `0700` folder owned by your account. |
 | **Agent tokens untouched** | Gembala doesn't read, store, or forward OAuth tokens or API keys. |
 | **Agent config untouched** | `~/.claude`, `~/.codex`, `~/.config/opencode`, and the agents' Keychain items are safe. Hooks are installed via flags. |
-| **Humans decide** | Agent permission dialogs are never answered automatically. Important actions only work from the app window. |
+| **Humans decide** | Agent permission dialogs are never answered automatically. Important actions only work from the app window. A structured Command Code pane only gets broad access from a confirmation in that window, never from an agent, Telegram, or a saved file. |
 | **Prompt injection contained** | Origin labels, access rules, rate limits, and the stop button keep malicious instructions from spreading between agents. |
 
 Found a security hole? Don't open a public issue, send it through

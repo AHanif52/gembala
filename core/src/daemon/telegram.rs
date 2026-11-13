@@ -342,7 +342,8 @@ fn is_always_confirm_line(line: &str) -> bool {
 }
 
 fn always_confirm_on_screen(pane: &Pane) -> bool {
-    pane.view.lock().unwrap().0.text().lines().any(is_always_confirm_line)
+    let Ok(terminal) = pane.terminal() else { return false };
+    terminal.view.lock().unwrap().0.text().lines().any(is_always_confirm_line)
 }
 
 /// Box tables (Claude's `┌─┬─┐ │ … │`) read badly on a phone (9 Nov: "susah kebaca"): border rows drop, the lines a
@@ -403,7 +404,8 @@ fn keys(agent: &str) -> &'static [&'static str] {
     // Claude numbered dialog: digits; Esc cancels.
     // FR-99 P2: an agent whose dialog was never recorded gets no button (Gemini, a new version): the prompt is answered on
     // the Mac. Sending Esc there could cancel something the user wanted, so the bar and the bot show no buttons at all.
-    if agent == "claude" || agent == "codex" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &[] }
+    // Command Code: numbered permission prompt (12 Nov 2026), read again when pressed like Claude's.
+    if agent == "claude" || agent == "codex" || agent == "commandcode" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &[] }
 }
 
 /// `❯ 2. No` / `  3. No, and tell Claude…` / Codex `› 1. Yes` -> the option number of a numbered dialog row
@@ -418,6 +420,8 @@ fn choice(row: &str) -> Option<u8> {
 fn blocked_keys(agent: &str, screen: &str, reason: &str, id_l: bool) -> Vec<(&'static str, String)> {
     if reason == claude::TRUST {
         Vec::new()
+    } else if agent == "commandcode" {
+        commandcode_keys(screen, id_l)
     } else if agent == "claude" || agent == "codex" {
         claude_keys(agent, screen, id_l)
     } else if known_dialog(agent, screen) {
@@ -543,6 +547,12 @@ fn ask_of(agent: &str, screen: &str) -> String {
             let thin = block.iter().position(|r| rule_row(r, '╌'))?;
             let detail = block.get(thin + 1).copied().filter(|d| !file_body(d));
             join_ask(Some(title.to_string()), detail.or_else(|| useful.get(1).copied()).map(str::to_string))
+        }),
+        // Command Code: a title row (`Execute Shell Command`) then `Command Code needs to execute <command>.`
+        "commandcode" => rows.iter().rposition(|r| r.starts_with("Command Code needs to ")).and_then(|i| {
+            let what = rows[i].trim_end_matches('.').to_string();
+            let title = i.checked_sub(1).map(|j| rows[j]).filter(|t| t.chars().count() <= 60 && !t.starts_with('❯') && !t.starts_with("Press ["));
+            join_ask(title.map(str::to_string), Some(what))
         }),
         // OpenCode: `△ Permission required` + `← Access …`, or the `△ Always allow` confirmation stage
         "opencode" => rows.iter().rev().find_map(|r| r.strip_prefix('←').map(|a| a.trim().to_string())).or_else(|| {
@@ -701,6 +711,30 @@ fn claude_keys(agent: &str, screen: &str, id_l: bool) -> Vec<(&'static str, Stri
     v
 }
 
+/// Command Code 2.1.311 permission prompt (recorded 12 Nov 2026): `1. Yes`, `2. Yes, don't ask again for this exact command
+/// in this project`, `3. No, tell Command Code what to do differently`. Only the grant options get a button: saying No opens
+/// a feedback box that needs a sentence, and this build never saw an Esc row in that prompt, so No stays on the Mac.
+fn commandcode_keys(screen: &str, id_l: bool) -> Vec<(&'static str, String)> {
+    let Some(opts) = dialog_opts(screen) else { return Vec::new() };
+    opts.iter()
+        .enumerate()
+        .filter(|(i, _)| *i < DIGITS.len())
+        .filter_map(|(i, l)| option_label(i, l, id_l).map(|label| (DIGITS[i], label)))
+        .collect()
+}
+
+/// an option the bar turns into a button: not a deny/cancel one and not a mode switch. Same rule that builds the labels
+fn is_grant(i: usize, raw: &str) -> bool {
+    !switches_mode(raw) && option_label(i, raw, true).is_some()
+}
+
+/// pressing a Command Code digit now: the same option is still on screen and it is one the bar shows (a "No, tell …" digit
+/// would open a feedback box and is refused even when it comes back from a stale keyboard)
+fn commandcode_digit_ok(screen: &str, n: usize) -> bool {
+    let Some(i) = n.checked_sub(1) else { return false };
+    dialog_opts(screen).and_then(|o| o.get(i).cloned()).is_some_and(|l| is_grant(i, &l))
+}
+
 /// pressing digit `n` now: still a numbered option on the current screen, and not a mode switch
 fn digit_ok(screen: &str, n: usize) -> bool {
     dialog_opts(screen).and_then(|o| o.get(n.wrapping_sub(1)).cloned()).is_some_and(|l| !switches_mode(&l))
@@ -749,12 +783,13 @@ fn key_bytes(key: &str) -> &'static [u8] {
 /// confirms it once that title is on screen; Codex and Claude re-read the dialog and refuse a number that is gone or that
 /// switches the permission mode. `false` = nothing was sent.
 pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str, seq: u64) -> bool {
+    let Ok(terminal) = p.terminal() else { return false };
     match key {
         // OpenCode "Always": Right+Enter moves once→always and submits it, which opens the "△ Always allow" confirmation
         // stage (no reply is sent yet). The confirming Enter goes out only after that title is actually observed on screen;
         // a dialog that resolved meanwhile, a closed pane, or a timeout sends nothing (retryable: nothing was approved).
         "always" => {
-            if !known_dialog("opencode", &p.view.lock().unwrap().0.text()) {
+            if !known_dialog("opencode", &terminal.view.lock().unwrap().0.text()) {
                 return false;
             }
             if type_into_blocked(st, id, p, seq, b"\x1b[C\r").is_err() {
@@ -790,18 +825,23 @@ pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str, seq: u64) -> bool {
             }
         }
         k if k != "esc" && p.agent_name().as_deref() == Some("codex") => {
-            let screen = p.view.lock().unwrap().0.text();
+            let screen = terminal.view.lock().unwrap().0.text();
             k.parse().ok().and_then(|n| codex_key(&screen, n)).is_some_and(|bytes| type_into_blocked(st, id, p, seq, &bytes).is_ok())
+        }
+        // Command Code digit: same rule as Claude, but only the grant options the bar shows may be sent
+        k if k != "esc" && p.agent_name().as_deref() == Some("commandcode") => {
+            let screen = terminal.view.lock().unwrap().0.text();
+            k.parse().is_ok_and(|n| commandcode_digit_ok(&screen, n)) && type_into_blocked(st, id, p, seq, key_bytes(k)).is_ok()
         }
         // Claude digit: re-read the dialog now; the option must still be there and not switch the permission mode
         k if k != "esc" && p.agent_name().as_deref() == Some("claude") => {
-            let screen = p.view.lock().unwrap().0.text();
+            let screen = terminal.view.lock().unwrap().0.text();
             k.parse().is_ok_and(|n| digit_ok(&screen, n)) && type_into_blocked(st, id, p, seq, key_bytes(k)).is_ok()
         }
         // every other key needs a dialog this build recognizes; an unknown agent has no key at all (keys() is empty)
         k => {
             let agent = p.agent_name().unwrap_or_default();
-            let screen = p.view.lock().unwrap().0.text();
+            let screen = terminal.view.lock().unwrap().0.text();
             keys(&agent).contains(&k) && known_dialog(&agent, &screen) && type_into_blocked(st, id, p, seq, key_bytes(k)).is_ok()
         }
     }
@@ -822,7 +862,8 @@ fn vote(st: &State, b: &Bot, poll: &Poll, picks: &[usize]) -> bool {
 fn vote_steps(st: &State, b: &Bot, poll: &Poll, picks: &[usize]) -> Result<(), &'static str> {
     let id = poll.pane;
     let Some(p) = st.panes.lock().unwrap().get(&id).cloned() else { return Err("pane closed") };
-    let screen = || p.view.lock().unwrap().0.text();
+    let terminal = p.messaging()?;
+    let screen = || terminal.view.lock().unwrap().0.text();
     let same = |s: &str| multi_opts(s).filter(|o| o.iter().map(|(l, ..)| short(&mask_secrets(l), 100)).eq(poll.labels.iter().cloned()));
     let wait = |ok: &dyn Fn(&str) -> bool| {
         (0..20).any(|_| {
@@ -1065,6 +1106,7 @@ fn blocked_word(reason: &str, id_l: bool) -> String {
 
 fn t(id: bool, k: &str) -> &'static str {
     let (i, e) = match k {
+        "unsupported_kind" => ("unsupported_kind: pane terstruktur belum mendukung Telegram.", "unsupported_kind: structured panes do not support Telegram yet."),
         // FR-87 (TECH 27.1): the same words as the macOS banner, the bell and the "Butuh lu" strip
         "blocked" => ("butuh izin", "needs permission"),
         "answer" => ("nunggu jawaban", "waiting for an answer"),
@@ -1627,7 +1669,8 @@ fn turn_start(rows: &[&str], typed: Option<&str>) -> usize {
 
 /// agent panes: the latest turn above the input box; shell panes: the screen as is (a `❯` zsh prompt isn't a turn)
 fn screen_snip(pane: &Pane, lines: usize) -> String {
-    let text = pane.view.lock().unwrap().0.text();
+    let Ok(terminal) = pane.terminal() else { return "unsupported_kind".into() };
+    let text = terminal.view.lock().unwrap().0.text();
     let agent = pane.agent_name();
     if agent.is_none() {
         return snippet(&text, lines);
@@ -1660,6 +1703,7 @@ fn codex_chrome_row(row: &str, agent: Option<&str>) -> bool {
 
 /// `screen_watch`, once a second per pane: password prompt (rising edge) and long shell commands that finished
 pub fn tick(st: &State, id: u64, pane: &Pane) {
+    let Ok(terminal) = pane.terminal() else { return };
     let long = pane.long_done.lock().unwrap().take();
     let Some(b) = live(st) else {
         pane.asked_pw.store(false, Ordering::Relaxed);
@@ -1678,7 +1722,7 @@ pub fn tick(st: &State, id: u64, pane: &Pane) {
         }
         b.tell(&format!("{}: {}", pane.name.lock().unwrap(), t(b.id_lang, "exited")));
     }
-    let pw = pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master);
+    let pw = pty::busy(&terminal.master, terminal.sid).is_some() && pty::wants_password(&terminal.master);
     let was = pane.asked_pw.swap(pw, Ordering::Relaxed);
     if !b.away.load(Ordering::Relaxed) {
         return;
@@ -1757,7 +1801,7 @@ fn notice(st: &State, b: &Bot, id: u64, kind: Kind) -> Option<(&'static str, Val
     };
     let mut text = head(&name, &ws, &status);
     let blocked = matches!(kind, Kind::Blocked(_));
-    let screen = if blocked { pane.view.lock().unwrap().0.text() } else { String::new() };
+    let screen = if blocked { pane.terminal().ok()?.view.lock().unwrap().0.text() } else { String::new() };
     if kind == Kind::Password {
         text += &format!("\n{}", esc(t(id_l, "password_hint")));
     } else if blocked {
@@ -1824,15 +1868,21 @@ fn last_agent(last: Option<u64>, panes: &[(u64, bool)]) -> Option<u64> {
 
 /// pane for a phone message: reply to a bot message, a name, or the active pane; no active pane and a single agent pane = that
 /// one; several = `pick` (the caller offers buttons)
+pub(super) fn checked_target(pane: Option<(u64, Arc<Pane>)>, error: &'static str) -> Result<(u64, Arc<Pane>), &'static str> {
+    let (id, pane) = pane.ok_or(error)?;
+    pane.messaging()?;
+    Ok((id, pane))
+}
+
 fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'static str> {
     let id = match to {
-        Some(To::Name(n)) => return st.by_name(&n).ok_or("no_pane"),
+        Some(To::Name(n)) => return checked_target(st.by_name(&n), "no_pane"),
         Some(To::Reply(r, name)) => {
             let known = b.sent.lock().unwrap().iter().find(|(m, _)| *m == r).map(|(_, p)| *p);
             match known {
                 Some(id) => id,
                 // not in RAM (daemon restarted): the pane named on the message's first line
-                None if !name.is_empty() => return st.by_name(&name).ok_or("old_reply"),
+                None if !name.is_empty() => return checked_target(st.by_name(&name), "old_reply"),
                 // reply to a message that isn't a pane's (the user's own photo, help, picker): like plain text
                 None => return target(st, b, None),
             }
@@ -1853,7 +1903,7 @@ fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'sta
             }
         }
     };
-    st.panes.lock().unwrap().get(&id).map(|p| (id, p.clone())).ok_or("no_pane")
+    checked_target(st.panes.lock().unwrap().get(&id).map(|p| (id, p.clone())), "no_pane")
 }
 
 /// What `/buka` may type: the built-in agents plus the Claude account commands Gembala writes to accounts.zsh (FR-61,
@@ -1873,11 +1923,13 @@ fn openable_now(st: &State) -> Vec<String> {
 
 /// a shell pane sitting at its prompt with nothing in front: the only kind `/buka` types into
 fn idle_shell(p: &Pane) -> bool {
-    p.agent_name().is_none() && p.at_prompt.load(Ordering::Relaxed) && pty::busy(&p.master, p.sid).is_none()
+    let Ok(terminal) = p.terminal() else { return false };
+    p.agent_name().is_none() && p.at_prompt.load(Ordering::Relaxed) && pty::busy(&terminal.master, terminal.sid).is_none()
 }
 
 /// `/buka`: types `<agent>` + Enter like the user at the keyboard; the pane becomes an agent pane (screen_watch) and active
 fn open_in(st: &State, b: &Bot, id: u64, p: &Pane, agent: &str) {
+    if p.messaging().is_err() { return b.tell("unsupported_kind"); }
     let id_l = b.id_lang;
     if p.agent_name().is_some() {
         return b.tell(t(id_l, "already_agent"));
@@ -1906,7 +1958,7 @@ fn open_picker(st: &State, b: &Bot, agent: &str, only_ws: Option<&str>) {
         .unwrap()
         .iter()
         .filter(|(_, p)| idle_shell(p))
-        .map(|(id, p)| (p.workspace.lock().unwrap().clone(), p.name.lock().unwrap().clone(), *id, p.sid))
+        .filter_map(|(id, p)| Some((p.workspace.lock().unwrap().clone(), p.name.lock().unwrap().clone(), *id, p.terminal().ok()?.sid)))
         .filter(|(w, ..)| only_ws.is_none_or(|o| o == w))
         .collect();
     if panes.is_empty() {
@@ -1993,8 +2045,9 @@ fn progress_of(b: &Bot, id: u64, pane: &Pane, queued: bool) -> String {
 /// `file`: a photo/file path is in the text. Claude turns a pasted image path into `[Image #N]` while the Enter of the same
 /// paste arrives, so the Enter was lost and the image waited for the next message (9 Nov); Enter goes ~1.5 s later
 fn deliver(st: &State, b: &Bot, id: u64, pane: &Pane, text: &str, msg: i64, file: bool) {
+    let Ok(terminal) = pane.terminal() else { return b.tell("unsupported_kind") };
     let status = *pane.status.lock().unwrap();
-    let pw = pty::busy(&pane.master, pane.sid).is_some() && pty::wants_password(&pane.master);
+    let pw = pty::busy(&terminal.master, terminal.sid).is_some() && pty::wants_password(&terminal.master);
     let why = match typed(pane.agent_name().is_some(), status, pw, text) {
         Ok(bytes) => match type_into(st, id, pane, &bytes[..bytes.len() - usize::from(file)]) {
             Ok(()) => {
@@ -2079,6 +2132,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
         In::Look(name) => match st.by_name(&name) {
             None => b.tell(t(id_l, "no_pane")),
             Some((_, pane)) => {
+                if pane.messaging().is_err() { return b.tell(t(id_l, "unsupported_kind")); }
                 let (n, ws_id) = (pane.name.lock().unwrap().clone(), pane.workspace.lock().unwrap().clone());
                 let ws = ws_name(&ws_id);
                 let st_txt = state_word(&pane, id_l);
@@ -2100,6 +2154,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
             Err(k) => b.tell(t(id_l, k)),
         },
         In::Use(name) => match st.by_name(&name) {
+            Some((_, p)) if p.messaging().is_err() => b.tell(t(id_l, "unsupported_kind")),
             Some((id, p)) if p.agent_name().is_some() => {
                 *b.last.lock().unwrap() = Some(id);
                 b.tell(&format!("{} {}", t(id_l, "now_to"), p.name.lock().unwrap()));
@@ -2915,6 +2970,26 @@ mod tests {
         assert_eq!(a["question"], "Which database should store login sessions?");
         // the options are answers, not permission grants: their own words stay (only the spacing is cleaned up)
         assert_eq!(a["options"][1]["label"], "2. SQLite simpler for local");
+    }
+
+    /// Command Code 2.1.311 (recorded 12 Nov 2026): the same numbered-dialog treatment as Claude. "No, tell Command Code
+    /// what to do differently" opens a feedback box, so it gets no button and its digit is refused even from a stale keyboard.
+    #[test]
+    fn dialog_commandcode() {
+        let dlg = |f: &str| std::fs::read_to_string(format!("{}/tests/dialogs/{f}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let cc = dlg("commandcode-2.1.311-bash.dialog");
+        let b = blocked_keys("commandcode", &cc, "", true);
+        assert_eq!(ks(b.clone()), ["1", "2"]);
+        assert_eq!((b[0].1.as_str(), b[1].1.as_str()), ("1. Izinkan", "2. Izinkan terus"));
+        assert!(commandcode_digit_ok(&cc, 1) && commandcode_digit_ok(&cc, 2));
+        assert!(!commandcode_digit_ok(&cc, 3) && !commandcode_digit_ok(&cc, 4) && !commandcode_digit_ok("● Done.", 1));
+        let v = dialog_view("commandcode", &cc, "minta izin", false);
+        assert_eq!(v["ask"], "Execute Shell Command · Command Code needs to execute cd /private/tmp/gk-dialog/commandcode && node card.mjs 2>&1 | head -50");
+        assert_eq!(v["options"][0]["label"], "1. Allow");
+        assert_eq!(v["options"][1]["label"], "2. Allow always");
+        assert_eq!(v["options"].as_array().unwrap().len(), 2);
+        // a screen this build doesn't recognize offers nothing (answered on the Mac)
+        assert!(blocked_keys("commandcode", "waiting for input", "", true).is_empty());
     }
 
     /// FR-99 P2: the answer box writes what the user typed, as if typed at the keyboard (bracketed paste + Enter).

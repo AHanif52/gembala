@@ -1,0 +1,5 @@
+{"type":"event","event":{"type":"run_start","sessionId":"fixture-session"}}
+{"type":"event","event":{"type":"text_delta","delta":"Halo 🌱","extra":"ignored"},"extra":true}
+{"type":"event","event":{"type":"future_event","payload":{"ignored":true}}}
+{"type":"event","event":{"type":"message_end","content":[{"type":"text","text":"Halo 🌱"}]}}
+{"type":"result","subtype":"success","sessionId":"fixture-session","stopReason":"end_turn","usage":{"inputTokens":12,"outputTokens":3,"cacheReadTokens":0,"cacheWriteTokens":0},"durationMs":25,"finalText":"Halo 🌱","extra":true}

@@ -54,6 +54,7 @@ penyedianya. Gembala nggak jadi proxy, nggak baca token, dan nggak ngubah config
 | **Antrean "Butuh lu"** | Semua pane yang nunggu izin dikumpulin di atas sidebar. Cmd+Shift+U lompat ke sana. |
 | **Notifikasi yang jelas** | Tiap banner bilang pane mana, kenapa (butuh izin, nunggu jawaban, gagal, selesai…), dan harus ngapain. Yang udah dijawab hilang sendiri; saklar per jenis. |
 | **Tetap jalan saat ditutup** | Cmd+Q nutup jendela, agent tetap kerja. Buka lagi, semua masih di tempatnya. |
+| **Pane Command Code terstruktur** | Pesan, thinking, kartu tool, dan diff usulan gantiin terminal, plus baris status buat model, effort, konteks, dan pemakaian. Mulai dengan akses terbatas (nggak bisa nulis file atau jalanin shell); akses luas cuma buat satu sesi setelah lu setujui di app, dan berakhir saat dicabut, restart, atau folder/sesi berubah. Slash command dan izin per aksi tetap di terminal. Pesan antar agent, Telegram, dan harness belum bisa ke pane ini. |
 | **Lanjutkan sesi** | Agent keluar jadi satu blok ringkas dengan tombol Lanjutkan. Sesi lama bisa dipilih lagi. |
 | **Worktree** | Jalankan agent di git worktree baru biar nggak saling tabrak. |
 | **Banyak akun Claude** | Akun pribadi dan kantor di satu mesin, tiap pane jelas pakai akun yang mana. |
@@ -105,7 +106,7 @@ ngejawab izin itu sendiri.
 | **Tanpa port jaringan** | Daemon cuma buka socket Unix di folder `0700` milik akun lu. |
 | **Token agent nggak disentuh** | Gembala nggak baca, nyimpen, atau neruskan token OAuth maupun API key. |
 | **Config agent nggak diubah** | `~/.claude`, `~/.codex`, `~/.config/opencode`, dan Keychain agent aman. Hook dipasang lewat flag. |
-| **Manusia yang mutusin** | Dialog izin agent nggak pernah dijawab otomatis. Aksi penting cuma bisa dari jendela app. |
+| **Manusia yang mutusin** | Dialog izin agent nggak pernah dijawab otomatis. Aksi penting cuma bisa dari jendela app. Pane Command Code terstruktur cuma dapat akses luas dari persetujuan di jendela itu, bukan dari agent, Telegram, atau file tersimpan. |
 | **Prompt injection dibatasi** | Label asal, aturan akses, batas laju, dan tombol henti mencegah instruksi jahat nyebar antar agent. |
 
 Nemu celah keamanan? Jangan buka issue publik, kirim lewat

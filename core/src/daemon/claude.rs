@@ -152,11 +152,12 @@ pub fn reason(raw: &str) -> String {
 
 /// Called before a Stop hook is published, and once a second by the screen watcher.
 pub fn refresh(st: &State, id: u64, pane: &Pane, hook: Option<&'static str>) {
+    let Ok(terminal) = pane.terminal() else { return };
     // FR-84: the trust dialog on screen holds the status until it's gone (`trust_watch`)
     if pane.trust.load(Ordering::Relaxed) || (pane.agent_name().as_deref() != Some("claude") && hook.is_none()) {
         return;
     }
-    let Some((pid, _)) = pty::busy(&pane.master, pane.sid) else {
+    let Some((pid, _)) = pty::busy(&terminal.master, terminal.sid) else {
         let pending = pane.claude.lock().unwrap().pending_done.take().is_some();
         if let Some(status) = hook.or(pending.then_some("done")) { set_status(st, id, pane, status, None); }
         return;

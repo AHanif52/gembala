@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"fixture-session","timestamp":"2026-11-13T00:00:00.000Z","cwd":"/fixture/project"}
+{"type":"message","id":"user","parentId":null,"timestamp":"2026-11-13T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Read fixture"}]}}
+{"type":"message","id":"sibling","parentId":"user","timestamp":"2026-11-13T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Discarded branch"}]}}
+{"type":"message","id":"assistant","parentId":"user","timestamp":"2026-11-13T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Inspect fixture"},{"type":"tool_use","id":"tool-1","name":"read_file","input":{"path":"fixture.txt"}}]}}
+{"type":"message","id":"tool","parentId":"assistant","timestamp":"2026-11-13T00:00:04.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":[{"type":"text","text":"fixture content"}],"is_error":false}]}}
+{"type":"custom","id":"metadata","parentId":"tool","timestamp":"2026-11-13T00:00:05.000Z","customType":"fixture","data":{"private":"not rendered"}}
+{"type":"message","id":"final","parentId":"metadata","timestamp":"2026-11-13T00:00:06.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Done"}]}}

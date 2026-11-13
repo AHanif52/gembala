@@ -547,6 +547,10 @@
 
     let attached = false;
     let sized = false; // the attach snapshot is already written at the daemon's size and fitted to the pane
+    // Switching tabs disposes this tile and builds a new one for the same pane. An attach or replay still in flight from
+    // the old tile must not write, decorate, or send its size afterwards (it would resize the pane under the new tile).
+    let disposed = false;
+    let gen = 0;
     // a new daemon sends the pane.attached marker after the snapshot: earlier events are already in the snapshot (dropped),
     // later ones aren't. An old daemon without the marker (reply without `sync`) = every event is used as before
     let synced = false;
@@ -556,19 +560,23 @@
     // FR-2: raw history is written at the size it had when it came out (width decides wrapping and cursor moves), then
     // xterm itself rewraps on resize; the result matches a tab that was never detached. Used by attach
     // and pane.replace (FR-56). `sized` is off meanwhile: a resize to the old size must not reach the PTY
-    const replay = async (a: any) => {
+    const replay = async (a: any, g: number) => {
+      const live = () => !disposed && g === gen;
       sized = false;
       const segs: { rows: number; cols: number; data: string }[] = a.segments ?? [];
       const raw = segs.map((s) => unb64(s.data));
       const snap = unb64(a.snapshot ?? "");
       for (let i = 0; i < segs.length; i++) {
+        if (!live()) return [];
         term.resize(segs[i].cols, segs[i].rows);
         await put(raw[i]);
       }
+      if (!live()) return [];
       // TECH 19 #10: the tail is written at the daemon grid size (e.g. 80 columns before the UI attached), then fitted to the pane;
       // xterm rewraps long rows, while a daemon grid (vt100) shrunk first would cut them
       if (a.cols && a.rows) term.resize(a.cols, a.rows);
       await put(snap);
+      if (!live()) return [];
       sized = true;
       if (el.offsetParent) fit.fit();
       call("pane.resize", { pane, rows: term.rows, cols: term.cols }).catch(() => {});
@@ -576,6 +584,7 @@
       return [...raw, snap];
     };
     const onEvent = (e: any) => {
+      if (disposed) return;
       // history being rewritten (pane.replace): later events wait
       if (!attached) return void early.push(e);
       if (e.event === "pane.output") term.write(unb64(e.params.data));
@@ -588,7 +597,10 @@
         // an old daemon (before the ring) sends one `data` chunk
         if (!e.params.segments) return void term.write(unb64(e.params.data), decorateSummary);
         attached = false;
-        replay(e.params).then(() => ((attached = true), early.splice(0).forEach(onEvent)));
+        const g = gen;
+        replay(e.params, g).then(() => {
+          if (!disposed && g === gen) (attached = true), early.splice(0).forEach(onEvent);
+        });
       }
       // the daemon stopped feeding this client output for this pane (it fell behind): re-attach rebuilds the screen
       if (e.event === "pane.lag") void doAttach();
@@ -608,6 +620,7 @@
     const doAttach = async () => {
       if (attaching) return; // a lag noticed during an attach is covered by it
       attaching = true;
+      const g = ++gen;
       attached = false;
       synced = false;
       early.splice(0);
@@ -616,15 +629,18 @@
         await unlisten; // listener ready before attach: the marker must not be missed
         // the attach reply and events take different paths in Tauri: events arriving first are held
         const a = await call("pane.attach", { pane });
+        if (disposed || g !== gen) return;
         if (!a.sync) synced = true;
         // event live tertahan sampai `attached`
-        const written = await replay(a);
+        const written = await replay(a, g);
+        if (disposed || g !== gen) return;
         if (a.prompt) onprompt(true); // FR-59: a B marker before attach isn't in the snapshot
         const text = written.map((d) => new TextDecoder().decode(d)).join("");
         if (/\S/.test(text.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
         attached = true;
         if (synced) early.splice(0).forEach(onEvent); // not yet: a marker arriving later drops what's held
       } catch (e) {
+        if (disposed || g !== gen) return;
         sized = true;
         // the pane left while this screen was away (a `pane.lag` or a reconnect whose pane.exit was missed): drop it
         if (String(e).includes("no_such_pane")) return onexit(pane);
@@ -682,12 +698,15 @@
     });
     term.onBinary((d) => call("pane.write", { pane, data: btoa(d) }));
     // the new daemon grid follows the pane size after the snapshot is written (see attach): before that vt100 cuts rows
-    term.onResize(({ rows, cols }) => sized && call("pane.resize", { pane, rows, cols }));
+    term.onResize(({ rows, cols }) => sized && !disposed && call("pane.resize", { pane, rows, cols }));
     const ro = new ResizeObserver(() => sized && el.offsetParent && fit.fit());
     ro.observe(el);
     if (focused) term.focus();
 
     return () => {
+      // this tile is gone (tab switched): a pending attach/replay must not write, decorate, or resize after it
+      disposed = true;
+      gen++;
       host.removeEventListener("mousemove", onHover);
       host.removeEventListener("mouseleave", leave);
       ro.disconnect();

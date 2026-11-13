@@ -1246,6 +1246,19 @@ fn status_blocked_dari_dialog_codex() {
     wait_blocked(&mut ui, pane, "dialog izin Codex");
 }
 
+/// 12 Nov 2026: Command Code's own permission prompt read as working, then done — no card, no buttons. The pane now reads
+/// as blocked from that screen and `pane.dialogs` offers only the two grant answers (No opens a feedback box: Mac only).
+#[test]
+fn status_blocked_dari_dialog_commandcode() {
+    let (_d, mut ui, pane) = pane_with_screen("cc-dialog", "commandcode", "commandcode-2.1.311-bash.dialog");
+    wait_blocked(&mut ui, pane, "dialog izin Command Code");
+    let d = ui.call("pane.dialogs", json!({"panes": [pane], "lang": "en"}))["result"]["panes"][pane.to_string()].clone();
+    assert_eq!(d["waiting"], true, "{d}");
+    let keys: Vec<&str> = d["options"].as_array().unwrap().iter().map(|o| o["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["1", "2"], "{d}");
+    assert!(d["ask"].as_str().unwrap().contains("Command Code needs to execute"), "{d}");
+}
+
 /// FR-99 P2: the permission bar reads the same dialog as the bot (`pane.dialogs`), and both of its answers only write while
 /// the pane is still `blocked` (`pane.answer`): a button sends the same bytes as the bot's, a typed answer lands in the pane.
 #[test]

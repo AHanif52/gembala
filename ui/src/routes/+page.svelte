@@ -2,6 +2,7 @@
   // Fase 1: workspace → tab → pohon split pane (FR-1, 37, 38, 43–46, 50, 52). Tata letak disimpan daemon (FR-45).
   import { onMount, tick, untrack } from "svelte";
   import Tile from "$lib/Tile.svelte";
+  import CommandCodePane, { forget as forgetCc } from "$lib/CommandCodePane.svelte";
   import Settings from "$lib/Settings.svelte";
 import changelog from "../../../CHANGELOG.md?raw";
 import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew";
@@ -74,6 +75,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     login?: string; // FR-61: "log in to account …" card after the Login button
     saver?: boolean; // FR-27: the token saver is on for this pane (badge in the head)
     subagents?: number; // FR-101 item 1: subagents running, from Claude's SubagentStart/SubagentStop hooks (daemon count)
+    kind?: "commandcode"; // PLAN-CC-PANE: structured pane (no PTY); absent = terminal
+    ccModel?: string; // PLAN-CC-PANE: model/effort of the next structured run (empty = profile default)
+    ccEffort?: string;
+    ccResume?: string; // PLAN-CC-PANE phase 4: session to reopen once the new structured pane mounts
   };
   const AGENTS = ["claude", "codex", "opencode", "omp", "commandcode"];
   // FR-4/52: status dot + text label, not color alone (BRD section 11)
@@ -955,6 +960,15 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   async function createPane(opts: Record<string, unknown> = {}): Promise<number> {
     const profile = (opts.profile as string) ?? "shell";
     const agent = cfg?.values.profiles.find((p) => p.id === profile)?.agent ?? "shell";
+    if (opts.kind === "commandcode") {
+      // PLAN-CC-PANE: no PTY, restricted access; the daemon validates folder + profile. No resume yet (phase 4).
+      const w = wss.find((x) => x.id === ((opts.workspace as string) ?? ws?.id));
+      const from = opts.from_pane as number | undefined;
+      const cwd = absPath((opts.cwd as string) ?? (from !== undefined ? meta[from]?.cwd : null) ?? w?.root ?? "~");
+      const r = await call("cc.create", { workspace: w?.id ?? ws?.id, cwd, profile });
+      meta[r.pane] = { profile, cwd, agent, name: r.name, sig: sig(profile), kind: "commandcode", ccModel: opts.ccModel as string, ccEffort: opts.ccEffort as string, ccResume: opts.ccResume as string | undefined };
+      return r.pane;
+    }
     // FR-53: Claude Code accepts a session id from outside; used again when the pane is rerun
     // FR-72: the agent's own session picker = session id not known yet
     const session = opts.pick ? undefined : ((opts.session as string) ?? (agent === "claude" ? crypto.randomUUID() : undefined));
@@ -999,6 +1013,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       account: m.owner?.id ?? m.acct, // FR-61: a session owned by another account resumes in its owning account
       history: m.hist, // FR-62: same spot, same history (e.g. "Resume session" on a restored shell keeps its old log)
       ...oldNames(m),
+      ...(m.kind ? { kind: m.kind, ccModel: m.ccModel, ccEffort: m.ccEffort, ccResume: m.session } : {}),
     });
     for (const w of wss)
       for (const t of w.tabs)
@@ -1118,6 +1133,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 
   /// autofocus loses to the terminal that held focus (same as the palette): focus explicitly
   async function openRich(pane: number) {
+    if (meta[pane]?.kind) return; // PLAN-CC-PANE: no PTY to send to
     rich = { pane, text: "" };
     await tick();
     document.querySelector<HTMLTextAreaElement>(".rich textarea")?.focus();
@@ -1252,6 +1268,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       }
       if (at.ws === wi) zoomed = false;
       if (meta[pane]?.pastes?.length) invoke("forget_paste", { paths: meta[pane].pastes }).catch(() => {});
+      forgetCc(pane);
       delete meta[pane];
       delete dead[pane];
       return;
@@ -1262,7 +1279,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// its old agent recorded in `prev` for the "Resume session" chip
   async function restart(old: number, shell = false) {
     const m = meta[old];
+    // PLAN-CC-PANE: a structured pane comes back structured (new session until phase 4 resume), never as a shell
+    if (m?.kind) shell = false;
     const id = await createPane({
+      ...(m?.kind ? { kind: m.kind, ccModel: m.ccModel, ccEffort: m.ccEffort, ccResume: m.session ?? m.ccResume } : {}),
       profile: shell || m?.profile === "shell" ? undefined : m?.profile,
       cwd: m?.cwd ?? undefined,
       session: shell ? undefined : m?.session,
@@ -1463,7 +1483,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     else if (id === "pane.move.newtab") moveToNewTab();
     else if (id === "pane.input.rich") openRich(tab.focus);
     else if (id === "pane.diff.toggle") openChanges(tab.focus);
-    else if (id === "pane.proc.kill") call("pane.kill", { pane: tab.focus });
+    else if (id === "pane.proc.kill" && meta[tab.focus]?.kind) {
+      // PLAN-CC-PANE: no process group to signal from here; the daemon cancels its own run (SIGINT → SIGTERM → SIGKILL)
+      const pane = tab.focus;
+      call("pane.info", { pane }).then((i) => i?.busy && i.runId && call("cc.cancel", { pane, runId: i.runId })).catch(() => {});
+    } else if (id === "pane.proc.kill") call("pane.kill", { pane: tab.focus });
     else if (id === "pane.proc.close") askClose(tab.focus);
     else if (id === "term.find") tiles[tab.focus]?.openFind();
     else if (id === "term.clear") tiles[tab.focus]?.clearScreen();
@@ -1513,13 +1537,23 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         go: () => goto(i),
       };
     });
-    const profiles: PalItem[] = (cfg?.values.profiles ?? []).map((p) => ({
-      label: p.name,
-      hint: p.command || "$SHELL",
-      kind: "profile",
-      agent: p.agent === "shell" ? "" : p.agent,
-      go: () => newTab(p.id === "shell" ? undefined : p.id),
-    }));
+    const profiles: PalItem[] = [
+      ...(cfg?.values.profiles ?? []).map((p) => ({
+        label: p.name,
+        hint: p.command || "$SHELL",
+        kind: "profile" as const,
+        agent: p.agent === "shell" ? "" : p.agent,
+        go: () => newTab(p.id === "shell" ? undefined : p.id),
+      })),
+      // PLAN-CC-PANE: the same Command Code profile as a structured pane
+      ...(cfg?.values.profiles ?? []).filter((p) => p.agent === "commandcode").map((p) => ({
+        label: tt("cc.newStructured", { name: p.name }),
+        hint: tt("cc.badge"),
+        kind: "profile" as const,
+        agent: p.agent,
+        go: () => newTab(p.id, at.ws, undefined, { kind: "commandcode" }),
+      })),
+    ];
     const actions: PalItem[] = [
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), kind: "action" as const, go: () => run(id) })),
       { label: tt("act.worktree"), hint: tt("act.worktreeHint"), kind: "action", go: () => openWorktree() },
@@ -1651,6 +1685,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
     popup(e, [
       ...(cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? ` (${tt("main.notInstalled")})` : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem),
+      ...(cfg?.values.profiles ?? []).filter((p) => p.agent === "commandcode" && !missing.has(p.agent)).map((p) => [tt("cc.newStructured", { name: p.name }), () => newTab(p.id, wi, undefined, { kind: "commandcode" })] as MItem),
       "-",
       [tt("act.worktree"), () => openWorktree(wi)],
       [tt("act.template"), () => openTemplate(wi)],
@@ -2614,7 +2649,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         meta[p].cwd = i.cwd;
         refreshGit(p);
       }
-      const busy = i.busy ? (i.name ?? "proses") : null;
+      const busy = i.busy ? (i.name ?? (i.kind === "commandcode" ? "commandcode" : "proses")) : null;
       const m = meta[p];
       // agent typed in a shell pane (`m.busy` = agent in the previous poll): an empty status from the daemon when the agent
       // exits is used too, so "done" doesn't get stuck after its agent died
@@ -2782,7 +2817,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 {/snippet}
 
 {#snippet chip(c: string, pane: number, g: any)}
-  {#if c === "attach"}
+  {#if meta[pane]?.kind && (c === "attach" || c === "rich_input")}
+    <!-- PLAN-CC-PANE: both type into a PTY; a structured pane has its own input -->
+  {:else if c === "attach"}
     <button class="chip box c-attach" title={tt("chip.attachTip")} aria-label={tt("chip.attach")} onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
   {:else if c === "diff" && g?.repo && g.files}
     <button class="chip box c-diff" title={tt("chip.diffTip", { key: combo("pane.diff.toggle") })} onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
@@ -3116,7 +3153,14 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 </div>
               {/if}
               <div class="tslot" class:withpbar={barShown(pane)}>
-              {#if active}
+              {#if active && meta[pane]?.kind === "commandcode"}
+              <CommandCodePane {pane} cwd={meta[pane].cwd ?? ""} efforts={openEfforts}
+                focused={at.ws === wi && at.tab === ti && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane}
+                bind:model={() => meta[pane]?.ccModel ?? "", (x) => meta[pane] && (meta[pane].ccModel = x)}
+                bind:effort={() => meta[pane]?.ccEffort ?? "", (x) => meta[pane] && (meta[pane].ccEffort = x)}
+                onterminal={() => newTab(meta[pane]?.profile, wi, undefined, { cwd: meta[pane]?.cwd ?? undefined })}
+                resume={meta[pane].ccResume ?? ""} onresumed={() => meta[pane] && delete meta[pane].ccResume} />
+              {:else if active}
               <Tile bind:this={tiles[pane]} {pane} codexPane={agentOf(pane) === "codex"} focused={at.ws === wi && at.tab === ti && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}
                 onpasted={(path: string) => meta[pane] && (meta[pane].pastes = [...(meta[pane].pastes ?? []), path])}
                 online={(line: string) => onLine(pane, line)} onkey={(key: string) => onMentionKey(pane, key)}
