@@ -531,6 +531,8 @@ export default {
   "set.look.timelineSub": "A dot per command, a folder · duration · exit head, Rerun/Edit/Copy buttons. Off = shell panes are a plain terminal",
   "set.look.codex": "Codex status like Claude",
   "set.look.codexSub": "Model, context, and 5-hour/weekly usage as bars at the bottom of Codex panes. Off = your own Codex footer (tui.status_line) is kept. Applies to Codex started after this",
+  "set.look.ccStructured": "Typing cmd opens a structured pane",
+  "set.look.ccStructuredSub": "Plain `cmd`, `commandcode`, or `cmdc` from the input editor opens a structured Command Code pane in its place (messages, tools, proposed diffs). With arguments it stays a terminal. Off = `cmd` runs in the shell",
   "set.agent.hook.claude": "official hooks",
   // Settings: agents, accounts, add-ons
   "common.close": "Close",

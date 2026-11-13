@@ -797,6 +797,10 @@
             <span>{t("set.look.codex")}<small>{t("set.look.codexSub")}</small></span>
             <input type="checkbox" role="switch" aria-label={t("set.look.codex")} checked={ui.codex_status} onchange={(e) => set("codex_status", e.currentTarget.checked)} />
           </div>
+          <div class="row">
+            <span>{t("set.look.ccStructured")}<small>{t("set.look.ccStructuredSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.look.ccStructured")} checked={ui.cc_structured} onchange={(e) => set("cc_structured", e.currentTarget.checked)} />
+          </div>
         </section>
       {:else if sec === "agent"}
         {#if agentPage === "akun"}

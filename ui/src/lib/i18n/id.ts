@@ -522,6 +522,8 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "set.look.timelineSub": "Titik per perintah, kepala folder · durasi · keluar, tombol Ulangi/Ubah/Salin. Mati = pane shell jadi terminal polos",
   "set.look.codex": "Status Codex ala Claude",
   "set.look.codexSub": "Model, konteks, sama jatah 5 jam/mingguan jadi bar di bawah pane Codex. Mati = footer Codex punya lu sendiri (tui.status_line) tetap kepake. Berlaku buat Codex yang dibuka abis ini",
+  "set.look.ccStructured": "Ketik cmd buka pane terstruktur",
+  "set.look.ccStructuredSub": "`cmd`, `commandcode`, atau `cmdc` polos dari kolom input buka pane Command Code terstruktur di tempat yang sama (pesan, tool, diff usulan). Pakai argumen tetap terminal. Mati = `cmd` jalan di shell",
   "set.agent.hook.claude": "hook resmi",
   "common.close": "Tutup",
   "common.edit": "Ubah",

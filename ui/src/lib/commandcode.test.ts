@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory } from "./commandcode.ts";
+import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, ccTrigger } from "./commandcode.ts";
 import { emptyView } from "./agent-view.ts";
 
 test("Command Code mod reports ordered status and never answers permission prompts", async () => {
@@ -136,4 +136,9 @@ test("access comes only from the daemon: yolo on grant, restricted on revoke or 
   assert.equal(v.access, "restricted");
   assert.equal(fromSnapshot({ state: "idle", access: "yolo" }, "e1", 0).access, "yolo");
   assert.equal(fromSnapshot({ state: "idle", access: "YOLO" }, "e1", 0).access, "restricted");
+});
+
+test("FR-107: only a bare Command Code command opens the structured pane", () => {
+  for (const t of ["cmd", "commandcode", "cmdc", "  cmd  "]) assert.equal(ccTrigger(t), true, t);
+  for (const t of ["cmd --resume abc", "cmd -p hi", "cmd2", "/cmd", "@cmd hi", "echo cmd", "cmd\nls", ""]) assert.equal(ccTrigger(t), false, t);
 });

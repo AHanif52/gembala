@@ -3,6 +3,7 @@
   import { onMount, tick, untrack } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import CommandCodePane, { forget as forgetCc } from "$lib/CommandCodePane.svelte";
+  import { ccTrigger } from "$lib/commandcode";
   import Settings from "$lib/Settings.svelte";
 import changelog from "../../../CHANGELOG.md?raw";
 import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew";
@@ -407,6 +408,15 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (text.trim() && history.at(-1) !== text) history.push(text);
     if (history.length > 200) history.shift();
     hi = -1;
+    // FR-107: bare `cmd` opens the structured pane here; the first plain profile, since cc.create refuses args/secrets
+    const cc = ccTrigger(text) && cfg?.values.ui.cc_structured !== false
+      ? cfg?.values.profiles.find((p) => p.agent === "commandcode" && !p.args?.length && !p.secret_env?.length && (p.permission ?? "default") === "default")
+      : undefined;
+    if (cc) {
+      draft[pane] = "";
+      if (await swapToProfile(pane, cc.id, undefined, false, { kind: "commandcode" }).then(() => true, () => false)) return;
+      draft[pane] = text; // cc.create failed (folder, profile): the command runs in the shell as typed
+    }
     draft[pane] = "";
     atPrompt[pane] = false; // shows again at the next prompt
     toShell(pane, text, true);
@@ -523,10 +533,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     zoomed = false;
   }
   /// the shell pane is replaced by a profile pane in the same spot (agent runs with official hooks, FR-4)
-  async function swapToProfile(old: number, profile: string, account?: string, pick = false): Promise<number | undefined> {
+  async function swapToProfile(old: number, profile: string, account?: string, pick = false, extra: Record<string, unknown> = {}): Promise<number | undefined> {
     const m = meta[old];
     if (!m) return;
-    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account, pick });
+    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account, pick, ...extra });
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {

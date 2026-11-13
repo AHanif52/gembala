@@ -213,3 +213,6 @@ export function proposal(name: string, input: any): { path: string; before: stri
   if (name === "write_file" && typeof input.content === "string") return { path, before: "", after: input.content };
   return null;
 }
+
+/// FR-107: a bare Command Code command (no arguments) typed in the input editor opens the structured pane instead
+export const ccTrigger = (text: string) => /^\s*(cmd|commandcode|cmdc)\s*$/.test(text);
