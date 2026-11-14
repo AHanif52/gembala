@@ -18,6 +18,7 @@ pub struct Msg {
     /// already through the SEC-7/23 filter
     pub body: String,
     pub reply_to: Option<String>,
+    pub is_reply: bool,
     pub hop: u32,
     pub at: SystemTime,
 }
@@ -66,6 +67,9 @@ pub struct Engine {
     /// messages received so far, for hops and reply owners (capped at the last 1000)
     known: VecDeque<Msg>,
     pub replies: HashMap<String, Msg>,
+    pub waiting: HashSet<String>,
+    pub undelivered_replies: HashMap<String, Msg>,
+    pub reply_alerted: HashSet<String>,
     pub queues: HashMap<u64, VecDeque<Queued>>,
     sent: HashMap<u64, VecDeque<Instant>>,
     pub paused: bool,
@@ -105,6 +109,8 @@ impl Engine {
     }
 
     pub fn remember(&mut self, m: &Msg) {
+        // Results cannot start another reply chain.
+        if m.is_reply { return; }
         self.known.push_back(m.clone());
         while self.known.len() > 1000 {
             self.known.pop_front();
@@ -134,6 +140,11 @@ impl Engine {
 
     pub fn queue_len(&self, to: u64) -> usize {
         self.queues.get(&to).map_or(0, VecDeque::len)
+    }
+
+    pub fn overdue_replies(&mut self) -> Vec<Msg> {
+        let old: Vec<Msg> = self.undelivered_replies.values().filter(|m| m.at.elapsed().is_ok_and(|age| age > Duration::from_secs(120))).cloned().collect();
+        old.into_iter().filter(|m| self.reply_alerted.insert(m.id.clone())).collect()
     }
 }
 
@@ -204,6 +215,7 @@ mod tests {
             to_name: "oc-1".into(),
             body: "kunci sk-ant-rahasia jangan bocor".into(),
             reply_to: None,
+            is_reply: false,
             hop,
             at: SystemTime::now(),
         }
@@ -253,6 +265,19 @@ mod tests {
         }
         assert_eq!(e.sent_last_minute(1), 3);
         assert_eq!(e.sent_last_minute(2), 0);
+    }
+
+    #[test]
+    fn balasan_tertahan_diperingatkan_sekali_setelah_dua_menit() {
+        let mut e = Engine::default();
+        e.undelivered_replies.insert("new".into(), msg("new", 1));
+        e.undelivered_replies.insert("old".into(), Msg { at: SystemTime::now() - Duration::from_secs(121), ..msg("old", 1) });
+        e.undelivered_replies.insert("delivered".into(), Msg { at: SystemTime::now() - Duration::from_secs(121), ..msg("delivered", 1) });
+        e.undelivered_replies.remove("delivered");
+        let old = e.overdue_replies();
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].id, "old");
+        assert!(e.overdue_replies().is_empty());
     }
 
     #[test]

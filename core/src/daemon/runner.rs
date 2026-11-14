@@ -473,6 +473,7 @@ fn audit(st: &State, l: &Live, code: &str, step: Option<usize>, agent: Option<&s
         to_name: format!("{}{}", agent.unwrap_or(""), step.map_or(String::new(), |s| format!("#{s}"))),
         body: code.into(),
         reply_to: None,
+        is_reply: false,
         hop: 0,
         at: std::time::SystemTime::now(),
     };
@@ -749,6 +750,7 @@ fn send(st: &Arc<State>, l: &mut Live, to: u64, pane: &Pane, step: usize, body: 
         to_name: pane.name.lock().unwrap().clone(),
         body: clean,
         reply_to: None,
+        is_reply: false,
         // SEC-30: the hop count starts at 1 per stage, so an agent's answer is hop 2
         hop: 1,
         at: std::time::SystemTime::now(),

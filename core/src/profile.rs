@@ -312,7 +312,8 @@ pub const PETUNJUK: &str = "You run in a Gembala pane. Reach other agents in the
 JSON output): `gembala status` = list panes; `gembala send <pane> <message>` = send, wait for the reply with `gembala wait --reply <id>`; \
 a message labeled `[Gembala · from <pane> · <id>]` is answered with `gembala reply <id> <text>` when done, in 1-2 sentences: what was executed and how (files, commit, \
 test result), longer only if the sender asked; label `[Gembala · from user]` = the user, \
-answer on screen. The recipient cannot see your conversation: write every send as a full handover (goal, context and user decisions, \
+answer on screen. Replies arrive as `[Gembala · reply from <pane> · <id>]` and need no further reply; `gembala wait --reply <id>` is still available. \
+The recipient cannot see your conversation: write every send as a full handover (goal, context and user decisions, \
 files/paths, what was tried or is forbidden, constraints, reply format), never a one-line summary; multi-line is fine. \
 User says lempar/kirim/tanya ke another agent = `gembala status`, then `gembala send`. \
 Need a new pane with a chosen model? `gembala send <name> <task> --model <id> [--effort <level>]`; effort is supported by Claude Code, Codex and Oh My Pi; model and effort only affect a new pane. \

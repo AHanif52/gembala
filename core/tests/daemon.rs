@@ -1369,6 +1369,152 @@ fn sh_profile(id: &str, script: &str) -> String {
     format!("[[profile]]\nid = \"{id}\"\ncommand = \"sh\"\nargs = [\"-c\", {}]\n", json!(script))
 }
 
+/// FR-106: authenticated pane clients exercise the real reply/queue/wait paths without personal sessions.
+#[test]
+fn fr106_balasan_tanpa_wait_dan_dengan_wait() {
+    let d = start("reply106");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = |name: &str| format!("stty -echo; '{g}' token > '{}/{}.token'; {}", d.dir.display(), name, if name == "b" { "while IFS= read -r line; do :; done" } else { "cat" });
+    let stub = d.dir.join("commandcode-test");
+    std::fs::write(&stub, format!("#!/bin/sh\n{}\n", script("a"))).unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let config = format!("[[profile]]\nid = \"commandcode\"\ncommand = {}\n", json!(stub));
+    profiles(&d, &mut ui, &(config + &sh_profile("hasil", &script("b"))), "b.token");
+    let a = ui.call("pane.create", json!({"profile":"commandcode", "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.create", json!({"profile":"hasil", "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    let client = |name: &str| {
+        let path = d.dir.join(format!("{name}.token"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let token = loop {
+            if let Ok(t) = std::fs::read_to_string(&path) && !t.trim().is_empty() { break t; }
+            assert!(Instant::now() < deadline, "token missing");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let mut c = Cli::connect(&d, "pane.sock");
+        assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
+        c
+    };
+    let mut ca = client("a");
+    let mut cb = client("b");
+    let status = |c: &mut Cli, s: &str| { assert!(c.call("hook", json!({"agent":"omp","status":s})).get("result").is_some()); };
+    status(&mut ca, "idle");
+    status(&mut cb, "idle");
+    std::thread::sleep(Duration::from_millis(600));
+    let send = |c: &mut Cli| {
+        let r = c.call("send", json!({"to":"hasil-1","body":"task","queue":true}));
+        assert_eq!(r["result"]["result"], "accepted", "{r}");
+        r["result"]["id"].as_str().unwrap().to_string()
+    };
+    let reply = |c: &mut Cli, id: &str, text: &str| c.call("reply", json!({"msg_id":id,"body":text}));
+
+    let id = send(&mut ca);
+    // Confirm policy and a different workspace still need no approval for the reply.
+    ui.call("pane.policy", json!({"pane":a,"policy":"confirm"}));
+    ui.call("pane.workspace", json!({"pane":a,"workspace":"other"}));
+    let r = reply(&mut cb, &id, "RESULT-IDLE");
+    assert_eq!(r["result"]["result"], "delivered", "{r}");
+    let output = ui.attach_until(a, &["RESULT-IDLE"]);
+    assert!(output.contains(&format!("[Gembala · reply from hasil-1 · {id}]")), "{output}");
+    assert_eq!(reply(&mut ca, r["result"]["id"].as_str().unwrap(), "loop")["error"]["code"], "no_such_msg");
+    ui.call("pane.workspace", json!({"pane":a,"workspace":"w"}));
+    ui.call("pane.policy", json!({"pane":a,"policy":"auto"}));
+
+    for busy in ["working", "blocked"] {
+        let id = send(&mut ca);
+        status(&mut ca, busy);
+        assert_eq!(reply(&mut cb, &id, "RESULT-QUEUED")["result"]["result"], "queued");
+        assert!(ui.call("msg.list", json!({}))["result"]["pending"].as_array().unwrap().is_empty());
+        status(&mut ca, "idle");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let history = ui.call("msg.list", json!({}))["result"]["history"].clone();
+            if history.as_array().unwrap().iter().any(|e| e["kind"] == "sent" && e["msg"]["reply_to"] == id) { break; }
+            assert!(Instant::now() < deadline, "{history}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    let id = send(&mut ca);
+    let mut waiter = client("a");
+    let wait_id = id.clone();
+    let handle = std::thread::spawn(move || waiter.call("wait", json!({"reply":wait_id,"timeout_ms":5000})));
+    std::thread::sleep(Duration::from_millis(200));
+    let r = reply(&mut cb, &id, "RESULT-WAIT");
+    assert_eq!(r["result"]["delivered_via"], "wait", "{r}");
+    assert_eq!(handle.join().unwrap()["result"]["reply"]["body"], "RESULT-WAIT");
+    let history = ui.call("msg.list", json!({}));
+    assert!(!history["result"]["history"].as_array().unwrap().iter().any(|e| e["kind"] == "sent" && e["msg"]["reply_to"] == id));
+
+    // A timed out or disconnected waiter must not suppress later pane delivery.
+    for disconnect in [false, true] {
+        status(&mut ca, "idle");
+        std::thread::sleep(Duration::from_millis(600));
+        let id = send(&mut ca);
+        let mut waiter = client("a");
+        if disconnect {
+            writeln!(waiter.w, "{}", json!({"id":2,"method":"wait","params":{"reply":id,"timeout_ms":5000}})).unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            drop(waiter);
+            std::thread::sleep(Duration::from_millis(200));
+        } else {
+            assert_eq!(waiter.call("wait", json!({"reply":id,"timeout_ms":10}))["result"]["timeout"], true);
+        }
+        assert_eq!(reply(&mut cb, &id, "RESULT-AFTER-WAIT")["result"]["result"], "delivered");
+    }
+
+    // Hop and rate limits remain ahead of delivery.
+    status(&mut ca, "idle");
+    std::thread::sleep(Duration::from_millis(600));
+    let mut chain = send(&mut ca);
+    for i in 0..3 {
+        let (c, target) = if i == 1 { (&mut cb, "commandcode-1") } else { (&mut ca, "hasil-1") };
+        let r = c.call("send", json!({"to":target,"body":"chain","reply_to":chain,"queue":true}));
+        assert_ne!(r["result"]["result"], "rejected", "{r}");
+        chain = r["result"]["id"].as_str().unwrap().to_string();
+    }
+    assert_eq!(reply(&mut cb, &chain, "limit")["result"]["reason"], "hop_limit");
+    ui.call("msg.pause", json!({"on":true}));
+    assert_eq!(reply(&mut cb, &id, "paused")["result"]["reason"], "paused");
+    ui.call("msg.pause", json!({"on":false}));
+    assert_eq!(reply(&mut ca, &id, "wrong owner")["error"]["code"], "not_allowed");
+
+    let shell = ui.call("pane.create", json!({"profile":"shell","workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    let command = format!("'{g}' token > '{}/shell.token'; cat\r", d.dir.display());
+    ui.call("pane.write", json!({"pane":shell,"data":B64.encode(command)}));
+    let mut cs = client("shell");
+    let shell_id = send(&mut cs);
+    let r = reply(&mut cb, &shell_id, "RESULT-SHELL");
+    assert_eq!(r["result"]["result"], "stored", "{r}");
+    assert_eq!(r["result"]["reason"], "target_shell");
+    assert_eq!(cs.call("wait", json!({"reply":shell_id,"timeout_ms":1000}))["result"]["reply"]["body"], "RESULT-SHELL");
+
+    // An exited agent stores the reply.
+    let id = send(&mut ca);
+    status(&mut ca, "working");
+    assert_eq!(reply(&mut cb, &id, "QUEUED-BEFORE-CLOSE")["result"]["result"], "queued");
+    ui.call("pane.write", json!({"pane":a,"data":B64.encode(b"\x04")}));
+    // Closing the pane also exercises target_gone; retain its authenticated client for the mailbox read.
+    ui.call("pane.close", json!({"pane":a}));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ui.call("pane.info", json!({"pane":a})).get("result").is_some() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(reply(&mut cb, &id, "RESULT-STORED")["result"]["result"], "stored");
+    // The result remains in the engine even after the sender pane exits.
+    let history = ui.call("msg.list", json!({}));
+    assert!(history["result"]["history"].as_array().unwrap().iter().any(|e| e["kind"] == "stored"));
+    assert!(!history["result"]["history"].as_array().unwrap().iter().any(|e| e["kind"] == "sent" && e["msg"]["reply_to"] == id));
+    let mut limited = false;
+    for _ in 0..10 {
+        let r = reply(&mut cb, &id, "rate");
+        if r["result"]["reason"] == "rate_limited" { limited = true; break; }
+        assert_eq!(r["result"]["result"], "stored", "{r}");
+    }
+    assert!(limited);
+}
+
 /// Criterion 1 + FR-19: from one pane, one command sends a task; the `reply` answer is read back without a keyboard.
 #[test]
 fn kriteria_1_kirim_dan_balas() {

@@ -326,6 +326,14 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
                 eprintln!("gembala send: model and effort only apply when opening a new pane");
             }
             let out = v.get("result").cloned().unwrap_or_else(|| v.get("error").cloned().unwrap_or_default());
+            if cmd == "reply" {
+                match out["result"].as_str() {
+                    Some("delivered") => eprintln!("Reply delivered{}.", if out["delivered_via"] == "wait" { " via wait" } else { " to sender pane" }),
+                    Some("queued") => eprintln!("Reply queued; sender will receive it when ready."),
+                    Some("stored") => eprintln!("Reply stored; sender has not received it ({}). It can be retrieved with wait --reply.", out["reason"].as_str().unwrap_or("unavailable")),
+                    _ => {},
+                }
+            }
             match out["token"].as_str() {
                 // `GEMBALA_SPOOL="$(gembala token)"`: token polos
                 Some(t) if cmd == "token" => println!("{t}"),

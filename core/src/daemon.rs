@@ -505,7 +505,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
                     Ok(json!({}))
                 }
-                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage", Some(me)) => pane_method(&st, me, method, p),
+                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage", Some(me)) => pane_method_connected(&st, me, method, p, Some(r.get_ref())),
                 // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start", "substart", "substop"].into_iter().find(|s| *s == x)) {
                     // FR-101 item 1: a subagent started or ended; only the count changes, not the pane status
@@ -902,6 +902,11 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 // FR-86: a close request waits for the user like an open card
                 "closes": closes,
                 "queued": queues,
+                "reply_pending": eng.undelivered_replies.values().filter(|m| m.at.elapsed().is_ok_and(|age| age > Duration::from_secs(120))).map(|m| {
+                    let mut v = m.summary();
+                    v["queued"] = json!(eng.queues.get(&m.to).is_some_and(|q| q.iter().any(|q| q.msg.id == m.id)));
+                    v
+                }).collect::<Vec<_>>(),
                 // FR-100: drafts an agent made for the user to review; title = first line
                 "reports": eng.reports.iter().map(|r| {
                     let (title, text) = r.body.split_once('\n').unwrap_or((&r.body, ""));
@@ -1832,7 +1837,7 @@ fn drafts_dir(st: &State) -> std::path::PathBuf {
 /// queue while the freshly opened agent starts (`deliver_loop` opening rule)
 fn queue_user(st: &State, pane_id: u64, pane: &Pane, body: String) -> Result<(), &'static str> {
     pane.messaging()?;
-    let m = bus::Msg { id: String::new(), from: pane_id, from_name: "user".into(), to: pane_id, to_name: pane.name.lock().unwrap().clone(), body, reply_to: None, hop: 0, at: std::time::SystemTime::now() };
+    let m = bus::Msg { id: String::new(), from: pane_id, from_name: "user".into(), to: pane_id, to_name: pane.name.lock().unwrap().clone(), body, reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now() };
     st.engine.lock().unwrap().queues.entry(pane_id).or_default().push_back(bus::Queued { msg: m, since: std::time::Instant::now(), approved: true });
     Ok(())
 }
@@ -1858,7 +1863,7 @@ fn ask_close(st: &State, me: u64, my_name: &str, target: u64, target_name: &str)
         return Err("close_limit");
     }
     let id = eng.new_id(&st.boot);
-    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: target, to_name: target_name.to_string(), body: String::new(), reply_to: None, hop: 0, at: std::time::SystemTime::now() };
+    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: target, to_name: target_name.to_string(), body: String::new(), reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now() };
     if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
         drop(eng);
         return Ok(reject(st, &m, "rate_limited"));
@@ -1935,7 +1940,7 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
     let reply_to = p["reply_to"].as_str().map(String::from);
     let hop = eng.hop_for(reply_to.as_deref());
     let id = eng.new_id(&st.boot);
-    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: 0, to_name: target.to_string(), body, reply_to, hop, at: std::time::SystemTime::now() };
+    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: 0, to_name: target.to_string(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now() };
     let why = if hop > msg::HOP_MAX {
         Some("hop_limit")
     } else if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
@@ -1976,6 +1981,7 @@ fn model_effort(p: &Value) -> Result<(&str, &str), &'static str> {
 /// Decision facts are re-read every time (SEC-28). `counted` = rate already counted on receipt.
 fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_queue: bool, approved: bool, counted: bool) -> Result<msg::Facts<'a>, &'static str> {
     let terminal = to.messaging()?;
+    if m.is_reply && (to.agent_name().is_none() || to.claude.lock().unwrap().shell) { return Err("target_shell"); }
     // SEC-5 exceptions to "confirm" (BRD 11 Nov 2026): the harness to a pane it drives (the recipe was approved, SEC-27),
     // and an owner to the helper it opened through an approved card (FR-75). Rate, hop, deny and pause still apply.
     // Read before the engine lock: the registry is never taken while the engine is held.
@@ -1986,11 +1992,11 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
     let mut eng = st.engine.lock().unwrap();
     let typing = to.typed_at.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
     Ok(msg::Facts {
-        target_status: if to.status.lock().unwrap().is_empty() { "unknown" } else { *to.status.lock().unwrap() },
+        target_status: match *to.status.lock().unwrap() { "" => "unknown", "blocked" if m.is_reply => "working", status => status },
         stable_for: to.status_at.lock().unwrap().elapsed(),
         // SEC-5: skip-permission flags from the profile are set when the pane is created; one typed in the pane is read from the process arguments
         policy: msg::effective_policy(*to.policy.lock().unwrap(), &pty::busy(&terminal.master, terminal.sid).map(|(pid, _)| pty::args_of(pid)).unwrap_or_default()),
-        same_workspace: *to.workspace.lock().unwrap() == from_ws,
+        same_workspace: m.is_reply || *to.workspace.lock().unwrap() == from_ws,
         paused: eng.paused,
         muted: eng.muted.contains(&m.to),
         typing,
@@ -2086,13 +2092,17 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
     match d {
         msg::Decision::Reject(r) => reject(st, &m, r),
         msg::Decision::Send => {
-            st.engine.lock().unwrap().note_sent(m.from);
-            deliver(st, &m, &to);
-            json!({"result": "accepted", "id": m.id})
+            if !m.is_reply { st.engine.lock().unwrap().note_sent(m.from); }
+            let delivered = deliver(st, &m, &to);
+            if m.is_reply && !delivered {
+                json!({"result": "stored", "reason": "io", "id": m.id})
+            } else {
+                json!({"result": if m.is_reply { "delivered" } else { "accepted" }, "id": m.id})
+            }
         }
         msg::Decision::Queue => {
             let mut eng = st.engine.lock().unwrap();
-            eng.note_sent(m.from);
+            if !m.is_reply { eng.note_sent(m.from); }
             eng.queues.entry(m.to).or_default().push_back(bus::Queued { msg: m.clone(), since: std::time::Instant::now(), approved });
             drop(eng);
             record(st, "queued", &m, None);
@@ -2107,12 +2117,20 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
 }
 
 /// SEC-7/8: origin label + bracketed paste + one Enter, written to the target PTY.
-fn deliver(st: &State, m: &bus::Msg, to: &Pane) {
-    let Ok(terminal) = to.terminal() else { return record(st, "rejected", m, Some("unsupported_kind")) };
-    if (&terminal.master).write_all(&msg::wrap(&m.from_name, &m.id, &m.body)).is_ok() {
+fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
+    let Ok(terminal) = to.terminal() else { record(st, "rejected", m, Some("unsupported_kind")); return false };
+    let bytes = if m.is_reply { msg::wrap_reply(&m.from_name, m.reply_to.as_deref().unwrap_or_default(), &m.body) } else { msg::wrap(&m.from_name, &m.id, &m.body) };
+    if (&terminal.master).write_all(&bytes).is_ok() {
+        if m.is_reply {
+            let mut eng = st.engine.lock().unwrap();
+            eng.undelivered_replies.remove(&m.id);
+            eng.reply_alerted.remove(&m.id);
+        }
         record(st, "sent", m, None);
+        true
     } else {
         record(st, "rejected", m, Some("io"));
+        false
     }
 }
 
@@ -2120,6 +2138,8 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) {
 fn deliver_loop(st: Arc<State>) {
     loop {
         thread::sleep(std::time::Duration::from_millis(200));
+        let overdue = st.engine.lock().unwrap().overdue_replies();
+        for m in overdue { record(&st, "reply_pending", &m, None); }
         let targets: Vec<u64> = st.engine.lock().unwrap().queues.keys().copied().collect();
         for to_id in targets {
             let head = st.engine.lock().unwrap().queues.get_mut(&to_id).and_then(|q| q.pop_front());
@@ -2146,11 +2166,14 @@ fn deliver_loop(st: Arc<State>) {
             // queue len 0: this message already holds its place
             let mut f = match facts_for(&st, &q.msg, &to, &from_ws, true, q.approved, true) {
                 Ok(facts) => facts,
-                Err(reason) => { reject(&st, &q.msg, reason); continue; },
+                Err(reason) => {
+                    if q.msg.is_reply { record(&st, "stored", &q.msg, Some(reason)); } else { reject(&st, &q.msg, reason); }
+                    continue;
+                },
             };
             f.queue_len = 0;
             match msg::decide(&f) {
-                msg::Decision::Send => deliver(&st, &q.msg, &to),
+                msg::Decision::Send => { deliver(&st, &q.msg, &to); },
                 msg::Decision::Queue => requeue(q),
                 msg::Decision::Confirm => {
                     st.engine.lock().unwrap().pending.push(q.msg.clone());
@@ -2220,6 +2243,18 @@ fn token_saver(st: &State, reader: u64) -> bool {
 
 /// Pane channel (SEC-3): `me` = the calling pane from kernel identity, not from message content.
 fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
+    pane_method_connected(st, me, method, p, None)
+}
+
+struct ReplyWait<'a>(&'a State, Option<String>);
+
+impl Drop for ReplyWait<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = &self.1 { self.0.engine.lock().unwrap().waiting.remove(id); }
+    }
+}
+
+fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, connection: Option<&UnixStream>) -> Res {
     st.panes.lock().unwrap().get(&me).ok_or("not_a_pane")?.messaging()?;
     let my_name = st.panes.lock().unwrap().get(&me).map(|x| x.name.lock().unwrap().clone()).ok_or("not_a_pane")?;
     let my_ws = st.workspace_of(me);
@@ -2288,7 +2323,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             let id = eng.new_id(&st.boot);
             drop(eng);
             let to_name = to.name.lock().unwrap().clone();
-            let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to_name.clone(), body, reply_to, hop, at: std::time::SystemTime::now() };
+            let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to_name.clone(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now() };
             // FR-79: the current name goes in the answer, so a sender using an old name switches over
             let mut r = try_send(st, m, p["queue"].as_bool() == Some(true), false);
             r["to"] = json!(to_name);
@@ -2315,7 +2350,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             eng.note_sent(me);
             let id = eng.new_id(&st.boot);
             let body = report_clean(&format!("{}\n{}", title.trim(), text.trim()));
-            let r = bus::Msg { id: id.clone(), from: me, from_name: my_name, to: me, to_name: String::new(), body, reply_to: None, hop: 0, at: std::time::SystemTime::now() };
+            let r = bus::Msg { id: id.clone(), from: me, from_name: my_name, to: me, to_name: String::new(), body, reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now() };
             eng.reports.push(r.clone());
             // ponytail: the 10 newest drafts; an agent drafting more than that is noise, the oldest goes
             if eng.reports.len() > 10 {
@@ -2345,7 +2380,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             ask_close(st, me, &my_name, tid, &name)
         }
         "reply" => {
-            // FR-19: only the message's recipient can reply to it; the sender picks the reply up with `wait --reply`
+            // FR-106: only the recipient can reply; an active waiter takes priority over typing into the sender pane.
             let orig = st.engine.lock().unwrap().find(p["msg_id"].as_str().ok_or("bad_params")?).cloned().ok_or("no_such_msg")?;
             if orig.to != me {
                 return Err("not_allowed");
@@ -2353,7 +2388,7 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
             let mut eng = st.engine.lock().unwrap();
             let id = eng.new_id(&st.boot);
-            let r = bus::Msg { id, from: me, from_name: my_name, to: orig.from, to_name: orig.from_name.clone(), body, reply_to: Some(orig.id.clone()), hop: orig.hop + 1, at: std::time::SystemTime::now() };
+            let r = bus::Msg { id, from: me, from_name: my_name, to: orig.from, to_name: orig.from_name.clone(), body, reply_to: Some(orig.id.clone()), hop: orig.hop + 1, is_reply: true, at: std::time::SystemTime::now() };
             let why = if r.hop > msg::HOP_MAX {
                 Some("hop_limit")
             } else if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
@@ -2368,14 +2403,39 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 return Ok(reject(st, &r, why));
             }
             eng.note_sent(me);
-            eng.remember(&r);
             eng.replies.insert(orig.id.clone(), r.clone());
+            let waiting = eng.waiting.contains(&orig.id);
             drop(eng);
             record(st, "reply", &r, None);
             if let Some(pane) = st.panes.lock().unwrap().get(&me) {
                 *pane.replied_at.lock().unwrap() = Some(std::time::Instant::now());
             }
-            Ok(json!({"result": "accepted", "id": r.id}))
+            if waiting {
+                return Ok(json!({"result": "delivered", "delivered_via": "wait", "id": r.id}));
+            }
+            st.engine.lock().unwrap().undelivered_replies.insert(r.id.clone(), r.clone());
+            let target = st.panes.lock().unwrap().get(&orig.from).cloned();
+            let reason = match target {
+                None => Some("target_gone"),
+                Some(ref pane) if pane.agent_name().is_none() || pane.claude.lock().unwrap().shell => Some("target_shell"),
+                Some(ref pane) if pane.status.lock().unwrap().is_empty() => Some("target_unknown"),
+                Some(ref pane) if pane.messaging().is_err() => Some("unsupported_kind"),
+                _ => None,
+            };
+            let mut result = if let Some(reason) = reason {
+                record(st, "stored", &r, Some(reason));
+                json!({"result": "stored", "reason": reason, "id": r.id})
+            } else {
+                try_send(st, r.clone(), true, true)
+            };
+            if result["result"] == "rejected" && matches!(result["reason"].as_str(), Some("target_gone" | "target_shell" | "target_unknown" | "unsupported_kind")) {
+                result["result"] = json!("stored");
+                record(st, "stored", &r, result["reason"].as_str());
+            }
+            if !matches!(result["result"].as_str(), Some("queued" | "stored")) {
+                st.engine.lock().unwrap().undelivered_replies.remove(&r.id);
+            }
+            Ok(result)
         }
         "read" => {
             // FR-7, SEC-12, SEC-17: plain text, redacted, wrapped in labeled delimiters
@@ -2409,11 +2469,14 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
                 None => None,
             };
             if let Some(r) = &reply {
-                let mine = st.engine.lock().unwrap().find(r).is_some_and(|m| m.from == me);
+                let mut eng = st.engine.lock().unwrap();
+                let mine = eng.find(r).is_some_and(|m| m.from == me);
                 if !mine {
                     return Err("not_allowed");
                 }
+                if !eng.waiting.insert(r.clone()) { return Err("already_waiting"); }
             }
+            let _waiting = ReplyWait(st, reply.clone());
             // FR-79: the target's current name goes in the answer, so a sender using an old name switches over
             let done = |mut v: Value| {
                 if let Some((_, pane)) = &target {
@@ -2423,8 +2486,16 @@ fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
             };
             let t0 = std::time::Instant::now();
             loop {
+                if connection.is_some_and(|socket| {
+                    let mut byte = 0u8;
+                    unsafe { libc::recv(socket.as_raw_fd(), (&mut byte as *mut u8).cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) == 0 }
+                }) { return Err("disconnected"); }
                 if let Some(r) = &reply {
-                    if let Some(m) = st.engine.lock().unwrap().replies.remove(r) {
+                    let mut eng = st.engine.lock().unwrap();
+                    if let Some(m) = eng.replies.remove(r) {
+                        eng.undelivered_replies.remove(&m.id);
+                        eng.reply_alerted.remove(&m.id);
+                        eng.queues.values_mut().for_each(|q| q.retain(|q| q.msg.id != m.id));
                         return Ok(json!({"reply": {"id": m.id, "from": m.from_name, "body": m.body}}));
                     }
                 } else if let Some((_, pane)) = &target {
