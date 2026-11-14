@@ -1416,6 +1416,8 @@ fn fr106_balasan_tanpa_wait_dan_dengan_wait() {
     assert_eq!(r["result"]["result"], "delivered", "{r}");
     let output = ui.attach_until(a, &["RESULT-IDLE"]);
     assert!(output.contains(&format!("[Gembala · reply from hasil-1 · {id}]")), "{output}");
+    let mut late_waiter = client("a");
+    assert_eq!(late_waiter.call("wait", json!({"reply":id,"timeout_ms":1}))["result"]["timeout"], true);
     assert_eq!(reply(&mut ca, r["result"]["id"].as_str().unwrap(), "loop")["error"]["code"], "no_such_msg");
     ui.call("pane.workspace", json!({"pane":a,"workspace":"w"}));
     ui.call("pane.policy", json!({"pane":a,"policy":"auto"}));

@@ -2123,6 +2123,7 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
     if (&terminal.master).write_all(&bytes).is_ok() {
         if m.is_reply {
             let mut eng = st.engine.lock().unwrap();
+            if let Some(reply_to) = &m.reply_to { eng.replies.remove(reply_to); }
             eng.undelivered_replies.remove(&m.id);
             eng.reply_alerted.remove(&m.id);
         }
