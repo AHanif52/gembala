@@ -2335,6 +2335,12 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const n = meta[p]?.name ?? "";
     return simple && /^shell-\d+$/.test(n) ? agentName(meta[p]?.profile) || n : n;
   };
+  /// FR-105: the pane code (`shell-9`, the address `gembala send` and `@shell-9` use) whenever Sederhana shows a
+  /// profile name in its place; "" when the label already is the code, so it is drawn once and never twice
+  const paneCode = (p: number) => {
+    const n = meta[p]?.name ?? "";
+    return n && n !== paneLabel(p) ? n : "";
+  };
   /// the profile's display name ("Claude Code", "Codex", "Oh My Pi"…), used by the strip and the cards
   const agentName = (id: string | undefined) => (id ? (cfg?.values.profiles.find((p) => p.id === id)?.name ?? id) : "");
   /// a blocked pane's agent, for the icon and the sentence
@@ -3352,6 +3358,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   <input class="edit pname" bind:value={editing.value} onkeydown={(e) => e.key === "Enter" && saveEdit()} onblur={saveEdit} autofocus aria-label={tt("pane.name")} />
                 {:else}
                   <button class="chip pname" title={tt("pane.renameTip")} ondblclick={() => (editing = { kind: "pane", id: String(pane), value: meta[pane]?.name ?? "" })}>{#if agentOf(pane)}<span class="aico {agentOf(pane)}">{GLYPH[agentOf(pane)]}</span>{/if}{paneLabel(pane)}</button>
+                  {#if paneCode(pane)}
+                    <!-- FR-105: Sederhana shows the profile name; the code (`shell-9`, the `gembala send` address) follows it, a click copies it -->
+                    <button class="chip pcode" title={tt("pane.copyCode", { name: paneCode(pane) })} onclick={() => copy(paneCode(pane))}>{paneCode(pane)}</button>
+                  {/if}
                 {/if}
                 {#if acctOf(pane)}<span class="chip acc c-acc" title={tt("pane.accountTip")}>{acctOf(pane)}</span>{/if}
                 {#if meta[pane]?.owner && agentOf(pane) === "claude"}<span class="chip rwarn" title={tt("pane.ownerTip", { name: meta[pane].owner.name })}>{tt("pane.owner", { name: meta[pane].owner.name })}</span>{/if}
@@ -5138,6 +5148,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   .bar.rest:focus-within > *,
   /* pane name and account (FR-61) always shown: the neighboring pane stays clear on who it is and which account it uses */
   .bar.rest > .pname,
+  .bar.rest > .pcode,
   .bar.rest > .acc {
     visibility: visible;
   }
@@ -5222,6 +5233,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     }
   }
   @container (max-width: 330px) {
+    .bar .chip.pcode,
     .bar .chip.acc.c-acc,
     .bar .chip.box.c-attach {
       display: none;
@@ -5269,6 +5281,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   .chip.pname {
     color: var(--fg);
     font-weight: 600;
+  }
+  .chip.pcode {
+    flex-shrink: 0;
+    color: var(--muted);
+    font: 11px ui-monospace, Menlo, monospace;
   }
   input.pname {
     width: 140px;

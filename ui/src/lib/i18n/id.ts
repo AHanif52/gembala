@@ -1005,6 +1005,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "pane.login": "Masuk ke akun {name}: ikuti langkah login di pane ini, atau ketik",
   "pane.name": "Nama pane",
   "pane.renameTip": "Klik dua kali untuk ganti nama",
+  "pane.copyCode": "Klik buat salin kode pane {name}. Kode ini alamat buat `gembala send` dan `@{name}`",
   "pane.accountTip": "Akun Claude Code (FR-61)",
   "pane.ownerTip": "Sesi ini dibuat di akun {name}. Di akun lain Claude membuang thinking lama: lebih lambat dan boros token. Keluar, lalu Lanjutkan di blok sesi = dibuka lagi di akun {name} (FR-61)",
   "pane.owner": "sesi dari {name}",

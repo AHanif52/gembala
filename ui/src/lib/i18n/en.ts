@@ -1020,6 +1020,7 @@ export default {
   "pane.login": "Signing in to {name}: follow the login steps in this pane, or type",
   "pane.name": "Pane name",
   "pane.renameTip": "Double-click to rename",
+  "pane.copyCode": "Click to copy the pane code {name}. That's the address for `gembala send` and `@{name}`",
   "pane.accountTip": "Claude Code account (FR-61)",
   "pane.ownerTip": "This session was made with account {name}. On another account Claude drops the old thinking: slower and heavier on tokens. Quit, then Resume in the session block = it reopens with account {name} (FR-61)",
   "pane.owner": "session from {name}",
