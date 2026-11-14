@@ -3488,6 +3488,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 bind:model={() => meta[pane]?.ccModel ?? "", (x) => meta[pane] && (meta[pane].ccModel = x)}
                 bind:effort={() => meta[pane]?.ccEffort ?? "", (x) => meta[pane] && (meta[pane].ccEffort = x)}
                 onterminal={() => newTab(meta[pane]?.profile, wi, undefined, { cwd: meta[pane]?.cwd ?? undefined })}
+                onshell={() => swapToProfile(pane, "shell")}
                 resume={meta[pane].ccResume ?? ""} onresumed={() => meta[pane] && delete meta[pane].ccResume} />
               {:else if active}
               <Tile bind:this={tiles[pane]} {pane} codexPane={agentOf(pane) === "codex"} focused={at.ws === wi && at.tab === ti && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}

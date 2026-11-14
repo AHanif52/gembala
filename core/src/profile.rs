@@ -879,7 +879,7 @@ fn pane_path(login: Option<&str>) -> String {
 
 /// Interactive login shell PATH, like a pane. Many installers only add to PATH in `.zshrc`
 /// (standalone Codex: `~/.local/bin`), which `-l -c` doesn't read. Taken once per daemon.
-fn user_path() -> Option<String> {
+pub(crate) fn user_path() -> Option<String> {
     USER_PATH
         .get_or_init(|| {
             let mut c = Command::new(crate::pty::login_shell());

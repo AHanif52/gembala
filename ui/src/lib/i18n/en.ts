@@ -1389,7 +1389,7 @@ export default {
   "cc.hintBusy": "Wait for it to finish or stop the run",
   "cc.send": "Send",
   "cc.stop": "Stop",
-  "cc.slash": "Slash commands run in the terminal. Not sent.",
+  "cc.slash": "Slash commands run in the terminal. Not sent. Type /exit to go back to the shell.",
   "cc.model": "Model",
   "cc.effort": "Effort",
   "cc.default": "Profile default",

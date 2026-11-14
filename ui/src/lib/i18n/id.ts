@@ -1372,7 +1372,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "cc.hintBusy": "Tunggu selesai atau hentikan run",
   "cc.send": "Kirim",
   "cc.stop": "Hentikan",
-  "cc.slash": "Slash command jalannya di terminal. Belum dikirim.",
+  "cc.slash": "Slash command jalan di terminal, belum dikirim. Ketik /exit buat balik ke shell.",
   "cc.model": "Model",
   "cc.effort": "Effort",
   "cc.default": "Bawaan profil",

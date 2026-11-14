@@ -257,6 +257,8 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     }
     let (model, effort) = model_effort(p)?;
     validate_model_effort(model, effort)?;
+    // A daemon started by launchd has no Homebrew PATH; `cmd` is `#!/usr/bin/env node`. Taken before any lock (first call runs a shell).
+    let path = [profile::user_path(), std::env::var("PATH").ok()].into_iter().flatten().collect::<Vec<_>>().join(":");
     let mut worker = cc.worker.lock().unwrap();
     let mut d = cc.data.lock().unwrap();
     if cc.closed.load(Ordering::Acquire) { return Err("no_such_pane"); }
@@ -290,7 +292,7 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     // Only the default access path is restricted; a grant recorded by the UI gate unlocks this one flag.
     if yolo { cmd.arg("--yolo"); }
     pty::scrub_env(&mut cmd);
-    cmd.envs(cc.env.iter().cloned()).current_dir(&cc.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.env("PATH", path).envs(cc.env.iter().cloned()).current_dir(&cc.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { cmd.pre_exec(|| { if libc::setsid() == -1 { Err(io::Error::last_os_error()) } else { Ok(()) } }); }
     // hello/pane_of_pid holds the same registry lock. Publish SID before the child can authenticate.
     let panes = st.panes.lock().unwrap();

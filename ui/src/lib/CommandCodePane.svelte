@@ -25,6 +25,7 @@
     model = $bindable(""),
     effort = $bindable(""),
     onterminal = () => {},
+    onshell = async () => {},
     resume = "",
     onresumed = () => {},
   }: {
@@ -35,6 +36,7 @@
     model?: string;
     effort?: string;
     onterminal?: () => void;
+    onshell?: () => Promise<unknown>; // `exit`, `/exit`, `/quit`: back to the shell in this pane (reverse of FR-107); closing cancels a run
     resume?: string; // session of this pane before the daemon restarted (phase 4): reopened read-first
     onresumed?: () => void;
   } = $props();
@@ -180,6 +182,7 @@
 
   async function send() {
     const text = prompt.trim();
+    if (["exit", "/exit", "/quit"].includes(text)) return void onshell().catch((e) => (note = errText(e)));
     if (!text || busy || locked) return;
     banner = null;
     if (text.startsWith("/")) return void (note = t("cc.slash"));
