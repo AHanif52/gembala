@@ -514,6 +514,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("path tanpa folder"))?;
     // the Gembala folder and its subfolders (hooks/) are created 0700; one level above is enough
     if let Some(up) = dir.parent().filter(|u| !u.exists()) {
+        // a fresh Linux account has no ~/.config yet
+        if let Some(root) = up.parent() {
+            fs::create_dir_all(root)?;
+        }
         crate::rundir::ensure_private_dir(up)?;
     }
     crate::rundir::ensure_private_dir(dir)?;
@@ -702,6 +706,14 @@ mod tests {
         let d = std::env::temp_dir().join(format!("gembala-cfg-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d.join("config.toml")
+    }
+
+    #[test]
+    fn write_atomic_creates_missing_grandparent() {
+        let p = scratch("grandparent");
+        let p = p.parent().unwrap().join("dot-config/gembala/hooks/x");
+        write_atomic(&p, b"a").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"a");
     }
 
     #[test]

@@ -77,6 +77,11 @@ jobs:
         run: npm ci --ignore-scripts
       - working-directory: ui
         run: npm run tauri build -- --bundles deb
+      # AppImage stays off until its three runtime problems are solved (TECH 21 "AppImage ditunda")
+      - name: Check .deb contents
+        run: scripts/deb-check.sh contents target/release/bundle/deb/*.deb
+      - name: Install .deb in a clean ubuntu:24.04 container
+        run: scripts/deb-check.sh install target/release/bundle/deb/*.deb
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gembala-linux-${{ matrix.os }}
