@@ -40,6 +40,8 @@ pub struct Profile {
     pub readonly: bool,
     /// FR-78: add-on flags for this pane's workspace (set at launch, not from the profile config)
     pub addons: Vec<String>,
+    /// FR-27: token saver for panes of this profile; None follows `[harness] token_saver`
+    pub token_saver: Option<bool>,
 }
 
 /// (agent, name, command, install command shown when missing, tested major.minor version)
@@ -76,6 +78,7 @@ pub fn builtin() -> Vec<Profile> {
         brief: String::new(),
         readonly: false,
         addons: vec![],
+        token_saver: None,
     };
     let agents = AGENTS.iter().map(|(agent, name, cmd, _, _)| Profile {
         id: agent.to_string(),
@@ -147,6 +150,11 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<D
                 Some(Some(b)) => *field = b,
                 Some(None) => errors.push(Diag::new("bool").at(at(key))),
             }
+        }
+        match t.get("token_saver").map(|v| v.as_bool()) {
+            None => {}
+            Some(b @ Some(_)) => p.token_saver = b,
+            Some(None) => errors.push(Diag::new("bool").at(at("token_saver"))),
         }
         match t.get("policy").map(|v| v.as_str()) {
             None => {}
@@ -857,7 +865,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
 
 pub fn to_json(p: &Profile) -> Value {
     json!({
-        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy, "permission": p.permission, "token": p.token, "account": p.account,
+        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy, "permission": p.permission, "token": p.token, "account": p.account, "token_saver": p.token_saver,
         "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
         "secret_env": p.secret_env.iter().map(|(k, r)| json!({"name": k, "ref": r})).collect::<Vec<_>>(),
     })

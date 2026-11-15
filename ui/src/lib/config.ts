@@ -31,6 +31,7 @@ export type Profile = {
   secret_env: { name: string; ref: string }[];
   summarize: boolean;
   notify: boolean;
+  token_saver?: boolean | null; // FR-27: this profile's own switch; unset follows the harness setting
   policy?: string; // SEC-5: messages from other agents — auto | confirm | deny
   permission: string; // FR-64: default | auto
   account?: string; // FR-61: the profile's default account; empty = Utama

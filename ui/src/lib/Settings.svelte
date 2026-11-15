@@ -127,6 +127,7 @@
     secret: string;
     summarize: boolean;
     notify: boolean;
+    saver: "" | "on" | "off"; // FR-27: "" = follow Settings › Harness
     permission: string;
     policy: string; // SEC-5 / msg.rs Policy: auto, confirm, deny
     account: string;
@@ -150,6 +151,7 @@
       secret: p.secret_env.map((x) => `${x.name}=${x.ref}`).join("\n"),
       summarize: p.summarize,
       notify: p.notify,
+      saver: p.token_saver === true ? "on" : p.token_saver === false ? "off" : "",
       permission: p.permission ?? "default",
       policy: p.policy ?? "auto",
       isNew: copy,
@@ -172,6 +174,7 @@
       secret: "",
       summarize: true,
       notify: true,
+      saver: "",
       permission: "default",
       policy: "auto",
       isNew: true,
@@ -195,6 +198,7 @@
       secret_env: pairs(form.secret),
       summarize: form.summarize,
       notify: form.notify,
+      token_saver: form.saver === "" ? null : form.saver === "on",
       permission: form.permission,
       policy: form.policy,
       account: form.account,
@@ -572,6 +576,16 @@
         <span class="grow">{t("set.prof.summarize")}</span>
         <input type="checkbox" role="switch" bind:checked={form.summarize} aria-label={t("set.prof.summarize")} />
       </div>
+      {#if form.agent !== "shell"}
+        <div class="row">
+          <span class="grow">{t("set.prof.saver")}<small>{t("set.prof.saverSub")}</small></span>
+          <span class="seg" role="group" aria-label={t("set.prof.saver")}>
+            {#each ["", "on", "off"] as const as v}
+              <button class:on={form.saver === v} onclick={() => form && (form.saver = v)}>{t(`set.prof.saver.${v || "follow"}`)}</button>
+            {/each}
+          </span>
+        </div>
+      {/if}
       <div class="row">
         <span class="grow">{t("set.prof.notify")}</span>
         <input type="checkbox" role="switch" bind:checked={form.notify} aria-label={t("set.prof.notify")} />

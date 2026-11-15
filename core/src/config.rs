@@ -343,6 +343,14 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), Diag> {
             t[k] = toml_edit::value(b);
         }
     }
+    // FR-27: true/false sets it, null (sent by "follow the setting") removes the key
+    match &p["token_saver"] {
+        Value::Bool(b) => t["token_saver"] = toml_edit::value(*b),
+        Value::Null if p.get("token_saver").is_some() => {
+            t.remove("token_saver");
+        }
+        _ => {}
+    }
     // env merged per key (old values are never sent to the UI); secret_env replaced whole (its references show in the form)
     for (k, merge) in [("env", true), ("secret_env", false)] {
         if let Some(m) = p[k].as_object() {
@@ -768,6 +776,14 @@ mod tests {
         save_profile(&p, &json!({"id": "claude", "name": "Claude"})).unwrap();
         let c = load(Some(&fs::read_to_string(&p).unwrap()));
         assert_eq!(c.profiles.iter().find(|x| x.id == "claude").unwrap().env.len(), 1);
+        // FR-27: the profile's saver switch: on/off is kept, null goes back to following the global setting
+        let saver = |p: &Path| load(Some(&fs::read_to_string(p).unwrap())).profiles.iter().find(|x| x.id == "claude").unwrap().token_saver;
+        save_profile(&p, &json!({"id": "claude", "token_saver": true})).unwrap();
+        assert_eq!(saver(&p), Some(true));
+        save_profile(&p, &json!({"id": "claude", "name": "Claude"})).unwrap();
+        assert_eq!(saver(&p), Some(true), "not sent = unchanged");
+        save_profile(&p, &json!({"id": "claude", "token_saver": null})).unwrap();
+        assert_eq!(saver(&p), None);
         // a secret in plain env is rejected, the file doesn't change
         let before = fs::read_to_string(&p).unwrap();
         let bad = save_profile(&p, &json!({"id": "claude", "env": {"KEY": "sk-ant-123"}})).unwrap_err();

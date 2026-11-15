@@ -171,6 +171,8 @@ struct Pane {
     /// SEC-3 fallback: 128-bit token for processes detached from the pane session (e.g. a tmux server, profile `token = true`)
     /// or that can't use sockets (FR-66: sandboxed Codex, created through `gembala token`)
     token: Mutex<Option<String>>,
+    /// FR-27: its profile's own token saver switch; None follows `[harness] token_saver`
+    saver: Mutex<Option<bool>>,
 }
 
 impl Pane {
@@ -1706,7 +1708,8 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         usage::note_codex(st);
     }
     // FR-27: the harness passes its recipe switch; a pane opened from the UI follows `[harness] token_saver`
-    let saver = p["saver"].as_bool().unwrap_or_else(|| st.config.lock().unwrap()["values"]["harness"]["token_saver"].as_bool().unwrap_or(false)) && agent != "shell";
+    // a profile's own switch (FR-27) wins over the global one
+    let saver = p["saver"].as_bool().or_else(|| prof.as_ref().and_then(|x| x.token_saver)).unwrap_or_else(|| st.config.lock().unwrap()["values"]["harness"]["token_saver"].as_bool().unwrap_or(false)) && agent != "shell";
     let launch = picked.as_ref().or(prof.as_ref()).and_then(|x| profile::launch(x, Some(&st.hooks), Some(&session), saver));
     let cmd = launch.as_deref().or(p["cmd"].as_str());
     let home = std::env::var("HOME").unwrap_or_default();
@@ -1767,6 +1770,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
         msg::effective_policy(msg::Policy::parse(&x.policy).unwrap_or(msg::Policy::Auto), &[x.args.clone(), profile::permission_flags(&x.agent, &x.permission)].concat())
     });
     *pane.token.lock().unwrap() = token;
+    *pane.saver.lock().unwrap() = prof.as_ref().and_then(|x| x.token_saver);
     // FR-62: old pane blocks (after the daemon stopped) show above the new shell and continue in the pane's file
     let prev = src.as_deref().map(history::load).unwrap_or_default();
     if !prev.is_empty() {
@@ -1832,6 +1836,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
         manual: Mutex::new(None),
         last_out: Mutex::new(std::time::Instant::now()),
         at_prompt: std::sync::atomic::AtomicBool::new(false),
+        saver: Mutex::new(None),
         hooked: std::sync::atomic::AtomicBool::new(false),
         exited: std::sync::atomic::AtomicBool::new(false),
         closing: std::sync::atomic::AtomicBool::new(false),
@@ -2512,7 +2517,7 @@ fn helper_quiet(status: &str, replied: Option<Duration>, status_for: Duration, m
 }
 
 /// FR-27, SEC-31: should output handed to this reader be reduced? A harness stage follows its recipe's `token_saver`;
-/// everything else follows `[harness] token_saver` (there is no per-profile switch yet, TECH 13). The registry is
+/// everything else follows its profile's switch, then `[harness] token_saver`. The registry is
 /// released before any run is locked: the ticker locks them the other way round.
 fn token_saver(st: &State, reader: u64) -> bool {
     let runs = st.harness.lock().unwrap().runs();
@@ -2522,7 +2527,8 @@ fn token_saver(st: &State, reader: u64) -> bool {
             return on;
         }
     }
-    st.config.lock().unwrap()["values"]["harness"]["token_saver"].as_bool().unwrap_or(false)
+    let own = st.panes.lock().unwrap().get(&reader).and_then(|p| *p.saver.lock().unwrap());
+    own.unwrap_or_else(|| st.config.lock().unwrap()["values"]["harness"]["token_saver"].as_bool().unwrap_or(false))
 }
 
 /// Pane channel (SEC-3): `me` = the calling pane from kernel identity, not from message content.
