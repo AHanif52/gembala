@@ -627,6 +627,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const m = meta[old];
     if (!m) return;
     const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account, pick, ...extra });
+    rememberAgent(wsIdOf(old), profile);
     for (const w of wss)
       for (const t of w.tabs)
         if (panes(t.tree).includes(old)) {
@@ -688,8 +689,19 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   const shortPreview = (s: string) => (s.length > 70 ? `${s.slice(0, 69)}…` : s);
   // a word starting with "-" is a flag: a command that wasn't found (`claude-kantor --permission-mode default`), not a sentence
   const askOffer = (cmd: string, code: number) => code === 127 && cmd.trim().split(/\s+/).length >= 3 && !/(^|\s)-/.test(cmd);
-  /// ponytail: the first installed agent is offered; remember the last one used per workspace when people ask for it
-  const offerAgent = $derived((cfg?.values.profiles ?? []).find((p) => p.agent !== "shell" && installed.includes(p.agent)));
+  /// the agent last started in this workspace (profile id), kept in localStorage like the other view preferences
+  const LAST_AGENT = "gembala.lastAgent";
+  let lastAgent = $state<Record<string, string>>((() => { try { return JSON.parse(localStorage.getItem(LAST_AGENT) ?? "{}"); } catch { return {}; } })());
+  function rememberAgent(wsId: string | undefined, profile?: string) {
+    if (!wsId || !profile || (cfg?.values.profiles.find((p) => p.id === profile)?.agent ?? "shell") === "shell") return;
+    lastAgent[wsId] = profile;
+    try { localStorage.setItem(LAST_AGENT, JSON.stringify(lastAgent)); } catch {}
+  }
+  /// the agent offered for a sentence that went to zsh: the one last started in this workspace, else the first installed
+  const offerAgent = $derived.by(() => {
+    const list = (cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell" && installed.includes(p.agent));
+    return list.find((p) => p.id === lastAgent[ws?.id ?? ""]) ?? list[0];
+  });
   /// "Kirim": this terminal pane becomes the agent and the sentence is its first message (same wait as a manual task)
   async function sendOffer(pane: number) {
     const text = offer[pane];
@@ -1276,6 +1288,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const w = wss[wi];
     const from = wi === at.ws ? tab?.focus : undefined;
     const id = await createPane({ profile, from_pane: from, cwd: from === undefined ? w.root : undefined, workspace: w.id, account, ...extra });
+    rememberAgent(w.id, profile);
     w.tabs.push({ id: uid(), title: "", tree: { pane: id }, focus: id });
     at = { ws: wi, tab: w.tabs.length - 1 };
     zoomed = false;
