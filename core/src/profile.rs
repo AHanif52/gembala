@@ -52,6 +52,7 @@ const AGENTS: &[(&str, &str, &str, &str, &str)] = &[
     ("opencode", "OpenCode", "opencode", "brew install anomalyco/tap/opencode", "1.19"),
     ("omp", "Oh My Pi", "omp", "brew install can1357/tap/omp", "18.18"),
     ("commandcode", "Command Code", "commandcode", "npm i -g command-code", "1.88"),
+    ("gemini", "Gemini CLI", "gemini", "brew install gemini-cli", "0.67"),
 ];
 
 /// agent kinds Gembala knows (recipes name agents by these)
@@ -557,7 +558,7 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
 
 /// FR-98: the same typed-agent wrappers for bash panes (Linux's default shell), each starting the agent through
 /// `gembala jail --` (SEC-20). `mapfile` splits the add-ons by line like zsh's `${(f)}`; bash 3.2 has no `mapfile`, so
-/// the add-ons are skipped there (Linux has bash 4+). `gemini` only needs the jail: Gembala has no hook for it.
+/// the add-ons are skipped there (Linux has bash 4+). `gemini` only needs the jail: its status comes from the screen (TECH 45).
 fn bash_agents(dir: &std::path::Path, exe: &str) -> String {
     let f = q(&dir.join("gembala.md").to_string_lossy());
     let notify = q(&format!("notify={}", json!([exe, "hook", "codex", "notify"])));
@@ -768,6 +769,8 @@ fn session_flags(agent: &str, s: &Session) -> Vec<String> {
         ("opencode", true, Some(id)) => vec!["--session".into(), id.into()],
         ("commandcode", true, Some(id)) => vec!["--resume".into(), id.into()],
         ("commandcode", true, None) => vec!["--continue".into()],
+        // FR-88: `--resume` takes `latest` or a list index, never an id; the card shows `gemini --resume latest`
+        ("gemini", true, _) => vec!["--resume".into(), "latest".into()],
         ("claude", true, None) | ("opencode" | "omp", true, _) => vec!["--continue".into()],
         ("codex", true, _) => vec!["resume".into(), "--last".into()],
         _ => vec![],
@@ -792,6 +795,8 @@ pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
         ("omp", "auto") => &["--approval-mode=yolo"],
         ("codex", "auto") => &["--approve-for-me"],
         ("commandcode", "auto") => &["--permission-mode", "accept-edits"],
+        // FR-88: edits auto-approved, shell and the rest still ask (`yolo` would skip every prompt)
+        ("gemini", "auto") => &["--approval-mode", "auto_edit"],
         _ => &[],
     };
     f.iter().map(|s| s.to_string()).collect()
@@ -945,11 +950,12 @@ pub(crate) fn user_path() -> Option<String> {
         .clone()
 }
 
-/// FR-28: find agents through the login shell (same PATH as a normal terminal), 10-second limit.
+/// FR-28: find agents through the login shell (same PATH as a normal terminal), 10-second limit. The `--version` probes
+/// run side by side: Node agents take 2-4 s each to start (Gemini CLI too), one after another they passed the limit.
 pub fn detect() -> Value {
     let names: Vec<&str> = AGENTS.iter().map(|a| a.0).collect();
     let script = format!(
-        "{}for a in {}; do p=$(command -v \"$a\") && printf '%s\\t%s\\t%s\\n' \"$a\" \"$p\" \"$(\"$a\" --version 2>/dev/null | head -1)\"; done",
+        "{}d=$(mktemp -d); for a in {}; do ( p=$(command -v \"$a\") && printf '%s\\t%s\\t%s\\n' \"$a\" \"$p\" \"$(\"$a\" --version 2>/dev/null | head -1)\" > \"$d/$a\" ) & done; wait; cat \"$d\"/* 2>/dev/null; rm -rf \"$d\"",
         pane_path(user_path().as_deref()),
         names.join(" ")
     );
@@ -1294,6 +1300,23 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains(&exe.to_string_lossy().to_string()) && text.contains("BASH_ENV=kosong"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn gemini_launch_resume_and_permission() {
+        let mut p = builtin().into_iter().find(|p| p.id == "gemini").unwrap();
+        assert_eq!((p.command.as_str(), p.permission.as_str()), ("gemini", "default"));
+        let hooks = Hooks { exe: "/x/gembala".into(), dir: "/cfg/hooks".into() };
+        // no hook flags: Gemini only takes system settings from a root-owned file (TECH 45), its status is read from the screen
+        let plain = launch(&p, Some(&hooks), None, false).unwrap();
+        assert!(!plain.contains("GEMINI_") && !plain.contains("--approval-mode") && !plain.contains("--yolo"), "{plain}");
+        p.permission = "auto".into();
+        let resume = Session { id: Some("12345678-1234-5678-1234-567812345678".into()), resume: true };
+        assert!(launch(&p, Some(&hooks), Some(&resume), false).unwrap().contains("'--approval-mode' 'auto_edit' '--resume' 'latest'"));
+        assert_eq!(session_flags("gemini", &Session { id: None, resume: true }), ["--resume", "latest"]);
+        assert!(session_flags("gemini", &Session { id: None, resume: false }).is_empty());
+        assert!(picker_flags("gemini").is_empty());
+        assert_eq!(hook_status("gemini", "start", "{}"), None);
     }
 
     #[test]

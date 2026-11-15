@@ -1,6 +1,6 @@
 /// FR-69: pane label from the agent's terminal title. Spinner marks, agent icons, and generic titles (agent name,
 /// folder name) are dropped; "" = no useful label.
-const GENERIC = ["claude code", "claude", "codex", "opencode", "omp", "oh my pi", "command code", "commandcode", "cmd", "cmdc"];
+const GENERIC = ["claude code", "claude", "codex", "opencode", "omp", "oh my pi", "command code", "commandcode", "cmd", "cmdc", "gemini cli", "gemini"];
 
 export function cleanTitle(raw: string | undefined, folder = ""): string {
   const t = (raw ?? "")

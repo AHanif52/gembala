@@ -818,7 +818,7 @@ export default {
   "set.tg.cmd.to": "/to <pane>",
   "set.tg.cmd.toSub": "switch the active pane",
   "set.tg.cmd.open": "/open <agent> [pane]",
-  "set.tg.cmd.openSub": "start claude, codex, omp, opencode or commandcode in a shell idle at its prompt",
+  "set.tg.cmd.openSub": "start claude, codex, omp, opencode, commandcode or gemini in a shell idle at its prompt",
   "set.tg.cmd.status": "/status",
   "set.tg.cmd.statusSub": "every pane and its status",
   "set.tg.cmd.look": "/look <pane>",

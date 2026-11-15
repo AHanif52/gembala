@@ -807,7 +807,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "set.tg.cmd.to": "/ke <pane>",
   "set.tg.cmd.toSub": "ganti pane aktif",
   "set.tg.cmd.open": "/buka <agent> [pane]",
-  "set.tg.cmd.openSub": "nyalain claude, codex, omp, opencode, atau commandcode di shell yang lagi diam",
+  "set.tg.cmd.openSub": "nyalain claude, codex, omp, opencode, commandcode, atau gemini di shell yang lagi diam",
   "set.tg.cmd.status": "/status",
   "set.tg.cmd.statusSub": "semua pane sama statusnya",
   "set.tg.cmd.look": "/lihat <pane>",

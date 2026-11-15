@@ -145,7 +145,7 @@
     isNew: boolean;
   };
   let form = $state<Form | null>(null);
-  const BUILTIN = ["shell", "claude", "codex", "opencode", "omp", "commandcode"];
+  const BUILTIN = ["shell", "claude", "codex", "opencode", "omp", "commandcode", "gemini"];
 
   function edit(p: Profile, copy = false) {
     let id = p.id;
@@ -261,7 +261,7 @@
   const mb = (kb: number) => `${Math.round(kb / 1024)} MB`;
   // one row per pane (total RAM/CPU of all its processes), details open per pane; panes with only a shell at the bottom
   const SHELLS = ["zsh", "bash", "fish", "sh", "login"];
-  const AGENT_BIN = ["claude", "codex", "opencode", "omp", "commandcode"];
+  const AGENT_BIN = ["claude", "codex", "opencode", "omp", "commandcode", "gemini"];
   const paneGroups = $derived.by(() => {
     const g = new Map<string, Proc[]>();
     for (const p of procs.filter((p) => p.role === "pane")) {
@@ -1189,7 +1189,7 @@
                 </select></div>
             {:else}
               <div class="row"><span>{t("hn.set.file")}<small>{t("hn.set.fileSub")}</small></span>
-                <select aria-label={t("hn.set.file")} bind:value={ai.file}><option>AGENTS.md</option><option>CLAUDE.md</option></select></div>
+                <select aria-label={t("hn.set.file")} bind:value={ai.file}><option>AGENTS.md</option><option>CLAUDE.md</option><option>GEMINI.md</option></select></div>
             {/if}
             <div class="row col"><span>{t("hn.set.need")}</span>
               <textarea class="tin" rows="4" bind:value={ai.ask} placeholder={t("hn.set.needPh")} aria-label={t("hn.set.need")}></textarea></div>
@@ -1501,7 +1501,7 @@
         <section>
           {#each Object.values(meta) as m}
             <div class="row">
-              <span>{m.name || m.profile}<small>{["claude", "codex", "opencode", "omp", "commandcode"].includes(m.agent) ? t("set.diag.byHook") : m.agent === "custom" ? t("set.diag.byScreen") : t("set.diag.byShell")}</small></span>
+              <span>{m.name || m.profile}<small>{["claude", "codex", "opencode", "omp", "commandcode"].includes(m.agent) ? t("set.diag.byHook") : m.agent === "custom" || m.agent === "gemini" ? t("set.diag.byScreen") : t("set.diag.byShell")}</small></span>
               <span class="m">{m.status ? tOr(`status.${m.status}`, m.status) : "-"}</span>
             </div>
           {:else}

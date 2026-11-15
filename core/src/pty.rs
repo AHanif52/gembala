@@ -174,10 +174,14 @@ pub fn proc_name(pid: i32) -> Option<String> {
     Some(if matches!(name.as_str(), "node" | "bun") { interpreted_agent(&name, &args_of(pid)) } else { name })
 }
 
-// npm's Command Code runs under node; match its entry point, never arbitrary node processes.
+// npm's Command Code and Gemini CLI run under node; match their entry points, never arbitrary node processes.
 // It also sets `process.title = "command-code"`, which rewrites argv[0] and empties the slots behind it.
 fn interpreted_agent(name: &str, args: &[String]) -> String {
-    if matches!(name, "node" | "bun") && (args.first().is_some_and(|a| a == "command-code") || args.get(1).is_some_and(|a| a.ends_with("/command-code/dist/index.mjs") || a.ends_with("/bin/commandcode") || a.ends_with("/bin/cmdc") || a.ends_with("/bin/cmd"))) {
+    // FR-88: Gemini's bundle (`.../@google/gemini-cli/bundle/gemini.js`) or its bin link; it relaunches itself as
+    // `node --max-old-space-size=8192 <bin/gemini>`, so the script is the first argument that isn't a node flag
+    if matches!(name, "node" | "bun") && args.iter().skip(1).find(|a| !a.starts_with('-')).is_some_and(|a| a.ends_with("/gemini-cli/bundle/gemini.js") || a.ends_with("/bin/gemini")) {
+        "gemini".into()
+    } else if matches!(name, "node" | "bun") && (args.first().is_some_and(|a| a == "command-code") || args.get(1).is_some_and(|a| a.ends_with("/command-code/dist/index.mjs") || a.ends_with("/bin/commandcode") || a.ends_with("/bin/cmdc") || a.ends_with("/bin/cmd"))) {
         "commandcode".into()
     } else {
         name.into()
@@ -350,6 +354,11 @@ mod tests {
             assert_eq!(interpreted_agent("node", &args(path)), "commandcode");
         }
         assert_eq!(interpreted_agent("node", &args("/tmp/other/index.mjs")), "node");
+        for path in ["/opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/gemini.js", "/usr/local/bin/gemini"] {
+            assert_eq!(interpreted_agent("node", &args(path)), "gemini");
+        }
+        assert_eq!(interpreted_agent("node", &args("/tmp/gemini.js")), "node");
+        assert_eq!(interpreted_agent("node", &["node".into(), "--max-old-space-size=8192".into(), "/opt/homebrew/bin/gemini".into(), "--skip-trust".into()]), "gemini");
         assert_eq!(interpreted_agent("node", &["node".into(), "other.mjs".into(), "/opt/homebrew/bin/cmd".into()]), "node");
         assert_eq!(interpreted_agent("node", &["command-code".into()]), "commandcode");
         assert_eq!(interpreted_agent("bun", &["command-code".into()]), "commandcode");

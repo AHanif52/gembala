@@ -1942,7 +1942,7 @@ fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'sta
 /// What `/buka` may type: the built-in agents plus the Claude account commands Gembala writes to accounts.zsh (FR-61,
 /// `claude-utama` + `claude-<id>`). The command is typed as is, never text from the phone (SEC-36).
 fn openable(claude_accounts: &[String]) -> Vec<String> {
-    let mut v: Vec<String> = ["claude", "codex", "omp", "opencode", "commandcode"].map(String::from).to_vec();
+    let mut v: Vec<String> = ["claude", "codex", "omp", "opencode", "commandcode", "gemini"].map(String::from).to_vec();
     if !claude_accounts.is_empty() {
         v.push("claude-utama".into());
     }
@@ -2962,8 +2962,8 @@ mod tests {
         assert_eq!(parse(&q, Some(&l), 0), In::OpenPick { pane: 11, agent: "claude-kantor".into(), cb: "c1".into(), msg: 9 });
         let q = json!({"callback_query": {"id": "c1", "from": {"id": 7}, "data": "w|ap2mf4uo|claude", "message": {"message_id": 9, "chat": {"id": 42}}}});
         assert_eq!(parse(&q, Some(&l), 0), In::OpenWs { ws: "ap2mf4uo".into(), agent: "claude".into(), cb: "c1".into(), msg: 9 });
-        assert_eq!(openable(&[]), ["claude", "codex", "omp", "opencode", "commandcode"]);
-        assert_eq!(openable(&["kantor".into()]), ["claude", "codex", "omp", "opencode", "commandcode", "claude-utama", "claude-kantor"]);
+        assert_eq!(openable(&[]), ["claude", "codex", "omp", "opencode", "commandcode", "gemini"]);
+        assert_eq!(openable(&["kantor".into()]), ["claude", "codex", "omp", "opencode", "commandcode", "gemini", "claude-utama", "claude-kantor"]);
         // free text is never an agent: "rm -rf ~" isn't in the list, so nothing is typed
         assert!(!openable(&[]).contains(&"rm".to_string()));
     }
