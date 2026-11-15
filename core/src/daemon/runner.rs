@@ -444,12 +444,17 @@ fn snapshot(st: &State, l: &Live) -> Value {
         }
         _ => (None, None),
     };
+    // FR-94: criteria from the request and the artifacts that prove them; the last test stage decides "gagal"
+    let request = fs::read_to_string(l.dir.join("artefak").join(REQUEST_FILE)).unwrap_or_default();
+    let test_failed = l.run.trace.iter().rev().find(|e| matches!(e.code, "shell_pass" | "shell_fail")).is_some_and(|e| e.code == "shell_fail");
+    let criteria: Vec<Value> = harness::criteria(&request, |n| artifact_text(l, n).is_some(), test_failed).iter()
+        .map(|c| json!({"text": c.text, "proof": c.proof, "status": c.status})).collect();
     let trace: Vec<Value> = l.run.trace.iter().map(|e| json!({"at": e.at, "code": e.code, "step": e.step, "agent": e.agent})).collect();
     json!({
         "run": l.id, "recipe": l.recipe_id, "name": l.run.recipe.name, "workspace": l.workspace, "cwd": l.cwd, "started_at": l.started_at,
         "saver": l.run.recipe.token_saver,
         "state": state_code(&l.run.state), "gate": if let Hs::Gate(i) = l.run.state { Some(i) } else { None }, "current": l.run.current(),
-        "halt": halt, "halt_step": halt_step, "round": l.run.round, "max_rounds": l.run.recipe.max_rounds, "steps": steps, "trace": trace,
+        "halt": halt, "halt_step": halt_step, "round": l.run.round, "max_rounds": l.run.recipe.max_rounds, "steps": steps, "criteria": criteria, "trace": trace,
         "panes": l.opened,
     })
 }

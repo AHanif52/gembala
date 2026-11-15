@@ -520,6 +520,51 @@ impl Run {
     }
 }
 
+/// FR-94: one acceptance criterion of the task and what proves it
+#[derive(Debug, Clone, PartialEq)]
+pub struct Criterion {
+    pub text: String,
+    pub proof: Vec<String>,
+    /// "terbukti", "gagal" or "belum diuji"; without a named artifact it is never "terbukti"
+    pub status: &'static str,
+}
+
+/// FR-94 / TECH 47: the criteria are the bullets under a "Kriteria" or "Acceptance criteria" heading of the request;
+/// `[bukti: a.md, test.log]` at the end of a bullet names the artifacts that prove it. `has` = artifact exists and is not empty;
+/// `test_failed` = the last test stage failed, which turns a criterion proven by `test.log` into "gagal".
+pub fn criteria(request: &str, has: impl Fn(&str) -> bool, test_failed: bool) -> Vec<Criterion> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in request.lines() {
+        let t = line.trim();
+        if t.starts_with('#') {
+            let h = t.trim_start_matches('#').trim().to_lowercase();
+            inside = h.starts_with("kriteria") || h.starts_with("acceptance criteria");
+            continue;
+        }
+        let Some(item) = inside.then(|| t.strip_prefix("- ").or_else(|| t.strip_prefix("* "))).flatten() else { continue };
+        let (text, names) = match item.rfind("[bukti:") {
+            Some(i) if item.ends_with(']') => (item[..i].trim(), &item[i + 7..item.len() - 1]),
+            _ => (item.trim(), ""),
+        };
+        let proof: Vec<String> = names.split(',').map(str::trim).filter(|n| !n.is_empty() && n.len() <= 64 && !n.contains('/') && !n.starts_with('.')).take(5).map(String::from).collect();
+        let status = if proof.iter().any(|n| n == "test.log") && test_failed {
+            "gagal"
+        } else if !proof.is_empty() && proof.iter().all(|n| has(n)) {
+            "terbukti"
+        } else {
+            "belum diuji"
+        };
+        if !text.is_empty() {
+            out.push(Criterion { text: text.chars().take(300).collect(), proof, status });
+        }
+        if out.len() >= 20 {
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,5 +952,21 @@ human = true
         assert_eq!(r.decide(9, Event::GateOk), vec![send(2, "codex")]);
         turn(&mut r, 10);
         assert_eq!(r.decide(12, Event::Verdict(true)), vec![Unlock, Notify(Notice::Done)]);
+    }
+
+    #[test]
+    fn criteria_without_proof_are_never_proven() {
+        let req = "# Tugas\nbuat login\n## Kriteria terima\n- login jalan [bukti: hasil.md]\n- error tampil\n- tes lulus [bukti: test.log, hasil.md]\n* tanpa nama bukti [bukti: ]\n## Lain\n- bukan kriteria\n";
+        let has = |n: &str| n == "hasil.md" || n == "test.log";
+        let c = criteria(req, has, false);
+        let got: Vec<(&str, &str)> = c.iter().map(|c| (c.text.as_str(), c.status)).collect();
+        assert_eq!(got, [("login jalan", "terbukti"), ("error tampil", "belum diuji"), ("tes lulus", "terbukti"), ("tanpa nama bukti", "belum diuji")]);
+        // the artifact is missing = not tested; the last test failed = failed, even though the log exists
+        assert_eq!(criteria(req, |_| false, false)[0].status, "belum diuji");
+        assert_eq!(criteria(req, has, true)[2].status, "gagal");
+        assert_eq!(criteria(req, has, true)[0].status, "terbukti");
+        assert!(criteria("# Tugas\n- bukan di bagian kriteria", has, false).is_empty());
+        // a path is not an artifact name
+        assert_eq!(criteria("## Kriteria\n- x [bukti: ../a, .b]", |_| true, false)[0].status, "belum diuji");
     }
 }
