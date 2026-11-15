@@ -1377,6 +1377,41 @@ fn sh_profile(id: &str, script: &str) -> String {
     format!("[[profile]]\nid = \"{id}\"\ncommand = \"sh\"\nargs = [\"-c\", {}]\n", json!(script))
 }
 
+/// FR-4: a custom agent that sent a hook is judged by its hooks; a quiet screen must not turn its `working` into `done`.
+/// One that never sent a hook still follows the screen.
+#[test]
+fn custom_with_hook_follows_hook_without_hook_follows_screen() {
+    let d = start("customhook");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let hooked = format!("stty -echo; '{g}' token > '{}/h.token'; cat", d.dir.display());
+    let config = sh_profile("hooked", &hooked) + &sh_profile("plain", "sleep 3.5; printf out; sleep 30");
+    profiles(&d, &mut ui, &config, "plain");
+    let h = ui.call("pane.create", json!({"profile":"hooked", "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    let p = ui.call("pane.create", json!({"profile":"plain", "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    let path = d.dir.join("h.token");
+    let t0 = Instant::now();
+    let token = loop {
+        if let Ok(t) = std::fs::read_to_string(&path) && !t.trim().is_empty() { break t; }
+        assert!(t0.elapsed() < Duration::from_secs(10), "token missing");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut c = Cli::connect(&d, "pane.sock");
+    assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
+    assert!(c.call("hook", json!({"agent":"omp","status":"working"})).get("result").is_some());
+    let status = |ui: &mut Cli, pane: u64| ui.call("pane.info", json!({"pane": pane}))["result"]["status"].clone();
+    // past the 3 s startup window and the 1.5 s quiet limit, the screen stays silent
+    for _ in 0..9 {
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(status(&mut ui, h), "working");
+    }
+    let t0 = Instant::now();
+    while status(&mut ui, p) != "done" {
+        assert!(t0.elapsed() < Duration::from_secs(12), "no hook: status must come from the screen");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// `wait --reply --while-working`: the limit restarts while the recipient works; the wait ends with `gone` when its pane closes.
 #[test]
 fn wait_reply_while_working() {
@@ -1434,8 +1469,8 @@ fn wait_reply_while_working() {
     std::thread::sleep(Duration::from_millis(600));
     let id = send(&mut ca);
     assert_eq!(wait(&id).join().unwrap()["result"]["timeout"], true);
-    // recipient pane closed: `gone`, not a timeout. The limit is far above the test's own timing, so the screen
-    // watcher (this `custom` stub is judged from its quiet screen and may turn `working` into `done`) can't end the wait
+    // recipient pane closed: `gone`, not a timeout. The limit is far above the test's own timing, so only the close ends it
+    // (the hooked `custom` stub keeps the hook's `working`: the quiet screen no longer turns it `done`)
     status(&mut cb, "working");
     let id = send(&mut ca);
     let h = wait_for(&id, 20_000);

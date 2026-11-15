@@ -2722,7 +2722,9 @@ fn screen_watch(st: Arc<State>) {
             let cur = *pane.status.lock().unwrap();
             // an exited pane isn't judged from the screen: the relaunched zsh prompt would read as an agent again
             // (11 Nov 2026: a Codex pane stayed `done`, so `send` was accepted and typed into zsh)
-            let next = if (manual || pane.agent == "commandcode") && pane.hooked.load(Ordering::Relaxed) {
+            // FR-4: a custom agent that sent a hook is judged by its hooks like commandcode; the screen only reads
+            // custom agents that never sent one (a hooked stub showed `working`, the quiet screen turned it `done`)
+            let next = if (manual || matches!(pane.agent.as_str(), "commandcode" | "custom")) && pane.hooked.load(Ordering::Relaxed) {
                 // a hook (e.g. SessionStart) can arrive before the agent is recognized: initial status = waiting for a task
                 if !cur.is_empty() {
                     continue;
