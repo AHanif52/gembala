@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, ccTrigger, ccSlash } from "./commandcode.ts";
+import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, ccTrigger, ccSlash, CC_SLASH } from "./commandcode.ts";
 import { emptyView } from "./agent-view.ts";
 
 test("Command Code mod reports ordered status and never answers permission prompts", async () => {
@@ -145,6 +145,20 @@ test("access comes only from the daemon: yolo on grant, restricted on revoke or 
   assert.equal(v.access, "restricted");
   assert.equal(fromSnapshot({ state: "idle", access: "yolo" }, "e1", 0).access, "yolo");
   assert.equal(fromSnapshot({ state: "idle", access: "YOLO" }, "e1", 0).access, "restricted");
+});
+
+test("ccSlash maps slash input to a UI control, leaves everything else for the model", () => {
+  for (const c of CC_SLASH) assert.deepEqual(ccSlash(`/${c}`), { cmd: c, arg: "", known: true }, c);
+  assert.deepEqual(ccSlash("/MODEL"), { cmd: "model", arg: "", known: true });
+  assert.deepEqual(ccSlash("/model  opus "), { cmd: "model", arg: "opus", known: true });
+  assert.deepEqual(ccSlash("/effort a\nb"), { cmd: "effort", arg: "a\nb", known: true });
+  assert.deepEqual(ccSlash("  /help "), { cmd: "help", arg: "", known: true });
+  assert.deepEqual(ccSlash("/foo bar"), { cmd: "foo", arg: "bar", known: false });
+  assert.deepEqual(ccSlash("/foo"), { cmd: "foo", arg: "", known: false });
+  assert.deepEqual(ccSlash("/"), { cmd: "", arg: "", known: false });
+  for (const t of ["halo", "cek a/b", ""]) assert.equal(ccSlash(t), null, t);
+  // a prompt that starts with a path is a prompt, not a command
+  for (const t of ["/tmp/x.log kenapa error?", "/Users/aku/proj tolong cek", "/tmp/x.log"]) assert.equal(ccSlash(t), null, t);
 });
 
 test("FR-107: only a bare Command Code command opens the structured pane", () => {
