@@ -1086,7 +1086,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "up.later": "Nanti",
   "up.restart": "Jalankan ulang daemon",
   "main.reconnecting": "Bentar, nyambung lagi ke daemon… pane-mu masih jalan",
-  "main.paused":"Pesan antar agent dijeda · {key} untuk lanjut",
+  "main.paused": "Pesan antar agent dijeda · {key} untuk lanjut",
   "main.cfgErrors": "Sebagian config.toml nggak kepake",
   "main.openSettings": "Buka Pengaturan",
   "main.zoomed": "maksimal · {key}",

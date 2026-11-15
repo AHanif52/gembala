@@ -1102,7 +1102,7 @@ export default {
   "up.later": "Later",
   "up.restart": "Restart daemon",
   "main.reconnecting": "Hang on, reconnecting to the daemon… your panes are still running",
-  "main.paused":"Messages between agents are paused · {key} to resume",
+  "main.paused": "Messages between agents are paused · {key} to resume",
   "main.cfgErrors": "Part of config.toml isn't used",
   "main.openSettings": "Open Settings",
   "main.zoomed": "maximized · {key}",
