@@ -804,7 +804,7 @@ mod tests {
         assert_eq!(telegram::checked_target(Some((id, pane.clone())), "no_pane").err(), Some("unsupported_kind"));
         assert_eq!(pane_method(&st, id, "send", &json!({})).unwrap_err(), "unsupported_kind");
         assert_eq!(runner::method(&st, "harness.start", &json!({"from_pane":id})).unwrap_err(), "unsupported_kind");
-        let m = bus::Msg { id:"test".into(), from:0, from_name:"remote".into(), to:id, to_name:"commandcode-1".into(), body:"do not execute".into(), reply_to:None, hop:0, is_reply: false, at:std::time::SystemTime::now() };
+        let m = bus::Msg { id:"test".into(), from:0, from_name:"remote".into(), to:id, to_name:"commandcode-1".into(), body:"do not execute".into(), reply_to:None, hop:0, is_reply: false, at:std::time::SystemTime::now(), tag: Default::default() };
         assert_eq!(try_send(&st, m, true, true)["reason"], "unsupported_kind");
         assert!(backend(&pane).unwrap().data.lock().unwrap().requests.is_empty());
     }

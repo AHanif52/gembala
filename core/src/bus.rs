@@ -8,6 +8,40 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// FR-95: what a message asks of its recipient
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Kind {
+    /// do it, then answer with `gembala reply`
+    #[default]
+    Request,
+    /// information only, no answer wanted
+    Note,
+    /// the answer to a `Request`
+    Result,
+}
+
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Request => "request",
+            Kind::Note => "note",
+            Kind::Result => "result",
+        }
+    }
+}
+
+/// FR-95 task numbering, FR-89 edit mark; filled by the daemon, never taken from the sender (BRD section 8)
+#[derive(Clone, Debug, Default)]
+pub struct Tag {
+    pub kind: Kind,
+    /// id of the first request of the task; empty until the daemon sets it
+    pub task: String,
+    /// the request the sender was working on
+    pub parent: Option<String>,
+    /// FR-89: the user changed the body while it was queued
+    pub edited: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Msg {
     pub id: String,
@@ -21,6 +55,7 @@ pub struct Msg {
     pub is_reply: bool,
     pub hop: u32,
     pub at: SystemTime,
+    pub tag: Tag,
 }
 
 impl Msg {
@@ -28,7 +63,8 @@ impl Msg {
         let preview: String = crate::git::redact(&self.body).chars().take(80).collect();
         // FR-99 P2: seconds since the epoch, so the "Butuh lu" strip can put the longest wait on top
         let at = self.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        json!({"id": self.id, "from": self.from_name, "to": self.to_name, "hop": self.hop, "reply_to": self.reply_to, "preview": preview, "at": at})
+        json!({"id": self.id, "from": self.from_name, "to": self.to_name, "hop": self.hop, "reply_to": self.reply_to, "preview": preview, "at": at,
+               "kind": self.tag.kind.name(), "task": self.tag.task, "parent": self.tag.parent, "edited": self.tag.edited})
     }
 }
 
@@ -72,6 +108,10 @@ pub struct Engine {
     pub waiting: HashSet<String>,
     pub undelivered_replies: HashMap<String, Msg>,
     pub reply_alerted: HashSet<String>,
+    /// FR-95: ids typed into a pane / ids that ended another way (answered, rejected, cancelled): a request still open
+    /// for its recipient is delivered and not closed. Kept in step with `known`.
+    delivered: HashSet<String>,
+    closed: HashSet<String>,
     pub queues: HashMap<u64, VecDeque<Queued>>,
     sent: HashMap<u64, VecDeque<Instant>>,
     pub paused: bool,
@@ -101,12 +141,31 @@ impl Engine {
         reply_to.and_then(|r| self.find(r)).map_or(0, |m| m.hop + 1)
     }
 
-    /// FR-66: incoming message to `to` waiting for a reply: not a reply, not answered, not held in the queue
-    /// or approval, younger than `max_age`. The newest.
-    pub fn waiting_for(&self, to: u64, max_age: Duration) -> Option<&Msg> {
-        let held = |id: &str| self.queues.get(&to).is_some_and(|q| q.iter().any(|x| x.msg.id == id)) || self.pending.iter().any(|m| m.id == id);
-        self.known.iter().rev().find(|m| {
-            m.to == to && m.reply_to.is_none() && !self.replies.contains_key(&m.id) && !held(&m.id) && m.at.elapsed().is_ok_and(|a| a < max_age)
+    /// FR-66, FR-95: `request`s typed into `to` that are not answered yet: not a reply, not answered or cancelled, younger
+    /// than `max_age`. The newest first. A queued, held, or rejected message was never typed, so it is not here.
+    pub fn open_requests(&self, to: u64, max_age: Duration) -> Vec<&Msg> {
+        self.known
+            .iter()
+            .rev()
+            .filter(|m| {
+                m.to == to && m.tag.kind == Kind::Request && m.reply_to.is_none() && self.delivered.contains(&m.id) && !self.closed.contains(&m.id)
+                    && !self.replies.contains_key(&m.id) && m.at.elapsed().is_ok_and(|a| a < max_age)
+            })
+            .collect()
+    }
+
+    /// FR-95: number, task and parent for a new message from `me`. The request `me` is working on (exactly one open) becomes
+    /// the parent; more than one and no `parent` = a new task. An explicit `parent` has to be a request sent to `me`.
+    pub fn tag_for(&self, me: u64, kind: Kind, parent: Option<&str>, own_id: &str) -> Result<Tag, &'static str> {
+        let open = self.open_requests(me, Duration::from_secs(86_400));
+        let up = match parent {
+            Some(p) => Some(self.find(p).filter(|m| m.to == me && m.tag.kind == Kind::Request).ok_or("bad_params")?),
+            None if open.len() == 1 => Some(open[0]),
+            None => None,
+        };
+        Ok(match up {
+            Some(up) => Tag { kind, task: if up.tag.task.is_empty() { up.id.clone() } else { up.tag.task.clone() }, parent: Some(up.id.clone()), edited: false },
+            None => Tag { kind, task: own_id.to_string(), parent: None, edited: false },
         })
     }
 
@@ -121,12 +180,20 @@ impl Engine {
         self.delivered.iter().any(|d| d == id)
     }
 
+    /// FR-95: this request is answered (or ended another way), whatever happens to the reply later
+    pub fn close(&mut self, id: &str) {
+        self.closed.insert(id.to_string());
+    }
+
     pub fn remember(&mut self, m: &Msg) {
         // Results cannot start another reply chain.
         if m.is_reply { return; }
         self.known.push_back(m.clone());
         while self.known.len() > 1000 {
-            self.known.pop_front();
+            if let Some(old) = self.known.pop_front() {
+                self.delivered.remove(&old.id);
+                self.closed.remove(&old.id);
+            }
         }
     }
 
@@ -143,6 +210,11 @@ impl Engine {
     }
 
     pub fn log(&mut self, kind: &str, m: &Msg, reason: Option<&str>) -> Value {
+        match kind {
+            "sent" => drop(self.delivered.insert(m.id.clone())),
+            "rejected" | "cancelled" => drop(self.closed.insert(m.id.clone())),
+            _ => {}
+        }
         let ev = json!({"kind": kind, "reason": reason, "msg": m.summary(), "at": m.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)});
         self.history.push_back(ev.clone());
         while self.history.len() > 200 {
@@ -219,6 +291,10 @@ impl Audit {
 mod tests {
     use super::*;
 
+    fn waiting(e: &Engine, to: u64, age: Duration) -> Option<&Msg> {
+        e.open_requests(to, age).into_iter().next()
+    }
+
     fn msg(id: &str, hop: u32) -> Msg {
         Msg {
             id: id.into(),
@@ -231,6 +307,7 @@ mod tests {
             is_reply: false,
             hop,
             at: SystemTime::now(),
+            tag: Tag::default(),
         }
     }
 
@@ -252,17 +329,59 @@ mod tests {
     fn pesan_menunggu_balasan() {
         let mut e = Engine::default();
         let day = Duration::from_secs(86_400);
-        e.remember(&msg("a", 0));
+        let sent = |e: &mut Engine, m: &Msg| drop(e.log("sent", m, None));
+        let a = msg("a", 0);
+        e.remember(&a);
+        assert!(waiting(&e, 2, day).is_none(), "belum diketik ke pane");
+        sent(&mut e, &a);
         e.remember(&Msg { reply_to: Some("x".into()), ..msg("balasan", 1) });
-        assert_eq!(e.waiting_for(2, day).map(|m| m.id.as_str()), Some("a"));
-        assert!(e.waiting_for(1, day).is_none(), "bukan penerimanya");
+        assert_eq!(waiting(&e, 2, day).map(|m| m.id.as_str()), Some("a"));
+        assert!(waiting(&e, 1, day).is_none(), "bukan penerimanya");
         e.replies.insert("a".into(), msg("r", 1));
-        assert!(e.waiting_for(2, day).is_none(), "sudah dibalas");
-        e.remember(&msg("tertahan", 0));
-        e.pending.push(msg("tertahan", 0));
-        assert!(e.waiting_for(2, day).is_none(), "menunggu persetujuan manusia");
-        e.remember(&Msg { at: SystemTime::now() - Duration::from_secs(3600), ..msg("lama", 0) });
-        assert!(e.waiting_for(2, Duration::from_secs(1800)).is_none(), "terlalu lama");
+        assert!(waiting(&e, 2, day).is_none(), "sudah dibalas");
+        e.replies.clear();
+        assert!(waiting(&e, 2, day).is_some());
+        e.close("a");
+        assert!(waiting(&e, 2, day).is_none(), "balasannya sudah diambil, tetap tidak menunggu");
+        let held = msg("tertahan", 0);
+        e.remember(&held);
+        e.pending.push(held);
+        assert!(waiting(&e, 2, day).is_none(), "menunggu persetujuan manusia");
+        let old = Msg { at: SystemTime::now() - Duration::from_secs(3600), ..msg("lama", 0) };
+        e.remember(&old);
+        sent(&mut e, &old);
+        assert!(waiting(&e, 2, Duration::from_secs(1800)).is_none(), "terlalu lama");
+        let note = Msg { tag: Tag { kind: Kind::Note, ..Tag::default() }, ..msg("catatan", 0) };
+        e.remember(&note);
+        sent(&mut e, &note);
+        assert_eq!(e.open_requests(2, day).len(), 1, "note tidak menunggu balasan (FR-95)");
+    }
+
+    /// FR-95: the one open request becomes the parent; two or none make a new task; `parent` must be a request to the sender
+    #[test]
+    fn nomor_tugas_dan_parent() {
+        let mut e = Engine::default();
+        let day = Duration::from_secs(86_400);
+        // pane 2 got two requests from pane 1
+        for id in ["a", "b"] {
+            let m = Msg { tag: Tag { task: id.into(), ..Tag::default() }, ..msg(id, 0) };
+            e.remember(&m);
+            drop(e.log("sent", &m, None));
+            if id == "a" {
+                let t = e.tag_for(2, Kind::Request, None, "n1").unwrap();
+                assert_eq!((t.task.as_str(), t.parent.as_deref()), ("a", Some("a")), "tepat satu = anak otomatis");
+            }
+        }
+        let t = e.tag_for(2, Kind::Request, None, "n2").unwrap();
+        assert_eq!((t.task.as_str(), t.parent.as_deref()), ("n2", None), "dua terbuka tanpa --parent = tugas baru");
+        let t = e.tag_for(2, Kind::Note, Some("b"), "n3").unwrap();
+        assert_eq!((t.kind, t.task.as_str(), t.parent.as_deref()), (Kind::Note, "b", Some("b")));
+        assert_eq!(e.tag_for(2, Kind::Request, Some("tidak-ada"), "n4").unwrap_err(), "bad_params");
+        assert_eq!(e.tag_for(1, Kind::Request, Some("a"), "n5").unwrap_err(), "bad_params", "bukan permintaan ke pengirim");
+        assert!(e.open_requests(2, day).len() == 2);
+        e.close("a");
+        let t = e.tag_for(2, Kind::Request, None, "n6").unwrap();
+        assert_eq!(t.parent.as_deref(), Some("b"), "yang sudah dijawab tidak dihitung");
     }
 
     #[test]

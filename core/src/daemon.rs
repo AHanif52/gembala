@@ -1881,7 +1881,7 @@ fn drafts_dir(st: &State) -> std::path::PathBuf {
 /// queue while the freshly opened agent starts (`deliver_loop` opening rule)
 fn queue_user(st: &State, pane_id: u64, pane: &Pane, body: String) -> Result<(), &'static str> {
     pane.messaging()?;
-    let m = bus::Msg { id: String::new(), from: pane_id, from_name: "user".into(), to: pane_id, to_name: pane.name.lock().unwrap().clone(), body, reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now() };
+    let m = bus::Msg { id: String::new(), from: pane_id, from_name: "user".into(), to: pane_id, to_name: pane.name.lock().unwrap().clone(), body, reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now(), tag: Default::default() };
     st.engine.lock().unwrap().queues.entry(pane_id).or_default().push_back(bus::Queued { msg: m, since: std::time::Instant::now(), approved: true });
     Ok(())
 }
@@ -1907,7 +1907,7 @@ fn ask_close(st: &State, me: u64, my_name: &str, target: u64, target_name: &str)
         return Err("close_limit");
     }
     let id = eng.new_id(&st.boot);
-    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: target, to_name: target_name.to_string(), body: String::new(), reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now() };
+    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: target, to_name: target_name.to_string(), body: String::new(), reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now(), tag: Default::default() };
     if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
         drop(eng);
         return Ok(reject(st, &m, "rate_limited"));
@@ -1957,6 +1957,16 @@ fn open_target(st: &State, name: &str) -> Option<(String, String)> {
 
 /// FR-75: `send` to an agent not open yet = a card in the requester's pane, not an error. Max `HELPERS_MAX` helpers
 /// (alive + waiting cards) per requester, and a helper can't ask (depth 1). Counts to SEC-9 like a send.
+/// FR-95: kind, task and parent of a `send` from the pane channel; the sender only chooses `note` and `--parent`
+fn tag_of(eng: &bus::Engine, me: u64, p: &Value, id: &str) -> Result<bus::Tag, &'static str> {
+    let kind = match p["kind"].as_str() {
+        None | Some("request") => bus::Kind::Request,
+        Some("note") => bus::Kind::Note,
+        Some(_) => return Err("bad_params"),
+    };
+    eng.tag_for(me, kind, p["parent"].as_str(), id)
+}
+
 fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &Value) -> Res {
     let (model, effort) = model_effort(p)?;
     validate_model_effort(model, effort)?;
@@ -1984,7 +1994,8 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
     let reply_to = p["reply_to"].as_str().map(String::from);
     let hop = eng.hop_for(reply_to.as_deref());
     let id = eng.new_id(&st.boot);
-    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: 0, to_name: target.to_string(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now() };
+    let tag = tag_of(&eng, me, p, &id)?;
+    let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: 0, to_name: target.to_string(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now(), tag };
     let why = if hop > msg::HOP_MAX {
         Some("hop_limit")
     } else if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
@@ -2055,11 +2066,37 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
 /// FR-66: the last message of a sandboxed agent's turn answers the incoming message still waiting (the normal `reply` path:
 /// hops, rate limit, hold still apply). With no waiting message the text is dropped and not stored.
 fn auto_reply(st: &Arc<State>, me: u64, text: &str) {
-    let waiting = st.engine.lock().unwrap().waiting_for(me, Duration::from_secs(1800)).map(|m| m.id.clone());
-    if let Some(id) = waiting {
-        let body: String = text.chars().take(4000).collect();
-        let _ = pane_method(st, me, "reply", &json!({"msg_id": id, "body": body}));
+    // FR-95: only with exactly one request waiting is the text unambiguous; with more, nobody gets it pasted and each
+    // sender hears that from Gembala
+    let open: Vec<(String, u64, String)> = st.engine.lock().unwrap().open_requests(me, Duration::from_secs(1800)).iter().map(|m| (m.id.clone(), m.from, m.from_name.clone())).collect();
+    match open.as_slice() {
+        [] => {}
+        [(id, ..)] => {
+            let body: String = text.chars().take(4000).collect();
+            let _ = pane_method(st, me, "reply", &json!({"msg_id": id, "body": body}));
+        }
+        many => {
+            let name = st.panes.lock().unwrap().get(&me).map(|x| x.name.lock().unwrap().clone()).unwrap_or_default();
+            let mut told: Vec<u64> = Vec::new();
+            for (id, from, _) in many {
+                if told.contains(from) { continue; }
+                told.push(*from);
+                let ids: Vec<&str> = many.iter().filter(|x| x.1 == *from).map(|x| x.0.as_str()).collect();
+                let text = format!("{name} selesai satu giliran, tapi jawabannya nggak jelas buat yang mana dari {} permintaan yang nunggu ({}). Minta dia jawab pakai `gembala reply <id> <teks>`.", many.len(), ids.join(", "));
+                gembala_note(st, *from, id, &text);
+            }
+        }
     }
+}
+
+/// FR-95: a `note` from Gembala itself, typed into the pane of `to` like a reply (no access check: it only reports on a
+/// message that pane sent). Nobody answers it.
+fn gembala_note(st: &State, to: u64, about: &str, text: &str) {
+    let Some(pane) = st.panes.lock().unwrap().get(&to).cloned() else { return };
+    let id = st.engine.lock().unwrap().new_id(&st.boot);
+    let tag = bus::Tag { kind: bus::Kind::Note, task: String::new(), parent: Some(about.to_string()), edited: false };
+    let m = bus::Msg { id, from: 0, from_name: "Gembala".into(), to, to_name: pane.name.lock().unwrap().clone(), body: text.into(), reply_to: Some(about.to_string()), hop: 0, is_reply: true, at: std::time::SystemTime::now(), tag };
+    try_send(st, m, true, true);
 }
 
 /// FR-66: CLI requests from sandboxed processes through the file `<run>/spool/<id>.req`; answer `<id>.res` (0600).
@@ -2205,10 +2242,14 @@ fn send_now(st: &State, q: bus::Queued) -> Value {
 /// SEC-7/8: origin label + bracketed paste + one Enter, written to the target PTY.
 fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
     let Ok(terminal) = to.terminal() else { record(st, "rejected", m, Some("unsupported_kind")); return false };
-    let bytes = if m.is_reply { msg::wrap_reply(&m.from_name, m.reply_to.as_deref().unwrap_or_default(), &m.body) } else { msg::wrap(&m.from_name, &m.id, &m.body) };
+    let bytes = match m.tag.kind {
+        bus::Kind::Note => msg::wrap_note(&m.from_name, &m.id, &m.body),
+        _ if m.is_reply => msg::wrap_reply(&m.from_name, m.reply_to.as_deref().unwrap_or_default(), &m.body),
+        _ => msg::wrap(&m.from_name, &m.id, &m.body),
+    };
     if (&terminal.master).write_all(&bytes).is_ok() {
         st.engine.lock().unwrap().mark_delivered(&m.id);
-        if m.is_reply {
+        if m.is_reply && m.tag.kind == bus::Kind::Result {
             let mut eng = st.engine.lock().unwrap();
             if let Some(reply_to) = &m.reply_to { eng.replies.remove(reply_to); }
             eng.undelivered_replies.remove(&m.id);
@@ -2422,9 +2463,10 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             let mut eng = st.engine.lock().unwrap();
             let hop = eng.hop_for(reply_to.as_deref());
             let id = eng.new_id(&st.boot);
+            let tag = tag_of(&eng, me, p, &id)?;
             drop(eng);
             let to_name = to.name.lock().unwrap().clone();
-            let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to_name.clone(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now() };
+            let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to_name.clone(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now(), tag };
             // FR-79: the current name goes in the answer, so a sender using an old name switches over
             let mut r = try_send(st, m, p["queue"].as_bool() == Some(true), false);
             r["to"] = json!(to_name);
@@ -2451,7 +2493,7 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             eng.note_sent(me);
             let id = eng.new_id(&st.boot);
             let body = report_clean(&format!("{}\n{}", title.trim(), text.trim()));
-            let r = bus::Msg { id: id.clone(), from: me, from_name: my_name, to: me, to_name: String::new(), body, reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now() };
+            let r = bus::Msg { id: id.clone(), from: me, from_name: my_name, to: me, to_name: String::new(), body, reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now(), tag: Default::default() };
             eng.reports.push(r.clone());
             // ponytail: the 10 newest drafts; an agent drafting more than that is noise, the oldest goes
             if eng.reports.len() > 10 {
@@ -2487,10 +2529,16 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             if orig.to != me || !st.engine.lock().unwrap().is_delivered(&orig.id) {
                 return Err("not_allowed");
             }
+            // FR-95: a `note` asks for nothing back
+            if orig.tag.kind == bus::Kind::Note {
+                return Err("bad_params");
+            }
             let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
             let mut eng = st.engine.lock().unwrap();
             let id = eng.new_id(&st.boot);
-            let r = bus::Msg { id, from: me, from_name: my_name, to: orig.from, to_name: orig.from_name.clone(), body, reply_to: Some(orig.id.clone()), hop: orig.hop + 1, is_reply: true, at: std::time::SystemTime::now() };
+            // FR-95: a reply is a `result` of the same task
+            let tag = bus::Tag { kind: bus::Kind::Result, task: if orig.tag.task.is_empty() { orig.id.clone() } else { orig.tag.task.clone() }, parent: Some(orig.id.clone()), edited: false };
+            let r = bus::Msg { id, from: me, from_name: my_name, to: orig.from, to_name: orig.from_name.clone(), body, reply_to: Some(orig.id.clone()), hop: orig.hop + 1, is_reply: true, at: std::time::SystemTime::now(), tag };
             let why = if r.hop > msg::HOP_MAX {
                 Some("hop_limit")
             } else if eng.sent_last_minute(me) >= msg::RATE_PER_MIN {
@@ -2505,6 +2553,7 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                 return Ok(reject(st, &r, why));
             }
             eng.note_sent(me);
+            eng.close(&orig.id);
             eng.replies.insert(orig.id.clone(), r.clone());
             let waiting = eng.waiting.contains(&orig.id);
             drop(eng);
@@ -2579,6 +2628,10 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                 let mine = eng.find(r).is_some_and(|m| m.from == me);
                 if !mine {
                     return Err("not_allowed");
+                }
+                // FR-95: nothing will answer a `note`, so there is nothing to wait for
+                if eng.find(r).is_some_and(|m| m.tag.kind == bus::Kind::Note) {
+                    return Err("bad_params");
                 }
                 if !eng.waiting.insert(r.clone()) { return Err("already_waiting"); }
             }

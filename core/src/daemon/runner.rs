@@ -476,6 +476,7 @@ fn audit(st: &State, l: &Live, code: &str, step: Option<usize>, agent: Option<&s
         is_reply: false,
         hop: 0,
         at: std::time::SystemTime::now(),
+        tag: Default::default(),
     };
     a.write("harness", &m, None);
 }
@@ -754,6 +755,7 @@ fn send(st: &Arc<State>, l: &mut Live, to: u64, pane: &Pane, step: usize, body: 
         // SEC-30: the hop count starts at 1 per stage, so an agent's answer is hop 2
         hop: 1,
         at: std::time::SystemTime::now(),
+        tag: bus::Tag { task: id.clone(), ..Default::default() },
     };
     let r = try_send(st, m, true, false);
     match (r["result"].as_str(), r["reason"].as_str()) {

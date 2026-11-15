@@ -27,7 +27,7 @@ use std::os::fd::FromRawFd;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: gembala daemon [--secret-fd N | --secret-sock <path>]
-       gembala send <pane> <message…> [--queue] [--reply-to <msg_id>] [--model <id>] [--effort <level>]
+       gembala send <pane> <message…> [--queue] [--note] [--parent <msg_id>] [--reply-to <msg_id>] [--model <id>] [--effort <level>]
        gembala wait [<pane>] [--reply <msg_id> [--while-working]] [--pattern <regex>] [--timeout <seconds>]
        gembala read <pane> [-n <lines>]
        gembala reply <msg_id> <text…>
@@ -256,9 +256,10 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--queue" => drop(opt.insert("queue", Value::Bool(true))),
+            "--note" => drop(opt.insert("note", Value::Bool(true))),
             "--while-working" => drop(opt.insert("while_working", Value::Bool(true))),
             "--screenshot" => drop(opt.insert("screenshot", Value::Bool(true))),
-            "--reply-to" | "--reply" | "--pattern" | "--timeout" | "-n" | "--model" | "--effort" => match it.next() {
+            "--reply-to" | "--parent" | "--reply" | "--pattern" | "--timeout" | "-n" | "--model" | "--effort" => match it.next() {
                 Some(v) => drop(opt.insert(a.trim_start_matches('-'), json!(v))),
                 None => return usage(),
             },
@@ -267,7 +268,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     }
     let text = |from: usize| rest.get(from..).map(|r| r.join(" ")).unwrap_or_default();
     let params = match cmd {
-        "send" if rest.len() >= 2 => json!({"to": rest[0], "body": text(1), "queue": opt.get("queue"), "reply_to": opt.get("reply-to"), "model": opt.get("model"), "effort": opt.get("effort")}),
+        "send" if rest.len() >= 2 => json!({"to": rest[0], "body": text(1), "queue": opt.get("queue"), "reply_to": opt.get("reply-to"), "kind": opt.get("note").map(|_| "note"), "parent": opt.get("parent"), "model": opt.get("model"), "effort": opt.get("effort")}),
         "reply" if rest.len() >= 2 => json!({"msg_id": rest[0], "body": text(1)}),
         "close" if rest.len() == 1 => json!({"target": rest[0]}),
         // FR-100: a draft for the user to review; Gembala never sends it anywhere (SEC-40)

@@ -2903,3 +2903,93 @@ fn fr106_kirim_sekarang_membalas_antre() {
     // a pane's agent cannot call it: UI channel only
     assert_eq!(cb.call("msg.send_now", json!({"id":reply_id}))["error"]["code"], "not_allowed");
 }
+
+/// Two agent panes (`pa-1`, `pb-1`, both idle) with a pane-channel client each, for message-engine tests.
+fn agent_pair(tag: &str) -> (Daemon, Cli, u64, u64, Cli, Cli) {
+    let d = start(tag);
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = |n: &str| format!("stty -echo; '{g}' token > '{}/{n}.token'; cat", d.dir.display());
+    profiles(&d, &mut ui, &(sh_profile("pa", &script("a")) + &sh_profile("pb", &script("b"))), "pb");
+    let a = ui.call("pane.create", json!({"profile": "pa", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let b = ui.call("pane.create", json!({"profile": "pb", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let (mut ca, mut cb) = (pane_client(&d, "a"), pane_client(&d, "b"));
+    for c in [&mut ca, &mut cb] {
+        assert!(c.call("hook", json!({"agent": "omp", "status": "idle"})).get("result").is_some());
+    }
+    std::thread::sleep(Duration::from_millis(600));
+    (d, ui, a, b, ca, cb)
+}
+
+fn pane_client(d: &Daemon, name: &str) -> Cli {
+    let path = d.dir.join(format!("{name}.token"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let token = loop {
+        if let Ok(t) = std::fs::read_to_string(&path) && !t.trim().is_empty() { break t; }
+        assert!(Instant::now() < deadline, "token missing");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut c = Cli::connect(d, "pane.sock");
+    assert_eq!(c.call("hello", json!({"proto": 1, "client": "cli", "token": token.trim()}))["result"]["proto"], 1);
+    c
+}
+
+/// the newest audit-history row of `kind` for message `id`
+fn history_row(ui: &mut Cli, kind: &str, id: &str) -> Value {
+    let h = ui.call("msg.list", json!({}))["result"]["history"].clone();
+    h.as_array().unwrap().iter().rev().find(|e| e["kind"] == kind && e["msg"]["id"] == id).cloned().unwrap_or(Value::Null)
+}
+
+/// FR-95: kinds, task numbers, parents, labels, and the automatic answer that only pastes when one request waits.
+#[test]
+fn fr95_jenis_pesan_dan_nomor_tugas() {
+    let (_d, mut ui, a, b, mut ca, mut cb) = agent_pair("fr95");
+    let id = |r: &Value| r["result"]["id"].as_str().unwrap_or_else(|| panic!("{r}")).to_string();
+    // request (default): task = its own id, no parent; the label stays as before
+    let r1 = ca.call("send", json!({"to": "pb-1", "body": "kerjain satu", "queue": true}));
+    assert_eq!(r1["result"]["result"], "accepted", "{r1}");
+    let id1 = id(&r1);
+    let row = history_row(&mut ui, "sent", &id1);
+    assert_eq!((row["msg"]["kind"].as_str(), row["msg"]["task"].as_str(), row["msg"]["parent"].is_null()), (Some("request"), Some(id1.as_str()), true), "{row}");
+    ui.attach_until(b, &[&format!("[Gembala · from pa-1 · {id1}]")]);
+    // pb works on exactly one request: its note becomes a child of it, labelled as a note
+    let n1 = cb.call("send", json!({"to": "pa-1", "body": "info aja", "kind": "note", "queue": true}));
+    let nid = id(&n1);
+    let row = history_row(&mut ui, "sent", &nid);
+    assert_eq!((row["msg"]["kind"].as_str(), row["msg"]["task"].as_str(), row["msg"]["parent"].as_str()), (Some("note"), Some(id1.as_str()), Some(id1.as_str())), "{row}");
+    ui.attach_until(a, &[&format!("[Gembala · note from pb-1 · {nid}]")]);
+    // nothing to answer or wait for on a note; the sender can't make up another kind
+    assert_eq!(ca.call("reply", json!({"msg_id": nid, "body": "makasih"}))["error"]["code"], "bad_params");
+    assert_eq!(cb.call("wait", json!({"reply": nid, "timeout_ms": 10}))["error"]["code"], "bad_params");
+    assert_eq!(cb.call("send", json!({"to": "pa-1", "body": "x", "kind": "result"}))["error"]["code"], "bad_params");
+    // a reply is a `result` of the same task
+    let rep = ca.call("send", json!({"to": "pb-1", "body": "dua", "queue": true}));
+    let id2 = id(&rep);
+    std::thread::sleep(Duration::from_millis(600));
+    let r = cb.call("reply", json!({"msg_id": id1, "body": "beres satu"}));
+    let rid = id(&r);
+    let row = history_row(&mut ui, "sent", &rid);
+    assert_eq!((row["msg"]["kind"].as_str(), row["msg"]["task"].as_str(), row["msg"]["parent"].as_str()), (Some("result"), Some(id1.as_str()), Some(id1.as_str())), "{row}");
+    // after the answer only id2 is open for pb, so it is the parent again
+    let r = cb.call("send", json!({"to": "pa-1", "body": "soal dua", "queue": true}));
+    let row = history_row(&mut ui, "sent", &id(&r));
+    assert_eq!(row["msg"]["parent"], id2, "{row}");
+    // a third request: two are open, no --parent = a new task; with --parent it joins the one named; a stranger is refused
+    assert_eq!(ca.call("send", json!({"to": "pb-1", "body": "tiga", "queue": true}))["result"]["result"], "accepted");
+    let r = cb.call("send", json!({"to": "pa-1", "body": "tugas baru", "queue": true}));
+    let new_task = id(&r);
+    let row = history_row(&mut ui, "sent", &new_task);
+    assert!(row["msg"]["parent"].is_null() && row["msg"]["task"] == new_task, "{row}");
+    let r = cb.call("send", json!({"to": "pa-1", "body": "anak", "parent": id2, "queue": true}));
+    assert_eq!(history_row(&mut ui, "sent", &id(&r))["msg"]["parent"], id2);
+    assert_eq!(cb.call("send", json!({"to": "pa-1", "body": "salah", "parent": "msg_nope"}))["error"]["code"], "bad_params");
+    assert_eq!(ca.call("send", json!({"to": "pb-1", "body": "salah", "parent": id2}))["error"]["code"], "bad_params", "bukan permintaan ke pengirim");
+    // end of turn with two requests open: the text is pasted nowhere; the sender hears it from Gembala
+    let before = ui.attach_until(a, &["tidak-ada"]);
+    assert!(!before.contains("JAWABAN-AMBIGU"));
+    let r = cb.call("hook", json!({"agent": "omp", "status": "idle", "reply": "JAWABAN-AMBIGU"}));
+    assert!(r.get("result").is_some(), "{r}");
+    let out = ui.attach_until(a, &["nggak jelas buat yang mana"]);
+    assert!(!out.contains("JAWABAN-AMBIGU"), "{out}");
+    assert!(out.contains("[Gembala · note from Gembala"), "{out}");
+}

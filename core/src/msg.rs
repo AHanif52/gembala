@@ -57,6 +57,11 @@ pub fn paste(clean: &str) -> Vec<u8> {
     format!("\x1b[200~{clean}\x1b[201~\r").into_bytes()
 }
 
+/// FR-95: a `note` says so in its label; nobody answers it
+pub fn wrap_note(from: &str, id: &str, clean_body: &str) -> Vec<u8> {
+    paste(&format!("[Gembala · note from {from} · {id}]\n{clean_body}"))
+}
+
 pub fn wrap_reply(from: &str, orig_id: &str, clean_body: &str) -> Vec<u8> {
     paste(&format!("[Gembala · reply from {from} · {orig_id}]\n{clean_body}"))
 }

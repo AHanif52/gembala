@@ -2291,7 +2291,7 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
 fn audit(st: &State, pane: &Pane, body: &str) {
     if let Some(a) = &st.audit {
         let name = pane.name.lock().unwrap().clone();
-        let m = bus::Msg { id: String::new(), from: 0, from_name: "telegram".into(), to: 0, to_name: name, body: body.into(), reply_to: None, hop: 0, is_reply: false, at: SystemTime::now() };
+        let m = bus::Msg { id: String::new(), from: 0, from_name: "telegram".into(), to: 0, to_name: name, body: body.into(), reply_to: None, hop: 0, is_reply: false, at: SystemTime::now(), tag: Default::default() };
         a.write("telegram", &m, None);
     }
 }
