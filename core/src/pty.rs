@@ -21,8 +21,26 @@ fn winsize(rows: u16, cols: u16) -> libc::winsize {
     libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 }
 }
 
-fn cloexec(fd: libc::c_int) -> io::Result<()> {
-    check(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) })
+/// Master and slave opened with `O_CLOEXEC` from the start: `openpty` + `fcntl` leaves a window in which another thread's
+/// fork (a git call, a second pane) hands the new PTY to its child — an agent must never hold another pane's master.
+fn open_pty(ws: &libc::winsize) -> io::Result<(OwnedFd, OwnedFd)> {
+    // `ptsname` returns a static buffer
+    static NAME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let fd = |rc: libc::c_int| if rc == -1 { Err(io::Error::last_os_error()) } else { Ok(unsafe { OwnedFd::from_raw_fd(rc) }) };
+    let master = fd(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) })?;
+    check(unsafe { libc::grantpt(master.as_raw_fd()) })?;
+    check(unsafe { libc::unlockpt(master.as_raw_fd()) })?;
+    let name = {
+        let _g = NAME.lock().unwrap_or_else(|e| e.into_inner());
+        let p = unsafe { libc::ptsname(master.as_raw_fd()) };
+        if p.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        unsafe { std::ffi::CStr::from_ptr(p) }.to_owned()
+    };
+    let slave = fd(unsafe { libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) })?;
+    check(unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ as _, ws) })?;
+    Ok((master, slave))
 }
 
 // ponytail: fixed list from the observed Claude Code 2.1 session env; add a prefix when another agent turns out to pass down markers
@@ -60,13 +78,7 @@ impl Pty {
     /// command (zsh reaches the same folder through `ZDOTDIR`, set by the caller). Debian/Ubuntu `/etc/profile`
     /// replaces PATH wholesale, so a login bash would lose the daemon's folder and `gembala` with it (FR-9).
     pub fn spawn(cmd: Option<&str>, rows: u16, cols: u16, env: &[(&str, &str)], cwd: Option<&Path>, hooks: Option<&Path>) -> io::Result<Pty> {
-        let (mut m, mut s) = (0, 0);
-        let mut ws = winsize(rows, cols);
-        check(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut ws) })?;
-        let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
-        // the master must not be inherited by pane processes (an agent must not hold another pane's PTY)
-        cloexec(m)?;
-        cloexec(s)?;
+        let (master, slave) = open_pty(&winsize(rows, cols))?;
 
         let shell = login_shell();
         let mut c = Command::new(&shell);

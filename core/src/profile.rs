@@ -443,16 +443,16 @@ fn zsh_file(name: &str, extra: &str) -> String {
 const ZSH_MARKS: &str = r#"__gembala_precmd() {
   local s=$?
   # A carries the prompt folder (no control characters) for the block head in the UI
-  builtin print -rn -- $'\e]133;D;'"$s"$'\a\e]133;A;'"${PWD//[[:cntrl:]]/}"$'\a'
+  builtin print -rn -- $'\e]133;'"$GEMBALA_MARK"$';D;'"$s"$'\a\e]133;'"$GEMBALA_MARK"$';A;'"${PWD//[[:cntrl:]]/}"$'\a'
   if [[ -n $GEMBALA_EDITOR ]]; then
     # FR-59: Gembala's editor replaces the prompt; the empty line above the command holds the block head
-    PS1=$'\n'"%{"$'\e]133;B\a'"%}" RPROMPT=
+    PS1=$'\n'"%{"$'\e]133;'"$GEMBALA_MARK"$';B\a'"%}" RPROMPT=
     (( ${#zle_highlight} )) || zle_highlight=(default:bold)  # bold command = block head (like Warp)
   else
-    [[ $PS1 == *'133;B'* ]] || PS1="$PS1%{"$'\e]133;B\a'"%}"
+    [[ $PS1 == *"$GEMBALA_MARK;B"* ]] || PS1="$PS1%{"$'\e]133;'"$GEMBALA_MARK"$';B\a'"%}"
   fi
 }
-__gembala_preexec() { builtin print -rn -- $'\e]133;C;'"$(builtin print -rn -- "$1" | /usr/bin/base64 | tr -d '\n')"$'\a'; }
+__gembala_preexec() { builtin print -rn -- $'\e]133;'"$GEMBALA_MARK"$';C;'"$(builtin print -rn -- "$1" | /usr/bin/base64 | tr -d '\n')"$'\a'; }
 autoload -Uz add-zsh-hook && add-zsh-hook precmd __gembala_precmd && add-zsh-hook preexec __gembala_preexec
 "#;
 
@@ -486,21 +486,21 @@ fn bash_login(login: &str, extra: &str) -> String {
 /// style it); the block head still comes from the `C` marker.
 const BASH_MARKS: &str = r#"__gembala_precmd() { __gembala_code=$?; }
 __gembala_prompt() {
-  printf '\e]133;D;%s\a\e]133;A;%s\a' "$__gembala_code" "${PWD//[[:cntrl:]]/}"
+  printf '\e]133;%s;D;%s\a\e]133;%s;A;%s\a' "$GEMBALA_MARK" "$__gembala_code" "$GEMBALA_MARK" "${PWD//[[:cntrl:]]/}"
   if [ -n "$GEMBALA_EDITOR" ]; then
     # FR-59: Gembala's editor replaces the prompt; the empty line above the command holds the block head
-    PS1=$'\n\[\e]133;B\a\]'
+    PS1=$'\n\[\e]133;'"$GEMBALA_MARK"$';B\a\]'
   else
-    case $PS1 in *'133;B'*) ;; *) PS1="$PS1\[\e]133;B\a\]" ;; esac
+    case $PS1 in *"$GEMBALA_MARK;B"*) ;; *) PS1="$PS1\[\e]133;$GEMBALA_MARK;B\a\]" ;; esac
   fi
 }
 if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))); then
-  PS0='$(__gembala_cmd=$(HISTTIMEFORMAT= history 1); __gembala_cmd=${__gembala_cmd#"${__gembala_cmd%%[! ]*}"}; __gembala_cmd=${__gembala_cmd#${__gembala_cmd%%[!0-9]*}}; __gembala_cmd=${__gembala_cmd#"${__gembala_cmd%%[! ]*}"}; printf "\e]133;C;%s\a" "$(printf %s "$__gembala_cmd" | /usr/bin/base64 | tr -d "\n")")'
+  PS0='$(__gembala_cmd=$(HISTTIMEFORMAT= history 1); __gembala_cmd=${__gembala_cmd#"${__gembala_cmd%%[! ]*}"}; __gembala_cmd=${__gembala_cmd#${__gembala_cmd%%[!0-9]*}}; __gembala_cmd=${__gembala_cmd#"${__gembala_cmd%%[! ]*}"}; printf "\e]133;%s;C;%s\a" "$GEMBALA_MARK" "$(printf %s "$__gembala_cmd" | /usr/bin/base64 | tr -d "\n")")'
 else
   __gembala_preexec() {
     if [ -n "$__gembala_arm" ]; then
       __gembala_arm=
-      printf '\e]133;C;%s\a' "$(printf '%s' "$BASH_COMMAND" | /usr/bin/base64 | tr -d '\n')"
+      printf '\e]133;%s;C;%s\a' "$GEMBALA_MARK" "$(printf '%s' "$BASH_COMMAND" | /usr/bin/base64 | tr -d '\n')"
     fi
   }
   trap '__gembala_preexec' DEBUG
@@ -802,7 +802,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
     flags.extend(p.addons.iter().cloned());
     flags.extend(session.map(|s| session_flags(&p.agent, s)).unwrap_or_default());
     // FR-56: invisible markers for the daemon (OSC 777), around the agent session output
-    let mut s = String::from(if p.summarize { "printf '\\033]777;gembala;agent-start\\007'; ( " } else { "( " });
+    let mut s = String::from(if p.summarize { "printf '\\033]777;%s;gembala;agent-start\\007' \"$GEMBALA_MARK\"; ( " } else { "( " });
     // interactive PATH (already taken by detect at daemon start), so agents only on the `.zshrc` PATH are found;
     // the app's own PATH after it (`/etc/profile` on Debian/Ubuntu resets PATH)
     s += &pane_path(USER_PATH.get().cloned().flatten().as_deref());
@@ -839,7 +839,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
     };
     s += " ); s=$?; ";
     if p.summarize {
-        s += "printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\"; ";
+        s += "printf '\\033]777;%s;gembala;agent-exit;%d\\007' \"$GEMBALA_MARK\" \"$s\"; ";
     }
     s += &format!("[ \"$s\" -eq 127 ] && printf '\\n%s\\n' {}; ", q(&hint));
     // FR-58/59: zsh reads the hook folder again through `.zlogin`/ZDOTDIR; bash has no ZDOTDIR, so the pane shell
@@ -1038,9 +1038,9 @@ mod tests {
         };
         let s = launch(&p, None, None, false).unwrap();
         let path = pane_path(USER_PATH.get().cloned().flatten().as_deref());
-        assert!(s.starts_with(&format!("printf '\\033]777;gembala;agent-start\\007'; ( {path}")), "{s}");
+        assert!(s.starts_with(&format!("printf '\\033]777;%s;gembala;agent-start\\007' \"$GEMBALA_MARK\"; ( {path}")), "{s}");
         assert!(s.contains("export X='a b'\\''c'; export D=\"$HOME\"/'.claude-kerja'; "), "{s}");
-        assert!(s.contains("printf '\\033]777;gembala;agent-exit;%d\\007' \"$s\""), "{s}");
+        assert!(s.contains("printf '\\033]777;%s;gembala;agent-exit;%d\\007' \"$GEMBALA_MARK\" \"$s\""), "{s}");
         let quiet = Profile { summarize: false, ..p.clone() };
         assert!(!launch(&quiet, None, None, false).unwrap().contains("777"));
         assert!(s.contains(&format!("export K=\"$({})\"; ", crate::os::secret_cmd("svc", "me@x"))), "{s}");
@@ -1197,7 +1197,9 @@ mod tests {
             let ok = std::process::Command::new("/bin/bash").arg("-n").arg(d.join(name)).status().unwrap().success();
             assert!(ok, "{name}");
         }
-        assert!(rc.contains("133;D") && rc.contains("133;C") && rc.contains("133;A") && rc.contains("133;B"), "{rc}");
+        // SEC-40: every marker carries the pane's nonce right after the number
+        assert!(rc.contains("133;%s;D") && rc.contains("133;%s;C") && rc.contains("133;%s;A") && rc.contains(";B"), "{rc}");
+        assert!(!rc.contains("133;D") && !rc.contains("133;C;") && !rc.contains("133;A;") && !rc.contains("133;B"), "{rc}");
         assert!(rc.contains("trap '__gembala_preexec' DEBUG") && rc.contains("PROMPT_COMMAND="), "{rc}");
         // interactive (`--rcfile`): the folder is back after the login file wiped PATH, and so is the PATH the pane
         // was started with (an agent the app found through its own PATH must stay reachable in a bash pane)

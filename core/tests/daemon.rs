@@ -1141,6 +1141,25 @@ fn penanda_blok_shell() {
     assert_eq!(Cli::ui(&d).call("pane.attach", json!({"pane": p}))["result"]["prompt"], true);
 }
 
+/// SEC-40: a marker without the pane's nonce (what `cat` of a hostile file prints) never reaches the stream; the shell's own
+/// markers (with the nonce from `GEMBALA_MARK`) still do.
+#[test]
+fn penanda_tanpa_nonce_dibuang() {
+    let d = start("nonce");
+    let mut ui = Cli::ui(&d);
+    let p = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.attach", json!({"pane": p}));
+    std::thread::sleep(Duration::from_secs(3)); // zsh is at its prompt (a slow runner needs more than 1 s)
+    let cmd = r"printf '\033]133;D;9\007\033]133;C;ZXZpbA==\007\033]777;gembala;agent-exit;5\007\033]133;wrong;D;8\007'; echo FORGE-$((1+1))";
+    ui.call("pane.write", json!({"pane": p, "data": B64.encode(format!("{cmd}\r"))}));
+    let out = ui.attach_until(p, &["FORGE-2", "\x1b]133;D;0\x07"]);
+    for forged in ["\x1b]133;D;9", "\x1b]133;C;ZXZpbA==", "\x1b]777;gembala;", "\x1b]133;wrong", "\x1b]133;D;8"] {
+        assert!(!out.contains(forged), "{forged:?} lolos: {out:?}");
+    }
+    assert!(out.contains('␛'), "{out:?}");
+    assert!(out.contains("\x1b]133;D;0\x07"), "penanda asli hilang: {out:?}");
+}
+
 /// FR-9: the `gembala` command can be called without a full path from a pane (login shell).
 #[test]
 fn gembala_ada_di_path_pane() {
@@ -2448,6 +2467,30 @@ fn wait_pattern_tidak_jadi_oracle() {
     assert!(rest.contains("matched"), "pattern ke teks tersamar harus cocok: {out}");
     let lama: u64 = out.split("LAMA=").nth(1).and_then(|x| x.split(|c: char| !c.is_ascii_digit()).next()).and_then(|x| x.parse().ok()).expect(&out);
     assert!(lama >= 1, "timeout 0 harus tetap menunggu ~1 detik: {lama} {out}");
+}
+
+/// SEC-21: a running `wait --pattern` asks again whether the target may still be read (the user switches `readable` off),
+/// and `send` to a plain shell pane is rejected on its own (not left to the empty status).
+#[test]
+fn wait_cek_ulang_akses_dan_send_ke_shell() {
+    let d = start("wait-acl");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let b = ui.call("pane.create", json!({"workspace": "w", "cmd": "sleep 60"}))["result"].clone();
+    let name = b["name"].as_str().unwrap().to_string();
+    ui.call("pane.readable", json!({"pane": b["pane"], "on": true}));
+    let uji = format!(
+        "g='{g}'; sleep 2; echo KIRIM:$($g send {name} hai); $g wait {name} --pattern TIDAK-ADA-DI-LAYAR --timeout 20; echo SELESAI-W; sleep 30"
+    );
+    profiles(&d, &mut ui, &sh_profile("uji", &uji), "SELESAI-W");
+    let k = ui.call("pane.create", json!({"profile": "uji", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    // the send is done and the wait loop is running (a slow runner starts the profile pane late)
+    ui.attach_until(k, &["KIRIM:"]);
+    std::thread::sleep(Duration::from_secs(2));
+    ui.call("pane.readable", json!({"pane": b["pane"], "on": false}));
+    let out = ui.attach_until(k, &["SELESAI-W"]);
+    assert!(out.contains("KIRIM:") && out.contains("target_unknown"), "{out}");
+    assert!(out.contains("acl_denied") && !out.contains("\"timeout\":true"), "{out}");
 }
 
 /// SEC-3 fallback: a process detached from the pane session is only recognized through a profile token `token = true`;

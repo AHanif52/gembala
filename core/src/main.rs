@@ -11,6 +11,7 @@ mod harness;
 mod history;
 mod ipc;
 mod jail;
+mod mark;
 mod msg;
 mod os;
 mod outbox;

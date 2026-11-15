@@ -34,6 +34,8 @@ tauri-plugin-clipboard-manager = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = "0.3"
 security-framework = "3.7.0"
+# SEC-42: the daemon peer is checked by code signature (the same calls as the daemon's `sign.rs`)
+core-foundation = "0.10"
 
 # SEC-20: Secret Service on Linux (gnome-keyring and friends). Build needs libdbus-1-dev.
 # FR-60: process list (Settings > Processes) without `ps`.

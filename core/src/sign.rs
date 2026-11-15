@@ -18,6 +18,31 @@ pub fn ui_requirement() -> Option<String> {
     Some(format!(r#"identifier "dev.gembala.app" and certificate leaf = H"{leaf}""#))
 }
 
+/// SEC-41: the signing key alone doesn't make a UI (a process that can use the self-signed key can sign any binary with
+/// the identifier), so the peer must also be the very UI binary installed next to this daemon: its cdhash is read from
+/// the file on disk at each connect, so a UI updated by `pasang.sh` while this daemon lives still passes.
+/// Daemon: `X.app/Contents/Helpers/Gembala Daemon.app/Contents/MacOS/gembala`; UI: `X.app/Contents/MacOS/gembala-ui`.
+#[cfg(target_os = "macos")]
+pub fn ui_pinned(s: &UnixStream) -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let Some(ui) = exe.ancestors().nth(5).map(|c| c.join("MacOS/gembala-ui")) else { return false };
+    cdhash_requirement(&ui).is_some_and(|r| peer_ok(s, &r))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn ui_pinned(_s: &UnixStream) -> bool {
+    false
+}
+
+/// `cdhash H"…"` of the code at `path` (`codesign -d -vvv` prints `CDHash=<hex>` on stderr).
+#[cfg(target_os = "macos")]
+pub fn cdhash_requirement(path: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/codesign").args(["-d", "-vvv"]).arg(path).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    let hash = text.lines().find_map(|l| l.strip_prefix("CDHash="))?.trim();
+    (hash.len() >= 40 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then(|| format!(r#"cdhash H"{hash}""#))
+}
+
 /// Peer audit token at connect (`LOCAL_PEERTOKEN`).
 #[cfg(target_os = "macos")]
 pub fn peer_ok(s: &UnixStream, requirement: &str) -> bool {
@@ -63,5 +88,16 @@ mod tests {
         assert!(!peer_ok(&a, "bukan requirement"));
         // the test binary isn't signed with the certificate: no requirement, the daemon only uses the secret
         assert_eq!(ui_requirement(), None);
+        assert!(!ui_pinned(&a));
+    }
+
+    /// The pin is the cdhash of the binary: the process running that binary passes, any other cdhash doesn't.
+    #[test]
+    fn peer_dengan_cdhash_biner_sendiri_lolos() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let req = cdhash_requirement(&std::env::current_exe().unwrap()).expect("test binary carries a cdhash (linker ad-hoc signature)");
+        assert!(peer_ok(&a, &req), "{req}");
+        assert!(!peer_ok(&a, r#"cdhash H"0000000000000000000000000000000000000000""#));
+        assert_eq!(cdhash_requirement(std::path::Path::new("/nonexistent")), None);
     }
 }

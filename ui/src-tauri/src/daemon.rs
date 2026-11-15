@@ -316,14 +316,49 @@ fn peer_path(s: &UnixStream) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{}/exe", c.pid)).ok().and_then(|p| p.canonicalize().ok())
 }
 
-/// Authenticate the Linux server before sending hello: an agent can replace `ui.addr`.
-#[cfg(target_os = "linux")]
+/// SEC-42: the server end of `ui.sock` must be this install's daemon before hello (an agent can replace the socket or
+/// `ui.addr`, and hello carries the secret on Linux). Linux: the peer's binary path. macOS: a signed UI demands the daemon
+/// helper's identifier and the UI's own certificate from the live process (a path breaks when an update moved the old
+/// bundle while its daemon kept running); an unsigned build (dev) falls back to the path.
 fn verify_daemon(s: &UnixStream, exe: Option<&std::path::Path>) -> io::Result<()> {
-    let expected = exe.and_then(|p| p.canonicalize().ok());
-    if expected.is_none() || peer_path(s) != expected {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "UI connection refused: server is not this install's Gembala daemon"));
+    #[cfg(target_os = "macos")]
+    let by_code = own_leaf().map(|leaf| peer_code_ok(s, &format!(r#"identifier "dev.gembala.app.daemon" and certificate leaf = H"{leaf}""#)));
+    #[cfg(not(target_os = "macos"))]
+    let by_code: Option<bool> = None;
+    let ok = by_code.unwrap_or_else(|| {
+        let expected = exe.and_then(|p| p.canonicalize().ok());
+        expected.is_some() && peer_path(s) == expected
+    });
+    if ok { Ok(()) } else { Err(io::Error::new(io::ErrorKind::PermissionDenied, "UI connection refused: server is not this install's Gembala daemon")) }
+}
+
+/// Certificate leaf hash of this UI's own signature (`None` = unsigned or ad-hoc build).
+#[cfg(target_os = "macos")]
+fn own_leaf() -> Option<String> {
+    let out = Command::new("/usr/bin/codesign").args(["-d", "-r-"]).arg(std::env::current_exe().ok()?).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let at = text.find("certificate leaf = H\"")? + "certificate leaf = H\"".len();
+    let hash = text.get(at..at + 40)?;
+    hash.bytes().all(|b| b.is_ascii_hexdigit()).then(|| hash.to_string())
+}
+
+/// The process at the other end (audit token at connect, immune to exec and PID reuse) satisfies `requirement`.
+#[cfg(target_os = "macos")]
+fn peer_code_ok(s: &UnixStream, requirement: &str) -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::data::CFData;
+    use security_framework::os::macos::code_signing::{Flags, GuestAttributes, SecCode, SecRequirement};
+    use std::os::fd::AsRawFd;
+    let mut token = [0u8; 32];
+    let mut len = token.len() as libc::socklen_t;
+    if unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERTOKEN, token.as_mut_ptr().cast(), &mut len) } != 0 || len as usize != token.len() {
+        return false;
     }
-    Ok(())
+    let data = CFData::from_buffer(&token);
+    let mut attrs = GuestAttributes::new();
+    attrs.set_audit_token(data.as_concrete_TypeRef());
+    let Ok(req) = requirement.parse::<SecRequirement>() else { return false };
+    SecCode::copy_guest_with_attribues(None, &attrs, Flags::NONE).is_ok_and(|code| code.check_validity(Flags::NONE, &req).is_ok())
 }
 
 /// Old way (macOS without a helper): a direct child of the app, secret through descriptor 3.
@@ -361,8 +396,11 @@ fn spawn_child(exe: &std::path::Path) -> io::Result<String> {
 
 impl Client {
     fn open(s: UnixStream, secret: &str, on_event: OnEvent) -> io::Result<Client> {
-        #[cfg(target_os = "linux")]
-        verify_daemon(&s, daemon_exe().as_deref())?;
+        Self::open_with(s, secret, on_event, daemon_exe().as_deref())
+    }
+
+    fn open_with(s: UnixStream, secret: &str, on_event: OnEvent, daemon: Option<&std::path::Path>) -> io::Result<Client> {
+        verify_daemon(&s, daemon)?;
         let mut r = BufReader::new(s.try_clone()?);
         let mut w = s;
         let hello = json!({"id": 0, "method": "hello", "params": {"proto": 1, "client": "ui", "secret": secret}});
@@ -422,7 +460,6 @@ impl Client {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn daemon_peer_checked_before_secret() {
         let (a, mut b) = UnixStream::pair().unwrap();
@@ -432,9 +469,9 @@ mod tests {
         assert!(verify_daemon(&a, Some(std::path::Path::new("/missing/gembala"))).is_err());
         let e = Client::open(a, "must-not-leak", Arc::new(|_| {})).err().unwrap();
         assert!(e.to_string().contains("server is not this install's Gembala daemon"), "{e}");
-        b.set_read_timeout(Some(std::time::Duration::from_secs(1))).unwrap();
+        let _ = b.set_read_timeout(Some(std::time::Duration::from_secs(1))); // macOS refuses it on a socket the peer closed
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut b, &mut bytes).unwrap();
+        let _ = std::io::Read::read_to_end(&mut b, &mut bytes); // macOS may report a reset instead of EOF
         assert!(bytes.is_empty(), "hello sent to an untrusted server");
     }
 
@@ -442,13 +479,27 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn hello_putus_bisa_diulang() {
+        // this test process stands in for the daemon, so it is the binary the path check expects
         let (a, b) = UnixStream::pair().unwrap();
         let t = thread::spawn(move || {
             let mut l = String::new();
             let _ = BufReader::new(&b).read_line(&mut l); // accept hello, then close without answering
         });
-        let e = Client::open(a, "x", Arc::new(|_| {})).err().unwrap();
+        let e = Client::open_with(a, "x", Arc::new(|_| {}), std::env::current_exe().ok().as_deref()).err().unwrap();
         t.join().unwrap();
         assert!(matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof), "{e:?}");
+    }
+
+    /// The code check takes the live peer's signature: this process satisfies its own cdhash, not another one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn peer_code_ok_membandingkan_tanda_tangan() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let out = Command::new("/usr/bin/codesign").args(["-d", "-vvv"]).arg(std::env::current_exe().unwrap()).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stderr);
+        let hash = text.lines().find_map(|l| l.strip_prefix("CDHash=")).expect("test binary has a cdhash");
+        assert!(peer_code_ok(&a, &format!(r#"cdhash H"{hash}""#)));
+        assert!(!peer_code_ok(&a, r#"cdhash H"0000000000000000000000000000000000000000""#));
+        assert!(!peer_code_ok(&a, "bukan requirement"));
     }
 }

@@ -8,6 +8,7 @@ use crate::account;
 use crate::addon;
 use crate::bus;
 use crate::config;
+use crate::mark;
 use crate::msg;
 use crate::outbox;
 use crate::git;
@@ -442,7 +443,8 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
     // passes any path check), so both laps demand the secret from the keyring; the abstract socket only adds a layer a
     // pane's Landlock domain can't cross, it is not the proof — any process of this uid can read `ui.addr` or
     // /proc/net/unix. Lapis 2's injection check applies to both as well.
-    let signed = chan == Chan::Ui && st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r));
+    // SEC-41: the certificate alone isn't enough, the peer must be the installed UI binary (cdhash)
+    let signed = chan == Chan::Ui && st.ui_req.as_deref().is_some_and(|r| crate::sign::peer_ok(&s, r) && crate::sign::ui_pinned(&s));
     let tainted = chan == Chan::Ui && !signed && crate::ipc::peer_tainted(&s);
     let (tx, rx) = sync_channel::<String>(QUEUE);
     // panes whose output this connection stopped receiving because it fell behind (filled in by `send_all`)
@@ -1746,6 +1748,9 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     if let Some(t) = &token {
         env.push(("GEMBALA_TOKEN", t.as_str()));
     }
+    // SEC-40: this pane's marker nonce; the hook scripts and the launch command put it into their OSC 133/777 markers
+    let nonce = new_secret().map_err(|_| "io")?[..32].to_string();
+    env.push(("GEMBALA_MARK", nonce.as_str()));
     let acct_dir = shell_acct.as_ref().map(|(_, v)| v.strip_prefix("~/").map_or_else(|| v.clone(), |rest| format!("{home}/{rest}")));
     if let (Some((k, _)), Some(d)) = (&shell_acct, &acct_dir) {
         env.push((k.as_str(), d.as_str()));
@@ -1799,7 +1804,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     }
     let aliases = pane.aliases.lock().unwrap().clone();
     let st = st.clone();
-    thread::spawn(move || pump(st, id, pane, pty));
+    thread::spawn(move || pump(st, id, pane, pty, mark::MarkFilter::new(&nonce)));
     Ok(json!({"pane": id, "name": name, "aliases": aliases, "hist": key, "saver": saver}))
 }
 
@@ -2176,6 +2181,10 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
         let reg = st.harness.lock().unwrap();
         reg.is_sender(m.from) && reg.is_locked(m.to)
     };
+    // a plain shell (or an agent that exited) takes no messages; `status` is empty there, which `decide` reads as unknown too
+    if !m.is_reply && !trusted && to.agent_name().is_none() {
+        return Err("target_unknown");
+    }
     let mut eng = st.engine.lock().unwrap();
     let typing = to.typed_at.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
     Ok(msg::Facts {
@@ -2583,12 +2592,16 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
     let my_name = st.panes.lock().unwrap().get(&me).map(|x| x.name.lock().unwrap().clone()).ok_or("not_a_pane")?;
     let my_ws = st.workspace_of(me);
     // SEC-21: read/wait only within the same workspace; shell panes only when the user allows it
-    let visible = |name: &str| -> Result<(u64, Arc<Pane>), &'static str> {
-        let (id, pane) = st.by_name(name).ok_or("no_such_pane")?;
+    let allowed = |pane: &Pane| -> Result<(), &'static str> {
         pane.messaging()?;
         if *pane.workspace.lock().unwrap() != my_ws || (pane.agent_name().is_none() && !pane.readable.load(Ordering::Relaxed)) {
             return Err("acl_denied");
         }
+        Ok(())
+    };
+    let visible = |name: &str| -> Result<(u64, Arc<Pane>), &'static str> {
+        let (id, pane) = st.by_name(name).ok_or("no_such_pane")?;
+        allowed(&pane)?;
         Ok((id, pane))
     };
     match method {
@@ -2847,6 +2860,8 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                         return Ok(json!({"reply": {"id": m.id, "from": m.from_name, "body": m.body}}));
                     }
                 } else if let Some((_, pane)) = &target {
+                    // SEC-21: the user can switch `readable` off or move the pane to another workspace while this waits
+                    allowed(pane)?;
                     if let Some(re) = &pattern {
                         // SEC-12/17: the pattern sees what `read` shows, never the raw screen (else a 1-bit oracle on redacted secrets)
                         if re.is_match(&scrub(st, &pane.terminal()?.view.lock().unwrap().0.text())) {
@@ -3358,7 +3373,8 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
         *pane.status_at.lock().unwrap() = std::time::Instant::now();
         return;
     }
-    let Some(code) = mark.strip_prefix("agent-exit;") else { return };
+    // SEC-40: the exit code is digits only (the launch command prints `%d`)
+    let Some(code) = mark.strip_prefix("agent-exit;").filter(|c| (1..=3).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_digit())) else { return };
     let name = pane.name.lock().unwrap().clone();
     agent_done(v, pane, id, &pane.agent, &name, None, code, &[]);
 }
@@ -3543,7 +3559,7 @@ fn claude_saved(home: &std::path::Path, id: &str) -> bool {
 }
 
 /// PTY output → grid + every subscriber. Ends when the pane shell exits.
-fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
+fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty, mut marks: mark::MarkFilter) {
     let Ok(terminal) = pane.terminal() else { return };
     let mut buf = [0u8; 16 * 1024];
     loop {
@@ -3553,15 +3569,17 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => break, // EIO: slave tertutup
         };
+        // SEC-40: markers without this pane's nonce are neutralized here, the rest of the daemon only sees real ones
+        let data = marks.feed(&buf[..n]);
         let mut v = terminal.view.lock().unwrap();
         // FR-56: manual agent has exited = summary block first, then the shell output (prompt) shows below it
         // ponytail: the agent's last output read together with the prompt in one read doesn't reach the session log
         if pane.manual.lock().unwrap().is_some() && pty::busy(&terminal.master, terminal.sid).is_none() {
-            let code = history::marks(&buf[..n]).into_iter().find_map(|m| if let history::Mark::End(c) = m { Some(c) } else { None });
+            let code = history::marks(&data).into_iter().find_map(|m| if let history::Mark::End(c) = m { Some(c) } else { None });
             manual_done(&mut v, &pane, id, &[], code);
         }
         // FR-56: agent session markers from the launch script are cut from the stream; the rest passes as is
-        let mut rest = &buf[..n];
+        let mut rest = data.as_slice();
         while let Some((pos, len, mark)) = find_marker(rest) {
             emit(&mut v, &pane, id, &rest[..pos]);
             on_marker(&mut v, &pane, id, mark);
