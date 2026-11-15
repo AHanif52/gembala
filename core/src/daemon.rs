@@ -2541,11 +2541,7 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             // FR-7, SEC-12, SEC-17: plain text, redacted, wrapped in labeled delimiters
             let (_, pane) = visible(p["target"].as_str().ok_or("bad_params")?)?;
             let n = p["lines"].as_u64().unwrap_or(40).clamp(1, 500) as usize;
-            let mut text = git::redact(&pane.terminal()?.view.lock().unwrap().0.tail(n));
-            // SEC-12: the active GEMBALA_TOKEN value is redacted too
-            for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.lock().unwrap().clone()) {
-                text = text.replace(&t, "[disamarkan]");
-            }
+            let mut text = scrub(st, &pane.terminal()?.view.lock().unwrap().0.tail(n));
             // FR-27, SEC-31: the reader's switch decides; the delimiters and the exit code stay in the result
             if token_saver(st, me) {
                 text = crate::saver::reduce(&text, None);
@@ -2556,7 +2552,12 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
         "wait" => {
             // FR-6: reply, pattern (literal or linear-time regex, max 256), or settled status; time limit up to 6 h (GESEKAN
             // 11 Nov: an executor's task ran past the old 1 h cap and the coordinator read the timeout as a failure)
-            let timeout = std::time::Duration::from_millis(p["timeout_ms"].as_u64().unwrap_or(600_000).min(21_600_000));
+            let mut timeout_ms = p["timeout_ms"].as_u64().unwrap_or(600_000).min(21_600_000);
+            if p["pattern"].is_string() {
+                // each pattern wait costs at least 1 s, so a caller cannot probe the screen at full speed
+                timeout_ms = timeout_ms.max(PATTERN_MIN_TIMEOUT_MS);
+            }
+            let timeout = std::time::Duration::from_millis(timeout_ms);
             let reply = p["reply"].as_str().map(String::from);
             // --while-working (reply only): the limit restarts while the recipient is working/blocked; the wait ends
             // with `gone` when its pane is closed or its agent exited (GESEKAN 11 Nov)
@@ -2604,7 +2605,8 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                     }
                 } else if let Some((_, pane)) = &target {
                     if let Some(re) = &pattern {
-                        if re.is_match(&pane.terminal()?.view.lock().unwrap().0.text()) {
+                        // SEC-12/17: the pattern sees what `read` shows, never the raw screen (else a 1-bit oracle on redacted secrets)
+                        if re.is_match(&scrub(st, &pane.terminal()?.view.lock().unwrap().0.text())) {
                             return done(json!({"matched": true}));
                         }
                     } else {
@@ -2630,6 +2632,17 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
         }
         _ => Err("not_allowed"),
     }
+}
+
+const PATTERN_MIN_TIMEOUT_MS: u64 = 1000;
+
+/// SEC-12/17: screen text as another agent may see it: secrets redacted, the active GEMBALA_TOKEN values too
+fn scrub(st: &State, text: &str) -> String {
+    let mut text = git::redact(text);
+    for t in st.panes.lock().unwrap().values().filter_map(|x| x.token.lock().unwrap().clone()) {
+        text = text.replace(&t, "[disamarkan]");
+    }
+    text
 }
 
 /// A typed omp/OpenCode carries Gembala's hooks: omp `--hook=…/omp-gembala.ts`, OpenCode `OPENCODE_CONFIG=…/hooks/opencode.json`

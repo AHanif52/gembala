@@ -2347,6 +2347,29 @@ fn langganan_status_per_workspace() {
     assert!(!all.contains("sana-1"), "workspace lain tidak boleh terlihat: {all}");
 }
 
+/// SEC-12/17: `wait --pattern` sees the redacted screen like `read`, and a zero timeout still costs about a second.
+#[test]
+fn wait_pattern_tidak_jadi_oracle() {
+    let d = start("oracle");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let key = "sk-ant-api03-PALSU$((1234567000+890))";
+    let uji = format!(
+        "sleep 3; '{g}' wait diam-1 --pattern PALSU1234567890 --timeout 1; '{g}' wait diam-1 --pattern 'disamarkan' --timeout 1; \
+         a=$(date +%s); '{g}' wait diam-1 --pattern TIDAK-ADA --timeout 0; echo LAMA=$(($(date +%s)-a)); echo SELESAI-O; sleep 30"
+    );
+    let toml = sh_profile("diam", &format!("echo {key}; sleep 60")) + &sh_profile("uji", &uji);
+    profiles(&d, &mut ui, &toml, "SELESAI-O");
+    ui.call("pane.create", json!({"profile": "diam", "workspace": "w"}));
+    let k = ui.call("pane.create", json!({"profile": "uji", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(k, &["SELESAI-O"]);
+    let (first, rest) = out.split_once("timeout").unwrap_or((&out, ""));
+    assert!(!first.contains("matched"), "pattern ke teks mentah: {out}");
+    assert!(rest.contains("matched"), "pattern ke teks tersamar harus cocok: {out}");
+    let lama: u64 = out.split("LAMA=").nth(1).and_then(|x| x.split(|c: char| !c.is_ascii_digit()).next()).and_then(|x| x.parse().ok()).expect(&out);
+    assert!(lama >= 1, "timeout 0 harus tetap menunggu ~1 detik: {lama} {out}");
+}
+
 /// SEC-3 fallback: a process detached from the pane session is only recognized through a profile token `token = true`;
 /// the token is redacted in `read` (SEC-12).
 #[test]
