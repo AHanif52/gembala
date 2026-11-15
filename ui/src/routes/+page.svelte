@@ -3121,7 +3121,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
             {#if sp}<span class="tt">{title(t)}</span>{:else}
-            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{#if hasGridOf(t)}<span class="gico" title={tt("grid.tabTip")}>▦</span>{/if}<span class="cname">{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && !simple && meta[t.focus]?.name && meta[t.focus].name !== title(t) ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>{#if row.child}<span class="cst st {st}">{helperStatus(t.focus)}</span>{#if st === "blocked" || st === "approve"}<span class="hopen">{tt("helper.openShort")}</span>{/if}{/if}</span>{/if}
+            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{#if hasGridOf(t)}<span class="gico" title={tt("grid.tabTip")}>▦</span>{/if}<span class="cname">{ag && !simple && meta[t.focus]?.name && meta[t.focus].name !== title(t) ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>{#if row.child}{#if st === "blocked" || st === "approve"}<span class="hopen">{tt("helper.openShort")}</span>{:else}<span class="cst st {st}">{helperStatus(t.focus)}</span>{/if}{/if}</span>{/if}
             <span class="n"><span class="k">{!row.child && n >= 0 && n < 9 ? combo(`tab.goto.${n + 1}`) : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
@@ -4591,7 +4591,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     color: var(--tx-amber, #d97706);
     font-weight: 600;
   }
-  .gcount {
+  .helper-head > .gcount {
+    flex: none;
     font-size: 12px;
     color: var(--muted);
   }
@@ -4731,21 +4732,27 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     align-items: center;
     white-space: nowrap;
   }
-  .tab.helper .cname,
+  .tab.helper .cname {
+    flex: none; /* the pane name is never cut */
+  }
   .tab.helper .cst {
+    flex: 0 1 auto; /* only the status text gives way */
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .tab.helper .cst {
-    flex: 0 10 auto; /* the status gives way first, the name stays readable */
-  }
   .tab.helper .hopen {
     flex: none;
   }
+  .tab.helper .tt .dot {
+    margin-right: 4px;
+  }
+  .tab.helper .tt .aico {
+    margin-right: 1px;
+  }
   .hopen {
-    margin-left: 6px;
-    padding: 0 6px;
+    margin-left: 4px;
+    padding: 0 4px;
     border: 1px solid var(--tx-amber, #d97706);
     border-radius: 8px;
     font-size: 10px;

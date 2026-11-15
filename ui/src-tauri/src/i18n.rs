@@ -101,7 +101,7 @@ const TEXT: &[(&str, &str, &str)] = &[
     ("tab.helper.owner", "Go to Helper's Owner", "Buka Pemilik Pembantu"),
     ("tab.helper.next", "Next Helper", "Pembantu Berikutnya"),
     ("tab.helper.prev", "Previous Helper", "Pembantu Sebelumnya"),
-    ("tab.helper.compare", "Compare with Owner", "Sandingkan sama Pemilik"),
+    ("tab.helper.compare", "Side by side", "Jejerin"),
     ("tab.goto.1", "Tab 1", "Tab 1"),
     ("tab.goto.2", "Tab 2", "Tab 2"),
     ("tab.goto.3", "Tab 3", "Tab 3"),
