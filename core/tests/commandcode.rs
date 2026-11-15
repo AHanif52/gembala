@@ -64,8 +64,7 @@ elif p == 'malformed':
     print('not JSON', flush=True)
     time.sleep(60)
 elif p == 'ring':
-    # same 9.6 MB (> the 8 MB ring) in a quarter of the events: the daemon re-serialises the 256 KB snapshot per event,
-    # so 600 events took ~8 s in a debug build and overran `finish()` on a loaded macOS runner
+    # 9.6 MB, more than the 8 MB ring
     for _ in range(150):
         emit(dict(type='event', event=dict(type='text_delta', delta='x' * 65536)))
     result()

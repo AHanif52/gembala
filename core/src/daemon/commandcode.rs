@@ -579,13 +579,16 @@ fn pump(st: &State, id: u64, pane: &super::Pane, mut child: Child) {
             if next != signal { unsafe { libc::killpg(pid, next); } signal = next; }
         }
         let mut buf = [0u8; 16 * 1024];
+        // a read that returned bytes loops again at once: sleeping 5 ms after every 16 KB capped a run's output at ~1.6 MB/s
+        let mut moved = false;
         if !out_eof {
             match child.stdout.as_mut().map(|out| out.read(&mut buf)) {
                 Some(Ok(0)) | None => out_eof = true,
-                Some(Ok(n)) if failure.is_none() => match reader.feed(&buf[..n]) {
+                Some(Ok(n)) if failure.is_none() => { moved = true; match reader.feed(&buf[..n]) {
                     Ok(values) => envelopes(st, id, cc, values, &mut result),
                     Err(e) => failure = Some(e),
-                },
+                } },
+                Some(Ok(_)) => moved = true,
                 Some(Err(e)) if e.kind() != io::ErrorKind::WouldBlock && e.kind() != io::ErrorKind::Interrupted => { failure = Some("stdout read failed".into()); out_eof = true; },
                 _ => {}
             }
@@ -593,7 +596,7 @@ fn pump(st: &State, id: u64, pane: &super::Pane, mut child: Child) {
         if !err_eof {
             match child.stderr.as_mut().map(|err| err.read(&mut buf)) {
                 Some(Ok(0)) | None => err_eof = true,
-                Some(Ok(n)) => { let left = BLOCK_MAX.saturating_sub(stderr.len()); stderr.extend_from_slice(&buf[..n.min(left)]); },
+                Some(Ok(n)) => { moved = true; let left = BLOCK_MAX.saturating_sub(stderr.len()); stderr.extend_from_slice(&buf[..n.min(left)]); },
                 Some(Err(e)) if e.kind() != io::ErrorKind::WouldBlock && e.kind() != io::ErrorKind::Interrupted => err_eof = true,
                 _ => {}
             }
@@ -616,7 +619,7 @@ fn pump(st: &State, id: u64, pane: &super::Pane, mut child: Child) {
             failure.get_or_insert_with(|| "output drain timed out".into());
             break;
         }
-        thread::sleep(Duration::from_millis(5));
+        if !moved { thread::sleep(Duration::from_millis(5)); }
     }
     if failure.is_none() {
         match reader.finish() { Ok(values) => envelopes(st, id, cc, values, &mut result), Err(e) => failure = Some(e) }

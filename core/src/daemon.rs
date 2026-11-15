@@ -2270,6 +2270,18 @@ fn close_pane(st: &State, id: u64, pane: &Pane) {
         }
         libc::killpg(terminal.sid, libc::SIGHUP);
     }
+    // an interactive bash can miss the HUP when it lands between two commands (the handler only sets a flag and the
+    // restarted `read` never looks at it), so the pane would stay open for good: same 3 s grace as `pane.kill`, then SIGKILL
+    let sid = terminal.sid;
+    thread::spawn(move || {
+        for _ in 0..30 {
+            thread::sleep(Duration::from_millis(100));
+            if unsafe { libc::killpg(sid, 0) } != 0 {
+                return;
+            }
+        }
+        unsafe { libc::killpg(sid, libc::SIGKILL) };
+    });
 }
 
 /// FR-86: a helper is done with when it replied at least `mins` ago and has been idle/done (or its agent gone, "") that
