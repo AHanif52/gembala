@@ -1237,7 +1237,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 "recipe.get" => store.get(id()?, inst),
                 "recipe.approve" => store.approve(id()?, p["hash"].as_str().ok_or("bad_params")?, inst).map(|_| json!({})),
                 "recipe.delete" => store.delete(id()?).map(|_| json!({})),
-                "recipe.duplicate" => store.duplicate(id()?, p["to"].as_str().ok_or("bad_params")?).map(|_| json!({})),
+                "recipe.duplicate" => store.duplicate(id()?, p["to"].as_str().ok_or("bad_params")?, p["name"].as_str()).map(|_| json!({})),
                 // 3b builder (B1): cards to add, templates for "+ Resep baru", and which card fields each agent uses
                 "recipe.library" => {
                     let agents: Vec<Value> = profile::agent_ids()

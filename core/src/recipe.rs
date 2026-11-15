@@ -228,11 +228,26 @@ pub fn parse_with(text: &str, id: &str, installed: Option<&[String]>, d: &Defaul
     Parsed { recipe: recipe.filter(|_| cx.errors.is_empty()), errors: cx.errors, warnings: cx.warnings }
 }
 
+/// 1-based line and column (in characters) of a byte offset, for "baris 3, kolom 7"
+fn line_col(text: &str, at: usize) -> (usize, usize) {
+    let head = &text[..at.min(text.len())];
+    let line = head.matches('\n').count() + 1;
+    (line, head.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1)
+}
+
 fn build(text: &str, id: &str, installed: Option<&[String]>, cx: &mut Ctx) -> Option<Recipe> {
     let doc = match text.parse::<DocumentMut>() {
         Ok(d) => d,
         Err(e) => {
-            cx.errors.push(Diag::new("toml_syntax").arg("os", e.message()));
+            // with a position the text says "baris 3, kolom 7" (toml_syntax_at); without, just the parser's message
+            let d = match e.span() {
+                Some(span) => {
+                    let (line, col) = line_col(text, span.start);
+                    Diag::new("toml_syntax_at").arg("os", e.message()).arg("line", line).arg("col", col)
+                }
+                None => Diag::new("toml_syntax").arg("os", e.message()),
+            };
+            cx.errors.push(d);
             return None;
         }
     };
@@ -1225,11 +1240,16 @@ impl Store {
     }
 
     /// FR-74 Duplikat: same text under a new id, not approved (a copy is a new recipe to review)
-    pub fn duplicate(&self, from: &str, to: &str) -> Result<(), Diag> {
-        let text = self.read(from)?;
+    pub fn duplicate(&self, from: &str, to: &str, name: Option<&str>) -> Result<(), Diag> {
+        let mut text = self.read(from)?;
         let p = self.path(to)?;
         if p.exists() {
             return Err(Diag::new("recipe_exists"));
+        }
+        // the builder's "Duplikat" names the copy; a text that doesn't parse is copied as it is
+        if let (Some(n), Ok(mut doc)) = (name, text.parse::<DocumentMut>()) {
+            doc["name"] = toml_edit::value(n);
+            text = doc.to_string();
         }
         crate::config::write_atomic(&p, text.as_bytes()).map_err(|e| crate::config::io_err("io_write", e))
     }
@@ -1360,6 +1380,21 @@ mod tests {
         assert!(p.recipe.is_some() && p.warnings.iter().any(|w| w.code == "limit_inactive"));
         assert_eq!(ok(MIN).fallback_on, ["exit", "timeout", "unknown"]);
         assert!(codes(&format!("fallback_on = [\"error\"]\n{MIN}")).iter().any(|c| c.starts_with("one_of@fallback_on")));
+    }
+
+    #[test]
+    fn toml_syntax_has_line_and_column() {
+        let at = |text: &str| {
+            let d = parse(text, "t", None).errors.into_iter().find(|d| d.code == "toml_syntax_at").unwrap();
+            let get = |k: &str| d.args.iter().find(|(a, _)| *a == k).map(|(_, v)| v.clone());
+            (get("line"), get("col"))
+        };
+        // broken on the 3rd line, after a multibyte char on line 1 (columns count characters)
+        let (line, col) = at("name = \"é\"\nmax_rounds = 2\n[[step\n");
+        assert_eq!(line.as_deref(), Some("3"));
+        assert!(col.is_some());
+        assert_eq!(at("name = \n").0.as_deref(), Some("1"));
+        assert_eq!(line_col("ab\ncdé\nx", 7), (2, 4));
     }
 
     #[test]
@@ -1516,10 +1551,15 @@ mod tests {
         s.save_approved("baru", MIN, None).unwrap();
         assert_eq!(s.get("baru", None).unwrap()["status"], "approved");
         // a copy is a new recipe to review, and never overwrites
-        s.duplicate("baru", "baru-2").unwrap();
+        s.duplicate("baru", "baru-2", None).unwrap();
         assert_eq!(s.get("baru-2", None).unwrap()["status"], "needs_approval");
-        assert_eq!(s.duplicate("baru", "fitur-baru").unwrap_err().code, "recipe_exists");
-        assert_eq!(s.duplicate("baru", "../x").unwrap_err().code, "recipe_id");
+        assert_eq!(s.duplicate("baru", "fitur-baru", None).unwrap_err().code, "recipe_exists");
+        assert_eq!(s.duplicate("baru", "../x", None).unwrap_err().code, "recipe_id");
+        // Duplikat from the builder renames the copy (other keys stay)
+        s.duplicate("baru", "baru-3", Some("Baru salinan")).unwrap();
+        let c = s.get("baru-3", None).unwrap();
+        assert_eq!(c["full"]["name"], "Baru salinan");
+        assert_eq!(c["full"]["steps"], s.get("baru", None).unwrap()["full"]["steps"]);
         let b = brief("tambah tahap test", "baru", Some(MIN), Path::new("/tmp/d/x.toml"));
         assert!(b.contains("tambah tahap test") && b.contains("/tmp/d/x.toml") && b.contains(MIN) && b.contains("max_rounds <= 3"), "{b}");
         let _ = fs::remove_dir_all(&d);

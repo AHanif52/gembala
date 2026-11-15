@@ -12,7 +12,7 @@
     setModel, setPrimary, skipped, slugId, used, type BRecipe, type BStep, type Diag, type LibAgent, type StepForm,
   } from "./recipe-builder";
 
-  let { id, tpl = "", names = {}, profiles = [], active = true, onclose, onstate = () => {}, onformulate = async () => null, onopenpane = () => {} }: {
+  let { id, tpl = "", names = {}, profiles = [], active = true, onclose, onstate = () => {}, onformulate = async () => null, onopenpane = () => {}, onduplicate = () => {} }: {
     /// recipe id (file name); ignored for a new recipe
     id: string;
     /// template id from `recipe.library`: a new recipe (not a file yet)
@@ -24,6 +24,8 @@
     /// B4: open the "Rumuskan tahap" tab with the brief; the page keeps this builder on screen. null = it failed
     onformulate?: (profile: string, need: string) => Promise<{ draft: string; pane: number; who: string } | null>;
     onopenpane?: (pane: number) => void;
+    /// Duplikat: the id of the copy, to open in a new tab
+    onduplicate?: (rid: string) => void;
     /// shown in the main area; a tab behind another one keeps its state but ignores keys
     active?: boolean;
     onclose: () => void;
@@ -130,6 +132,27 @@
     }, 350);
     return () => clearTimeout(h);
   });
+
+  /// Duplikat: the saved file under a free id, named "<name> salinan"; it opens as its own tab, not approved
+  async function duplicate() {
+    if (!rec || busy || fresh || dirty) return;
+    busy = true;
+    const name = rec.name.slice(0, 60 - t("rb.dupSuffix").length) + t("rb.dupSuffix");
+    try {
+      // another copy made a moment ago takes the id first: ask again with the fresh list
+      for (let n = 0; n < 3; n++) {
+        const to = slugId(name, ((await call("recipe.list")) as { id: string }[]).map((r) => r.id));
+        const r = await call("recipe.duplicate", { id: curId, to, name });
+        if (!r.error) return void onduplicate(to);
+        if (r.error !== "recipe_exists") return void (fail = errText(r.error, r.args));
+      }
+      fail = errText("recipe_exists");
+    } catch (e) {
+      fail = errText(e);
+    } finally {
+      busy = false;
+    }
+  }
 
   async function review() {
     if (!rec || busy) return;
@@ -415,6 +438,7 @@
             <span class="tplwrap"><button class="mini tplbtn" onclick={() => (tplMenu = !tplMenu)}>{t("rb.tpl", { name: lib.templates.find((x) => x.id === tplId)?.recipe.name ?? "…" })}</button>
               {#if tplMenu}<div class="menu left" role="menu">{#each lib.templates as tp (tp.id)}<button role="menuitem" onclick={() => applyTemplate(tp.id)}>{tp.recipe.name}</button>{/each}</div>{/if}</span>
           {/if}
+          {#if !fresh}<button class="mini" disabled={busy || dirty} title={dirty ? t("rb.dupHint") : ""} onclick={duplicate}>{t("rb.dup")}</button>{/if}
           <button class="mini pri" disabled={busy} onclick={review}>✓ {t("rb.review")}</button>
         </div>
         {#if leaving}
