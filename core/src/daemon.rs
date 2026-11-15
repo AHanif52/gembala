@@ -3446,6 +3446,7 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     eprintln!("{} pane {id}: {agent} exited, code {code}, {secs} s", history::now());
     let home = std::env::var("HOME").unwrap_or_default();
     let dir = pty::cwd_of(terminal.sid);
+    let files = dir.as_deref().map_or(0, |d| git::status(d)["files"].as_u64().unwrap_or(0));
     let cwd = dir.as_ref().map(|c| c.to_string_lossy().replacen(&home, "~", 1)).unwrap_or_default();
     let omp = |d: std::path::PathBuf| omp_session(std::path::Path::new(&home), &d, since);
     let resume = match agent {
@@ -3473,7 +3474,9 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     };
     *pane.last_output.lock().unwrap() = log;
     let cmd = msg::sanitize(cmd).unwrap_or_default();
-    let text = history::block_text(&cwd, secs, code, &cmd, resume.as_deref());
+    // FR-99 P5: the card says how many files are changed in the folder now (the toolbar chip's number) and what the agent last said
+    let said = pane.last_msg.lock().unwrap().as_deref().map(turn_summary).unwrap_or_default();
+    let text = history::block_text_with(&cwd, secs, code, &cmd, resume.as_deref(), files, &said);
     // FR-62: the manual agent block (from the zsh marker) gets its resume command; a profile agent becomes its own block
     // an unfinished shell block (agent exit detected before the D marker) is used too, so a D marker arriving
     // afterwards doesn't record a second block without a resume command

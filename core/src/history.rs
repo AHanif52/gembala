@@ -201,6 +201,16 @@ const GUTTER: &str = "";
 /// One block like FR-56 (timeline): `<icon> <folder> · <duration>[ · exit n]` dim, command bold,
 /// resume command dim if any (then one row for the UI buttons), then one blank row as spacing between blocks.
 pub fn block_text(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&str>) -> String {
+    block_text_with(cwd, secs, code, cmd, resume, 0, "")
+}
+
+/// Prefix of the summary row of an agent block (FR-99 P5): the UI draws it as "what it did" over that row. Blocks written
+/// before this have no such row, and the head without ` · N file` is read as before.
+pub const SUMMARY_MARK: &str = "¶ ";
+
+/// `block_text` for an agent session that changed files: the head gets ` · N file` after the duration and the agent's last
+/// message follows the command as one row (`SUMMARY_MARK`). 0 files and an empty summary give the plain block.
+pub fn block_text_with(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&str>, files: u64, summary: &str) -> String {
     let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
     // agent icon colored like in the sidebar (FR-52); other commands have no icon
     let first = cmd.split_whitespace().next().unwrap_or_default();
@@ -209,7 +219,11 @@ pub fn block_text(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&s
         .find(|(a, _)| first == *a || first.starts_with(&format!("{a}-")))
         .map_or(String::new(), |(_, g)| format!("{g}\x1b[0m\x1b[2m "));
     let cmd = cmd.replace('\n', &format!("\r\n{GUTTER}"));
-    let mut t = format!("{GUTTER}\x1b[2m{icon}{cwd} · {}{exit}\x1b[0m\r\n{GUTTER}\x1b[1m{cmd}\x1b[0m\r\n", dur(secs));
+    let changed = if files > 0 { format!(" · {files} file") } else { String::new() };
+    let mut t = format!("{GUTTER}\x1b[2m{icon}{cwd} · {}{changed}{exit}\x1b[0m\r\n{GUTTER}\x1b[1m{cmd}\x1b[0m\r\n", dur(secs));
+    if !summary.is_empty() {
+        t += &format!("{GUTTER}\x1b[2m{SUMMARY_MARK}{summary}\x1b[0m\r\n");
+    }
     // pen screen 02: resume command dim without a marker, then two rows for the buttons the UI draws
     if let Some(r) = resume {
         t += &format!("{GUTTER}\x1b[2m{r}\x1b[0m\r\n\r\n\r\n");
@@ -372,7 +386,12 @@ mod tests {
         let t = String::from_utf8(trim_separator(&[b"ls\r\nok\r\n".as_slice(), &separator(0), &separator(1), b"\r\n"].concat())).unwrap();
         assert_eq!(t, "ls\r\nok\r\n\r\n\r\n\r\n");
         // the blank rows reserved for buttons before the line stay
-        let blk = block_text("~", 1, "0", "claude", Some("claude --resume x"));
+        // FR-99 P5: files and summary add to the head and one row after the command; without them the block is as before
+        let plain = block_text("~", 1, "0", "claude", Some("claude --resume x"));
+        let rich = block_text_with("~", 1, "0", "claude", Some("claude --resume x"), 3, "Dock diperbaiki.");
+        assert!(rich.contains("~ · 1 dtk · 3 file\x1b[0m\r\n") && rich.contains("\x1b[1mclaude\x1b[0m\r\n\x1b[2m¶ Dock diperbaiki.\x1b[0m\r\n\x1b[2mclaude --resume x"), "{rich:?}");
+        assert_eq!(block_text_with("~", 1, "0", "claude", Some("claude --resume x"), 0, ""), plain);
+        let blk = plain;
         let t = String::from_utf8(trim_separator(&[blk.as_bytes(), &separator(0)].concat())).unwrap();
         assert_eq!(t, blk);
         // log from the grid (trailing blank rows gone): the last block's button rows are given back
