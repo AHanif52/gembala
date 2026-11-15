@@ -13,7 +13,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { call } from "./daemon";
   import { BUSY, apply, emptyView, num, type Block, type Tool } from "./agent-view";
-  import { fromSnapshot, loadHistory, onEvent, proposal, type CcEvent } from "./commandcode";
+  import { ccSlash, fromSnapshot, loadHistory, onEvent, proposal, type CcEvent } from "./commandcode";
   import { lineDiff } from "./diff";
   import { errText, i18n, loc, t, tOr } from "./i18n/state.svelte";
 
@@ -180,12 +180,33 @@
     if (r) picking = Array.isArray(r.sessions) ? r.sessions : [];
   }
 
+  let modelEl = $state<HTMLSelectElement>();
+  let effortEl = $state<HTMLSelectElement>();
+  // Slash input maps to the controls above; it is never sent to the model.
+  function slash(cmd: string, arg: string, known: boolean) {
+    note = "";
+    if (cmd === "model" || cmd === "effort") {
+      const isModel = cmd === "model";
+      const ids = isModel ? models.map((m) => m.id) : efforts;
+      const hit = arg && ids.find((x) => x.toLowerCase() === arg.toLowerCase());
+      if (hit) return void (isModel ? (model = hit) : (effort = hit));
+      (isModel ? modelEl : effortEl)?.focus();
+      if (arg) note = t("cc.slashNoOption", { arg });
+    } else if (cmd === "resume" || cmd === "history") void pick();
+    else if (cmd === "permissions" || cmd === "access") void (v.access === "yolo" ? (note = t("cc.slashAccessWide")) : openGate());
+    else note = t(known ? "cc.slashHelp" : "cc.slash");
+  }
+
   async function send() {
     const text = prompt.trim();
-    if (["exit", "/exit", "/quit"].includes(text)) return void onshell().catch((e) => (note = errText(e)));
+    if (["exit", "/exit", "/quit"].includes(text.toLowerCase())) return void onshell().catch((e) => (note = errText(e)));
     if (!text || busy || locked) return;
     banner = null;
-    if (text.startsWith("/")) return void (note = t("cc.slash"));
+    const sl = ccSlash(text);
+    if (sl) {
+      prompt = "";
+      return slash(sl.cmd, sl.arg, sl.known);
+    }
     note = "";
     prompt = "";
     const turn = { role: "user" as const, text, at: Date.now() };
@@ -342,14 +363,14 @@
     {#if note}<p class="meta" role="status">{note}</p>{/if}
     <div class="status">
       <label>{t("cc.model")}
-        <select bind:value={model}>
+        <select bind:value={model} bind:this={modelEl}>
           <option value="">{t("cc.default")}</option>
           {#if model && !models.some((m) => m.id === model)}<option value={model}>{model}</option>{/if}
           {#each models as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
         </select>
       </label>
       <label>{t("cc.effort")}
-        <select bind:value={effort}>
+        <select bind:value={effort} bind:this={effortEl}>
           <option value="">{t("cc.default")}</option>
           {#each efforts as e (e)}<option value={e}>{e}</option>{/each}
         </select>

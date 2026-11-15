@@ -216,3 +216,12 @@ export function proposal(name: string, input: any): { path: string; before: stri
 
 /// FR-107: a bare Command Code command (no arguments) typed in the input editor opens the structured pane instead
 export const ccTrigger = (text: string) => /^\s*(cmd|commandcode|cmdc)\s*$/.test(text);
+
+// Slash input in the CC pane is never sent to the model: it maps to a UI control or a note.
+export const CC_SLASH = ["model", "effort", "resume", "history", "permissions", "access", "help"];
+export function ccSlash(text: string): { cmd: string; arg: string; known: boolean } | null {
+  const m = /^\/(\S*)\s*(.*)$/s.exec(text.trim());
+  if (!m) return null;
+  const cmd = m[1].toLowerCase();
+  return { cmd, arg: m[2].trim(), known: CC_SLASH.includes(cmd) };
+}

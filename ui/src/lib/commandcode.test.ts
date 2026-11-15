@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, ccTrigger } from "./commandcode.ts";
+import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, ccTrigger, ccSlash } from "./commandcode.ts";
 import { emptyView } from "./agent-view.ts";
 
 test("Command Code mod reports ordered status and never answers permission prompts", async () => {
