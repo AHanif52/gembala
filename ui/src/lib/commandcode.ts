@@ -147,8 +147,8 @@ export function onEvent(v: View, ev: CcEvent): "ok" | "dup" | "resync" {
   return "ok";
 }
 
-/// `cc.attach` snapshot (daemon-reduced state, survives ring eviction) → view. It has no user prompts or run borders:
-/// earlier output shows as one block of history.
+/// `cc.attach` snapshot (daemon-reduced state, survives ring eviction) → view. User prompts come back from `runs`;
+/// agent output is split into turns at those prompts.
 export function fromSnapshot(s: any, epoch: string, through: number): View {
   const v = emptyView();
   v.epoch = epoch;
@@ -164,10 +164,24 @@ export function fromSnapshot(s: any, epoch: string, through: number): View {
     v.tools[id] = { id, name: str(t?.toolName), input: t?.input ?? null, status, output: text(t?.result ?? t?.error ?? t?.hookOutput) || undefined, partial: t?.partial ? text(t.partial) : undefined };
   }
   const messages: any[] = Array.isArray(s?.messages) ? s.messages : [];
-  if (!messages.length && !running && !s?.result && !Object.keys(v.tools).length) return v;
-  v.turns.push({ role: "agent", runId: v.runId ?? "", at: Date.now(), blocks: [], draft: [], state: running ? "starting" : "done" });
+  // prompts of the runs still in the snapshot; `from` counts messages ever produced, `dropped` those already evicted
+  const runs: any[] = (Array.isArray(s?.runs) ? s.runs : []).filter((r: any) => typeof r?.prompt === "string");
+  if (!messages.length && !running && !s?.result && !Object.keys(v.tools).length && !runs.length) return v;
+  let next = 0;
+  const open = (i: number) => {
+    while (next < runs.length && (Number(runs[next].from) || 0) - (Number(s?.dropped) || 0) <= i) v.turns.push({ role: "user", text: clip(runs[next].prompt), at: Number(runs[next++].at) || 0 });
+  };
+  const agentTurn = () => {
+    if (v.turns.at(-1)?.role !== "agent") v.turns.push({ role: "agent", runId: v.runId ?? "", at: Date.now(), blocks: [], draft: [], state: running ? "starting" : "done" });
+  };
   v.status = running ? "starting" : "done";
-  for (const m of messages) for (const a of agentActions({ type: "message_end", content: m })) apply(v, a);
+  messages.forEach((m, i) => {
+    open(i);
+    agentTurn();
+    for (const a of agentActions({ type: "message_end", content: m })) apply(v, a);
+  });
+  open(messages.length);
+  agentTurn();
   if (running) {
     for (const a of agentActions({ type: "message_update", content: s.content ?? [] })) apply(v, a);
     if (s.thinking) apply(v, { t: "thinking", delta: s.thinking });

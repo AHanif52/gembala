@@ -473,6 +473,8 @@ fn resume_binds_session_history_and_guards() {
     assert_eq!(c.call("cc.resume", json!({"pane":pane, "sessionId":"bad/id"}))["error"]["code"], "bad_params");
     write_session(&d.dir, "old.jsonl", "old-session", &cwd, 2);
     assert_eq!(c.call("cc.resume", json!({"pane":pane, "sessionId":"old-session"}))["error"]["code"], "unsupported_format");
+    write_session(&d.dir, "older.jsonl", "older-session", &cwd, 1);
+    assert_eq!(c.call("cc.resume", json!({"pane":pane, "sessionId":"older-session"}))["error"]["code"], "unsupported_format");
     // A session has one writer: another pane binding the same id is refused.
     let second = c.create(&d);
     assert_eq!(c.call("cc.resume", json!({"pane":second, "sessionId":"fixture-session"}))["error"]["code"], "session_in_use");
@@ -481,4 +483,35 @@ fn resume_binds_session_history_and_guards() {
     assert_eq!(c.call("cc.resume", json!({"pane":second, "sessionId":"fixture-session"}))["error"]["code"], "busy");
     assert_eq!(c.call("cc.cancel", json!({"pane":second, "runId":run}))["result"]["accepted"], true);
     assert_eq!(c.finish(second)["snapshot"]["state"], "interrupted");
+}
+
+#[test]
+fn snapshot_keeps_the_prompt_of_every_run() {
+    let d = start("prompts"); let mut c = Client::ui(&d); let pane = c.create(&d);
+    c.run(pane, "r1", "fixture");
+    c.finish(pane);
+    c.run(pane, "r2", "fixture");
+    let snap = c.finish(pane)["snapshot"].clone();
+    let runs = snap["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{snap}");
+    assert_eq!(runs[0]["prompt"], "fixture");
+    assert_eq!(runs[1]["prompt"], "fixture");
+    assert!(runs[1]["from"].as_u64() >= runs[0]["from"].as_u64());
+}
+
+#[test]
+fn outside_writer_is_noticed_until_the_session_is_reloaded() {
+    let d = start_home("outside"); let mut c = Client::ui(&d); let pane = c.create(&d);
+    let cwd = std::fs::canonicalize(&d.dir).unwrap();
+    write_session(&d.dir, "mine.jsonl", "fixture-session", &cwd, 3);
+    assert_eq!(c.call("cc.stale", json!({"pane":pane}))["result"]["stale"], false, "nothing bound yet");
+    c.call("cc.resume", json!({"pane":pane, "sessionId":"fixture-session"}));
+    assert_eq!(c.call("cc.stale", json!({"pane":pane}))["result"]["stale"], false);
+    let file = d.dir.join(".commandcode/projects/demo/mine.jsonl");
+    let mut text = std::fs::read_to_string(&file).unwrap();
+    text.push_str("{\"type\":\"message\",\"id\":\"outside\",\"parentId\":\"final\",\"timestamp\":\"t\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"more\"}]}}\n");
+    std::fs::write(&file, text).unwrap();
+    assert_eq!(c.call("cc.stale", json!({"pane":pane}))["result"]["stale"], true);
+    c.call("cc.resume", json!({"pane":pane, "sessionId":"fixture-session"}));
+    assert_eq!(c.call("cc.stale", json!({"pane":pane}))["result"]["stale"], false);
 }

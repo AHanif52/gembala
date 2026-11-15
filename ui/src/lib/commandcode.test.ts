@@ -101,6 +101,15 @@ test("cc.attach snapshot rebuilds a view that keeps reduced state after ring evi
   assert.equal(v.tools.t2.status, "unknown");
 });
 
+test("cc.attach snapshot brings the user prompts back, split per run", () => {
+  const v = fromSnapshot({
+    state: "idle", dropped: 1, sessionId: "s",
+    messages: [[{ type: "text", text: "a2" }], [{ type: "text", text: "b1" }]],
+    runs: [{ prompt: "first", at: 1, from: 0 }, { prompt: "second", at: 2, from: 2 }, { prompt: "third", at: 3, from: 3 }],
+  }, "e1", 5);
+  assert.deepEqual(v.turns.map((t) => (t.role === "user" ? `you:${t.text}` : "agent")), ["you:first", "agent", "you:second", "agent", "you:third", "agent"]);
+});
+
 test("cc.resume history: user prompts, tool results paired by id, live seq kept", () => {
   const v = emptyView();
   v.epoch = "e1";

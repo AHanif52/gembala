@@ -727,6 +727,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         "cc.access" => commandcode::access(st, p),
         "cc.sessions" => commandcode::sessions(st, p),
         "cc.resume" => commandcode::resume(st, p),
+        "cc.stale" => commandcode::stale(st, p),
         "pane.list" => {
             let panes = st.panes.lock().unwrap();
             let mut ids: Vec<_> = panes.keys().copied().collect();

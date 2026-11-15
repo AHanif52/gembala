@@ -93,7 +93,17 @@
     if (again) return attach(true);
   }
 
+  // another process (a terminal `cmd --resume`) wrote the bound session: calm notice + reload, polled while idle
+  let outside = $state(false);
+  async function checkOutside() {
+    if (busy || !v.sessionId || outside) return;
+    try {
+      outside = (await call("cc.stale", { pane }))?.stale === true;
+    } catch {}
+  }
+
   onMount(() => {
+    const poll = setInterval(checkOutside, 4000);
     const un = listen<any>("daemon", ({ payload }) => {
       if (payload?.event !== "cc.event" || payload.params?.pane !== pane) return;
       const e: CcEvent = payload.params;
@@ -109,6 +119,7 @@
       .then((r) => (models = Array.isArray(r?.models) ? r.models : []))
       .catch(() => {});
     return () => {
+      clearInterval(poll);
       un.then((f) => f());
       call("cc.detach", { pane }).catch(() => {});
     };
@@ -134,6 +145,7 @@
       const r = await call("cc.resume", { pane, sessionId: id });
       const messages = r?.history?.messages ?? [];
       loadHistory(v, r.sessionId ?? id, messages);
+      outside = false;
       restored = false;
       banner = { ok: true, n: messages.length, cut, partial: !!r?.history?.partial };
       locked = cut;
@@ -314,6 +326,12 @@
         {:else}{t("cc.broken", { error: banner.error ?? "" })}{/if}
       </p>
       {#if locked}<button class="btn pri" onclick={() => ((locked = false), input?.focus())}>{t("cc.continue")}</button>{/if}
+    </div>
+  {/if}
+  {#if outside}
+    <div class="resume" role="status">
+      <p>{t("cc.outside")}</p>
+      <button class="btn pri" disabled={busy} onclick={() => v.sessionId && openSession(v.sessionId)}>{t("cc.outsideReload")}</button>
     </div>
   {/if}
   <div class="msgs" bind:this={box}>

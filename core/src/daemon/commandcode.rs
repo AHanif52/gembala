@@ -60,10 +60,13 @@ struct Data {
     bytes: usize,
     snapshot: Value,
     subscribers: Vec<Sub>,
+    /// Transcript file of the bound session and how it looked when this pane last read or wrote it: a different
+    /// look later means another process (a terminal `cmd --resume`) continued the session.
+    seen: Option<(PathBuf, (u64, u64))>,
 }
 
 fn snapshot() -> Value {
-    json!({"state":"idle", "access":"restricted", "messages":[], "text":"", "thinking":"", "tools":{}, "truncated":false})
+    json!({"state":"idle", "access":"restricted", "messages":[], "runs":[], "dropped":0, "text":"", "thinking":"", "tools":{}, "truncated":false})
 }
 
 fn clip(text: &str, cap: usize) -> String {
@@ -103,6 +106,22 @@ impl Data {
         }
     }
 
+    /// The prompt of a run, kept beside `messages` (which only hold agent output) so a resync can show it again.
+    /// `from` counts messages ever produced before the run, so evicting old messages doesn't move it.
+    fn note_prompt(&mut self, prompt: &str) {
+        let from = self.snapshot["dropped"].as_u64().unwrap_or(0) + self.snapshot["messages"].as_array().map_or(0, |m| m.len() as u64);
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        if let Some(runs) = self.snapshot["runs"].as_array_mut() {
+            runs.push(json!({"prompt": clip(prompt, 16 << 10), "at": at, "from": from}));
+            if runs.len() > 64 { runs.remove(0); }
+        }
+    }
+
+    /// Remember the transcript file as it is now (own run finished, or history just read).
+    fn stamp_session(&mut self, cwd: &Path) {
+        self.seen = scan_sessions(cwd).into_iter().find(|s| s.id == self.session).and_then(|s| Some((s.path.clone(), file_look(&s.path)?)));
+    }
+
     fn emit(&mut self, epoch: &str, id: u64, kind: &str, payload: Value) {
         if kind == "agent" { self.reduce(&payload); }
         self.seq += 1;
@@ -140,7 +159,7 @@ impl Data {
                 if event["type"] == "message_end"
                     && let Some(messages) = self.snapshot["messages"].as_array_mut() {
                         messages.push(content);
-                        if messages.len() > 64 { messages.remove(0); }
+                        if messages.len() > 64 { messages.remove(0); self.snapshot["dropped"] = json!(self.snapshot["dropped"].as_u64().unwrap_or(0) + 1); }
                         self.snapshot["text"] = json!("");
                         self.snapshot["thinking"] = json!("");
                         self.snapshot["content"] = Value::Null;
@@ -163,6 +182,8 @@ impl Data {
             _ => {}
         }
         if self.snapshot.to_string().len() > SNAP_MAX {
+            let gone = self.snapshot["messages"].as_array().map_or(0, |m| m.len() as u64);
+            self.snapshot["dropped"] = json!(self.snapshot["dropped"].as_u64().unwrap_or(0) + gone);
             self.snapshot["messages"] = json!([]);
             self.snapshot["tools"] = json!({});
             self.snapshot["content"] = Value::Null;
@@ -193,7 +214,7 @@ pub(super) fn create(st: &Arc<State>, p: &Value) -> Res {
         model: model.into(), effort: effort.into(), closed: AtomicBool::new(false),
         worker: Mutex::new(None),
         data: Mutex::new(Data { seq:0, run_id:String::new(), session:String::new(), active:false, cancel:None,
-            requests:VecDeque::new(), ring:VecDeque::new(), bytes:0, snapshot:snapshot(), subscribers:Vec::new() }),
+            requests:VecDeque::new(), ring:VecDeque::new(), bytes:0, snapshot:snapshot(), subscribers:Vec::new(), seen:None }),
         access: Mutex::new(Access { mode:"restricted", revision:0, cwd:cwd.clone(), session:String::new() }),
     };
     let key = new_secret().map_err(|_| "io")?[..16].to_string();
@@ -306,6 +327,7 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     cc.pid.store(pid, Ordering::Release);
     drop(panes);
     d.active = true; d.cancel = None; d.run_id = run_id.clone();
+    d.note_prompt(prompt);
     d.snapshot["text"] = json!(""); d.snapshot["thinking"] = json!("");
     d.snapshot["content"] = Value::Null; d.snapshot["result"] = Value::Null;
     d.snapshot["diagnostic"] = Value::Null; d.snapshot["stderr"] = json!("");
@@ -453,6 +475,23 @@ pub(super) fn sessions(st: &State, p: &Value) -> Res {
     Ok(out)
 }
 
+/// Size and modification time (ms): enough to notice that someone else appended to a transcript.
+fn file_look(path: &Path) -> Option<(u64, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    let ms = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
+    Some((m.len(), ms))
+}
+
+/// `cc.stale`: has another process written the bound session since this pane last read or wrote it? Never during a run.
+pub(super) fn stale(st: &State, p: &Value) -> Res {
+    let pane = st.pane(p)?;
+    let cc = backend(&pane)?;
+    if p.as_object().is_none_or(|o| o.keys().any(|k| k != "pane")) { return Err("bad_params"); }
+    let d = cc.data.lock().unwrap();
+    let stale = !d.active && d.seen.as_ref().is_some_and(|(path, look)| file_look(path).is_some_and(|now| now != *look));
+    Ok(json!({"stale": stale}))
+}
+
 fn block_value(block: &Block) -> Value {
     match block {
         Block::Text(text) => json!({"type":"text", "text":clip(text, BLOCK_MAX)}),
@@ -495,6 +534,7 @@ pub(super) fn resume(st: &State, p: &Value) -> Res {
     let partial = history.partial;
     let mut d = cc.data.lock().unwrap();
     d.bind_session(Some(wanted));
+    d.seen = file_look(&found.path).map(|l| (found.path.clone(), l));
     // Reopened history starts restricted again: wide access needs a fresh gate.
     let mut access = cc.access.lock().unwrap();
     if access.mode != "restricted" { access.mode = "restricted"; access.session.clear(); access.revision += 1; }
@@ -651,6 +691,7 @@ fn pump(st: &State, id: u64, pane: &super::Pane, mut child: Child) {
     d.snapshot["state"] = json!(state); d.snapshot["exitCode"] = json!(code);
     d.snapshot["diagnostic"] = json!(failure);
     d.snapshot["stderr"] = json!(clip(&telegram::mask_secrets(&String::from_utf8_lossy(&stderr)), BLOCK_MAX));
+    d.stamp_session(&cc.cwd);
     d.active = false;
     cc.pid.store(0, Ordering::Release);
     d.emit(&st.boot, id, "state", json!({"state":state,"exitCode":code}));
