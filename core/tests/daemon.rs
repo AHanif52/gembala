@@ -508,7 +508,15 @@ fn info_dan_hentikan_proses() {
     let mut ui = Cli::ui(&d);
     let pane = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
     let w = |ui: &mut Cli, s: &str| ui.call("pane.write", json!({"pane": pane, "data": B64.encode(s)}));
-    assert_eq!(wait_info(&mut ui, pane, false, Duration::from_secs(5))["busy"], false);
+    // a starting bash runs its rc files in a child, so one idle reading isn't enough: need several in a row before `pane.kill`
+    // re-reads the foreground (else it can catch that child and report stopped=true)
+    let t0 = Instant::now();
+    let mut diam = 0;
+    while diam < 3 && t0.elapsed() < Duration::from_secs(15) {
+        diam = if wait_info(&mut ui, pane, false, Duration::from_secs(5))["busy"] == false { diam + 1 } else { 0 };
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(diam, 3, "shell never went idle");
     assert_eq!(ui.call("pane.kill", json!({"pane": pane}))["result"]["stopped"], false);
 
     w(&mut ui, "sleep 60\r");
@@ -1638,7 +1646,14 @@ fn fr66_balasan_akhir_giliran_dan_spool() {
     let a = ui.call("pane.create", json!({"profile": "kirim", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
     let out = ui.attach_until(a, &["SELESAI-66"]);
     assert!(out.contains("JAWABAN-OTOMATIS"), "{out}");
-    assert_eq!(ui.call("pane.info", json!({"pane": recipient}))["result"]["last"], "JAWABAN-OTOMATIS selesai");
+    // the reply goes out before the daemon sets `last` (daemon.rs auto_reply, then last_preview): poll instead of reading once
+    let t0 = Instant::now();
+    let mut last = ui.call("pane.info", json!({"pane": recipient}))["result"]["last"].clone();
+    while last != "JAWABAN-OTOMATIS selesai" && t0.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(100));
+        last = ui.call("pane.info", json!({"pane": recipient}))["result"]["last"].clone();
+    }
+    assert_eq!(last, "JAWABAN-OTOMATIS selesai");
     // spool: the recipient pane's token, the request as a file like from inside the sandbox
     let token = std::fs::read_to_string(&tok).unwrap().trim().to_string();
     assert_eq!(token.len(), 32, "{token}");
