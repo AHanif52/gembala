@@ -58,6 +58,8 @@ const HELPERS_MAX: usize = 4;
 /// A helper's first task waits for proof the agent's prompt is up: its first hook (`hooked`), or for an agent without
 /// hooks the screen gone quiet (`HELPER_QUIET`) at least `HELPER_GRACE` after launch; `HELPER_MAX` = give up waiting
 const HELPER_GRACE: Duration = Duration::from_secs(4);
+/// TECH 43: a hooked agent's prompt hook should answer a typed message within this; else the Enter is sent once more
+const SUBMIT_WAIT: Duration = Duration::from_millis(1500);
 const HELPER_QUIET: Duration = Duration::from_secs(1);
 const HELPER_MAX: Duration = Duration::from_secs(15);
 /// FR-86: close request cards waiting per asking agent (a pane the user didn't answer yet)
@@ -80,6 +82,14 @@ struct Terminal {
     sid: i32,
     /// Grid and subscribers share a lock so attach cannot miss output.
     view: Mutex<(Grid, Vec<Sub>)>,
+}
+
+/// TECH 43: a delivered message waiting for proof of submit (status hook after `seq`)
+struct SentCheck {
+    at: std::time::Instant,
+    seq: u64,
+    msg: bus::Msg,
+    retried: bool,
 }
 
 struct Pane {
@@ -130,6 +140,8 @@ struct Pane {
     /// FR-4: this manual agent sends full hooks (Claude, omp, OpenCode; not Codex, which only has `notify`):
     /// status from hooks only. Without this, Claude's status line redraws read as working then done over and over (notifications pile up)
     hooked: std::sync::atomic::AtomicBool,
+    /// TECH 43: the last message typed into this hooked pane, until its prompt hook proves the agent took it
+    sent_check: Mutex<Option<SentCheck>>,
     /// The agent in front has exited (`agent_done`): until one runs again (`agent-start`, a hook, one typed by
     /// hand), the pane is a plain shell for `agent_name` — send/read/wait reject like a shell pane (11 Nov 2026)
     exited: std::sync::atomic::AtomicBool,
@@ -1845,6 +1857,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
         at_prompt: std::sync::atomic::AtomicBool::new(false),
         saver: Mutex::new(None),
         hooked: std::sync::atomic::AtomicBool::new(false),
+        sent_check: Mutex::new(None),
         exited: std::sync::atomic::AtomicBool::new(false),
         closing: std::sync::atomic::AtomicBool::new(false),
         trust: std::sync::atomic::AtomicBool::new(false),
@@ -2419,7 +2432,13 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
         _ if m.is_reply => msg::wrap_reply(&from, m.reply_to.as_deref().unwrap_or_default(), &m.body),
         _ => msg::wrap(&from, &m.id, &m.body),
     };
+    // TECH 43: a hooked agent that was idle goes `working` through its prompt hook once it takes the message; no change = the Enter was lost
+    let seq = to.status_seq.load(Ordering::Relaxed);
+    let idle = matches!(*to.status.lock().unwrap(), "idle" | "done");
     if (&terminal.master).write_all(&bytes).is_ok() {
+        if idle && to.hooked.load(Ordering::Relaxed) {
+            *to.sent_check.lock().unwrap() = Some(SentCheck { at: std::time::Instant::now(), seq, msg: m.clone(), retried: false });
+        }
         if m.is_reply && m.tag.kind == bus::Kind::Result {
             let mut eng = st.engine.lock().unwrap();
             if let Some(reply_to) = &m.reply_to { eng.replies.remove(reply_to); }
@@ -2434,12 +2453,34 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
     }
 }
 
+/// TECH 43: a message typed into a hooked agent that never turned `working` after `SUBMIT_WAIT` gets one more Enter;
+/// still nothing after another wait = logged as `unconfirmed` (the text sits in the prompt), never silently "sent"
+fn check_submits(st: &State) {
+    let panes: Vec<Arc<Pane>> = st.panes.lock().unwrap().values().cloned().collect();
+    for pane in panes {
+        let mut slot = pane.sent_check.lock().unwrap();
+        let Some(c) = slot.as_mut() else { continue };
+        if pane.status_seq.load(Ordering::Relaxed) != c.seq {
+            *slot = None;
+        } else if c.at.elapsed() >= SUBMIT_WAIT && !c.retried {
+            c.retried = true;
+            c.at = std::time::Instant::now();
+            if let Ok(t) = pane.terminal() { let _ = (&t.master).write_all(b"\r"); }
+        } else if c.at.elapsed() >= SUBMIT_WAIT {
+            let m = slot.take().map(|c| c.msg);
+            drop(slot);
+            if let Some(m) = m { record(st, "unconfirmed", &m, Some("no_enter")); }
+        }
+    }
+}
+
 /// Queue: expires after 10 minutes; every message is checked again right before writing (SEC-28).
 fn deliver_loop(st: Arc<State>) {
     loop {
         thread::sleep(std::time::Duration::from_millis(200));
         let overdue = st.engine.lock().unwrap().overdue_replies();
         for m in overdue { record(&st, "reply_pending", &m, None); }
+        check_submits(&st);
         let targets: Vec<u64> = st.engine.lock().unwrap().queues.keys().copied().collect();
         for to_id in targets {
             // FR-89: while this lap decides on the head, cancel/edit see it as in flight, not as sent

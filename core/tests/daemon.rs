@@ -3313,3 +3313,55 @@ fn fr90_mungkin_sampai_dan_kedaluwarsa() {
     assert_eq!(ui.call("msg.discard", json!({"id": "msg_old3"}))["result"]["result"], "discarded");
     wait_until("file removed", || !file.exists());
 }
+
+/// TECH 43: a message typed into an idle hooked agent that never reports `working` gets one more Enter, then is logged
+/// `unconfirmed`; an agent that takes it (prompt hook) gets exactly one Enter and no alarm
+#[test]
+fn tech43_enter_lost_is_retried_once_then_reported() {
+    let d = start("enter43");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = |name: &str| format!("stty raw -echo; '{g}' token > '{}/{name}.token'; cat -v", d.dir.display());
+    profiles(&d, &mut ui, &(sh_profile("src", &script("src")) + &sh_profile("lost", &script("lost")) + &sh_profile("took", &script("took"))), "took");
+    let pane = |ui: &mut Cli, p: &str| ui.call("pane.create", json!({"profile":p, "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    let (_src, lost, took) = (pane(&mut ui, "src"), pane(&mut ui, "lost"), pane(&mut ui, "took"));
+    let client = |name: &str| {
+        let path = d.dir.join(format!("{name}.token"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let token = loop {
+            if let Ok(t) = std::fs::read_to_string(&path) && !t.trim().is_empty() { break t; }
+            assert!(Instant::now() < deadline, "token missing");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let mut c = Cli::connect(&d, "pane.sock");
+        assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
+        c
+    };
+    let (mut src, mut cl, mut ct) = (client("src"), client("lost"), client("took"));
+    for c in [&mut src, &mut cl, &mut ct] {
+        assert!(c.call("hook", json!({"agent":"omp","status":"idle"})).get("result").is_some());
+    }
+    std::thread::sleep(Duration::from_millis(600));
+    for to in ["lost-1", "took-1"] {
+        let r = src.call("send", json!({"to":to,"body":"MARK","queue":true}));
+        assert_eq!(r["result"]["result"], "accepted", "{r}");
+    }
+    // `took` reports the prompt hook right away, `lost` stays silent
+    assert!(ct.call("hook", json!({"agent":"omp","status":"working"})).get("result").is_some());
+    let enters = |out: &str| out.split("^[[201~").nth(1).map_or(0, |t| t.matches("^M").count());
+    let out = ui.attach_until(took, &["MARK", "^[[201~^M"]);
+    std::thread::sleep(Duration::from_millis(2500));
+    let out2 = ui.attach_until(took, &["MARK"]);
+    assert_eq!((enters(&out), enters(&out2)), (1, 1), "{out2}");
+    let out = ui.attach_until(lost, &["MARK", "^[[201~^M^M"]);
+    assert_eq!(enters(&out), 2, "{out}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let unconfirmed = loop {
+        let h = ui.call("msg.list", json!({}))["result"]["history"].clone();
+        let hits: Vec<Value> = h.as_array().unwrap().iter().filter(|e| e["kind"] == "unconfirmed").cloned().collect();
+        if !hits.is_empty() || Instant::now() > deadline { break hits; }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(unconfirmed.len(), 1, "{unconfirmed:?}");
+    assert_eq!(unconfirmed[0]["msg"]["to"], "lost-1");
+}
