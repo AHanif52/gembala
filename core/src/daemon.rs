@@ -21,7 +21,8 @@ use crate::snap;
 use crate::pty::{self, Pty};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use crate::tasks;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
@@ -981,6 +982,16 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 "history": eng.history,
             }))
         }
+        // FR-92: the task panel
+        "task.list" => Ok(task_view(st)),
+        "task.done" => {
+            let id = p["id"].as_str().ok_or("bad_params")?;
+            if !st.engine.lock().unwrap().tasks.finish(id, history::now()) {
+                return Err("no_such_task");
+            }
+            outbox_save(st);
+            Ok(json!({}))
+        }
         "msg.approve" | "msg.reject" => {
             // FR-12: only the UI channel (a human) can decide a confirm card (SEC-20)
             let id = p["id"].as_str().ok_or("bad_params")?;
@@ -1117,6 +1128,8 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             }
             let id = st.engine.lock().unwrap().new_id(&st.boot);
             (&to.terminal()?.master).write_all(&msg::wrap("user", "", &body)).map_err(|_| "io")?;
+            // FR-92: one user request to one agent = one task
+            st.engine.lock().unwrap().tasks.open(&id, &to.key, &to.name.lock().unwrap(), &body, history::now());
             Ok(json!({"result": "accepted", "id": id}))
         }
         // FR-91: the user asks the agent in this pane to write its handover summary and send the path to `to`
@@ -1998,6 +2011,40 @@ fn bus_event(st: &State, ev: Value) {
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
 }
 
+/// FR-92: tasks for the panel: the notes (owner, title, ends) plus where each child stands right now, then the harness runs in progress.
+/// Open ones first, newest on top; done ones after.
+fn task_view(st: &State) -> Value {
+    // the registry is never taken while the engine is held
+    struct P { id: u64, name: String, agent: String, status: &'static str, reset_at: Option<i64>, limit: bool }
+    let panes: HashMap<String, P> = st.panes.lock().unwrap().iter().map(|(id, p)| {
+        // one lock at a time: a guard in a struct literal lives to the end of the statement
+        let (limit, reset_at) = { let l = p.limit.lock().unwrap(); (l.is_some(), l.as_ref().and_then(|l| l.reset_at)) };
+        let (name, status) = (p.name.lock().unwrap().clone(), *p.status.lock().unwrap());
+        (p.key.clone(), P { id: *id, name, agent: p.agent_name().unwrap_or_default(), status, reset_at, limit })
+    }).collect();
+    let (tasks, held, queued) = {
+        let eng = st.engine.lock().unwrap();
+        let held: HashSet<String> = eng.held.iter().map(|h| h.id.clone()).collect();
+        let queued: HashSet<String> = eng.queues.values().flatten().map(|q| q.msg.id.clone()).chain(eng.pending.iter().map(|m| m.id.clone())).chain(eng.opens.iter().map(|o| o.msg.id.clone())).collect();
+        (eng.tasks.list.clone(), held, queued)
+    };
+    let mut rows: Vec<Value> = tasks.iter().map(|t| {
+        let owner = panes.get(&t.owner_key);
+        let kids: Vec<Value> = t.kids.iter().map(|k| {
+            let to = if k.to_key.is_empty() { panes.values().find(|p| p.name == k.to_name) } else { panes.get(&k.to_key) };
+            let state = tasks::kid_state(k, held.contains(&k.id), to.is_some_and(|p| p.limit), queued.contains(&k.id), to.map(|p| p.status));
+            json!({"id": k.id, "from": k.from_name, "to": to.map_or(&k.to_name, |p| &p.name), "to_pane": to.map_or(0, |p| p.id), "agent": to.map_or("", |p| &p.agent), "title": k.title, "at": k.at,
+                   "state": state, "why": k.end, "reset_at": to.and_then(|p| p.reset_at).filter(|_| state == "limit"), "result": k.result, "outcome": k.outcome})
+        }).collect();
+        let waiting: Vec<&Value> = kids.iter().filter(|k| matches!(k["state"].as_str(), Some("running" | "waiting" | "held" | "limit"))).collect();
+        json!({"id": t.id, "kind": "task", "title": t.title, "owner": {"name": owner.map_or(&t.owner_name, |p| &p.name), "pane": owner.map_or(0, |p| p.id), "agent": owner.map_or("", |p| &p.agent)},
+               "at": t.at, "done": t.done, "implicit": t.implicit, "waiting_on": waiting.iter().map(|k| k["to"].clone()).collect::<Vec<_>>(), "kids": kids})
+    }).collect();
+    rows.extend(runner::task_rows(st));
+    rows.sort_by_key(|r| (r["done"].as_u64().is_some(), std::cmp::Reverse(r["at"].as_u64().unwrap_or(0))));
+    json!({"tasks": rows})
+}
+
 /// FR-90, SEC-39: write what waits in memory (queues, confirm cards, the message being typed right now, cards left from the
 /// last run) to `outbox/queue.json`. Called on every change that matters and by the delivery loop, so a crash loses at most
 /// the last 200 ms; unchanged = no write; nothing waiting = the file is removed.
@@ -2010,11 +2057,14 @@ fn outbox_save(st: &State) {
     if *last != text && outbox::write(&outbox::path(), &text).is_ok() {
         *last = text;
     }
+    // FR-92: the task notes go out with it (unchanged = no write)
+    st.engine.lock().unwrap().tasks.save(&tasks::path());
 }
 
 /// FR-90: at boot, the last run's file becomes `held` cards. A queued message older than 10 minutes is `expired`; the file is
 /// rewritten at once, so the expired ones and the old text are gone from disk.
 fn restore_outbox(st: &State) {
+    st.engine.lock().unwrap().tasks = tasks::Tasks::load(&tasks::path());
     let now = history::now();
     for r in outbox::load(&outbox::path()) {
         if r.expired(now) {
@@ -2084,6 +2134,7 @@ fn record(st: &State, kind: &str, m: &bus::Msg, reason: Option<&str>) {
 
 /// FR-96: `id` (a request an agent sent) ended without an answer. Returns whether it was followed at all.
 fn group_end(st: &State, id: &str, reason: &str) -> bool {
+    st.engine.lock().unwrap().tasks.end(id, reason); // FR-92
     let fin = if reason == "owner_cancelled" { bus::Fin::Silent } else { bus::Fin::Ended(reason.to_string()) };
     let (tracked, flush) = {
         let mut eng = st.engine.lock().unwrap();
@@ -2362,6 +2413,7 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
         return Err("helper_cant_open");
     }
     let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
+    let from_key = st.panes.lock().unwrap().get(&me).map(|f| f.key.clone()).unwrap_or_default();
     let mut eng = st.engine.lock().unwrap();
     if alive + eng.opens.iter().filter(|o| o.msg.from == me).count() >= HELPERS_MAX {
         return Err("helper_limit");
@@ -2385,6 +2437,7 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
     }
     eng.note_sent(me);
     eng.track(&m);
+    eng.tasks.attach(&m, &from_key, "", history::now()); // FR-92
     eng.opens.push(bus::Open { msg: m.clone(), profile, account, model: model.into(), effort: effort.into(), cwd, workspace: my_ws.to_string(), since: std::time::Instant::now() });
     drop(eng);
     record(st, "confirm", &m, Some("needs_open"));
@@ -3026,6 +3079,9 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to_name.clone(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now(), tag };
             // FR-79: the current name goes in the answer, so a sender using an old name switches over
             let tracked = m.clone();
+            // FR-92: a child of the owner's task (before the send: a refusal ends it right away)
+            let from_key = st.panes.lock().unwrap().get(&me).map(|f| f.key.clone()).unwrap_or_default();
+            st.engine.lock().unwrap().tasks.attach(&tracked, &from_key, &to.key, history::now());
             let mut r = try_send(st, m, p["queue"].as_bool() == Some(true), false);
             // FR-96: an accepted or queued request is followed until it has an end
             if matches!(r["result"].as_str(), Some("accepted" | "queued")) {
@@ -3130,6 +3186,7 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             }
             eng.note_sent(me);
             eng.close(&orig.id);
+            eng.tasks.result(&orig.id, &r.body); // FR-92
             let waiting = eng.waiting.contains(&orig.id);
             // FR-96: a helper's `result` waits for the other requests of its group, unless the owner waits on this one itself
             if !waiting && eng.grouped(&orig.id) {

@@ -459,6 +459,27 @@ fn snapshot(st: &State, l: &Live) -> Value {
     })
 }
 
+/// FR-92: each run in progress is a task for the panel; its stages up to the current one are the children
+pub fn task_rows(st: &State) -> Vec<Value> {
+    let runs: Vec<_> = st.harness.lock().unwrap().runs.values().cloned().collect();
+    runs.iter().map(|l| {
+        let l = l.lock().unwrap();
+        let v = snapshot(st, &l);
+        let cur = l.run.current();
+        let gate = if let Hs::Gate(i) = l.run.state { Some(i) } else { None };
+        let request = fs::read_to_string(l.dir.join("artefak").join(REQUEST_FILE)).unwrap_or_default();
+        let kids: Vec<Value> = v["steps"].as_array().into_iter().flatten().enumerate()
+            .take_while(|(i, _)| cur.or(gate).is_none_or(|c| *i <= c))
+            .map(|(i, s)| {
+                let state = if gate == Some(i) { "waiting" } else if cur == Some(i) { "running" } else { "done" };
+                json!({"id": format!("{}#{i}", l.id), "from": "", "to": s["pane_name"], "to_pane": s["pane"], "agent": s["pane_agent"], "stage": s["name"], "title": s["name"],
+                       "at": l.started_at, "state": state, "why": if gate == Some(i) { "gate" } else { "" }, "result": "", "outcome": null})
+            }).collect();
+        json!({"id": l.id, "kind": "flow", "title": crate::tasks::first_line(&request), "owner": {"name": v["name"], "pane": 0, "agent": ""},
+               "at": l.started_at, "done": null, "implicit": false, "kids": kids, "workspace": l.workspace, "state": v["state"]})
+    }).collect()
+}
+
 fn save(st: &State, l: &Live) {
     let mut v = snapshot(st, l);
     v["test"] = json!(l.test);

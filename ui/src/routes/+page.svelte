@@ -12,6 +12,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import Changes from "$lib/Changes.svelte";
   import OutputView from "$lib/OutputView.svelte";
   import Messages from "$lib/Messages.svelte";
+  import Tasks from "$lib/Tasks.svelte";
+  import { openCount, type Task } from "$lib/tasks";
   import NewTask from "$lib/NewTask.svelte";
   import Report from "$lib/Report.svelte";
   import HarnessFlow from "$lib/HarnessFlow.svelte";
@@ -306,6 +308,17 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   // so opening a tab re-attaches it from the daemon snapshot — scroll position and selection start fresh (TECH 24).
   // Phase 2: message drawer, manual send, message engine data from the daemon
   let drawer = $state(false);
+  // FR-92: the right column has two tabs, the message box and the task panel
+  let drawerTab = $state<"msgs" | "tasks">("msgs");
+  let taskData = $state<Task[]>([]);
+  const taskN = $derived(openCount(taskData));
+  /// each door names its tab; a door for the tab that is already open closes the column, one for the other tab switches
+  function openDrawer(tab: "msgs" | "tasks", toggle = true) {
+    const same = drawer && drawerTab === tab;
+    drawerTab = tab;
+    drawer = toggle ? !same : true;
+    if (drawer) ((flow = false), refreshMsgs());
+  }
   // FR-16, FR-26, FR-73: harness. `runs` = latest run per workspace id (the daemon pushes harness.state)
   let newTask = $state(false);
   // 3b: the recipe card builder is a sidebar tab, but not a pane tab: it lives outside `ws.tabs`, so the Jejerin grid, LIVE_TABS,
@@ -357,6 +370,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   async function refreshMsgs() {
     const picked = new Map((msgData?.opens ?? []).map((o: any) => [o.id, o]));
     msgData = await call("msg.list").catch(() => msgData);
+    taskData = (await call("task.list").catch(() => ({ tasks: taskData })))?.tasks ?? taskData;
     // FR-75: a model/effort the user changed on an open card survives the refresh
     for (const o of msgData?.opens ?? []) {
       const p: any = picked.get(o.id);
@@ -1678,7 +1692,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     last = { id, at: performance.now() };
     const [, group, arg] = id.split(".");
     const cur = order.findIndex((o) => o.wi === at.ws && o.ti === at.tab);
-    if (id === "msg.drawer") return void ((drawer = !drawer), drawer && ((flow = false), refreshMsgs()));
+    if (id === "msg.drawer") return void openDrawer("msgs");
+    if (id === "msg.tasks") return void openDrawer("tasks");
     if (id === "msg.stop")
       return void call("msg.pause", { on: !msgData?.paused })
         .then(refreshMsgs)
@@ -2749,7 +2764,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   function goNeed(r: NeedRow) {
     if (r.pane != null && meta[r.pane] && !dead[r.pane]) return jumpTo(r.pane);
     // FR-90: a card held by a restart lives in the message drawer
-    if (r.kind === "held") return void ((drawer = true), (flow = false), refreshMsgs());
+    if (r.kind === "held") return void openDrawer("msgs", false);
     // only a harness row has somewhere else to go; a card whose pane is gone has no jump target
     if (r.kind !== "gate" && r.kind !== "ship") return;
     // the gate row has no pane: open that workspace's flow, where the gate card and its button live
@@ -3209,6 +3224,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     {:else if name === "bell"}<path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3" />
     {:else if name === "mail"}<rect x="1.5" y="3.5" width="13" height="9" rx="1.5" /><path d="M2 4.5l6 4.5l6-4.5" />
     {:else if name === "send"}<path d="M4 12L12 4M6 4h6v6" />
+    {:else if name === "tasks"}<path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
     {:else if name === "phone"}<rect x="4.5" y="1.5" width="7" height="13" rx="1.5" /><path d="M7 12h2" />{/if}
   </svg>
 {/snippet}
@@ -3568,7 +3584,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 {#if !compared && !t.parent && pane === t.focus && helpersOf(t).length}<button class="hb jbtn" title="{tt("helper.jejerin")} {combo("tab.helper.compare")}" onclick={openJejerin}>▦ {tt("helper.jejerin")}</button>{/if}
                 <!-- FR-99 P2: the second door to the message box; the count = cards waiting in this pane -->
                 {#if cardsFor(pane).length}
-                  <button class="hb msgbox" title={tt("msg.title")} onclick={() => ((drawer = !drawer), drawer && refreshMsgs())}>
+                  <button class="hb msgbox" title={tt("msg.title")} onclick={() => openDrawer("msgs")}>
                     {tt("msg.open")} <span class="n">{cardsFor(pane).length}</span>
                   </button>
                 {/if}
@@ -3840,7 +3856,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 {#if meta[pane]?.roleWarn}<span class="chip rwarn" title={tt("pane.roleWarnTip")}>{tt("pane.roleWarn")}</span>{/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
                 <!-- FR-99 P4: the message box and "send to another agent" were only shortcuts; labelled doors now (icon only in a narrow pane) -->
-                <button class="chip box c-msg" title="{tt("chip.msgTip")} {combo("msg.drawer")}" onclick={() => ((drawer = !drawer), drawer && ((flow = false), refreshMsgs()))}>{@render icon("mail")}<span class="cl">{tt("chip.msg")}</span>{#if msgData?.pending?.length} <span class="n">{msgData.pending.length}</span>{/if}</button>
+                <button class="chip box c-task" title="{tt("chip.tasksTip")} {combo("msg.tasks")}" onclick={() => openDrawer("tasks")}>{@render icon("tasks")}<span class="cl">{tt("chip.tasks")}</span>{#if taskN} <span class="n">{taskN}</span>{/if}</button>
+                <button class="chip box c-msg" title="{tt("chip.msgTip")} {combo("msg.drawer")}" onclick={() => openDrawer("msgs")}>{@render icon("mail")}<span class="cl">{tt("chip.msg")}</span>{#if msgData?.pending?.length} <span class="n">{msgData.pending.length}</span>{/if}</button>
                 <button class="chip box c-send" title="{tt("chip.sendTip")} {combo("msg.compose")}" onclick={() => (compose = { to: targets[0]?.pane ?? null, body: "", force: false, error: "" })}>{@render icon("send")}<span class="cl">{tt("chip.send")}</span></button>
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>{tt("pane.output")}</button>{/if}
                 {#if meta[pane]?.prev}<button class="chip" onclick={() => resumePrev(pane)}>{tt("pane.resumePrev", { agent: meta[pane].prev.agent })}</button>{/if}
@@ -4108,9 +4125,12 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     <Report draft={d} version={appVer} mode={simple ? "Simple" : "Full"} home={homePath} onclose={() => (reportDraft = null)}
       onsent={() => ((reportDraft = null), d.id && call("report.discard", { id: d.id }).then(refreshMsgs))} />
   {/if}
-  {#if drawer}
+  {#if drawer && drawerTab === "tasks"}
+    <Tasks tasks={taskData} msgCount={msgData?.pending?.length ?? 0} {simple} width={drawerW} right={changes ? panelW : 0} person={whoOf} ago={(at) => ago(now - at * 1000)} clock={(at) => resetClock(at)}
+      onchange={refreshMsgs} onclose={() => (drawer = false)} onmsgs={() => openDrawer("msgs", false)} onjump={jumpTo} onflow={() => ((drawer = false), (flow = true))} />
+  {:else if drawer}
     <Messages data={msgData} {rows} models={modelsForOpen} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} canWorktree={(o: any) => !!meta[o.from_pane]?.git?.root} onreport={(r: any) => (reportDraft = { title: r.title, body: r.body, from: r.from, id: r.id })} who={openWho}
-      person={whoOf} {simple} width={drawerW} right={changes ? panelW : 0} />
+      person={whoOf} {simple} width={drawerW} right={changes ? panelW : 0} taskCount={taskN} ontasks={() => openDrawer("tasks", false)} />
   {/if}
   {#if compose}
     <div class="confirm compose" role="dialog" aria-label={tt("cmp.title")}>

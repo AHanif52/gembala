@@ -22,6 +22,8 @@
     simple = false,
     width = 360,
     right = 0,
+    taskCount = 0,
+    ontasks,
   }: {
     data: any;
     rows: Row[];
@@ -38,6 +40,9 @@
     simple?: boolean;
     width?: number;
     right?: number;
+    /// FR-92: open tasks, for the other tab's badge
+    taskCount?: number;
+    ontasks?: () => void;
   } = $props();
 
 
@@ -67,7 +72,14 @@
 
 <aside class="drawer" style:width="{width}px" style:right="{right}px" aria-label={t("msg.aria")}>
   <header>
-    <span>{t("msg.title")}</span>
+    {#if ontasks}
+      <span class="tabs">
+        <button class="tab" onclick={ontasks}>{t("task.tab")}{#if taskCount}<i>{taskCount}</i>{/if}</button>
+        <span class="tab on" title={t("msg.title")}>{t("task.tabMsgs")}{#if data?.pending?.length}<i>{data.pending.length}</i>{/if}</span>
+      </span>
+    {:else}
+      <span>{t("msg.title")}</span>
+    {/if}
     <button class="mini" onclick={onclose} aria-label={t("msg.close")}>Esc</button>
   </header>
   {#if failed}<div class="failed" role="alert">{failed}</div>{/if}
@@ -264,9 +276,40 @@
     padding: 8px 12px;
     border-bottom: 1px solid var(--line);
   }
-  header span:first-child {
+  header > span:first-child {
     flex: 1;
     font-weight: 600;
+  }
+  /* FR-92: the same two tabs as the task panel */
+  .tabs {
+    display: flex;
+    gap: 2px;
+    align-items: flex-end;
+    margin: -8px 0 -8px -12px;
+    padding: 8px 0 0 12px;
+  }
+  .tab {
+    padding: 6px 12px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    font: 600 13px system-ui, -apple-system, sans-serif;
+    cursor: pointer;
+  }
+  .tab.on {
+    border-color: var(--tx-blue, #3b82f6);
+    color: var(--fg);
+    cursor: default;
+  }
+  .tab i {
+    margin-left: 5px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: rgba(217, 119, 6, 0.2);
+    color: var(--tx-amber, #d97706);
+    font-size: 10.5px;
+    font-style: normal;
   }
   .body {
     flex: 1;

@@ -22,6 +22,7 @@ mod rundir;
 mod saver;
 mod sign;
 mod snap;
+mod tasks;
 
 use std::fs::File;
 use std::io::Write;

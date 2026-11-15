@@ -116,6 +116,7 @@ const TEXT: &[(&str, &str, &str)] = &[
     ("pane.attention.next", "Next Pane Needing Permission", "Pane Berikutnya yang Butuh Izin"),
     ("msg.compose", "Send to Another Agent…", "Kirim ke Agent Lain…"),
     ("msg.drawer", "Message Drawer", "Laci Pesan"),
+    ("msg.tasks", "Task Panel", "Panel Tugas"),
     ("msg.stop", "Pause / Resume All Messages", "Henti / Lanjutkan Semua Pesan"),
     ("term.find", "Find…", "Cari…"),
     ("term.clear", "Clear Screen", "Bersihkan Layar"),

@@ -11,7 +11,7 @@ struct Daemon(Mutex<Option<Arc<daemon::Client>>>);
 /// The webview may only call pane methods; other human actions are added per feature.
 const ALLOWED: &[&str] =
     &["pane.list", "pane.create", "pane.write", "pane.resize", "pane.attach", "pane.close", "pane.info", "pane.kill", "daemon.stop", "config.get", "config.set", "agents.detect", "daemon.info", "layout.load", "layout.save", "daemon.reset", "git.status", "git.diff", "pane.rename", "pane.agent_output", "profile.save", "profile.reset", "keys.set",
-      "account.list", "account.create", "account.remove", "account.update", "git.worktree_add", "git.worktree_remove", "git.turns", "git.turn_diff", "git.turn_preview", "git.turn_restore", "git.file_preview", "git.file_restore", "git.file_commit", "ctx.compose", "msg.list", "msg.approve", "msg.reject", "msg.send_now", "msg.cancel", "msg.edit", "msg.resend", "msg.discard", "open.approve", "open.reject", "close.approve", "close.reject", "report.discard", "report.env", "update.status", "update.check", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace",
+      "account.list", "account.create", "account.remove", "account.update", "git.worktree_add", "git.worktree_remove", "git.turns", "git.turn_diff", "git.turn_preview", "git.turn_restore", "git.file_preview", "git.file_restore", "git.file_commit", "ctx.compose", "msg.list", "task.list", "task.done", "msg.approve", "msg.reject", "msg.send_now", "msg.cancel", "msg.edit", "msg.resend", "msg.discard", "open.approve", "open.reject", "close.approve", "close.reject", "report.discard", "report.env", "update.status", "update.check", "msg.pause", "msg.mute", "msg.send", "pane.policy", "pane.readable", "pane.workspace",
       "addon.plugin", "addon.mcp.get", "addon.mcp.set", "addon.status", "lan.check",
       "recipe.list", "recipe.get", "recipe.approve", "recipe.delete", "recipe.duplicate", "recipe.draft_new", "recipe.draft_get", "recipe.draft_apply", "config.draft_new", "config.draft_get", "config.draft_apply", "agent_file.brief", "recipe.validate", "recipe.library", "recipe.render", "recipe.save", "recipe.step_draft_new", "recipe.step_draft_get",
       "harness.preflight", "harness.start", "harness.restart", "harness.artifact", "harness.state", "harness.runs", "harness.stop", "harness.gate", "harness.takeover", "harness.release", "harness.close_panes",
@@ -72,6 +72,7 @@ const TAB_KEYS: &[(&str, &str)] = &[
 const MSG_KEYS: &[(&str, &str)] = &[
     ("msg.compose", "Cmd+Shift+K"),
     ("msg.drawer", "Cmd+J"),
+    ("msg.tasks", "Cmd+Shift+J"), // FR-92; Cmd+Alt+J and Cmd+Alt+Shift+J are the helper and swap keys
     ("msg.stop", "Cmd+Shift+."),
 ];
 
@@ -116,6 +117,7 @@ const ALT_KEYS: &[(&str, &str)] = &[
     ("tab.helper.compare", "Cmd+Alt+C"),
     ("term.clear", "Cmd+L"),                   // Cmd+K would equal msg.compose
     ("msg.stop", "Cmd+Alt+Shift+."),           // Cmd+Shift+. would equal pane.proc.kill
+    ("msg.tasks", "Cmd+Alt+Y"),                // Cmd+Shift+J would equal msg.drawer (Cmd+J)
     ("pane.diff.toggle", "Cmd+Alt+Shift+V"),   // Cmd+Shift+= would equal term.zoom.in (the same key on a US layout)
 ];
 

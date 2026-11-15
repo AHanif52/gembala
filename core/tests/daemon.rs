@@ -3379,6 +3379,71 @@ fn fr90_antrean_tahan_restart() {
     wait_until("queue.json removed", || !file.exists());
 }
 
+/// FR-92: the user's request is a task owned by the agent; what the owner sends on is a child that follows send, reply and
+/// pane close; "selesai giliran" and a helper's answer do not finish the task, the user's mark does; the notes survive a restart.
+#[test]
+fn fr92_panel_tugas() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut d, mut ui, a, b, mut ca, mut cb) = agent_pair_keys("fr92", Some([KEY_A, KEY_B]));
+    let id_of = |r: &Value| r["result"]["id"].as_str().unwrap_or_else(|| panic!("{r}")).to_string();
+    let tasks = |ui: &mut Cli| {
+        let r = ui.call("task.list", json!({}));
+        r["result"]["tasks"].as_array().unwrap_or_else(|| panic!("{r}")).clone()
+    };
+    assert!(tasks(&mut ui).is_empty());
+    // the user asks pa: a task owned by pa-1
+    let r = ui.call("msg.send", json!({"to": a, "body": "Migrasi tabel bucket\nlangkah dua"}));
+    let tid = id_of(&r);
+    let t = tasks(&mut ui);
+    assert_eq!((t[0]["id"].as_str(), t[0]["title"].as_str(), t[0]["owner"]["name"].as_str()), (Some(tid.as_str()), Some("Migrasi tabel bucket"), Some("pa-1")), "{t:?}");
+    assert!(t[0]["kids"].as_array().unwrap().is_empty() && t[0]["done"].is_null());
+    // pa sends on: a child under the same task (not a second task)
+    std::thread::sleep(Duration::from_millis(300));
+    let m1 = id_of(&ca.call("send", json!({"to": "pb-1", "body": "tulis tes", "queue": true})));
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(cb.call("hook", json!({"agent": "omp", "status": "working"})).get("result").is_some());
+    let t = tasks(&mut ui);
+    assert_eq!(t.len(), 1, "{t:?}");
+    let kid = &t[0]["kids"][0];
+    assert_eq!((kid["id"].as_str(), kid["to"].as_str(), kid["state"].as_str()), (Some(m1.as_str()), Some("pb-1"), Some("running")), "{t:?}");
+    assert_eq!(t[0]["waiting_on"], json!(["pb-1"]));
+    // the helper answers: the child is done with its first line, the task is not
+    cb.call("reply", json!({"msg_id": m1, "body": "Status: done\nTes sudah ditulis\ndetail"}));
+    let t = tasks(&mut ui);
+    let kid = &t[0]["kids"][0];
+    assert_eq!((kid["state"].as_str(), kid["result"].as_str(), kid["outcome"].as_str()), (Some("done"), Some("Status: done"), Some("done")), "{t:?}");
+    assert!(t[0]["done"].is_null() && t[0]["waiting_on"].as_array().unwrap().is_empty(), "{t:?}");
+    // a second child whose pane closes before it answers: failed
+    assert!(cb.call("hook", json!({"agent": "omp", "status": "idle"})).get("result").is_some());
+    std::thread::sleep(Duration::from_millis(600));
+    let m2 = id_of(&ca.call("send", json!({"to": "pb-1", "body": "satu lagi", "queue": true})));
+    std::thread::sleep(Duration::from_millis(600));
+    ui.call("pane.close", json!({"pane": b}));
+    std::thread::sleep(Duration::from_millis(2500));
+    let t = tasks(&mut ui);
+    let kid = t[0]["kids"].as_array().unwrap().iter().find(|k| k["id"] == m2).unwrap_or_else(|| panic!("{t:?}")).clone();
+    assert_eq!(kid["state"], "failed", "{t:?}");
+    // on disk, private; then the daemon dies and the notes come back
+    let file = d.dir.join("cfg/outbox/tasks.json");
+    wait_until("tasks.json", || std::fs::read_to_string(&file).is_ok_and(|x| x.contains("Migrasi tabel bucket") && x.contains("Status: done")));
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    drop((ui, ca, cb));
+    d.child.kill().unwrap();
+    d.child.wait().unwrap();
+    let d2 = spawn_in(d.dir.clone(), 3600, &[]);
+    let mut ui = Cli::ui(&d2);
+    wait_until("config", || ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("pb"));
+    let t = tasks(&mut ui);
+    assert_eq!((t.len(), t[0]["title"].as_str(), t[0]["kids"].as_array().unwrap().len()), (1, Some("Migrasi tabel bucket"), 2), "{t:?}");
+    // the owner pane is not back yet (no pane has its key): the task is still listed with the name it had
+    assert_eq!((t[0]["owner"]["name"].as_str(), t[0]["owner"]["pane"].as_u64()), (Some("pa-1"), Some(0)), "{t:?}");
+    // the user marks it done: it stays listed as done; an unknown id is refused
+    assert_eq!(ui.call("task.done", json!({"id": "msg_nope"}))["error"]["code"], "no_such_task");
+    assert!(ui.call("task.done", json!({"id": tid})).get("result").is_some());
+    let t = tasks(&mut ui);
+    assert!(t[0]["done"].as_u64().is_some(), "{t:?}");
+}
+
 /// FR-90: what the daemon was typing when it died is never offered again; stale queue entries are `expired`; their text leaves the disk.
 #[test]
 fn fr90_mungkin_sampai_dan_kedaluwarsa() {

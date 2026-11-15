@@ -1635,6 +1635,10 @@ pub fn on_status(st: &State, id: u64, pane: &Pane, status: &str) {
         _ => return,
     };
     if let Kind::Done(_) = kind {
+        // FR-92: the answer to what the user asked from Telegram reaches the user: the owner's tasks are done
+        if asked {
+            st.engine.lock().unwrap().tasks.answered(&pane.key, crate::history::now());
+        }
         // every message typed while the agent worked (a photo, then a follow-up) gets its 👍, not only the last
         for m in pane.tg_ask.lock().unwrap().drain(..) {
             b.react(m, "👍");

@@ -276,6 +276,8 @@ pub struct Engine {
     pub history: VecDeque<Value>,
     /// FR-96: requests agents sent, until each has an end (memory only: a restart makes them FR-90 cards)
     groups: Vec<Group>,
+    /// FR-92: task notes for the task panel
+    pub tasks: crate::tasks::Tasks,
 }
 
 impl Engine {
