@@ -582,23 +582,30 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     return `${tt(`tpl.role.${k}` as Key)}${n ? ` ${n}` : ""}`;
   };
   const READONLY = ["koordinator", "planner", "reviewer"];
-  let tpl = $state<{ wi: number; t: number; rows: { label: string; role: string; prof: number; name: string }[]; brief: string } | null>(null);
+  let tpl = $state<{ wi: number; t: number; rows: { label: string; role: string; prof: number; name: string }[]; brief: string; task: string } | null>(null);
+  /// FR-99 P4: "Brief workspace…" from the workspace menu: the brief alone, without opening a template
+  let briefDlg = $state<{ wi: number; text: string } | null>(null);
+  function saveBrief() {
+    if (!briefDlg) return;
+    wss[briefDlg.wi].brief = briefDlg.text.trim().slice(0, 4000) || undefined;
+    briefDlg = null;
+  }
   function pickTemplate(t: number) {
     if (!tpl) return;
     const prefer = (agent: string) => Math.max(0, startProfiles.findIndex((p) => p.agent === agent));
     tpl.t = t;
     tpl.rows = TEMPLATES[t].roles.map(([label, role, agent, name]) => ({ label, role, prof: prefer(agent), name }));
   }
-  function openTemplate(wi = at.ws) {
+  function openTemplate(wi = at.ws, task = "") {
     if (!startProfiles.length) return say(tt("main.noAgents"));
-    tpl = { wi, t: 0, rows: [], brief: wss[wi]?.brief ?? "" };
+    tpl = { wi, t: 0, rows: [], brief: wss[wi]?.brief ?? "", task };
     pickTemplate(0);
   }
   const limitOf = (role: string, prof: number) =>
     !READONLY.includes(role) ? "edit" : startProfiles[prof]?.agent === "claude" ? "lock" : "warn";
   async function runTemplate() {
     if (!tpl) return;
-    const { wi, rows } = tpl;
+    const { wi, rows, task } = tpl;
     const title = tt(`tpl.${TEMPLATES[tpl.t].key}` as Key);
     const w = wss[wi];
     w.brief = tpl.brief.trim().slice(0, 4000) || undefined;
@@ -621,6 +628,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     w.tabs.push({ id: uid(), title, tree, focus: ids[0] });
     at = { ws: wi, tab: w.tabs.length - 1 };
     zoomed = false;
+    // FR-99 P4: the task goes to the first role through the message engine (not typed into the pane), once the agents have had time to start
+    if (task.trim()) setTimeout(() => sendMsg(ids[0], task.trim(), false).then((e) => e && say(e)), 5000);
   }
   /// the shell pane is replaced by a profile pane in the same spot (agent runs with official hooks, FR-4)
   async function swapToProfile(old: number, profile: string, account?: string, pick = false, extra: Record<string, unknown> = {}): Promise<number | undefined> {
@@ -1888,6 +1897,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     popup(e, [
       [tt("menu.rename"), () => (editing = { kind: "ws", id: w.id, value: w.name }), true, undefined, { icon: "rename" }],
       [tt("menu.changeFolder"), () => changeRoot(w), true, undefined, { icon: "folder" }],
+      [tt("menu.brief"), () => (briefDlg = { wi, text: w.brief ?? "" }), true, undefined, { icon: "rename" }],
+      [tt("act.template"), () => openTemplate(wi), true, undefined, { icon: "account" }],
       [tt("menu.color"), colorMenu(w.color, (c) => (w.color = c ?? null)), true, undefined, { icon: "color", title: tt("menu.wsColor"), hint: tt("menu.wsColorHint") }],
       ...(accts.length > 1
         ? [[tt("menu.defaultAccount", { name: cur?.name ?? tt("acc.main") }), accts.map((a): MItem => [a.name, () => void (w.accounts = { ...w.accounts, claude: a.id }), true, undefined, { on: a === cur }]), true, undefined, { icon: "account" }] as MItem]
@@ -3136,6 +3147,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     {:else if name === "sliders"}<path d="M2 5h7M12 5h2M2 11h2M7 11h7" /><circle cx="10.5" cy="5" r="1.5" /><circle cx="5.5" cy="11" r="1.5" />
     {:else if name === "gear"}<circle cx="8" cy="8" r="2" /><path d="M12.7 6.2L14.5 6.7L14.5 9.3L12.7 9.8L12.6 10.1L13.5 11.6L11.6 13.5L10.1 12.6L9.8 12.7L9.3 14.5L6.7 14.5L6.2 12.7L5.9 12.6L4.4 13.5L2.5 11.6L3.4 10.1L3.3 9.8L1.5 9.3L1.5 6.7L3.3 6.2L3.4 5.9L2.5 4.4L4.4 2.5L5.9 3.4L6.2 3.3L6.7 1.5L9.3 1.5L9.8 3.3L10.1 3.4L11.6 2.5L13.5 4.4L12.6 5.9z" />
     {:else if name === "bell"}<path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3" />
+    {:else if name === "mail"}<rect x="1.5" y="3.5" width="13" height="9" rx="1.5" /><path d="M2 4.5l6 4.5l6-4.5" />
+    {:else if name === "send"}<path d="M4 12L12 4M6 4h6v6" />
     {:else if name === "phone"}<rect x="4.5" y="1.5" width="7" height="13" rx="1.5" /><path d="M7 12h2" />{/if}
   </svg>
 {/snippet}
@@ -3765,6 +3778,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 {#if meta[pane]?.owner && agentOf(pane) === "claude"}<span class="chip rwarn" title={tt("pane.ownerTip", { name: meta[pane].owner.name })}>{tt("pane.owner", { name: meta[pane].owner.name })}</span>{/if}
                 {#if meta[pane]?.roleWarn}<span class="chip rwarn" title={tt("pane.roleWarnTip")}>{tt("pane.roleWarn")}</span>{/if}
                 {#each toolbar.left as c}{@render chip(c, pane, g)}{/each}
+                <!-- FR-99 P4: the message box and "send to another agent" were only shortcuts; labelled doors now (icon only in a narrow pane) -->
+                <button class="chip box c-msg" title="{tt("chip.msgTip")} {combo("msg.drawer")}" onclick={() => ((drawer = !drawer), drawer && ((flow = false), refreshMsgs()))}>{@render icon("mail")}<span class="cl">{tt("chip.msg")}</span>{#if msgData?.pending?.length} <span class="n">{msgData.pending.length}</span>{/if}</button>
+                <button class="chip box c-send" title="{tt("chip.sendTip")} {combo("msg.compose")}" onclick={() => (compose = { to: targets[0]?.pane ?? null, body: "", force: false, error: "" })}>{@render icon("send")}<span class="cl">{tt("chip.send")}</span></button>
                 {#if meta[pane]?.output}<button class="chip" onclick={() => (outputOf = pane)}>{tt("pane.output")}</button>{/if}
                 {#if meta[pane]?.prev}<button class="chip" onclick={() => resumePrev(pane)}>{tt("pane.resumePrev", { agent: meta[pane].prev.agent })}</button>{/if}
                 {#if meta[pane]?.sig && meta[pane].sig !== sig(meta[pane].profile)}
@@ -3986,7 +4002,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       agents={installed}
       {simple}
       names={Object.fromEntries((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell").map((p) => [p.agent, `${GLYPH[p.agent] ?? ""} ${p.name}`.trim()]))}
-      ontemplate={() => ((newTask = false), openTemplate())}
+      ontemplate={(task: string) => ((newTask = false), openTemplate(at.ws, task))}
       onclose={() => (newTask = false)}
       onstarted={(s: Snap) => {
         if (ws.id === s.workspace && (owner ?? tab)) runOwner[s.run] = (owner ?? tab)!.id;
@@ -4140,6 +4156,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           <button class="tplc" class:on={tpl.t === i} onclick={() => pickTemplate(i)}><span>{tt(`tpl.${t.key}` as Key)}</span><span class="m">{tt(`tpl.${t.key}Desc` as Key)}</span></button>
         {/each}
       </div>
+      <label class="tpltask">{tt("tpl.task")}
+        <textarea class="edit" bind:value={tpl.task} rows="2" maxlength="4000" placeholder={tt("tpl.taskPh")}></textarea>
+        <small class="m">{tt("tpl.taskSub")}</small>
+      </label>
       <div class="roles">
         <div class="rrow rh"><span>{tt("tpl.role")}</span><span>Agent</span><span>{tt("tpl.limit")}</span><span>{tt("pane.name")}</span></div>
         {#each tpl.rows as r, i (i)}
@@ -4149,7 +4169,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             <select class="edit" bind:value={r.prof}>
               {#each startProfiles as p, j (p.key)}<option value={j}>{GLYPH[p.agent] ?? "›"} {p.label}</option>{/each}
             </select>
-            <span class="lim {lim}">{tt(`tpl.lim.${lim}`)}</span>
+            <span class="lim {lim}" title={!simple && lim === "lock" ? "--disallowedTools" : ""}>{tt(`tpl.lim.${lim}`)}</span>
             <input class="edit" bind:value={r.name} spellcheck="false" autocapitalize="off" />
           </div>
         {/each}
@@ -4158,11 +4178,29 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         <b>{tt("tpl.brief", { name: wss[tpl.wi]?.name ?? "" })}</b>
         <span class="m">{tt("tpl.briefSub")}</span>
         <textarea class="edit" bind:value={tpl.brief} rows="5" maxlength="4000" spellcheck="false" placeholder={tt("tpl.briefPh")}></textarea>
+        <small class="m">{tt("tpl.briefTest")} <code>Test: npm test</code></small>
       </div>
       <span class="acts">
         <span class="m">{ttn("tpl.foot", tpl.rows.length)}</span>
         <button class="mini" onclick={() => (tpl = null)}>{tt("common.cancel")}</button>
         <button class="mini pri" onclick={runTemplate}>{ttn("tpl.run", tpl.rows.length)}</button>
+      </span>
+    </div>
+  {/if}
+  {#if briefDlg}
+    <!-- FR-99 P4 (L9): the workspace brief on its own -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="confirm tpldlg briefdlg" role="dialog" aria-label={tt("brief.title", { name: wss[briefDlg.wi]?.name ?? "" })} tabindex="-1" onkeydown={(e) => e.key === "Escape" && (briefDlg = null)}>
+      <span class="thd"><b>{tt("brief.title", { name: wss[briefDlg.wi]?.name ?? "" })}</b><button class="mini" onclick={() => (briefDlg = null)} aria-label={tt("common.close")}>×</button></span>
+      <span class="m">{tt("brief.sub")}</span>
+      <div class="brief">
+        <!-- svelte-ignore a11y_autofocus -->
+        <textarea class="edit" bind:value={briefDlg.text} rows="8" maxlength="4000" spellcheck="false" autofocus placeholder={tt("tpl.briefPh")}></textarea>
+        <small class="m">{tt("tpl.briefTest")} <code>Test: npm test</code></small>
+      </div>
+      <span class="acts">
+        <button class="mini" onclick={() => (briefDlg = null)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
+        <button class="mini pri" onclick={saveBrief}>{tt("common.save")}</button>
       </span>
     </div>
   {/if}
@@ -5888,6 +5926,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     }
   }
   @container (max-width: 520px) {
+    .bar .chip.box .cl {
+      display: none;
+    }
     .bar .chip.box.c-rich,
     .bar .chip.box.c-set {
       display: none;
@@ -6262,6 +6303,17 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     top: 45%;
     width: min(760px, 92%);
     gap: 12px;
+  }
+  .tpltask {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tpltask textarea {
+    resize: vertical;
+  }
+  .briefdlg {
+    width: min(560px, 92%);
   }
   .tpldlg .thd {
     display: flex;

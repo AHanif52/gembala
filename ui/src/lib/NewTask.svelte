@@ -31,7 +31,7 @@
     /// agent kind -> shown name with its glyph ("✳ Claude Code"), never the raw id
     names?: Record<string, string>;
     /// FR-99 P1 / P4: "Kerja bareng beberapa agent" opens the role template dialog
-    ontemplate?: () => void;
+    ontemplate?: (task: string) => void;
     onclose: () => void;
     onstarted: (snap: any) => void;
     onmanual: (o: { agent: string; task: string; cwd: string }) => void;
@@ -54,7 +54,8 @@
   // svelte-ignore state_referenced_locally
   let folder = $state(cwd);
   // FR-99 P1: a new user starts by hand; the last choice is kept per workspace after that
-  let mode = $state<"manual" | "harness">(saved.mode === "harness" ? "harness" : "manual");
+  // svelte-ignore state_referenced_locally
+  let mode = $state<"manual" | "harness" | "team">(saved.mode === "harness" || (saved.mode === "team" && ontemplate) ? saved.mode : "manual");
   // svelte-ignore state_referenced_locally
   let agent = $state<string>(agents.includes(saved.agent) ? saved.agent : (agents[0] ?? ""));
   let recipeId = $state<string>(saved.recipe ?? "");
@@ -74,7 +75,7 @@
   /// the simple mode keeps the field folded while the command is unknown (L5b); the full mode always shows it
   const testShown = $derived(needsTest && (!simple || testOpen || !!test.trim()));
   const pfParams = () => ({ recipe: recipeId, cwd: folder, workspace: ws.id, test: needsTest ? test.trim() : "", skip_shell: skipTest });
-  const ready = $derived(task.trim().length > 0 && folder.startsWith("/") && (mode === "manual" ? !!agent : canStart(items)));
+  const ready = $derived(task.trim().length > 0 && folder.startsWith("/") && (mode === "manual" ? !!agent : mode === "team" ? true : canStart(items)));
 
   $effect(() => {
     try {
@@ -122,6 +123,7 @@
   async function go() {
     if (!ready || busy) return;
     error = "";
+    if (mode === "team") return ontemplate?.(task.trim());
     if (mode === "manual") return onmanual({ agent, task: task.trim(), cwd: folder });
     busy = true;
     try {
@@ -142,6 +144,7 @@
     if (!task.trim()) return t("hn.why.task");
     if (!folder.startsWith("/")) return t("hn.why.folder");
     if (mode === "manual") return agent ? "" : t("hn.why.agent");
+    if (mode === "team") return "";
     const bad = items?.find((i) => !i.ok && i.blocking);
     return bad ? tOr(`hn.check.${bad.check}`, bad.check) : items ? "" : "…";
   });
@@ -179,6 +182,7 @@
   <div class="seg" role="radiogroup" aria-label={t("hn.how")}>
     <button role="radio" aria-checked={mode === "manual"} class:on={mode === "manual"} onclick={() => (mode = "manual")}>{simple ? t("hn.manualS") : t("hn.manual")}</button>
     <button role="radio" aria-checked={mode === "harness"} class:on={mode === "harness"} onclick={() => (mode = "harness")}>{simple ? t("hn.harnessS") : t("hn.harness")}</button>
+    {#if ontemplate}<button role="radio" aria-checked={mode === "team"} class:on={mode === "team"} onclick={() => (mode = "team")}>{t("hn.team3")}</button>{/if}
   </div>
 
   {#if mode === "manual"}
@@ -189,6 +193,8 @@
       </select>
     </label>
     <p class="hint">{simple ? t("hn.manualWhenS") : t("hn.manualWhen")}</p>
+  {:else if mode === "team"}
+    <p class="hint">{t("hn.team3Sub")}</p>
   {:else}
     <label class="line">
       <span class="lab">{t("hn.recipe")}</span>
@@ -229,11 +235,10 @@
   {/if}
 
   {#if error}<div class="bad" role="alert">{error}</div>{/if}
-  {#if ontemplate}<button class="link" onclick={ontemplate}>{simple ? t("hn.teamS") : t("hn.team")}</button>{/if}
   <div class="acts">
     {#if why && !busy}<span class="m why grow" role="status">{why}</span>{/if}
     <button class="mini" onclick={onclose}>{t("hn.cancel")} <span class="k">Esc</span></button>
-    <button class="mini go" disabled={!ready || busy} onclick={go}>{t("hn.start")} <span class="k">{keyText("Cmd+Enter")}</span></button>
+    <button class="mini go" disabled={!ready || busy} onclick={go}>{mode === "team" ? t("hn.next") : t("hn.start")} <span class="k">{keyText("Cmd+Enter")}</span></button>
   </div>
 
   {#if review}
@@ -250,19 +255,6 @@
 </div>
 
 <style>
-  .link {
-    align-self: flex-start;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--muted);
-    font: inherit;
-    text-decoration: underline;
-    cursor: pointer;
-  }
-  .link:hover {
-    color: var(--fg);
-  }
   .veil {
     position: absolute;
     inset: 0;
