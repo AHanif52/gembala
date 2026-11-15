@@ -1407,11 +1407,12 @@ fn wait_reply_while_working() {
         r["result"]["id"].as_str().unwrap().to_string()
     };
     let reply = |c: &mut Cli, id: &str, text: &str| c.call("reply", json!({"msg_id":id,"body":text}));
-    let wait = |id: &str| {
+    let wait_for = |id: &str, ms: u64| {
         let mut w = client("a");
         let id = id.to_string();
-        std::thread::spawn(move || w.call("wait", json!({"reply":id,"timeout_ms":300,"while_working":true})))
+        std::thread::spawn(move || w.call("wait", json!({"reply":id,"timeout_ms":ms,"while_working":true})))
     };
+    let wait = |id: &str| wait_for(id, 300);
     // working: well past the 300 ms limit the wait is still on, and the reply reaches it
     status(&mut cb, "working");
     let id = send(&mut ca);
@@ -1425,13 +1426,17 @@ fn wait_reply_while_working() {
     std::thread::sleep(Duration::from_millis(600));
     let id = send(&mut ca);
     assert_eq!(wait(&id).join().unwrap()["result"]["timeout"], true);
-    // recipient pane closed: `gone`, not a timeout
+    // recipient pane closed: `gone`, not a timeout. The limit is far above the test's own timing, so the screen
+    // watcher (this `custom` stub is judged from its quiet screen and may turn `working` into `done`) can't end the wait
     status(&mut cb, "working");
     let id = send(&mut ca);
-    let h = wait(&id);
+    let h = wait_for(&id, 20_000);
     std::thread::sleep(Duration::from_millis(500));
+    let closed = Instant::now();
     ui.call("pane.close", json!({"pane": b}));
-    assert_eq!(h.join().unwrap()["result"]["gone"], true);
+    let r = h.join().unwrap();
+    assert_eq!(r["result"]["gone"], true, "{r}");
+    assert!(closed.elapsed() < Duration::from_secs(10), "gone only after {:?}", closed.elapsed());
 }
 
 /// FR-106: authenticated pane clients exercise the real reply/queue/wait paths without personal sessions.
