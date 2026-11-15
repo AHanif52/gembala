@@ -8,17 +8,22 @@
   import { lineDiff } from "./diff";
   import { errText, t, tOr } from "./i18n/state.svelte";
   import {
-    MAX_CHAIN, addAgent, addStep, canAddAgent, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, same,
-    setModel, setPrimary, skipped, slugId, used, type BRecipe, type BStep, type Diag, type LibAgent,
+    MAX_CHAIN, NAME_MAX, PASSES, addAgent, customStep, formErrors, addStep, canAddAgent, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, same,
+    setModel, setPrimary, skipped, slugId, used, type BRecipe, type BStep, type Diag, type LibAgent, type StepForm,
   } from "./recipe-builder";
 
-  let { id, tpl = "", names = {}, active = true, onclose, onstate = () => {} }: {
+  let { id, tpl = "", names = {}, profiles = [], active = true, onclose, onstate = () => {}, onformulate = async () => null, onopenpane = () => {} }: {
     /// recipe id (file name); ignored for a new recipe
     id: string;
     /// template id from `recipe.library`: a new recipe (not a file yet)
     tpl?: string;
     /// agent kind -> "✳ Claude Code"
     names?: Record<string, string>;
+    /// agent profiles that can formulate a custom stage (no shell)
+    profiles?: { id: string; name: string; agent: string }[];
+    /// B4: open the "Rumuskan tahap" tab with the brief; the page keeps this builder on screen. null = it failed
+    onformulate?: (profile: string, need: string) => Promise<{ draft: string; pane: number; who: string } | null>;
+    onopenpane?: (pane: number) => void;
     /// shown in the main area; a tab behind another one keeps its state but ignores keys
     active?: boolean;
     onclose: () => void;
@@ -176,6 +181,46 @@
 
   const lines = $derived(prev ? lineDiff(prev.base, prev.text) : []);
 
+  // ---- B4: Tahap kustom (pen 25-27). The need goes to an agent tab; its draft file shows up as this form ----
+  type Cust = { need: string; profile: string; agent: string; draft: string; pane: number; who: string; errors: Diag[]; f: StepForm | null; busy: boolean; fail: boolean };
+  const blank = (): StepForm => ({ name: "", kind: "work", instruction: "", output: "", pass: "reply" });
+  let cust = $state<Cust | null>(null);
+  function openCustom() {
+    const p = profiles.find((x) => x.agent === "claude") ?? profiles[0];
+    cust = { need: "", profile: p?.id ?? "", agent: p?.agent ?? installed[0]?.agent ?? "claude", draft: "", pane: 0, who: "", errors: [], f: p ? null : blank(), busy: false, fail: false };
+  }
+  async function formulate() {
+    const c = cust;
+    if (!c || c.busy || !c.need.trim() || !c.profile) return;
+    c.busy = true;
+    c.fail = false;
+    c.agent = profiles.find((x) => x.id === c.profile)?.agent ?? c.agent;
+    const r = await onformulate(c.profile, c.need.trim()).catch(() => null);
+    c.busy = false;
+    if (!r) return void (c.fail = true);
+    Object.assign(c, { draft: r.draft, pane: r.pane, who: r.who, errors: [] });
+  }
+  /// back to the need: the old draft is not read anymore
+  const rework = () => cust && Object.assign(cust, { draft: "", f: null, errors: [] });
+  // the draft file is read every 2 s until it passes the daemon's schema check; a half-written file only shows its errors
+  $effect(() => {
+    const d = cust?.draft;
+    if (!d || cust?.f) return;
+    const h = setInterval(async () => {
+      const r = await call("recipe.step_draft_get", { draft: d }).catch(() => null);
+      if (!cust || cust.draft !== d || cust.f || !r?.exists) return;
+      if (r.step) Object.assign(cust, { f: { ...r.step }, errors: [] });
+      else cust.errors = r.errors ?? [];
+    }, 2000);
+    return () => clearInterval(h);
+  });
+  const custErrs = $derived(cust?.f ? formErrors(cust.f) : []);
+  function addCustom() {
+    if (!cust?.f || !rec || custErrs.length) return;
+    rec.steps = addStep($state.snapshot(rec.steps) as BStep[], customStep($state.snapshot(cust.f) as StepForm, cust.need, cust.agent, rec.steps.map((x) => x.id)));
+    cust = null;
+  }
+
   // ---- editing helpers ----
   const patch = (i: number, f: (s: BStep) => BStep) => rec && (rec.steps[i] = f($state.snapshot(rec.steps[i]) as BStep));
   const idxOf = (sid: string) => rec?.steps.findIndex((s) => s.id === sid) ?? -1;
@@ -253,7 +298,8 @@
     const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
     if (typing) return;
     e.preventDefault();
-    if (leaving) leaving = false;
+    if (cust) cust = null;
+    else if (leaving) leaving = false;
     else if (menu || tplMenu) (menu = null), (tplMenu = false);
     else if (chain) chain = null;
     else if (mode === "review") mode = "edit";
@@ -469,7 +515,7 @@
                   <b>{c.name || c.id}</b>
                   <small>{used(rec.steps, c.id) ? t("rb.inFlow") : t(`rb.kind.${c.human ? "gate" : c.shell ? "shell" : c.kind === "check" ? "check" : "work"}`)}</small></button>
               {/each}
-              <button class="li cust" disabled title={t("rb.customSoon")}><b>{t("rb.custom")}</b><small>{t("rb.customSub")}</small></button>
+              <button class="li cust" onclick={openCustom}><b>{t("rb.custom")}</b><small>{t("rb.customSub")}</small></button>
             </div>
           </section>
 
@@ -492,6 +538,63 @@
               <small>{t("rb.triggerNote")}</small></div>
             <div class="hard">{t("rb.hard")}</div>
           </section>
+        </div>
+      </div>
+    {/if}
+    {#if cust && rec}
+      {@const c = cust}
+      <div class="cveil" role="presentation">
+        <div class="cdlg" role="dialog" aria-label={t("rb.cu.title")}>
+          <div class="chead"><b>✦ {t("rb.cu.title")}</b><span class="grow"></span>
+            <button class="x" aria-label={t("rb.cu.close")} onclick={() => (cust = null)}>×</button></div>
+          <div class="ccols">
+            <div class="cleft">
+              <span class="cap">{t("rb.cu.s1")}</span>
+              <p class="hint">{t("rb.cu.need")}</p>
+              <textarea class="cneed" rows="7" bind:value={c.need} aria-label={t("rb.cu.s1")}></textarea>
+              {#if profiles.length}
+                <span class="cap">{t("rb.cu.with")}</span>
+                <select bind:value={c.profile} aria-label={t("rb.cu.with")}>{#each profiles as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select>
+                <small>{t("rb.cu.withNote")}</small>
+                {#if c.fail}<div class="bad" role="alert">{t("rb.cu.askFail")}</div>{/if}
+                <div class="acts"><button class="mini pri" disabled={c.busy || !c.need.trim() || !c.profile || (!!c.draft && !c.f)} onclick={formulate}>✦ {c.busy || (c.draft && !c.f) ? t("rb.cu.going") : t("rb.cu.go")}</button></div>
+              {:else}<small>{t("rb.cu.noAgent")}</small>{/if}
+            </div>
+            <div class="cright">
+              <div class="chead2"><span class="cap">{t("rb.cu.s2")}</span><span class="grow"></span>
+                <span class="pill {c.f ? 'chg' : ''}">{c.f ? t("rb.cu.proposal") : c.draft ? t("rb.cu.waiting") : t("rb.cu.idle")}</span></div>
+              {#if c.f}
+                {@const f = c.f}
+                <label class="cf"><span class="cap">{t("rb.cu.name")}</span>
+                  <input bind:value={f.name} class:badf={custErrs.includes("name")} maxlength={NAME_MAX} aria-label={t("rb.cu.name")} /></label>
+                <div class="crow2">
+                  <label class="cf"><span class="cap">{t("rb.cu.kind")}</span>
+                    <select bind:value={f.kind} aria-label={t("rb.cu.kind")}><option value="work">{t("rb.kind.work")}</option><option value="check">{t("rb.kind.check")}</option></select></label>
+                  <label class="cf"><span class="cap">{t("rb.cu.out")}</span>
+                    <input bind:value={f.output} class:badf={custErrs.includes("output")} placeholder={t("rb.cu.noOut")} aria-label={t("rb.cu.out")} /></label>
+                </div>
+                <label class="cf"><span class="cap">{t("rb.cu.instr")}</span>
+                  <textarea rows="5" bind:value={f.instruction} class:badf={custErrs.includes("instruction")} aria-label={t("rb.cu.instr")}></textarea></label>
+                <label class="cf"><span class="cap">{t("rb.cu.pass")}</span>
+                  <select bind:value={f.pass} class:badf={custErrs.includes("pass")} aria-label={t("rb.cu.pass")}>{#each PASSES as p}<option value={p}>{tOr(`rb.pass.${p}`, p)}</option>{/each}</select></label>
+              {:else if c.draft}
+                <div class="cwait">
+                  <div class="cwho"><b>{t("rb.cu.wait", { who: c.who })}</b><span class="grow"></span>
+                    <button class="mini" onclick={() => onopenpane(c.pane)}>{t("rb.cu.openPane")}</button></div>
+                  <p class="hint">{t("rb.cu.waitSub")}</p>
+                  {#each c.errors as d}<div class="warn">{diagText(d)}</div>{/each}
+                </div>
+              {:else}
+                <div class="cwait"><p class="hint">{t("rb.cu.idleSub")}</p>
+                  <div class="acts"><button class="mini" onclick={() => (c.f = blank())}>{t("rb.cu.manual")}</button></div></div>
+              {/if}
+            </div>
+          </div>
+          <div class="cfoot">
+            <small class="grow">{t("rb.cu.foot")}</small>
+            {#if c.f && profiles.length}<button class="mini" onclick={rework}>{t("rb.cu.rework")}</button>{/if}
+            <button class="mini pri" disabled={!c.f || custErrs.length > 0} onclick={addCustom}>＋ {t("rb.cu.add")}</button>
+          </div>
         </div>
       </div>
     {/if}
@@ -1079,6 +1182,100 @@
     font: 9.5px "SF Mono", Menlo, monospace;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+  }
+  .cveil {
+    position: absolute; /* over the builder only (its .rpane is fixed), the sidebar stays usable */
+    inset: 0;
+    z-index: 8;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.5);
+  }
+  .cdlg {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: min(900px, calc(100vw - 48px));
+    max-height: calc(100vh - 64px);
+    overflow: auto;
+    padding: 14px 18px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--fg);
+  }
+  .chead,
+  .chead2,
+  .cfoot,
+  .cwho {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .chead .x {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .ccols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  .cleft,
+  .cright {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .cright {
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .cap {
+    color: var(--muted);
+    font: 10px "SF Mono", Menlo, monospace;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .cneed,
+  .cf textarea {
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    resize: vertical;
+  }
+  .cf {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+  }
+  .crow2 {
+    display: flex;
+    gap: 10px;
+  }
+  .badf {
+    border-color: var(--tx-red, #ef4444) !important;
+  }
+  .cwait {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .cfoot {
+    padding-top: 4px;
   }
   .li.cust {
     border-color: var(--pri-bg, #3b82f6);

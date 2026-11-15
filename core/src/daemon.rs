@@ -1217,7 +1217,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         // FR-16, FR-73: harness runs. UI channel only (SEC-20): the pane channel has no harness method.
         "harness.preflight" | "harness.start" | "harness.state" | "harness.stop" | "harness.gate" | "harness.takeover" | "harness.release" | "harness.close_panes" => runner::method(st, m, p),
         // FR-74, SEC-27: harness recipes. Approve and delete exist on the UI channel only; the pane channel has no recipe method.
-        "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" | "recipe.duplicate" | "recipe.draft_new" | "recipe.draft_get" | "recipe.draft_apply" | "recipe.library" | "recipe.render" | "recipe.save" => {
+        "recipe.list" | "recipe.get" | "recipe.approve" | "recipe.delete" | "recipe.validate" | "recipe.duplicate" | "recipe.draft_new" | "recipe.draft_get" | "recipe.draft_apply" | "recipe.step_draft_new" | "recipe.step_draft_get" | "recipe.library" | "recipe.render" | "recipe.save" => {
             let store = recipe::Store::new(config::path().parent().unwrap_or(std::path::Path::new("/")));
             // agent kinds found on this Mac; unknown until detection ran once, then nothing is flagged as missing
             let found = st.agents.lock().unwrap().clone();
@@ -1265,6 +1265,36 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                     fs::create_dir_all(drafts_dir(st)).map_err(|_| "io")?;
                     queue_user(st, pane_id, &pane, recipe::brief(&ask, rid, current.as_deref(), &path))?;
                     Ok(json!({"draft": draft, "path": path}))
+                }
+                // 3b B4 Tahap kustom: same path as draft_new, but the agent writes one stage as JSON (drafts/<16 hex>.json)
+                "recipe.step_draft_new" => {
+                    let pane_id = p["pane"].as_u64().ok_or("bad_params")?;
+                    let pane = st.pane(p)?;
+                    if pane.agent_name().is_none() {
+                        return Err("bad_params");
+                    }
+                    let need = msg::sanitize(p["need"].as_str().ok_or("bad_params")?)?.trim().chars().take(4000).collect::<String>();
+                    if need.is_empty() {
+                        return Err("bad_params");
+                    }
+                    let draft = new_secret().map_err(|_| "io")?[..16].to_string();
+                    let path = drafts_dir(st).join(format!("{draft}.json"));
+                    fs::create_dir_all(drafts_dir(st)).map_err(|_| "io")?;
+                    queue_user(st, pane_id, &pane, recipe::step_brief(&need, &path))?;
+                    Ok(json!({"draft": draft, "path": path}))
+                }
+                // what the agent wrote so far: the card only when every field passed the schema check, else one error per field
+                "recipe.step_draft_get" => {
+                    let path = draft_path(st, p)?.with_extension("json");
+                    let text = match fs::symlink_metadata(&path) {
+                        Ok(m) if m.is_file() && m.len() <= 64 * 1024 => fs::read_to_string(&path).ok(),
+                        _ => None,
+                    };
+                    Ok(match text.map(|t| recipe::check_step_draft(&t)) {
+                        None => json!({"exists": false}),
+                        Some(Ok(step)) => json!({"exists": true, "step": step, "errors": []}),
+                        Some(Err(e)) => json!({"exists": true, "errors": e.iter().map(crate::diag::Diag::json).collect::<Vec<_>>()}),
+                    })
                 }
                 // what the agent wrote so far + the rules applied to it + the recipe now, for the diff (layar 21)
                 "recipe.draft_get" => {

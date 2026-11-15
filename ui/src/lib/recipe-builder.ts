@@ -149,6 +149,31 @@ export function slugId(name: string, taken: string[]): string {
   for (let n = 2; ; n++) if (!taken.includes(`${base}-${n}`)) return `${base}-${n}`;
 }
 
+// ---- custom stage (B4): the form of "Tahap kustom", filled by the formulating agent or by hand ----
+export type StepForm = { name: string; kind: "work" | "check"; instruction: string; output: string; pass: string };
+export const PASSES = ["reply", "file", "first_line_pass", "exit0"];
+export const NAME_MAX = 24;
+const FILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/// the form fields that would be refused (same rules as `recipe::check_step_draft`; the daemon still checks on save)
+export function formErrors(f: StepForm): string[] {
+  const e: string[] = [];
+  if (!f.name.trim() || [...f.name.trim()].length > NAME_MAX) e.push("name");
+  if (!f.instruction.trim()) e.push("instruction");
+  if (f.output && !FILE_RE.test(f.output)) e.push("output");
+  if (!PASSES.includes(f.pass)) e.push("pass");
+  else if (!f.output && (f.pass === "file" || f.pass === "first_line_pass")) e.push("pass");
+  return e;
+}
+
+/// the card for the flow: defaults of "Kustom" (the formulating agent, its default model, medium effort, 15 minutes); `need` is kept
+export function customStep(f: StepForm, need: string, agent: string, ids: string[]): BStep {
+  return {
+    id: slugId(`tahap ${f.name}`, ids), kind: f.kind, name: f.name.trim(), need: need.trim(), instruction: f.instruction.trim(), agents: [agent],
+    model: "", models: {}, effort: "medium", output: f.output, inputs: [], pass: f.pass, timeout_secs: 900, gate: false, human: false, shell: false, max_cost: null,
+  };
+}
+
 // ---- recipe tabs (the builder as a sidebar tab, session only: never in layout.json) ----
 export type RTab = { key: string; ws: string; rid: string; tpl: string; name: string; st: string };
 

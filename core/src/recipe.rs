@@ -971,6 +971,69 @@ Example:\n```toml\n{FEATURE}```",
     )
 }
 
+/// 3b B4: keys of a stage draft the agent writes (JSON); anything else is refused
+pub const STEP_DRAFT_KEYS: &[&str] = &["name", "kind", "instruction", "output", "pass"];
+pub const STEP_NAME_MAX: usize = 24;
+const STEP_TEXT_MAX: usize = 4000;
+
+/// 3b B4 "Rumuskan tahap": the brief for the agent pane. The agent only writes the draft file; the card it describes is
+/// reviewed in the builder and added to the flow by the user.
+pub fn step_brief(need: &str, draft: &Path) -> String {
+    format!(
+        "Gembala \"Tahap kustom\": turn the user's need into one harness stage (a card in a recipe).\n\n\
+Need from the user, as written:\n{need}\n\n\
+Write ONE JSON object to this file and nothing else: {}\n\
+Do not edit any other file, do not run anything, do not approve anything: the user reviews the card in Gembala. \
+When the file is written, say \"draft written\" in one line.\n\n\
+Keys (no others): {}.\n\
+- name: short card title, at most {STEP_NAME_MAX} characters\n\
+- kind: `work` (the agent changes things) or `check` (the agent checks; a failed check sends the work back)\n\
+- instruction: what the agent does in this stage, written to the agent, at most {STEP_TEXT_MAX} characters\n\
+- output: artifact file name the stage writes in the run folder (letters, digits, `.`, `-`, `_`; no folders), or \"\" for none\n\
+- pass: how the stage counts as done: {} (`file` and `first_line_pass` need an output; `{REQUEST_FILE}` is the task)\n\n\
+Example:\n```json\n{{\"name\": \"Check docs\", \"kind\": \"check\", \"instruction\": \"Read the changed files and list every public \
+function without a doc comment. First line of the reply: PASS if none, FAIL otherwise.\", \"output\": \"docs.md\", \"pass\": \"first_line_pass\"}}\n```",
+        draft.display(),
+        STEP_DRAFT_KEYS.join(", "),
+        PASSES.join(", "),
+    )
+}
+
+/// the schema check of a stage draft: the form fills only when every field passes; otherwise one error per field
+pub fn check_step_draft(text: &str) -> Result<Value, Vec<Diag>> {
+    let Ok(Value::Object(o)) = serde_json::from_str::<Value>(text) else {
+        return Err(vec![Diag::new("step_draft_json")]);
+    };
+    let mut errs: Vec<Diag> = o.keys().filter(|k| !STEP_DRAFT_KEYS.contains(&k.as_str())).map(|k| Diag::new("step_draft_key").arg("key", k.chars().take(40).collect::<String>())).collect();
+    let get = |k: &str| o.get(k).and_then(Value::as_str).map(str::trim);
+    let name = get("name").filter(|n| (1..=STEP_NAME_MAX).contains(&n.chars().count()) && !n.chars().any(char::is_control));
+    if name.is_none() {
+        errs.push(Diag::new("step_draft_name").at("name").arg("max", STEP_NAME_MAX));
+    }
+    let kind = get("kind").filter(|k| matches!(*k, "work" | "check"));
+    if kind.is_none() {
+        errs.push(Diag::new("step_draft_kind").at("kind"));
+    }
+    let instruction = get("instruction").and_then(|i| crate::msg::sanitize(i).ok()).map(|i| i.trim().to_string()).filter(|i| !i.is_empty() && i.chars().count() <= STEP_TEXT_MAX);
+    if instruction.is_none() {
+        errs.push(Diag::new("step_draft_instruction").at("instruction").arg("max", STEP_TEXT_MAX));
+    }
+    let output = get("output").filter(|f| f.is_empty() || file_name_ok(f));
+    if output.is_none() {
+        errs.push(Diag::new("step_draft_output").at("output"));
+    }
+    let pass = get("pass").filter(|p| PASSES.contains(p));
+    if pass.is_none() {
+        errs.push(Diag::new("step_draft_pass").at("pass"));
+    } else if let (Some("file" | "first_line_pass"), Some("")) = (pass, output) {
+        errs.push(Diag::new("step_draft_pass_output").at("pass"));
+    }
+    match (name, kind, instruction, output, pass) {
+        (Some(n), Some(k), Some(i), Some(f), Some(p)) if errs.is_empty() => Ok(json!({"name": n, "kind": k, "instruction": i, "output": f, "pass": p})),
+        _ => Err(errs),
+    }
+}
+
 /// recipe files + approvals under the Gembala config folder (`recipes/`, `state.json`)
 pub struct Store {
     dir: PathBuf,
@@ -1497,6 +1560,28 @@ mod tests {
         s.ensure_defaults().unwrap();
         assert!(!p.exists());
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn step_draft_check() {
+        let ok = r#"{"name":"Check docs","kind":"check","instruction":"List functions without docs.","output":"docs.md","pass":"first_line_pass"}"#;
+        assert_eq!(check_step_draft(ok).unwrap()["output"], "docs.md");
+        let codes = |t: &str| check_step_draft(t).unwrap_err().iter().map(|d| d.code).collect::<Vec<_>>();
+        assert_eq!(codes("not json"), ["step_draft_json"]);
+        assert_eq!(codes(r#"[1]"#), ["step_draft_json"]);
+        // a key we don't know is refused, not ignored
+        assert!(codes(&ok.replace("\"pass\"", "\"shell\":true,\"pass\"")).contains(&"step_draft_key"));
+        assert_eq!(codes(&ok.replace("Check docs", &"x".repeat(25))), ["step_draft_name"]);
+        assert_eq!(codes(&ok.replace("\"check\"", "\"human\"")), ["step_draft_kind"]);
+        assert_eq!(codes(&ok.replace("docs.md", "../docs.md")), ["step_draft_output"]);
+        assert_eq!(codes(&ok.replace("first_line_pass", "always")), ["step_draft_pass"]);
+        // a pass that reads a file needs the file
+        assert_eq!(codes(&ok.replace("docs.md", "")), ["step_draft_pass_output"]);
+        assert!(check_step_draft(&ok.replace("docs.md", "").replace("first_line_pass", "reply")).is_ok());
+        // control characters in the instruction are dropped (SEC-7), an empty one is refused
+        let s = check_step_draft(&ok.replace("List", "\\u001b[2JList")).unwrap();
+        assert_eq!(s["instruction"], "[2JList functions without docs.");
+        assert_eq!(codes(&ok.replace("List functions without docs.", "  ")), ["step_draft_instruction"]);
     }
 
     #[test]

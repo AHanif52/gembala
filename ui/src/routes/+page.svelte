@@ -306,10 +306,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   let newTask = $state(false);
   // 3b: the recipe card builder is a sidebar tab, but not a pane tab: it lives outside `ws.tabs`, so the Jejerin grid, LIVE_TABS,
   // pane.attach and layout.json never see it (it is session only). `rshow` remembers which pane tab was current, so picking any
-  // pane tab (which moves `at`) hides the builder without every `at = …` having to know about it.
+  // pane tab (any `at = {…}` is a new object, even to the same tab) hides the builder without every caller having to know about it.
   let rtabs = $state<RTab[]>([]);
-  let rshow = $state<{ key: string; ws: number; tab: number } | null>(null);
-  const showKey = $derived(rshow && rshow.ws === at.ws && rshow.tab === at.tab && rtabs.some((x) => x.key === rshow!.key) ? rshow.key : null);
+  let rshow = $state.raw<{ key: string; at: typeof at } | null>(null);
+  const showKey = $derived(rshow && rshow.at === at && rtabs.some((x) => x.key === rshow!.key) ? rshow.key : null);
   const rrefs: Record<string, { leave: () => void } | undefined> = {};
   const agentNames = $derived(Object.fromEntries((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell").map((p) => [p.agent, `${GLYPH[p.agent] ?? ""} ${p.name}`.trim()])));
   function openRecipeTab(rid: string, tpl = "") {
@@ -319,16 +319,30 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     rtabs = r.tabs;
     at = { ws: wss.indexOf(w), tab: Math.max(0, Math.min(at.tab, w.tabs.length - 1)) };
     w.collapsed = false;
-    rshow = { key: r.key, ws: at.ws, tab: at.tab };
+    rshow = { key: r.key, at };
   }
   const showRecipe = (key: string, wi: number) => {
     at = { ws: wi, tab: Math.max(0, Math.min(at.ws === wi ? at.tab : 0, wss[wi].tabs.length - 1)) };
-    rshow = { key, ws: at.ws, tab: at.tab };
+    rshow = { key, at };
   };
   /// ×: the builder asks first when there are unsaved changes (same question as its own back button)
   function closeRecipe(key: string, wi: number) {
     showRecipe(key, wi);
     rrefs[key]?.leave();
+  }
+  const stepProfiles = $derived((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell").map((p) => ({ id: p.id, name: p.name, agent: p.agent })));
+  /// B4 Tahap kustom: the agent tab "Rumuskan tahap" opens next to the builder, which stays on screen (the page keeps `rshow` on the new `at`)
+  async function formulateStep(key: string, profile: string, need: string) {
+    const wi = wss.findIndex((w) => w.id === rtabs.find((x) => x.key === key)?.ws);
+    if (wi < 0) return null;
+    const pane = await newTab(profile, wi).catch(() => 0);
+    if (!pane) return null;
+    const t = wss[wi].tabs[at.tab];
+    if (t) t.title = tt("rb.cu.tab");
+    showRecipe(key, wi);
+    const d = await call("recipe.step_draft_new", { pane, need }).catch(() => null);
+    if (!d?.draft) return null;
+    return { draft: d.draft as string, pane, who: `${stepProfiles.find((p) => p.id === profile)?.name ?? profile} · ${meta[pane]?.name ?? ""}` };
   }
   const dropRecipe = (key: string) => ((rtabs = rtabs.filter((x) => x.key !== key)), delete rrefs[key]);
   let flow = $state(false);
@@ -3874,7 +3888,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     <div class="paused" role="status">{tt("main.paused", { key: combo("msg.stop") })}</div>
   {/if}
   {#if flow && ws && runs[ws.id]}
-    <HarnessFlow snap={runs[ws.id]} has={(p: number) => !!meta[p]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onchanges={(p: number) => ((flow = false), showChanges(p))} onclose={() => (flow = false)} />
+    <HarnessFlow snap={runs[ws.id]} has={(p: number) => !!meta[p]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onchanges={(p: number) => ((flow = false), showChanges(p))} onrecipe={(id: string) => ((flow = false), openRecipeTab(id))} onclose={() => (flow = false)} />
   {/if}
   {#if newTask && ws}
     <NewTask
@@ -4162,7 +4176,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 <!-- 3b: builder tabs stay mounted (their edits survive a switch to a pane tab) and are only shown while current -->
 {#each rtabs as r (r.key)}
   <div class="rpane" hidden={showKey !== r.key} style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right="{rightPad}px">
-    <RecipeBuilder id={r.rid} tpl={r.tpl} names={agentNames} active={showKey === r.key} bind:this={rrefs[r.key]}
+    <RecipeBuilder id={r.rid} tpl={r.tpl} names={agentNames} profiles={stepProfiles} active={showKey === r.key} onformulate={(profile, need) => formulateStep(r.key, profile, need)} onopenpane={jumpTo} bind:this={rrefs[r.key]}
       onstate={(x) => (rtabs = patchRecipe(rtabs, r.key, x))} onclose={() => dropRecipe(r.key)} />
   </div>
 {/each}

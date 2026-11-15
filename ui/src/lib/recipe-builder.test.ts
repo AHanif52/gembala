@@ -1,7 +1,7 @@
 // @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { openRecipe, patchRecipe, addAgent, addStep, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, setModel, setPrimary, skipped, slugId } from "./recipe-builder.ts";
+import { customStep, formErrors, openRecipe, patchRecipe, addAgent, addStep, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, setModel, setPrimary, skipped, slugId } from "./recipe-builder.ts";
 
 const st = (id, o = {}) => ({ id, kind: "work", name: id, need: "", instruction: "", agents: ["claude"], model: "", models: {}, effort: "", output: "", inputs: [], pass: "reply", timeout_secs: 900, gate: false, human: false, shell: false, max_cost: null, ...o });
 const ship = st("ship", { human: true, agents: [], gate: true, timeout_secs: 0 });
@@ -117,4 +117,25 @@ test("patchRecipe patches one tab and keeps references when nothing changes", ()
   assert.equal(patchRecipe(tabs, "k2", { st: "dirty" })[1].st, "dirty");
   assert.equal(patchRecipe(tabs, "k2", { st: "dirty" })[0], rt);
   assert.equal(patchRecipe(tabs, "k1", { st: "approved" })[0], rt);
+});
+
+const form = { name: "Audit Desain UI", kind: "check", instruction: "Baca diff.", output: "desain.md", pass: "first_line_pass" };
+test("formErrors follows the daemon's draft rules", () => {
+  assert.deepEqual(formErrors(form), []);
+  assert.deepEqual(formErrors({ ...form, name: "x".repeat(25) }), ["name"]);
+  assert.deepEqual(formErrors({ ...form, name: "  " }), ["name"]);
+  assert.deepEqual(formErrors({ ...form, instruction: " " }), ["instruction"]);
+  assert.deepEqual(formErrors({ ...form, output: "../a.md" }), ["output"]);
+  assert.deepEqual(formErrors({ ...form, pass: "always" }), ["pass"]);
+  assert.deepEqual(formErrors({ ...form, output: "" }), ["pass"]);
+  assert.deepEqual(formErrors({ ...form, output: "", pass: "reply" }), []);
+});
+test("customStep: Kustom defaults, need kept, id free among the flow", () => {
+  const s = customStep(form, " cek UI ", "claude", ["plan"]);
+  assert.equal(s.id, "tahap-audit-desain-ui");
+  assert.deepEqual([s.agents, s.effort, s.timeout_secs, s.model, s.need, s.gate, s.human], [["claude"], "medium", 900, "", "cek UI", false, false]);
+  assert.equal(customStep(form, "", "claude", [s.id]).id, "tahap-audit-desain-ui-2");
+  // lands before Ship
+  const steps = addStep([{ id: "plan", human: false, kind: "work" }, { id: "ship", human: true }], s);
+  assert.deepEqual(steps.map((x) => x.id), ["plan", s.id, "ship"]);
 });

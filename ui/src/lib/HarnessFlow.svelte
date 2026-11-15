@@ -7,7 +7,7 @@
   import { errText, t, tOr } from "./i18n/state.svelte";
 
   // `has`: the pane is still open (FR-86: a finished run's panes close, a stopped one's stay until the user closes them)
-  let { snap, has, onchange, onjump, onchanges, onclose }: { snap: Snap; has: (pane: number) => boolean; onchange: (s: Snap) => void; onjump: (pane: number) => void; onchanges: (pane: number) => void; onclose: () => void } = $props();
+  let { snap, has, onchange, onjump, onchanges, onrecipe = () => {}, onclose }: { snap: Snap; has: (pane: number) => boolean; onchange: (s: Snap) => void; onjump: (pane: number) => void; onchanges: (pane: number) => void; onrecipe?: (id: string) => void; onclose: () => void } = $props();
 
   /// FR-23/FR-26: the Ship card opens the changes panel for the run's work pane (all stage panes share the run folder)
   const lastPane = (s: Snap) => stagePanes(s).at(-1)?.pane ?? null;
@@ -26,6 +26,8 @@
 <aside class="drawer" aria-label={t("hn.flowAria")}>
   <header>
     <span>{snap.name} <small class="m">·  {tOr(`hn.state.${snap.state}`, snap.state)}{snap.halt ? ` · ${tOr(`hn.halt.${snap.halt}`, snap.halt)}${snap.halt_step != null ? ` (${stepName(snap.halt_step)})` : ""}` : ""}</small></span>
+    <!-- 3b: the recipe this run uses, as a builder tab (layar 22); a run started from text has no recipe file -->
+    {#if snap.recipe}<button class="mini" onclick={() => onrecipe(snap.recipe)}>{t("hn.recipe")}</button>{/if}
     <button class="mini" onclick={onclose} aria-label={t("hn.close")}>Esc</button>
   </header>
   <div class="body">
