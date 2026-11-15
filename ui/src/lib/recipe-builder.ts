@@ -148,3 +148,16 @@ export function slugId(name: string, taken: string[]): string {
   if (!taken.includes(base)) return base;
   for (let n = 2; ; n++) if (!taken.includes(`${base}-${n}`)) return `${base}-${n}`;
 }
+
+// ---- recipe tabs (the builder as a sidebar tab, session only: never in layout.json) ----
+export type RTab = { key: string; ws: string; rid: string; tpl: string; name: string; st: string };
+
+/// one recipe = one tab: an existing recipe id is focused if it is already open; a new one (from a template) is always a new tab
+export function openRecipe(tabs: RTab[], ws: string, rid: string, tpl: string, key: string): { tabs: RTab[]; key: string } {
+  const have = rid ? tabs.find((x) => x.rid === rid) : undefined;
+  return have ? { tabs, key: have.key } : { tabs: [...tabs, { key, ws, rid, tpl, name: "", st: tpl ? "unsaved" : "" }], key };
+}
+
+/// builder -> sidebar: name, saved id and state of a tab (a new recipe gets its id once it is saved, so opening it again finds the tab)
+export const patchRecipe = (tabs: RTab[], key: string, p: Partial<RTab>): RTab[] =>
+  tabs.map((x) => (x.key === key && Object.entries(p).some(([k, v]) => x[k as keyof RTab] !== v) ? { ...x, ...p } : x));

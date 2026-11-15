@@ -3,6 +3,7 @@
   // the recipe as the daemon's JSON, `recipe.render` turns it into text + problems (nothing is written), and Simpan sends
   // only the hash of the text the user reviewed (`recipe.save`, SEC-27). Layout follows Gembala.pen screens 23-24:
   // cards side by side in the ALUR panel (scrolls sideways), Pustaka tahap + Resep panels below.
+  import { untrack } from "svelte";
   import { call } from "./daemon";
   import { lineDiff } from "./diff";
   import { errText, t, tOr } from "./i18n/state.svelte";
@@ -11,14 +12,18 @@
     setModel, setPrimary, skipped, slugId, used, type BRecipe, type BStep, type Diag, type LibAgent,
   } from "./recipe-builder";
 
-  let { id, tpl = "", names = {}, onclose }: {
+  let { id, tpl = "", names = {}, active = true, onclose, onstate = () => {} }: {
     /// recipe id (file name); ignored for a new recipe
     id: string;
     /// template id from `recipe.library`: a new recipe (not a file yet)
     tpl?: string;
     /// agent kind -> "✳ Claude Code"
     names?: Record<string, string>;
+    /// shown in the main area; a tab behind another one keeps its state but ignores keys
+    active?: boolean;
     onclose: () => void;
+    /// sidebar row of the tab: name, saved id (a new recipe gets one on save) and state
+    onstate?: (s: { name: string; rid: string; st: string }) => void;
   } = $props();
 
   type Lib = { steps: BStep[]; templates: { id: string; recipe: BRecipe }[]; agents: LibAgent[] };
@@ -155,12 +160,18 @@
     mode = "edit";
   }
 
-  function leave() {
+  export function leave() {
     if (dirty && !saved) leaving = true;
     else onclose();
   }
   $effect(() => {
     if (saved && rec && !same(rec, JSON.parse(base))) saved = false;
+  });
+
+  $effect(() => {
+    if (!rec) return;
+    const x = { name: rec.name, rid: fresh ? "" : curId, st: fresh ? "unsaved" : dirty ? "dirty" : status };
+    untrack(() => onstate(x)); // the parent reads its own tab list in there; that must not become a dependency of this effect
   });
 
   const lines = $derived(prev ? lineDiff(prev.base, prev.text) : []);
@@ -238,7 +249,7 @@
   const focusLib = () => libEl?.scrollIntoView({ block: "nearest", behavior: "smooth" });
 
   function onkey(e: KeyboardEvent) {
-    if (e.key !== "Escape") return;
+    if (!active || e.key !== "Escape") return;
     const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
     if (typing) return;
     e.preventDefault();
@@ -296,8 +307,7 @@
   </div>
 {/snippet}
 
-<div class="veil" role="presentation">
-  <div class="modal" role="dialog" aria-label={t("rb.title")}>
+<div class="rb" role="region" aria-label={t("rb.title")}>
     {#if !rec && !broken}
       <div class="pad">{fail || t("common.loading")}
         <div class="acts"><button class="mini" onclick={onclose}>{t("common.close")}</button></div></div>
@@ -485,23 +495,12 @@
         </div>
       </div>
     {/if}
-  </div>
 </div>
 
 <style>
-  .veil {
-    position: fixed;
-    inset: 0;
-    z-index: 10;
-    display: grid;
-    place-items: center;
-    background: rgba(0, 0, 0, 0.5);
-  }
-  .modal {
-    width: min(1240px, calc(100vw - 32px));
-    height: calc(100vh - 80px);
-    border: 1px solid var(--line);
-    border-radius: 8px;
+  .rb {
+    width: 100%;
+    height: 100%;
     background: var(--card);
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;

@@ -16,6 +16,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import Report from "$lib/Report.svelte";
   import HarnessFlow from "$lib/HarnessFlow.svelte";
   import RecipeBuilder from "$lib/RecipeBuilder.svelte";
+  import { openRecipe, patchRecipe, type RTab } from "$lib/recipe-builder";
   import { live as runLive, stagePanes, type AiAsk, type AiDraft, type Snap } from "$lib/harness";
   import ContextMenu, { type MenuAt, type MItem } from "$lib/ContextMenu.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -274,6 +275,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     at = { ws: wi, tab: wss[wi].tabs.indexOf(t) };
     if (latestHelper?.id === t.id) latestHelper = null;
     zoomed = false;
+    rshow = null;
   };
   const goOwner = () => { if (owner && ws) openTab(at.ws, owner); };
   const nextHelper = (step: number) => {
@@ -302,7 +304,33 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   let drawer = $state(false);
   // FR-16, FR-26, FR-73: harness. `runs` = latest run per workspace id (the daemon pushes harness.state)
   let newTask = $state(false);
-  let builder = $state<{ id: string; tpl: string } | null>(null); // 3b: the recipe card builder
+  // 3b: the recipe card builder is a sidebar tab, but not a pane tab: it lives outside `ws.tabs`, so the Jejerin grid, LIVE_TABS,
+  // pane.attach and layout.json never see it (it is session only). `rshow` remembers which pane tab was current, so picking any
+  // pane tab (which moves `at`) hides the builder without every `at = …` having to know about it.
+  let rtabs = $state<RTab[]>([]);
+  let rshow = $state<{ key: string; ws: number; tab: number } | null>(null);
+  const showKey = $derived(rshow && rshow.ws === at.ws && rshow.tab === at.tab && rtabs.some((x) => x.key === rshow!.key) ? rshow.key : null);
+  const rrefs: Record<string, { leave: () => void } | undefined> = {};
+  const agentNames = $derived(Object.fromEntries((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell").map((p) => [p.agent, `${GLYPH[p.agent] ?? ""} ${p.name}`.trim()])));
+  function openRecipeTab(rid: string, tpl = "") {
+    const w = ws;
+    if (!w) return;
+    const r = openRecipe(rtabs, w.id, rid, tpl, uid());
+    rtabs = r.tabs;
+    at = { ws: wss.indexOf(w), tab: Math.max(0, Math.min(at.tab, w.tabs.length - 1)) };
+    w.collapsed = false;
+    rshow = { key: r.key, ws: at.ws, tab: at.tab };
+  }
+  const showRecipe = (key: string, wi: number) => {
+    at = { ws: wi, tab: Math.max(0, Math.min(at.ws === wi ? at.tab : 0, wss[wi].tabs.length - 1)) };
+    rshow = { key, ws: at.ws, tab: at.tab };
+  };
+  /// ×: the builder asks first when there are unsaved changes (same question as its own back button)
+  function closeRecipe(key: string, wi: number) {
+    showRecipe(key, wi);
+    rrefs[key]?.leave();
+  }
+  const dropRecipe = (key: string) => ((rtabs = rtabs.filter((x) => x.key !== key)), delete rrefs[key]);
   let flow = $state(false);
   let runs = $state<Record<string, Snap>>({});
   const runOwner: Record<string, string> = {}; // run id -> owner tab id, for stages opened after the first
@@ -1509,7 +1537,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen || builder || picker || editing || rich || pal || lempar || newTask) return;
+    if (settingsOpen || showKey || picker || editing || rich || pal || lempar || newTask) return;
     if (confirm || quitAsk || linkAsk || wsAsk) return;
     // one key can arrive through the menu and keydown at once; don't run twice
     if (id === last.id && performance.now() - last.at < 150) return;
@@ -1979,7 +2007,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       }
       return; // controls in Settings take keys as usual
     }
-    if (builder) return; // the card builder handles its own keys
+    if (showKey) return; // the card builder handles its own keys
     if (rich || pal || lempar) return; // the Rich Input textarea, palette, and hand-off bar handle their own keys
     if (compose) {
       if (e.key === "Escape") (compose = null), stop(e);
@@ -3134,7 +3162,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {@const st = row.child ? stat(t.focus) : tabStatus(t)}
         <!-- FR-101 item 1 (TECH 29): a tab split by hand lists its agents as rows below the title, like helpers -->
         {@const sp = row.child ? null : splitRows(panes(t.tree), (p) => !!paneAgent(p), (p) => !!meta[p]?.busy || meta[p]?.status === "blocked")}
-        <button class="tab {t.color ?? ''}" class:helper={!!row.child} class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} class:approve={st === "approve"} data-wi={wi} data-ti={ti}
+        <button class="tab {t.color ?? ''}" class:helper={!!row.child} class:on={at.ws === wi && at.tab === ti && !showKey} class:blocked={st === "blocked"} class:approve={st === "approve"} data-wi={wi} data-ti={ti}
           class:lift={(dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti) || (dragging?.kind === "ws" && dragging.wi === wi)}
           data-k={t.id} title={row.child ? tt("helper.shortcut", { next: combo("tab.helper.next"), prev: combo("tab.helper.prev") }) : undefined}
           onpointerdown={(e) => (row.child ? startHelperDrag(e, w, wi, t) : startDrag(e, "tab", wi, ti))} oncontextmenu={(e) => tabMenu(e, wi, t)}
@@ -3175,6 +3203,18 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {/if}
         {/if}
       {/each}
+      {#if !w.collapsed}
+        {#each rtabs.filter((x) => x.ws === w.id) as r (r.key)}
+          <!-- 3b: recipe builder tab; one row per recipe, outside the pane tabs (no drag, no shortcut number) -->
+          <div class="tab rtab" class:on={showKey === r.key} data-k={r.key} role="button" tabindex="0" title={r.name}
+            onclick={() => showRecipe(r.key, wi)} onkeydown={(e) => e.key === "Enter" && showRecipe(r.key, wi)}>
+            <span class="tt"><span class="aico" aria-hidden="true">▤</span>{tt("rb.tabName", { name: r.name || tt("rb.newName") })}</span>
+            <span class="n"><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: r.name || tt("rb.newName") })}
+                onclick={(e) => (e.stopPropagation(), closeRecipe(r.key, wi))} onkeydown={(e) => e.key === "Enter" && (e.stopPropagation(), closeRecipe(r.key, wi))}>×</span></span>
+            <span class="sub"><span class="st rst {r.st}">{tt("rb.tabSub", { s: r.st === "unsaved" ? tt("rb.unsaved") : r.st === "dirty" ? tt("rb.dirtyShort") : tOr(`hn.set.st.${r.st || "approved"}`, r.st) })}</span></span>
+          </div>
+        {/each}
+      {/if}
       </div>
     {/each}
     <!-- FR-99 P1: used rarely, so it sits quietly under the list -->
@@ -3854,7 +3894,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         flow = true;
       }}
       onmanual={startManual}
-      onrecipe={(id: string) => ((newTask = false), (builder = { id, tpl: "" }))}
+      onrecipe={(id: string) => ((newTask = false), openRecipeTab(id))}
     />
   {/if}
   {#if reportDraft}
@@ -4113,14 +4153,20 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 {#if __GEMBALA_DEBUG__}<span class="devtag" title={__GEMBALA_DEBUG__}>{__GEMBALA_DEBUG__}</span>{/if}
 <!-- outside .grid: a fixed .grid is its own stacking layer, so inside it Settings (z-index 10) lost to the sidebar grip (4) and the rail (6) -->
 {#if settingsOpen && cfg}
-  <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} onbuilder={(id: string, tpl = "") => ((settingsOpen = false), (builder = { id, tpl }))} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
+  <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} onbuilder={(id: string, tpl = "") => ((settingsOpen = false), openRecipeTab(id, tpl))} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
     onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
     oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)}
     onresetHints={() => { helperTip = true; hintReset += 1; try { localStorage.removeItem(TIP_KEY); } catch {} }} onwhatsnew={() => (settingsOpen = false, openWhatsNew())} />
 {/if}
-{#if builder}
-  <RecipeBuilder id={builder.id} tpl={builder.tpl} names={Object.fromEntries((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell").map((p) => [p.agent, `${GLYPH[p.agent] ?? ""} ${p.name}`.trim()]))} onclose={() => (builder = null)} />
-{/if}
+
+<!-- 3b: builder tabs stay mounted (their edits survive a switch to a pane tab) and are only shown while current -->
+{#each rtabs as r (r.key)}
+  <div class="rpane" hidden={showKey !== r.key} style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right="{rightPad}px">
+    <RecipeBuilder id={r.rid} tpl={r.tpl} names={agentNames} active={showKey === r.key} bind:this={rrefs[r.key]}
+      onstate={(x) => (rtabs = patchRecipe(rtabs, r.key, x))} onclose={() => dropRecipe(r.key)} />
+  </div>
+{/each}
+
 {#if quitAsk}
   <!-- also opened from Settings > General (z-index 10): sits above it (9 Nov: covered, Esc first to see it) -->
   <div class="confirm ask over" role="alertdialog" aria-label={tt("quit.aria")}>
@@ -4256,6 +4302,21 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   .grid {
     position: fixed;
     inset: 0;
+  }
+  .rpane {
+    position: fixed;
+    bottom: 0;
+    z-index: 4;
+  }
+  .rpane[hidden] {
+    display: none;
+  }
+  .tab.rtab {
+    cursor: pointer;
+  }
+  /* the muted caption fails 4.5:1 on the blue selected row in the light theme */
+  .tab.rtab.on .rst {
+    color: var(--fg);
   }
   .empty {
     position: absolute;

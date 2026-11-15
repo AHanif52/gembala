@@ -1,7 +1,7 @@
 // @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addAgent, addStep, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, setModel, setPrimary, skipped, slugId } from "./recipe-builder.ts";
+import { openRecipe, patchRecipe, addAgent, addStep, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, setModel, setPrimary, skipped, slugId } from "./recipe-builder.ts";
 
 const st = (id, o = {}) => ({ id, kind: "work", name: id, need: "", instruction: "", agents: ["claude"], model: "", models: {}, effort: "", output: "", inputs: [], pass: "reply", timeout_secs: 900, gate: false, human: false, shell: false, max_cost: null, ...o });
 const ship = st("ship", { human: true, agents: [], gate: true, timeout_secs: 0 });
@@ -97,4 +97,24 @@ test("primary picked from the card", () => {
   assert.equal(r.model, "", "the replaced agent's model goes with it");
   assert.deepEqual(r.models, { codex: "gpt-6.1" });
   assert.equal(setPrimary(s, "claude"), s);
+});
+
+const rt = { key: "k1", ws: "w", rid: "fix", tpl: "", name: "Fix", st: "approved" };
+test("openRecipe focuses the open tab of an existing recipe", () => {
+  const r = openRecipe([rt], "w", "fix", "", "k2");
+  assert.equal(r.tabs.length, 1);
+  assert.equal(r.key, "k1");
+});
+test("openRecipe makes a tab per other recipe and per new recipe", () => {
+  assert.equal(openRecipe([rt], "w", "other", "", "k2").tabs.length, 2);
+  const n = openRecipe([rt], "w", "", "tpl", "k3");
+  assert.deepEqual(n.tabs.map((x) => x.key), ["k1", "k3"]);
+  assert.equal(n.tabs[1].st, "unsaved");
+  assert.equal(openRecipe(n.tabs, "w", "", "tpl", "k4").tabs.length, 3);
+});
+test("patchRecipe patches one tab and keeps references when nothing changes", () => {
+  const tabs = [rt, { ...rt, key: "k2", rid: "b" }];
+  assert.equal(patchRecipe(tabs, "k2", { st: "dirty" })[1].st, "dirty");
+  assert.equal(patchRecipe(tabs, "k2", { st: "dirty" })[0], rt);
+  assert.equal(patchRecipe(tabs, "k1", { st: "approved" })[0], rt);
 });
