@@ -52,9 +52,13 @@ const LOG_LINES: usize = 1_000;
 const QUEUE: usize = 256;
 /// FR-79: old names per pane that still work as addresses
 const ALIAS_MAX: usize = 8;
-/// FR-75: helper panes (alive + waiting cards) per requesting agent; a helper's first task waits this long after launch
+/// FR-75: helper panes (alive + waiting cards) per requesting agent
 const HELPERS_MAX: usize = 4;
+/// A helper's first task waits for proof the agent's prompt is up: its first hook (`hooked`), or for an agent without
+/// hooks the screen gone quiet (`HELPER_QUIET`) at least `HELPER_GRACE` after launch; `HELPER_MAX` = give up waiting
 const HELPER_GRACE: Duration = Duration::from_secs(4);
+const HELPER_QUIET: Duration = Duration::from_secs(1);
+const HELPER_MAX: Duration = Duration::from_secs(15);
 /// FR-86: close request cards waiting per asking agent (a pane the user didn't answer yet)
 const CLOSES_MAX: usize = 4;
 
@@ -2422,7 +2426,9 @@ fn deliver_loop(st: Arc<State>) {
             // trust prompt, hooks not up yet); nothing is written to it before that (SEC-6)
             // FR-77: an approved message to a pane opened in the last 2 minutes (Atur pakai AI brief) waits the same way
             let opening = q.approved && (to.helper_of.lock().unwrap().is_some() || to.started.elapsed() < Duration::from_secs(120));
-            if opening && to.started.elapsed() < HELPER_GRACE {
+            let up = to.started.elapsed();
+            let ready = to.hooked.load(Ordering::Relaxed) || up >= HELPER_MAX || (up >= HELPER_GRACE && to.last_out.lock().unwrap().elapsed() >= HELPER_QUIET);
+            if opening && !ready {
                 requeue(q);
                 continue;
             }

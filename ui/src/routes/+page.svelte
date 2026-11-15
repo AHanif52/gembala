@@ -700,10 +700,18 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     delete offer[pane];
     delete offerAt[pane];
   }
+  /// the daemon only accepts a send once the agent's status is idle (hook or prompt on screen), so retry while it says
+  /// busy/blocked (starting, trust dialog) instead of waiting a fixed time; 30 s later the text goes to the input box
   async function firstMessage(id: number, task: string) {
-    await new Promise((r) => setTimeout(r, 4000));
-    const sent = await call("msg.send", { to: id, body: task }).then((r) => !r?.error, () => false);
-    if (!sent) rich = { pane: id, text: task };
+    const until = Date.now() + 30_000;
+    while (Date.now() < until) {
+      // `call` rejects with the error code
+      const err = await call("msg.send", { to: id, body: task }).then(() => "", (e) => String(e?.message ?? e));
+      if (!err) return;
+      if (err !== "target_busy" && err !== "target_blocked") break;
+      await new Promise((res) => setTimeout(res, 500));
+    }
+    rich = { pane: id, text: task };
   }
   /// FR-101 (5): what the "⋯" of a narrow pane bar offers (the chips the width hid, and the rest)
   function barMenu(pane: number, g: any): MItem[] {
