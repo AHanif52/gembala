@@ -2610,6 +2610,34 @@ fn harness_runs_a_recipe_with_fallback_and_a_gate() {
     }
     // a finished run can be read again from its saved row
     assert_eq!(ui.call("harness.state", json!({"run": run}))["result"]["state"], "done");
+
+    // FR-99 P3 `harness.artifact`: only a file the run's own recipe lists, as text, cut at 256 KB, secrets masked
+    let art = cfg.join("harness").join(&run).join("artefak");
+    std::fs::write(art.join("plan.md"), "plan ghp_abcdefghijklmnopqrstuvwxyz0123456789\n").unwrap();
+    let r = ui.call("harness.artifact", json!({"run": run, "name": "plan.md"}))["result"].clone();
+    assert!(r["text"].as_str().unwrap().starts_with("plan ") && !r["text"].as_str().unwrap().contains("ghp_abc") && r["truncated"] == false, "{r}");
+    for bad in ["permintaan.md", "../run.json", "../../cfg", "jejak.md", ".x", "plan.md/x"] {
+        assert_eq!(ui.call("harness.artifact", json!({"run": run, "name": bad}))["error"]["code"], "no_such_artifact", "{bad}");
+    }
+    assert!(ui.call("harness.artifact", json!({"run": "../x", "name": "plan.md"}))["error"].is_object());
+    std::fs::write(art.join("plan.md"), "x".repeat(300 << 10)).unwrap();
+    let r = ui.call("harness.artifact", json!({"run": run, "name": "plan.md"}))["result"].clone();
+    assert!(r["truncated"] == true && r["text"].as_str().unwrap().len() == 256 << 10, "truncated");
+
+    // FR-99 P3 `harness.restart`: same recipe, request, folder and test command, begins at the chosen stage with the earlier outputs
+    let s = ui.call("harness.restart", json!({"run": run, "from": 1}))["result"].clone();
+    let run2 = s["run"].as_str().unwrap_or_else(|| panic!("{s}")).to_string();
+    assert_ne!(run2, run);
+    assert_eq!(s["trace"][0]["code"], "restart", "{s}");
+    let s = wait_state(&mut ui, &run2, &["gate", "halted"]);
+    assert_eq!((s["state"].clone(), s["gate"].clone()), (json!("gate"), json!(2)), "{s}");
+    assert!(cfg.join("harness").join(&run2).join("artefak/plan.md").exists());
+    assert_eq!(std::fs::read_to_string(cfg.join("harness").join(&run2).join("artefak/permintaan.md")).unwrap(), "make a plan");
+    // a live run cannot be restarted; Ship is no place to begin
+    assert_eq!(ui.call("harness.restart", json!({"run": run2}))["error"]["code"], "run_active");
+    ui.call("harness.stop", json!({"run": run2}));
+    wait_state(&mut ui, &run2, &["halted"]);
+    assert_eq!(ui.call("harness.restart", json!({"run": run2, "from": 2}))["error"]["code"], "bad_params");
 }
 
 /// 3b B4 + B5 (criterion 13, last sentence): a stage described in words goes through `recipe.step_draft_*`, the recipe the

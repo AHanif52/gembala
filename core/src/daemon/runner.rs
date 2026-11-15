@@ -432,7 +432,7 @@ fn snapshot(st: &State, l: &Live) -> Value {
     let names = st.names();
     let steps: Vec<Value> = l.run.recipe.steps.iter().enumerate().map(|(i, s)| {
         let pane = l.panes.get(&i).copied();
-        json!({"id": s.id, "name": s.name, "kind": s.kind, "human": s.human, "shell": s.shell, "gate": s.gate, "agents": s.agents, "output": s.output,
+        json!({"id": s.id, "name": s.name, "kind": s.kind, "human": s.human, "shell": s.shell, "gate": s.gate, "agents": s.agents, "output": s.output, "inputs": s.inputs,
                "pane": pane, "pane_name": pane.and_then(|p| names.get(&p)), "pane_agent": l.agents.get(&i), "message": l.msgs.get(&i)})
     }).collect();
     let (halt, halt_step) = match &l.run.state {
@@ -453,7 +453,9 @@ fn snapshot(st: &State, l: &Live) -> Value {
 }
 
 fn save(st: &State, l: &Live) {
-    let _ = config::write_atomic(&l.dir.join("run.json"), format!("{}\n", snapshot(st, l)).as_bytes());
+    let mut v = snapshot(st, l);
+    v["test"] = json!(l.test);
+    let _ = config::write_atomic(&l.dir.join("run.json"), format!("{v}\n").as_bytes());
 }
 
 fn ui_event(st: &State, method: &str, params: Value) {
@@ -846,6 +848,8 @@ pub fn method(st: &Arc<State>, m: &str, p: &Value) -> Res {
             Ok(json!({"ok": ok, "items": items}))
         }
         "harness.start" => start(st, p),
+        "harness.restart" => restart(st, p),
+        "harness.artifact" => artifact(st, p),
         "harness.state" => state(st, p),
         "harness.runs" => Ok(json!({"runs": saved_runs(st, p["workspace"].as_str().unwrap_or_default())})),
         "harness.close_panes" => {
@@ -887,6 +891,14 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
         store().touch(id);
     }
     let run = harness::Run::new(recipe, &installed(st));
+    let from_step = match p["from"].as_u64() {
+        Some(i) if (i as usize) < run.recipe.steps.len() && !run.recipe.steps[i as usize].human => Some(i as usize),
+        Some(_) => return Err("bad_params"),
+        None => None,
+    };
+    if let Some(old) = p["copy_from"].as_str().filter(|r| valid_run_id(r)) {
+        copy_artifacts(&data_dir().join(old).join("artefak"), &dir.join("artefak"));
+    }
     let start_diff = fingerprint(&cwd);
     let live = Live {
         id: run_id.clone(),
@@ -922,11 +934,72 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
     }
     let snap = {
         let mut l = live.lock().unwrap();
-        feed(st, &mut l, Event::Start);
+        let ev = match from_step {
+            Some(step) => Event::StartAt { step, worker: p["worker"].as_str().map(String::from) },
+            None => Event::Start,
+        };
+        feed(st, &mut l, ev);
         snapshot(st, &l)
     };
     spawn_ticker(st.clone(), live);
     Ok(snap)
+}
+
+/// the earlier run's stage outputs (plan.md, scan.md ...) for a run that begins in the middle; the request and trail are written fresh
+fn copy_artifacts(from: &Path, to: &Path) {
+    let Ok(dir) = fs::read_dir(from) else { return };
+    for e in dir.flatten() {
+        let name = e.file_name();
+        let ok = fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_file() && m.len() <= MAX_ARTIFACT * 8);
+        if ok && name != REQUEST_FILE && name != "jejak.md" {
+            let _ = fs::copy(e.path(), to.join(&name));
+        }
+    }
+}
+
+/// FR-99 P3 "Jalanin ulang": a new run, same recipe, request, folder and test command as the stopped one, beginning at stage
+/// `from` (default: Execute, else the first). The earlier run must have ended and the workspace be free; the stage outputs
+/// before `from` come along. A run that ended `done` can be repeated too (the user picks the stage).
+fn restart(st: &Arc<State>, p: &Value) -> Res {
+    let id = p["run"].as_str().filter(|r| valid_run_id(r)).ok_or("bad_params")?;
+    if find(st, p).is_some() {
+        return Err("run_active");
+    }
+    let dir = data_dir().join(id);
+    let old: Value = fs::read_to_string(dir.join("run.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or("no_such_run")?;
+    let steps = old["steps"].as_array().ok_or("no_such_run")?;
+    let from = p["from"].as_u64().map(|i| i as usize).or_else(|| steps.iter().position(|s| s["id"] == "execute")).unwrap_or(0);
+    let prev = steps.get(..from).and_then(|s| s.iter().rev().find(|s| s["kind"] == "work" && s["human"] != true && s["shell"] != true));
+    let request = fs::read_to_string(dir.join("artefak").join(REQUEST_FILE)).map_err(|_| "no_such_run")?;
+    let mut np = json!({
+        "recipe": old["recipe"], "workspace": old["workspace"], "cwd": old["cwd"], "test": old["test"], "request": request,
+        "from": from, "copy_from": id, "worker": prev.and_then(|s| s["pane_agent"].as_str()),
+    });
+    np["from_pane"] = p["from_pane"].clone();
+    start(st, &np)
+}
+
+/// FR-99 P3 "Baca rencana": one file a stage of this run reads or writes (its recipe lists the name), as plain text for the
+/// UI to show read-only. Only names the run's own steps list in `output`/`inputs`; never a path (SEC-38 mask applies).
+const MAX_READ: u64 = 256 << 10;
+fn artifact(st: &Arc<State>, p: &Value) -> Res {
+    let name = p["name"].as_str().ok_or("bad_params")?;
+    let snap = state(st, &json!({"run": p["run"]}))?;
+    let listed = snap["steps"].as_array().is_some_and(|steps| {
+        steps.iter().any(|s| s["output"] == name || s["inputs"].as_array().is_some_and(|i| i.iter().any(|n| n == name)))
+    });
+    let id = p["run"].as_str().filter(|r| valid_run_id(r)).ok_or("bad_params")?;
+    if !listed || name.contains('/') || name.starts_with('.') {
+        return Err("no_such_artifact");
+    }
+    let path = data_dir().join(id).join("artefak").join(name);
+    let len = fs::symlink_metadata(&path).ok().filter(|m| m.is_file()).map(|m| m.len()).ok_or("no_such_artifact")?;
+    use std::io::Read;
+    let mut b = Vec::new();
+    fs::File::open(&path).and_then(|f| f.take(MAX_READ).read_to_end(&mut b)).map_err(|_| "io")?;
+    // cut inside a character: lossy conversion keeps the rest readable
+    let text = telegram::mask_secrets(&String::from_utf8_lossy(&b));
+    Ok(json!({"text": text, "truncated": len > MAX_READ}))
 }
 
 fn find(st: &State, p: &Value) -> Option<Arc<Mutex<Live>>> {

@@ -23,6 +23,9 @@ pub enum Status {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Start,
+    /// FR-99 P3 "Jalanin ulang": a fresh run that begins at `step` instead of the first. `worker` = the agent that did the
+    /// last work stage before it in the earlier run, so a check stage still skips it (BRD 8 rule 4) and a fix round has someone to ask
+    StartAt { step: usize, worker: Option<String> },
     /// status of the current stage's pane
     Status(Status),
     /// the stage's agent process ended, or (shell step) the test command finished with this code
@@ -204,6 +207,16 @@ impl Run {
             (State::Idle, Event::Start) => {
                 self.log("start", None, None);
                 self.start_step(0)
+            }
+            (State::Idle, Event::StartAt { step, worker }) if step < self.recipe.steps.len() && !self.recipe.steps[step].human => {
+                self.log("restart", Some(step), worker.as_deref());
+                // "Execute" for the fix rounds = the work stage right before the chosen one
+                self.exec = (0..step).rev().find(|i| {
+                    let s = &self.recipe.steps[*i];
+                    s.kind == "work" && !s.human && !s.shell
+                });
+                self.worker = worker.filter(|_| self.exec.is_some());
+                self.start_step(step)
             }
             (State::Gate(i), Event::GateOk) => {
                 let i = *i;
@@ -570,6 +583,26 @@ human = true
         assert_eq!(r.decide(3, Event::Verdict(true)), vec![Notify(Notice::Gate(0))]);
         assert_eq!(r.state, State::Gate(0));
         assert_eq!(r.decide(100, Event::GateOk), vec![send(1, "claude")]);
+    }
+
+    #[test]
+    fn restart_at_a_stage_skips_the_earlier_ones_and_keeps_the_worker_rules() {
+        // from Execute: same as after the gate
+        let mut r = feature("");
+        assert_eq!(r.decide(0, Event::StartAt { step: 1, worker: None }), vec![send(1, "claude")]);
+        assert!(r.trace.iter().any(|e| e.code == "restart" && e.step == Some(1)));
+        // from the check: the checker is not the agent that did the work earlier, and a failed check can start a fix round
+        let mut r = feature("");
+        assert_eq!(r.decide(0, Event::StartAt { step: 3, worker: Some("claude".into()) }), vec![send(3, "codex")]);
+        assert_eq!(turn(&mut r, 1), vec![Evaluate { step: 3 }]);
+        assert_eq!(r.decide(3, Event::Verdict(false)), vec![SendFix { step: 1, agent: "claude".into(), failed: 3 }]);
+        // Ship is never a place to begin, a started run cannot restart
+        let mut r = feature("");
+        assert_eq!(r.decide(0, Event::StartAt { step: 4, worker: None }), vec![]);
+        assert_eq!(r.decide(0, Event::StartAt { step: 9, worker: None }), vec![]);
+        assert_eq!(r.state, State::Idle);
+        r.decide(0, Event::Start);
+        assert_eq!(r.decide(1, Event::StartAt { step: 1, worker: None }), vec![]);
     }
 
     #[test]
