@@ -79,6 +79,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     saver?: boolean; // FR-27: the token saver is on for this pane (badge in the head)
     subagents?: number; // FR-101 item 1: subagents running, from Claude's SubagentStart/SubagentStop hooks (daemon count)
     kind?: "commandcode"; // PLAN-CC-PANE: structured pane (no PTY); absent = terminal
+    under?: number; // FR-107: the shell pane hidden under this structured pane (not in the tab tree); it comes back when this one closes
     ccModel?: string; // PLAN-CC-PANE: model/effort of the next structured run (empty = profile default)
     ccEffort?: string;
     ccResume?: string; // PLAN-CC-PANE phase 4: session to reopen once the new structured pane mounts
@@ -547,7 +548,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const dir = meta[t.focus]?.git?.root;
     if (!dir) return;
     const go = async (force: boolean) => {
-      for (const p of panes(t.tree)) await call("pane.close", { pane: p }).catch(() => {});
+      for (const p of withUnder(panes(t.tree))) await call("pane.close", { pane: p }).catch(() => {});
       await new Promise((r) => setTimeout(r, 500));
       const r = await call("git.worktree_remove", { dir, force }).catch((e) => ({ error: String(e?.message ?? e) }));
       if (r.error) return say(r.error === "pane_in_worktree" ? tt("err.pane_in_worktree") : tt("wt.removeFailed", { why: errText(r.error, r.args) }));
@@ -624,10 +625,17 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           t.tree = replace(t.tree, old, id);
           if (t.focus === old) t.focus = id;
         }
+    // FR-107: the structured pane sits on top; the shell keeps its PTY and scrollback behind it
+    if (extra.kind === "commandcode") {
+      meta[id].under = old;
+      return id;
+    }
     delete meta[old];
     call("pane.close", { pane: old }).catch(() => {}); // its pane.exit doesn't find the tab anymore: ignored
     return id;
   }
+  /// FR-107: a structured pane's hidden shell goes with it when a tab or workspace closes (it isn't in the tree)
+  const withUnder = (ids: number[]) => ids.flatMap((p) => (meta[p]?.under !== undefined ? [meta[p].under!, p] : [p]));
 
   /// FR-99 P1: a sentence typed into the terminal by mistake. zsh answers 127 (command not found); three words or more,
   /// so a mistyped short command (`gti status`) doesn't get the offer. Shown in Simple and Full (user decision 10 Nov 2026).
@@ -1324,7 +1332,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// FR-38: closing a tab = closing all its panes, one confirmation listing the processes still running
   async function closeTabs(wi: number, ts: Tab[]) {
     ts = [...new Set(ts.flatMap((t) => [t, ...wss[wi].tabs.filter((x) => x.parent === t.id)]))];
-    const ps = ts.flatMap((t) => panes(t.tree));
+    const ps = withUnder(ts.flatMap((t) => panes(t.tree)));
     const known = await Promise.all(ps.filter((p) => !dead[p]).map((p) => paneInfo(p).then((i) => ({ p, i }))));
     ps.filter((p) => dead[p]).concat(known.filter((x) => !x.i).map((x) => x.p)).forEach(onexit);
     const infos = known.filter((x) => x.i);
@@ -1341,6 +1349,32 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   async function onexit(pane: number) {
     if (relaunching.has(pane)) return;
     if (confirm?.pane === pane) confirm = null;
+    // FR-107: the hidden shell under a structured pane died: the link goes, closing that pane just removes it
+    const over = Object.keys(meta).map(Number).find((k) => meta[k].under === pane);
+    if (over !== undefined) {
+      delete meta[over].under;
+      delete meta[pane];
+      delete dead[pane];
+      return;
+    }
+    // FR-107: a structured pane that closes (exit, ×) gives its slot back to the shell under it, scrollback intact
+    const under = meta[pane]?.under;
+    if (under !== undefined && meta[under] && !dead[under]) {
+      for (const w of wss)
+        for (const t of w.tabs)
+          if (panes(t.tree).includes(pane)) {
+            t.tree = replace(t.tree, pane, under);
+            if (t.focus === pane) t.focus = under;
+          }
+      const session = meta[pane].session;
+      withdrawTitles(settle(nst, pane));
+      forgetCc(pane);
+      delete meta[pane];
+      delete dead[pane];
+      zoomed = false;
+      if (session) tick().then(() => tiles[under]?.note(tt("cc.backToShell", { session: `${session.slice(0, 8)}…` })));
+      return;
+    }
     withdrawTitles(settle(nst, pane));
     for (const [wi, w] of wss.entries()) {
       const ti = w.tabs.findIndex((t) => panes(t.tree).includes(pane));
@@ -2344,7 +2378,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 
   async function askRemoveWorkspace(wi: number) {
     if (wss.length < 2) return;
-    const ids = wss[wi].tabs.flatMap((t) => panes(t.tree)).filter((p) => !dead[p]);
+    const ids = withUnder(wss[wi].tabs.flatMap((t) => panes(t.tree))).filter((p) => !dead[p]);
     const infos = await Promise.all(ids.map((pane) => call("pane.info", { pane }).catch(() => ({}))));
     const busy = infos.filter((i: any) => i.busy).length;
     if (busy) wsAsk = { wi, busy };
@@ -2353,7 +2387,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 
   function removeWorkspace(wi: number) {
     wsAsk = null;
-    const ids = wss[wi].tabs.flatMap((t) => panes(t.tree));
+    const ids = withUnder(wss[wi].tabs.flatMap((t) => panes(t.tree)));
     wss.splice(wi, 1);
     at = { ws: 0, tab: 0 };
     for (const p of ids) {
@@ -2462,6 +2496,13 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             dead[id] = true;
           }
       wss = restored;
+      // FR-107: a shell hidden under a structured pane stays hidden while both live; otherwise the link goes (the shell shows as a tab)
+      for (const [k, m] of Object.entries(meta)) {
+        if (m.under === undefined) continue;
+        const u = m.under;
+        if (sameBoot && !dead[+k] && typeof u === "number" && alive.has(u) && oldMeta[u]) (meta[u] = oldMeta[u]), alive.delete(u);
+        else delete m.under;
+      }
       // layout.json is untrusted: the FR-56 card stays, its resume command only when it matches a daemon-made shape
       for (const m of Object.values(meta)) if (m.ended) m.ended = { resume: safeResume(m.ended.resume) };
       // FR-45: dead panes are replaced by new shells right away (negative id first so it doesn't clash with new run ids)
@@ -3488,7 +3529,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 bind:model={() => meta[pane]?.ccModel ?? "", (x) => meta[pane] && (meta[pane].ccModel = x)}
                 bind:effort={() => meta[pane]?.ccEffort ?? "", (x) => meta[pane] && (meta[pane].ccEffort = x)}
                 onterminal={() => newTab(meta[pane]?.profile, wi, undefined, { cwd: meta[pane]?.cwd ?? undefined })}
-                onshell={() => swapToProfile(pane, "shell")}
+                onshell={async () => {
+                  if (meta[pane]?.under === undefined) return void swapToProfile(pane, "shell");
+                  await call("pane.close", { pane }).catch(() => {});
+                  onexit(pane);
+                }}
                 resume={meta[pane].ccResume ?? ""} onresumed={() => meta[pane] && delete meta[pane].ccResume} />
               {:else if active}
               <Tile bind:this={tiles[pane]} {pane} codexPane={agentOf(pane) === "codex"} focused={at.ws === wi && at.tab === ti && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane && !ed} {ui} zoom={zoom + (meta[pane]?.zoom ?? 0)} {onexit} {onlink}

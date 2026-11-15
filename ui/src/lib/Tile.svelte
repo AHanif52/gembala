@@ -167,6 +167,14 @@
     online(line);
   }
   export const focus = () => term.focus();
+  /// FR-107: a line for the person, written into the screen only (never to the PTY); held until the attach snapshot is in
+  let notes: string[] = [];
+  let showNotes = false;
+  const flushNotes = () => showNotes && notes.length && term.write(notes.splice(0).map((n) => `\r\n\x1b[2m${n}\x1b[0m\r\n`).join(""));
+  export function note(text: string) {
+    notes.push(text);
+    flushNotes();
+  }
   /// The page re-attaches every pane of a daemon it reconnected to (criterion 17); filled in `onMount`
   let reattachNow: (() => void) | null = null;
   export function reattach() {
@@ -622,6 +630,7 @@
       attaching = true;
       const g = ++gen;
       attached = false;
+      showNotes = false;
       synced = false;
       early.splice(0);
       term.reset();
@@ -638,6 +647,8 @@
         const text = written.map((d) => new TextDecoder().decode(d)).join("");
         if (/\S/.test(text.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ""))) onused();
         attached = true;
+        showNotes = true;
+        flushNotes();
         if (synced) early.splice(0).forEach(onEvent); // not yet: a marker arriving later drops what's held
       } catch (e) {
         if (disposed || g !== gen) return;
