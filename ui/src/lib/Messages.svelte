@@ -75,9 +75,9 @@
     <h4>{t("msg.agents")}</h4>
     <section>
       {#each rows as r (r.pane)}
-        <div class="row">
+        <div class="row arow">
           <span class="grow"
-            ><b>{simple ? person(r.name) : r.name}</b><small>{r.agent} · {r.status ? tOr(`status.${r.status}`, r.status) : t("msg.untracked")}{lastTask[r.name] ? ` · ${t("msg.lastTask", { task: lastTask[r.name] })}` : ""}</small></span
+            ><b title={simple ? person(r.name) : r.name}>{simple ? person(r.name) : r.name}</b><small>{r.agent} · {r.status ? tOr(`status.${r.status}`, r.status) : t("msg.untracked")}{lastTask[r.name] ? ` · ${t("msg.lastTask", { task: lastTask[r.name] })}` : ""}</small></span
           >
           {#if r.agent === "shell"}
             <label class="sw"><input type="checkbox" checked={r.readable} onchange={(e) => act("pane.readable", { pane: r.pane, on: e.currentTarget.checked })} /> {t("msg.readable")}</label>
@@ -269,8 +269,28 @@
     font-weight: 600;
   }
   .body {
+    flex: 1;
+    min-height: 0;
     overflow: auto;
-    padding: 4px 12px 12px;
+    padding: 4px 12px 28px;
+  }
+  /* an agent row is two lines: the name (one line, ellipsis) and, under it, its receive policy and mute; never side by side */
+  .arow {
+    flex-wrap: wrap;
+  }
+  .arow .grow {
+    flex: 1 1 100%;
+  }
+  .arow .grow b {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .arow > small {
+    flex: none;
+  }
+  .arow > .sw:last-child {
+    margin-left: auto;
   }
   footer {
     display: flex;
