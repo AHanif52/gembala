@@ -562,7 +562,8 @@ printf '%s' '{"reports":[{"limits":[{"id":"rolling-5h","window":{"resetsAt":1794
         )
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let (w, limited) = omp_usage(&path.to_string_lossy()).unwrap();
+        // Linux: a fork in another test thread can still hold the write fd, so exec fails with ETXTBSY; retry
+        let (w, limited) = (0..3).find_map(|_| omp_usage(&path.to_string_lossy())).unwrap();
         assert_eq!(w, vec![window("5h", 50.0, Some(1794388910), None)]);
         assert!(!limited);
         let _ = std::fs::remove_file(&path);
