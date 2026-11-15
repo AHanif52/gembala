@@ -1339,6 +1339,8 @@ export default {
   "hn.closePanes": "Close stage panes",
   "hn.closePanesTip": "The run stopped, so its panes stayed for a look. Done looking? This frees their memory. The trail and artifacts stay.",
   "hn.trail": "What happened",
+  "hn.old": "Earlier runs",
+  "hn.oldNone": "No earlier runs in this workspace",
   "hn.ev.start": "started",
   "hn.ev.send": "sent to",
   "hn.ev.exit": "agent left",

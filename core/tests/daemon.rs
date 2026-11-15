@@ -2841,6 +2841,13 @@ fn harness_stop_and_stale_run() {
     let s = ui.call("harness.state", json!({"run": "run-1-1"}))["result"].clone();
     assert_eq!((s["state"].as_str(), s["halt"].as_str()), (Some("halted"), Some("daemon_restart")), "{s}");
     assert_eq!(ui.call("harness.state", json!({"run": "../x"}))["error"]["code"], "no_such_run");
+    // FR-26: old runs of the workspace, newest first; the stopped one above, not the stale row (other workspace)
+    std::fs::write(stale.join("run.json"), r#"{"run":"run-1-1","name":"Old","workspace":"w","started_at":5,"state":"running"}"#).unwrap();
+    let list = ui.call("harness.runs", json!({"workspace": "w"}))["result"]["runs"].clone();
+    let ids: Vec<&str> = list.as_array().unwrap().iter().map(|r| r["run"].as_str().unwrap()).collect();
+    assert_eq!(ids, [run.as_str(), "run-1-1"], "{list}");
+    assert_eq!((list[0]["halt"].as_str(), list[1]["halt"].as_str()), (Some("stopped"), Some("daemon_restart")), "{list}");
+    assert!(ui.call("harness.runs", json!({"workspace": "other"}))["result"]["runs"].as_array().unwrap().is_empty());
 }
 
 #[test]

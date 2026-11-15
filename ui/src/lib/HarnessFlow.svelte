@@ -17,6 +17,16 @@
     call(method, { run: snap.run })
       .then((r) => (r.error ? (error = errText(r.error, r.args)) : onchange(r)))
       .catch((e) => (error = errText(e)));
+  /// the workspace's earlier runs, read from disk when the section opens; picking one shows its saved flow here
+  let old = $state<{ run: string; name: string; started_at: number; state: string; halt: string | null }[] | null>(null);
+  const loadOld = () =>
+    call("harness.runs", { workspace: snap.workspace })
+      .then((r) => (old = (r.runs ?? []).filter((x: { run: string }) => x.run !== snap.run)))
+      .catch(() => (old = []));
+  const showOld = (run: string) =>
+    call("harness.state", { run })
+      .then((r) => (r.error ? (error = errText(r.error, r.args)) : onchange(r)))
+      .catch((e) => (error = errText(e)));
   const stepName = (i: number | null) => (i == null ? "" : (snap.steps[i]?.name ?? ""));
   const line = (e: Snap["trace"][number]) => [tOr(`hn.ev.${e.code}`, e.code), e.step != null ? stepName(e.step) : "", e.agent ?? ""].filter(Boolean).join(" · ");
 </script>
@@ -85,6 +95,20 @@
         <div class="row"><span class="grow">{line(e)}</span><span class="m">{clock(e.at)}</span></div>
       {/each}
     </section>
+
+    <details ontoggle={(e) => e.currentTarget.open && loadOld()}>
+      <summary>{t("hn.old")}</summary>
+      <section>
+        {#each old ?? [] as r (r.run)}
+          <div class="row">
+            <button class="mini grow" onclick={() => showOld(r.run)}>{r.name || r.run}</button>
+            <span class="m">{tOr(`hn.state.${r.state}`, r.state)}{r.halt ? ` · ${tOr(`hn.halt.${r.halt}`, r.halt)}` : ""} · {new Date(r.started_at * 1000).toLocaleString()}</span>
+          </div>
+        {:else}
+          <div class="row"><span class="m">{old ? t("hn.oldNone") : "…"}</span></div>
+        {/each}
+      </section>
+    </details>
   </div>
 </aside>
 

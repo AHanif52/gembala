@@ -1322,6 +1322,8 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "hn.closePanes": "Tutup pane tahap",
   "hn.closePanesTip": "Jalannya berhenti, jadi pane-nya dibiarin buat lu cek. Udah? Tutup biar RAM-nya lega. Jejak sama artefak tetap ada.",
   "hn.trail": "Yang udah kejadian",
+  "hn.old": "Run sebelumnya",
+  "hn.oldNone": "Belum ada run lama di workspace ini",
   "hn.ev.start": "mulai",
   "hn.ev.send": "dikirim ke",
   "hn.ev.exit": "agent keluar",

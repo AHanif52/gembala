@@ -847,6 +847,7 @@ pub fn method(st: &Arc<State>, m: &str, p: &Value) -> Res {
         }
         "harness.start" => start(st, p),
         "harness.state" => state(st, p),
+        "harness.runs" => Ok(json!({"runs": saved_runs(st, p["workspace"].as_str().unwrap_or_default())})),
         "harness.close_panes" => {
             if find(st, p).is_some() {
                 return Err("run_active");
@@ -955,6 +956,29 @@ fn state(st: &Arc<State>, p: &Value) -> Res {
         let _ = config::write_atomic(&file, format!("{v}\n").as_bytes());
     }
     Ok(v)
+}
+
+/// FR-26: runs kept on disk (`run.json`) for one workspace, newest first, at most `RUNS_LISTED`: the flow drawer's old-run list.
+/// One that was going when the daemon stopped reads as halted, same as `state`; a live one is left out (its drawer is open).
+const RUNS_LISTED: usize = 20;
+fn saved_runs(st: &Arc<State>, workspace: &str) -> Vec<Value> {
+    let Ok(dir) = fs::read_dir(data_dir()) else { return Vec::new() };
+    let mut out: Vec<Value> = dir
+        .flatten()
+        .filter_map(|e| {
+            let id = e.file_name().into_string().ok().filter(|i| valid_run_id(i))?;
+            let v: Value = serde_json::from_str(&fs::read_to_string(e.path().join("run.json")).ok()?).ok()?;
+            if v["workspace"].as_str() != Some(workspace) || find(st, &json!({"run": id})).is_some() {
+                return None;
+            }
+            let ended = matches!(v["state"].as_str(), Some("done" | "halted"));
+            Some(json!({"run": id, "name": v["name"], "started_at": v["started_at"], "state": if ended { v["state"].clone() } else { json!("halted") },
+                        "halt": if ended { v["halt"].clone() } else { json!("daemon_restart") }, "halt_step": v["halt_step"]}))
+        })
+        .collect();
+    out.sort_by_key(|v| std::cmp::Reverse(v["started_at"].as_u64().unwrap_or(0)));
+    out.truncate(RUNS_LISTED);
+    out
 }
 
 /// stop, gate, takeover, release: the user's own buttons (UI channel); each only means something in the right state
