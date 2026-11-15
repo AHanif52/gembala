@@ -3322,9 +3322,10 @@ fn tech43_enter_lost_is_retried_once_then_reported() {
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let script = |name: &str| format!("stty raw -echo; '{g}' token > '{}/{name}.token'; cat -v", d.dir.display());
-    profiles(&d, &mut ui, &(sh_profile("src", &script("src")) + &sh_profile("lost", &script("lost")) + &sh_profile("took", &script("took"))), "took");
+    profiles(&d, &mut ui, &(sh_profile("src", &script("src")) + &sh_profile("lost", &script("lost")) + &sh_profile("took", &script("took")) + &sh_profile("typed", &script("typed"))), "typed");
     let pane = |ui: &mut Cli, p: &str| ui.call("pane.create", json!({"profile":p, "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
     let (_src, lost, took) = (pane(&mut ui, "src"), pane(&mut ui, "lost"), pane(&mut ui, "took"));
+    let typed = pane(&mut ui, "typed");
     let client = |name: &str| {
         let path = d.dir.join(format!("{name}.token"));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -3337,15 +3338,17 @@ fn tech43_enter_lost_is_retried_once_then_reported() {
         assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
         c
     };
-    let (mut src, mut cl, mut ct) = (client("src"), client("lost"), client("took"));
-    for c in [&mut src, &mut cl, &mut ct] {
+    let (mut src, mut cl, mut ct, mut cy) = (client("src"), client("lost"), client("took"), client("typed"));
+    for c in [&mut src, &mut cl, &mut ct, &mut cy] {
         assert!(c.call("hook", json!({"agent":"omp","status":"idle"})).get("result").is_some());
     }
     std::thread::sleep(Duration::from_millis(600));
-    for to in ["lost-1", "took-1"] {
+    for to in ["lost-1", "took-1", "typed-1"] {
         let r = src.call("send", json!({"to":to,"body":"MARK","queue":true}));
         assert_eq!(r["result"]["result"], "accepted", "{r}");
     }
+    // the user types into `typed` before the wait is over: no second Enter, still logged
+    ui.call("pane.write", json!({"pane":typed, "data": B64.encode("half")}));
     // `took` reports the prompt hook right away, `lost` stays silent
     assert!(ct.call("hook", json!({"agent":"omp","status":"working"})).get("result").is_some());
     let enters = |out: &str| out.split("^[[201~").nth(1).map_or(0, |t| t.matches("^M").count());
@@ -3359,9 +3362,12 @@ fn tech43_enter_lost_is_retried_once_then_reported() {
     let unconfirmed = loop {
         let h = ui.call("msg.list", json!({}))["result"]["history"].clone();
         let hits: Vec<Value> = h.as_array().unwrap().iter().filter(|e| e["kind"] == "unconfirmed").cloned().collect();
-        if !hits.is_empty() || Instant::now() > deadline { break hits; }
+        if hits.len() >= 2 || Instant::now() > deadline { break hits; }
         std::thread::sleep(Duration::from_millis(100));
     };
-    assert_eq!(unconfirmed.len(), 1, "{unconfirmed:?}");
-    assert_eq!(unconfirmed[0]["msg"]["to"], "lost-1");
+    let mut to: Vec<&str> = unconfirmed.iter().map(|e| e["msg"]["to"].as_str().unwrap()).collect();
+    to.sort();
+    assert_eq!(to, ["lost-1", "typed-1"], "{unconfirmed:?}");
+    let out = ui.attach_until(typed, &["MARK", "half"]);
+    assert_eq!(enters(&out), 1, "{out}");
 }

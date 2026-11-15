@@ -2462,6 +2462,11 @@ fn check_submits(st: &State) {
         let Some(c) = slot.as_mut() else { continue };
         if pane.status_seq.load(Ordering::Relaxed) != c.seq {
             *slot = None;
+        } else if c.at.elapsed() >= SUBMIT_WAIT && !c.retried && pane.typed_at.lock().unwrap().is_some_and(|t| t.elapsed() < c.at.elapsed()) {
+            // FR-11: the user typed here since the write; an Enter now would send their half-written line
+            let m = slot.take().map(|c| c.msg);
+            drop(slot);
+            if let Some(m) = m { record(st, "unconfirmed", &m, Some("no_enter")); }
         } else if c.at.elapsed() >= SUBMIT_WAIT && !c.retried {
             c.retried = true;
             c.at = std::time::Instant::now();
