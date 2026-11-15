@@ -911,6 +911,21 @@ fn vote_steps(st: &State, b: &Bot, poll: &Poll, picks: &[usize]) -> Result<(), &
     Ok(())
 }
 
+/// a single-choice answer in the middle of several questions: Claude moves to the next tab and stays `blocked` with the
+/// same sequence, so no status change would send its card. The screen changed and still shows a dialog = send that card.
+fn next_tab_card(b: &Bot, id: u64, p: &Pane, seq: u64, before: &str) {
+    let Ok(terminal) = p.terminal() else { return };
+    let moved = (0..15).any(|_| {
+        thread::sleep(Duration::from_millis(100));
+        *p.status.lock().unwrap() != "blocked" || p.status_seq.load(Ordering::Relaxed) != seq || terminal.view.lock().unwrap().0.text() != before
+    });
+    let screen = terminal.view.lock().unwrap().0.text();
+    let still = *p.status.lock().unwrap() == "blocked" && p.status_seq.load(Ordering::Relaxed) == seq;
+    if moved && still && (dialog_opts(&screen).is_some() || multi_opts(&screen).is_some()) {
+        let _ = b.out.try_send(Out::Notice(id, Kind::Blocked(seq), Instant::now()));
+    }
+}
+
 fn cb_data(pane: u64, seq: u64, key: &str) -> String {
     format!("k|{pane}|{seq}|{key}")
 }
@@ -2259,10 +2274,14 @@ fn handle(st: &Arc<State>, b: &Bot, u: &Value) {
                 *p.status.lock().unwrap() == "blocked" && p.status_seq.load(Ordering::Relaxed) == seq && keys(&p.agent_name().unwrap_or_default()).contains(&key.as_str())
             });
             let pane = pane.filter(|_| ok);
+            let before = pane.as_ref().and_then(|p| p.terminal().ok()).map(|t| t.view.lock().unwrap().0.text()).unwrap_or_default();
             let sent = match pane.as_ref() {
                 Some(p) => send_answer(st, id, p, &key, seq),
                 None => false,
             };
+            if let (true, Some(p)) = (sent, pane.as_ref()) {
+                next_tab_card(b, id, p, seq, &before);
+            }
             let word = if sent { t(id_l, "sent") } else { t(id_l, "gone") };
             let _ = b.out.try_send(Out::Api("answerCallbackQuery", json!({"callback_query_id": cb, "text": word})));
             let _ = b.out.try_send(Out::Api("editMessageReplyMarkup", json!({"chat_id": b.chat(), "message_id": msg, "reply_markup": {"inline_keyboard": []}})));
