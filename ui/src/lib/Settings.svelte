@@ -138,6 +138,7 @@
     secret: string;
     summarize: boolean;
     notify: boolean;
+    checkpoints: boolean;
     saver: "" | "on" | "off"; // FR-27: "" = follow Settings › Harness
     permission: string;
     policy: string; // SEC-5 / msg.rs Policy: auto, confirm, deny
@@ -162,6 +163,7 @@
       secret: p.secret_env.map((x) => `${x.name}=${x.ref}`).join("\n"),
       summarize: p.summarize,
       notify: p.notify,
+      checkpoints: p.checkpoints !== false,
       saver: p.token_saver === true ? "on" : p.token_saver === false ? "off" : "",
       permission: p.permission ?? "default",
       policy: p.policy ?? "auto",
@@ -185,6 +187,7 @@
       secret: "",
       summarize: true,
       notify: true,
+      checkpoints: true,
       saver: "",
       permission: "default",
       policy: "auto",
@@ -209,6 +212,7 @@
       secret_env: pairs(form.secret),
       summarize: form.summarize,
       notify: form.notify,
+      checkpoints: form.checkpoints,
       token_saver: form.saver === "" ? null : form.saver === "on",
       permission: form.permission,
       policy: form.policy,
@@ -603,6 +607,10 @@
       <div class="row">
         <span class="grow">{t("set.prof.notify")}</span>
         <input type="checkbox" role="switch" bind:checked={form.notify} aria-label={t("set.prof.notify")} />
+      </div>
+      <div class="row">
+        <span class="grow">{t("set.prof.checkpoints")}<small>{t("set.prof.checkpointsSub")}</small></span>
+        <input type="checkbox" role="switch" bind:checked={form.checkpoints} aria-label={t("set.prof.checkpoints")} />
       </div>
       <div class="row col">
         <span>Env<small>{t("set.prof.envSub")}</small></span>

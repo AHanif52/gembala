@@ -959,6 +959,76 @@ fn turn_keeps_the_last_agent_message_as_its_summary() {
     assert!(first.starts_with("Dock cuma memantul saat butuh izin. Token ") && !first.contains("ghp_abc") && !first.contains('\n'), "{first}");
 }
 
+/// FR-70: two turns edit a repo; the second one is previewed and restored from the UI channel (the user's file comes back,
+/// the file it created goes, the ignored file stays, HEAD and the index stay); the pane channel can't restore; a profile
+/// with `checkpoints = false` keeps no turns.
+#[test]
+fn fr70_giliran_dipotret_dan_dikembalikan() {
+    let d = start("fr70");
+    let mut ui = Cli::ui(&d);
+    let exe = env!("CARGO_BIN_EXE_gembala");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let repo = d.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |a: &[&str]| assert!(std::process::Command::new("git").args(a).current_dir(&repo).status().unwrap().success());
+    git(&["init", "-q"]);
+    std::fs::write(repo.join(".gitignore"), "rahasia.txt\n").unwrap();
+    std::fs::write(repo.join("a.txt"), "satu\n").unwrap();
+    git(&["add", ".gitignore", "a.txt"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "i"]);
+    let head0 = String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&repo).output().unwrap().stdout).unwrap();
+    let hook = |ev: &str| format!("printf '%s' '{{}}' | '{exe}' hook claude {ev}\n");
+    let body = |extra: &str| format!("#!/bin/sh\ncd '{}'\n{}sleep 1\n{extra}{}sleep 60\n", repo.display(), hook("prompt"), hook("stop"));
+    let fake = cfg.join("fr70-claude.sh");
+    // turn 1 changes nothing; turn 2 edits a.txt, creates b.txt and an ignored file
+    std::fs::write(&fake, format!("#!/bin/sh\ncd '{r}'\n{p}sleep 1\n{s}sleep 1\n{p}sleep 1\necho dua > a.txt\necho baru > b.txt\necho x > rahasia.txt\n{s}sleep 60\n", r = repo.display(), p = hook("prompt"), s = hook("stop"))).unwrap();
+    let off = cfg.join("fr70-off.sh");
+    std::fs::write(&off, body("echo y > c.txt\n")).unwrap();
+    for f in [&fake, &off] {
+        std::fs::set_permissions(f, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    }
+    profiles(&d, &mut ui, &format!("[[profile]]\nid = \"claude\"\ncommand = {}\n[[profile]]\nid = \"calm\"\nagent = \"claude\"\ncommand = {}\ncheckpoints = false\n", json!(fake), json!(off)), "fr70-claude");
+    let pane = ui.call("pane.create", json!({"profile": "claude", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let t0 = Instant::now();
+    let turns = loop {
+        let r = ui.call("git.turns", json!({"pane": pane}))["result"].clone();
+        if r.as_array().is_some_and(|a| a.len() >= 2) {
+            break r;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "turns: {r}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!((&turns[0]["files"], &turns[1]["files"]), (&json!(2), &json!(0)), "{turns}");
+    let i = turns[0]["i"].clone();
+    let diff = ui.call("git.turn_diff", json!({"pane": pane, "i": i}))["result"]["diff"].as_str().unwrap().to_string();
+    assert!(diff.contains("+dua") && diff.contains("b.txt") && !diff.contains("rahasia"), "{diff}");
+    let card = ui.call("git.turn_preview", json!({"pane": pane, "i": i}))["result"].clone();
+    assert_eq!(card["files"], json!([{"kind": "ubah", "path": "a.txt"}, {"kind": "hapus", "path": "b.txt"}]), "{card}");
+    assert_eq!((&card["others"], &card["head_moved"]), (&json!([]), &json!(false)), "{card}");
+    assert_eq!(ui.call("git.turn_restore", json!({"pane": pane, "i": i}))["result"]["restored"], 2);
+    assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "satu\n");
+    assert!(!repo.join("b.txt").exists() && repo.join("rahasia.txt").exists());
+    let git_out = |a: &[&str]| String::from_utf8(std::process::Command::new("git").args(a).current_dir(&repo).output().unwrap().stdout).unwrap();
+    assert_eq!(git_out(&["rev-parse", "HEAD"]), head0);
+    assert!(git_out(&["status", "--porcelain"]).trim().is_empty(), "the user's index stays untouched");
+    // the pane channel can't preview or restore
+    let script = r#"(printf '%s\n' '{"id":1,"method":"hello","params":{"proto":1}}' '{"id":2,"method":"git.turn_restore","params":{"pane":1,"i":0}}' '{"id":3,"method":"git.turn_preview","params":{"pane":1,"i":0}}'; sleep 1) | nc -U "$GEMBALA_SOCKET"; echo SELESAI-70"#;
+    let sh = ui.call("pane.create", json!({"cmd": script, "rows": 40, "cols": 200}))["result"]["pane"].as_u64().unwrap();
+    let out = ui.attach_until(sh, &["SELESAI-70"]);
+    assert!(out.contains(r#"{"error":{"code":"not_allowed"},"id":2}"#) && out.contains(r#"{"error":{"code":"not_allowed"},"id":3}"#), "{out}");
+    // profile with checkpoints = false: its turn runs, no turn is kept
+    let calm = ui.call("pane.create", json!({"profile": "calm", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let t0 = Instant::now();
+    while !repo.join("c.txt").exists() {
+        assert!(t0.elapsed() < Duration::from_secs(30), "calm turn did not run");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(ui.call("git.turns", json!({"pane": calm}))["result"], json!([]));
+}
+
 /// FR-48: reset deletes only Gembala-owned files, then the daemon exits; other files in that folder aren't touched.
 #[test]
 fn reset_hanya_data_gembala() {

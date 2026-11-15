@@ -526,6 +526,8 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "set.prof.saver.on": "Nyala",
   "set.prof.saver.off": "Mati",
   "set.prof.notify": "Notifikasi untuk pane dari profil ini",
+  "set.prof.checkpoints": "Simpan titik kembali tiap giliran",
+  "set.prof.checkpointsSub": "Cuma di folder git. Biar folder bisa dibalikin ke sebelum giliran.",
   "set.prof.envSub": "Nama dan nilai; nilai tidak ditampilkan ulang, isi lagi bila ingin mengubah",
   "set.prof.envNamePh": "NAMA",
   "set.prof.envValuePh": "nilai",

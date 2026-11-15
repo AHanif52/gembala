@@ -1906,6 +1906,7 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     });
     *pane.token.lock().unwrap() = token;
     *pane.saver.lock().unwrap() = prof.as_ref().and_then(|x| x.token_saver);
+    pane.turns.lock().unwrap().off = prof.as_ref().is_some_and(|x| !x.checkpoints);
     // FR-62: old pane blocks (after the daemon stopped) show above the new shell and continue in the pane's file
     let prev = src.as_deref().map(history::load).unwrap_or_default();
     if !prev.is_empty() {
@@ -3578,6 +3579,9 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
     let busy = |s: &str| matches!(s, "working" | "blocked");
     let turns = pane.turns.clone();
     if status == "working" && !busy(prev) {
+        if turns.lock().unwrap().off {
+            return;
+        }
         let pid = pty::busy(&terminal.master, terminal.sid).map_or(terminal.sid, |(pid, _)| pid);
         let Some(cwd) = pty::cwd_of(pid).or_else(|| pty::cwd_of(terminal.sid)) else { return };
         snap::queue(move || {

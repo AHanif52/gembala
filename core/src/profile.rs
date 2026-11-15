@@ -26,6 +26,8 @@ pub struct Profile {
     pub summarize: bool,
     /// FR-40: notifications for panes from this profile (on by default).
     pub notify: bool,
+    /// FR-70: restore points per agent turn for panes from this profile (on by default).
+    pub checkpoints: bool,
     /// SEC-5: recipient policy `auto` | `confirm` | `deny`
     pub policy: String,
     /// FR-64: the agent's own permission mode, `default` | `auto`; Gembala only adds launch flags (see `permission_flags`)
@@ -72,6 +74,7 @@ pub fn builtin() -> Vec<Profile> {
         secret_env: vec![],
         summarize: true,
         notify: true,
+        checkpoints: true,
         policy: "auto".into(),
         permission: "default".into(),
         token: false,
@@ -145,7 +148,7 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<D
                 Some(_) => errors.push(Diag::new("text_bad").at(at(key)).then("default")),
             }
         }
-        for (key, field) in [("summarize", &mut p.summarize), ("notify", &mut p.notify), ("token", &mut p.token)] {
+        for (key, field) in [("summarize", &mut p.summarize), ("notify", &mut p.notify), ("checkpoints", &mut p.checkpoints), ("token", &mut p.token)] {
             match t.get(key).map(|v| v.as_bool()) {
                 None => {}
                 Some(Some(b)) => *field = b,
@@ -912,7 +915,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
 
 pub fn to_json(p: &Profile) -> Value {
     json!({
-        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "policy": p.policy, "permission": p.permission, "token": p.token, "account": p.account, "token_saver": p.token_saver,
+        "id": p.id, "name": p.name, "agent": p.agent, "command": p.command, "args": p.args, "cwd": p.cwd, "summarize": p.summarize, "notify": p.notify, "checkpoints": p.checkpoints, "policy": p.policy, "permission": p.permission, "token": p.token, "account": p.account, "token_saver": p.token_saver,
         "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
         "secret_env": p.secret_env.iter().map(|(k, r)| json!({"name": k, "ref": r})).collect::<Vec<_>>(),
     })

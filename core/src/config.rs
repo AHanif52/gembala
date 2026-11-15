@@ -338,7 +338,7 @@ pub fn save_profile(path: &Path, p: &Value) -> Result<(), Diag> {
     if let Some(args) = p["args"].as_array() {
         t["args"] = toml_edit::value(args.iter().filter_map(Value::as_str).collect::<toml_edit::Array>());
     }
-    for k in ["summarize", "notify"] {
+    for k in ["summarize", "notify", "checkpoints"] {
         if let Some(b) = p[k].as_bool() {
             t[k] = toml_edit::value(b);
         }

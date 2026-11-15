@@ -38,6 +38,8 @@ pub struct Turn {
 
 #[derive(Default)]
 pub struct Turns {
+    /// The pane's profile turned restore points off
+    pub off: bool,
     pub open: Option<Open>,
     pub done: Vec<Turn>,
 }
