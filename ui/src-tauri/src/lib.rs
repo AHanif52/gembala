@@ -823,6 +823,12 @@ pub fn run() {
 /// so background processes aren't taken as sneaky. "Stop everything" stops the daemon first, so it doesn't show.
 fn on_exit(app: &tauri::AppHandle) {
     use tauri_plugin_notification::NotificationExt;
+    // Cmd+Q and the window's Destroyed -> exit(0) can both reach Exit: stop the daemon once (a second `daemon.stop`
+    // call would reconnect, i.e. launch a fresh daemon just to stop it)
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let Some(c) = app.state::<Daemon>().0.lock().unwrap().clone() else { return };
     let values = c.call("config.get", json!({})).map(|v| v["values"].clone()).unwrap_or_default();
     if values["ui"]["on_quit"] == "stop" {

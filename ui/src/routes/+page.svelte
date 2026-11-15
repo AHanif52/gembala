@@ -1327,6 +1327,22 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// its old agent recorded in `prev` for the "Resume session" chip
   async function restart(old: number, shell = false) {
     const m = meta[old];
+    // a dead card from a dropped connection (not a real restart): if that daemon and pane are still alive, bring the
+    // pane back instead of starting a second agent next to it
+    if (dead[old] && m?.from && m.from.pane >= 0) {
+      const live = await call("daemon.info").then(async (i) => i.boot === m.from!.boot && (await call("pane.list")).includes(m.from!.pane)).catch(() => false);
+      if (live && !meta[m.from.pane]) {
+        const p = m.from.pane;
+        meta[p] = { ...m, from: undefined };
+        for (const w of wss) for (const t of w.tabs) if (panes(t.tree).includes(old)) {
+          t.tree = replace(t.tree, old, p);
+          if (t.focus === old) t.focus = p;
+        }
+        delete meta[old];
+        delete dead[old];
+        return;
+      }
+    }
     // PLAN-CC-PANE: a structured pane comes back structured (new session until phase 4 resume), never as a shell
     if (m?.kind) shell = false;
     const id = await createPane({
@@ -1374,22 +1390,28 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// ask who the daemon is first — same boot id and the pane still listed = re-attach it; a different boot id = the
   /// panes stopped with it.
   let lost = false;
+  let reconnecting = $state(false); // small notice while the connection is being retried; the dead-pane card only comes after
   async function onLost() {
     if (lost) return;
     lost = true;
     confirm = null;
     changes = null;
     rich = null;
-    await new Promise((r) => setTimeout(r, 500));
-    // the next call reconnects (no answer = the daemon is really gone and this says nothing)
+    reconnecting = true;
+    // The next call reconnects. A daemon that is busy or still starting answers late, so one failed try says nothing:
+    // retry with backoff (~20 s) before giving up, otherwise a live daemon's panes were marked dead on a hiccup.
     let alive = new Set<number>();
     let same = false;
-    try {
-      same = (await call("daemon.info")).boot === boot;
-      alive = new Set<number>(await call("pane.list"));
-    } catch {
-      same = false;
+    for (const wait of [500, 1000, 2000, 3000, 5000, 8000]) {
+      await new Promise((r) => setTimeout(r, wait));
+      try {
+        const info = await call("daemon.info");
+        alive = new Set<number>(await call("pane.list"));
+        same = info.boot === boot;
+        break;
+      } catch {}
     }
+    reconnecting = false;
     let next = Math.min(-1, ...Object.keys(meta).map(Number), ...Object.keys(dead).map(Number)) - 1;
     const again: number[] = [];
     for (const w of wss)
@@ -3802,6 +3824,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       </span>
     </div>
   {/if}
+  {#if reconnecting}
+    <div class="paused reconn" role="status">{tt("main.reconnecting")}</div>
+  {/if}
   {#if msgData?.paused}
     <div class="paused" role="status">{tt("main.paused", { key: combo("msg.stop") })}</div>
   {/if}
@@ -5992,6 +6017,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     background: var(--card);
     color: var(--tx-amber, #d97706);
     font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .paused.reconn {
+    border-color: var(--bd, currentColor);
+    color: inherit;
+    opacity: 0.8;
   }
   .compose {
     min-width: 420px;
