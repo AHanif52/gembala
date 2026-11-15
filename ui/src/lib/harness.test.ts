@@ -1,7 +1,7 @@
 // @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canStart, clock, findingFile, live, restartDefault, restartStages, stagePanes, stepView, testCommand, stuckStep } from "./harness.ts";
+import { canStart, clock, findingFile, live, restartDefault, restartStages, stagePanes, stepView, testCommand, stuckStep, withCriteria, criteriaCount } from "./harness.ts";
 
 const step = (id, pane = null) => ({ id, name: id, kind: "work", human: false, shell: false, gate: false, agents: [], output: "", pane, pane_name: pane ? `p${pane}` : null, pane_agent: pane ? "claude" : null, message: null });
 const snap = (over) => ({ run: "r", recipe: "t", name: "T", workspace: "w", cwd: "/x", started_at: 0, state: "running", gate: null, current: 0, halt: null, halt_step: null, round: 0, max_rounds: 2, steps: [step("a", 1), step("b"), step("c")], trace: [], ...over });
@@ -53,4 +53,12 @@ test("stopped run: where it is stuck, what to read, where a restart may begin", 
   assert.deepEqual(restartStages(halted({})), [0, 1, 2, 3], "Ship is never a place to begin");
   assert.equal(restartDefault(halted({})), 1, "Execute");
   assert.equal(restartDefault(halted({ steps: [step("a"), step("b")] })), 0, "no Execute = the first");
+});
+
+test("FR-94: criteria become the bullets the daemon reads; only a test criterion gets test.log", () => {
+  assert.equal(withCriteria("Tambah login", []), "Tambah login");
+  assert.equal(withCriteria("Tambah login", ["  ", ""]), "Tambah login");
+  const out = withCriteria("Tambah login\n", ["Login jalan", "Semua tes lulus", "Aneh [bukti: x.md]"]);
+  assert.equal(out, "Tambah login\n\n## Kriteria\n- Login jalan\n- Semua tes lulus [bukti: test.log]\n- Aneh (bukti: x.md]\n");
+  assert.deepEqual(criteriaCount([{ text: "a", proof: [], status: "proven" }, { text: "b", proof: [], status: "failed" }, { text: "c", proof: [], status: "untested" }, { text: "d", proof: [], status: "untested" }]), { proven: 1, failed: 1, untested: 2 });
 });

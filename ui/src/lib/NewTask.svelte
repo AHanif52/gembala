@@ -4,7 +4,7 @@
   // (harness.preflight) and starts nothing until every blocking item is ok.
   import { invoke } from "@tauri-apps/api/core";
   import { call } from "./daemon";
-  import { canStart, testCommand } from "./harness";
+  import { canStart, testCommand, withCriteria } from "./harness";
   import { errText, t, tOr } from "./i18n/state.svelte";
   import { isMac, keyText, mod } from "./keys.svelte";
 
@@ -51,6 +51,8 @@
   })();
 
   let task = $state("");
+  /// FR-94: "when is it done?"; written into the request as a Kriteria list (harness only)
+  let criteria = $state<string[]>([]);
   // svelte-ignore state_referenced_locally
   let folder = $state(cwd);
   // FR-99 P1: a new user starts by hand; the last choice is kept per workspace after that
@@ -127,7 +129,7 @@
     if (mode === "manual") return onmanual({ agent, task: task.trim(), cwd: folder });
     busy = true;
     try {
-      const r = await call("harness.start", { ...pfParams(), request: task });
+      const r = await call("harness.start", { ...pfParams(), request: withCriteria(task, criteria) });
       if (r.error) error = r.error === "preflight" ? todo(r.args?.check) : errText(r.error, r.args);
       else onstarted(r);
     } catch (e) {
@@ -198,6 +200,13 @@
   {:else if mode === "team"}
     <p class="hint">{t("hn.team3Sub")}</p>
   {:else}
+    <div class="crit">
+      <span class="lab">{t("hn.criteria")} <small>{t("hn.criteriaSub")}</small></span>
+      {#each criteria as _, i (i)}
+        <div class="line"><input class="grow" bind:value={criteria[i]} aria-label={t("hn.criteria")} /><button class="mini" aria-label={t("common.close")} onclick={() => (criteria = criteria.filter((_, j) => j !== i))}>×</button></div>
+      {/each}
+      {#if criteria.length < 20}<button class="mini" onclick={() => (criteria = [...criteria, ""])}>{t("hn.criteriaAdd")}</button>{/if}
+    </div>
     <label class="line">
       <span class="lab">{t("hn.recipe")}</span>
       <select bind:value={recipeId}>

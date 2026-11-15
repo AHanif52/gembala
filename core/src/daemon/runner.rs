@@ -444,7 +444,7 @@ fn snapshot(st: &State, l: &Live) -> Value {
         }
         _ => (None, None),
     };
-    // FR-94: criteria from the request and the artifacts that prove them; the last test stage decides "gagal"
+    // FR-94: criteria from the request and the artifacts that prove them; the last test stage decides "failed"
     let request = fs::read_to_string(l.dir.join("artefak").join(REQUEST_FILE)).unwrap_or_default();
     let test_failed = l.run.trace.iter().rev().find(|e| matches!(e.code, "shell_pass" | "shell_fail")).is_some_and(|e| e.code == "shell_fail");
     let criteria: Vec<Value> = harness::criteria(&request, |n| artifact_text(l, n).is_some(), test_failed).iter()

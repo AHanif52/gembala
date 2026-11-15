@@ -3,7 +3,7 @@
   // event trail, and the user's buttons: approve the gate (Ship included), stop, take over, give back. All through the
   // UI channel (SEC-20); the daemon decides what each button means in the current state.
   import { call } from "./daemon";
-  import { clock, findingFile, live, restartDefault, restartStages, stagePanes, stepView, stuckStep, type Snap } from "./harness";
+  import { clock, findingFile, live, restartDefault, restartStages, stagePanes, stepView, stuckStep, criteriaCount, type Snap } from "./harness";
   import { errText, t, tOr } from "./i18n/state.svelte";
 
   // `has`: the pane is still open (FR-86: a finished run's panes close, a stopped one's stay until the user closes them)
@@ -80,6 +80,22 @@
         </li>
       {/each}
     </ol>
+
+    <!-- FR-94: each criterion of the task, the file that proves it, and where it stands; no file = never "proven" -->
+    {#if snap.criteria?.length}
+      {@const n = criteriaCount(snap.criteria)}
+      <section class="crit" aria-label={t("hn.criteria")}>
+        <b>{t("hn.criteria")}</b> <small class="m">{t("hn.crit.count", { a: n.proven, b: n.failed, c: n.untested })}</small>
+        <ul>
+          {#each snap.criteria as c (c.text)}
+            <li class="c-{c.status}">
+              <span class="grow">{c.text}{#if c.proof.length}<small class="m mono"> · {c.proof.join(", ")}</small>{/if}</span>
+              <span class="cs">{t(`hn.crit.${c.status}`)}</span>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
 
     {#if snap.state === "gate"}
       <div class="gate" role="status">
@@ -226,6 +242,11 @@
     flex-direction: column;
     gap: 10px;
   }
+  .crit ul { list-style: none; margin: 6px 0 0; padding: 0; }
+  .crit li { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line, #262626); font-size: 12px; }
+  .crit .cs { align-self: center; height: fit-content; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #3a2606; color: #fbbf24; }
+  .crit .c-proven .cs { background: #052e16; color: #86efac; }
+  .crit .c-failed .cs { background: #3b0d0d; color: #fca5a5; }
   .steps {
     list-style: none;
     margin: 0;

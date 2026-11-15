@@ -11,6 +11,8 @@ export type Snap = {
   round: number; max_rounds: number; steps: HStep[]; trace: { at: number; code: string; step: number | null; agent: string | null }[];
   /// every pane the run opened, fallbacks' replaced ones too (FR-86)
   panes?: number[];
+  /// FR-94: the task's criteria and what proves each (daemon-computed)
+  criteria?: Criterion[];
 };
 export type View = "done" | "now" | "gate" | "failed" | "todo";
 
@@ -68,3 +70,16 @@ export const clock = (secs: number) => `${Math.floor(secs / 60)}:${String(Math.f
 export type AiDraft = { kind: "recipe" | "config"; draft: string; id: string; ask: string; pane: number; who: string; ready?: boolean };
 /// what "Rumuskan" asks the page to start: a recipe or config.toml draft, or an AGENTS.md/CLAUDE.md edit by the agent itself
 export type AiAsk = { target: "recipe" | "config" | "agent"; id: string; ask: string; profile: string; section: string; file: string };
+
+/// FR-94 (TECH 47.2): the task text with its criteria as the bullets the daemon reads under a "Kriteria" heading. A criterion
+/// that talks about tests names `test.log` as its proof; any other has none yet, so it shows "untested" until it has one.
+export function withCriteria(task: string, criteria: string[]): string {
+  const items = criteria.map((c) => c.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 20);
+  if (!items.length) return task;
+  const line = (c: string) => `- ${c.replace(/\[bukti:/gi, "(bukti:")}${/\b(tes|test|lulus)\b/i.test(c) ? " [bukti: test.log]" : ""}`;
+  return `${task.trimEnd()}\n\n## Kriteria\n${items.map(line).join("\n")}\n`;
+}
+
+export type Criterion = { text: string; proof: string[]; status: "proven" | "failed" | "untested" };
+/// counts for the report header: "1 proven · 1 failed · 2 untested"
+export const criteriaCount = (c: Criterion[]) => ({ proven: c.filter((x) => x.status === "proven").length, failed: c.filter((x) => x.status === "failed").length, untested: c.filter((x) => x.status === "untested").length });

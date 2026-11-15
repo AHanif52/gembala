@@ -3489,9 +3489,9 @@ fn fr93_limit_from_hook_holds_queue_until_retry() {
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let script = |name: &str| format!("stty raw -echo; '{g}' token > '{}/{name}.token'; cat -v", d.dir.display());
-    profiles(&d, &mut ui, &(sh_profile("src", &script("src")) + &sh_profile("held", &script("held"))), "held");
+    profiles(&d, &mut ui, &(sh_profile("src", &script("src")) + &sh_profile("held", &script("held")) + &sh_profile("third", &script("third"))), "third");
     let pane = |ui: &mut Cli, p: &str| ui.call("pane.create", json!({"profile":p, "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
-    let (_src, held) = (pane(&mut ui, "src"), pane(&mut ui, "held"));
+    let (_src, held, third) = (pane(&mut ui, "src"), pane(&mut ui, "held"), pane(&mut ui, "third"));
     let client = |name: &str| {
         let path = d.dir.join(format!("{name}.token"));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -3504,8 +3504,8 @@ fn fr93_limit_from_hook_holds_queue_until_retry() {
         assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
         c
     };
-    let (mut src, mut ch) = (client("src"), client("held"));
-    for c in [&mut src, &mut ch] {
+    let (mut src, mut ch, mut c3) = (client("src"), client("held"), client("third"));
+    for c in [&mut src, &mut ch, &mut c3] {
         assert!(c.call("hook", json!({"agent":"omp","status":"idle"})).get("result").is_some());
     }
     std::thread::sleep(Duration::from_millis(600));
@@ -3518,6 +3518,7 @@ fn fr93_limit_from_hook_holds_queue_until_retry() {
     assert!(info["limit"]["left"].as_u64().is_some_and(|s| s > 4 * 3600), "{info}");
     let r = src.call("send", json!({"to":"held-1","body":"MARK-HELD","queue":true}));
     assert_eq!(r["result"]["result"], "queued", "{r}");
+    assert_eq!(ui.call("pane.info", json!({"pane":held}))["result"]["limit"]["queued"], 1);
     std::thread::sleep(Duration::from_millis(1200));
     assert!(!ui.attach_until(held, &[]).contains("MARK-HELD"));
     assert_eq!(ui.call("pane.limit_at_reset", json!({"pane":held}))["result"]["at_reset"], true);
@@ -3525,6 +3526,17 @@ fn fr93_limit_from_hook_holds_queue_until_retry() {
     assert!(ui.call("pane.info", json!({"pane":held}))["result"]["limit"].is_null());
     let out = ui.attach_until(held, &["MARK-HELD"]);
     assert!(out.contains("MARK-HELD"), "{out}");
+    // "Lempar ke agent lain": the held message goes to a pane the user names; the hold ends, nothing else moves
+    ch.call("hook", json!({"agent":"claude","status":"done","limit":"rate_limit"}));
+    let r = src.call("send", json!({"to":"held-1","body":"MARK-MOVED","queue":true}));
+    assert_eq!(r["result"]["result"], "queued", "{r}");
+    assert_eq!(ui.call("pane.limit_move", json!({"pane":held,"to":"held-1"}))["error"]["code"], "bad_params");
+    let r = ui.call("pane.limit_move", json!({"pane":held,"to":"third-1"}));
+    assert_eq!(r["result"]["moved"], 1, "{r}");
+    assert!(ui.call("pane.info", json!({"pane":held}))["result"]["limit"].is_null());
+    let out = ui.attach_until(third, &["MARK-MOVED"]);
+    assert!(out.contains("MARK-MOVED"), "{out}");
+    assert_eq!(ui.call("pane.limit_move", json!({"pane":held,"to":"third-1"}))["error"]["code"], "no_limit");
     // the agent working again ends a hold
     ch.call("hook", json!({"agent":"claude","status":"done","limit":"billing_error"}));
     assert!(!ui.call("pane.info", json!({"pane":held}))["result"]["limit"].is_null());

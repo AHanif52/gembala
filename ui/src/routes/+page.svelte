@@ -69,6 +69,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     readable?: boolean; // SEC-21
     hist?: string; // FR-62: history key from the daemon, sent again when this pane comes back (rerun, daemon restart)
     from?: { boot: string; pane: number }; // FR-62: old pane (previous daemon) of a pane without `hist` (daemon from before keys)
+    limit?: { reset_at: number | null; at_reset: boolean; left: number; queued: number } | null; // FR-93: the agent's own hook said it hit a limit
+    limitAt?: number; // when the UI first saw `limit`
+    loginStep?: string | null; // FR-32: next step as text when the agent's login failed
     ended?: { resume: string | null }; // FR-56: finished agent block with buttons, gone once a new process runs
     acct?: string; // FR-61: account id picked when the pane was created (used again on rerun)
     aliases?: string[]; // FR-79: old pane names, carried to the replacement pane so they stay addresses
@@ -664,7 +667,34 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   const reportsFor = (pane: number) => (msgData?.reports ?? []).filter((r: any) => r.from_pane === pane);
   /// FR-99 P2: every card a pane holds, oldest first (frontCard picks the front one). A draft or the command offer has no
   /// timestamp of its own, so it counts as the oldest: it needs a person too.
-  type Card = { id: string; kind: "message" | "open" | "report" | "offer"; at: number; m?: any; o?: any; r?: any };
+  type Card = { id: string; kind: "message" | "open" | "report" | "offer" | "limit" | "login"; at: number; m?: any; o?: any; r?: any };
+  /// FR-93 / FR-32: the daemon's view of a held or logged-out pane, from `pane.info` and the `pane.limit`/`pane.login` events
+  function syncHold(pane: number, limit: any, login: string | null) {
+    const m = meta[pane];
+    if (!m) return;
+    if (JSON.stringify(m.limit ?? null) !== JSON.stringify(limit)) {
+      if (limit && !m.limit) m.limitAt = Date.now();
+      m.limit = limit;
+    }
+    if ((m.loginStep ?? null) !== login) m.loginStep = login;
+  }
+  /// "bisa lagi 14.30" from the reset the agent reported (epoch seconds); none = the hold's own 5-hour cap
+  const resetClock = (at: number | null) => (at ? new Date(at * 1000).toLocaleTimeString(i18n.lang === "en" ? "en-GB" : "id-ID", { hour: "2-digit", minute: "2-digit" }).replace(":", i18n.lang === "en" ? ":" : ".") : "");
+  /// other agent panes a held queue can move to
+  const moveTargets = (pane: number) =>
+    Object.keys(meta).map(Number).filter((p) => p !== pane && !dead[p] && AGENTS.includes(meta[p]?.agent)).map((p) => ({ name: meta[p].name, label: whoOf(meta[p].name) }));
+  let movePick = $state<Record<number, string>>({});
+  async function limitAct(pane: number, act: "retry" | "reset" | "move") {
+    const r =
+      act === "retry"
+        ? await call("pane.limit_retry", { pane }).catch((e) => ({ error: String(e) }))
+        : act === "reset"
+          ? await call("pane.limit_at_reset", { pane, on: !meta[pane]?.limit?.at_reset }).catch((e) => ({ error: String(e) }))
+          : await call("pane.limit_move", { pane, to: movePick[pane] ?? moveTargets(pane)[0]?.name }).catch((e) => ({ error: String(e) }));
+    if (r?.error) say(errText(r.error));
+    else if (act === "reset") syncHold(pane, r, meta[pane]?.loginStep ?? null);
+    else syncHold(pane, null, meta[pane]?.loginStep ?? null);
+  }
   function cardsFor(pane: number): Card[] {
     const cards: Card[] = [
       ...pendingFor(pane).map((m: any) => ({ id: `msg:${m.id}`, kind: "message" as const, at: (m.at ?? 0) * 1000, m })),
@@ -672,6 +702,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       ...reportsFor(pane).map((r: any) => ({ id: `rep:${r.id}`, kind: "report" as const, at: (r.at ?? now / 1000) * 1000, r })),
     ];
     if (offer[pane]) cards.push({ id: "offer", kind: "offer", at: offerAt[pane] ?? now });
+    // FR-93 / FR-32: the agent's own hook said so; the card carries the choices (mockup-fr93-fr32-fr94.html)
+    if (meta[pane]?.limit) cards.push({ id: "limit", kind: "limit", at: meta[pane].limitAt ?? now });
+    if (meta[pane]?.loginStep) cards.push({ id: "login", kind: "login", at: now });
     return cards;
   }
   /// a pane name from the message engine ("shell-11") as a person reads it: "OpenCode · Migrasi API"
@@ -3024,6 +3057,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       // FR-99 P1: so does the "send it to an agent?" card: Send would swap the pane and close what runs there now
       if (busy && !m.busy && offer[p]) delete offer[p];
       if (m.busy !== busy) m.busy = busy;
+      syncHold(p, i.limit ?? null, i.login ?? null);
       if (m.shell !== i.shell) m.shell = i.shell;
       // FR-69: label only while an agent runs in this pane
       const label = AGENTS.includes(m.agent) || AGENTS.includes(busy ?? "") ? cleanTitle(i.title, base(i.cwd)) : "";
@@ -3081,9 +3115,15 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       if (payload.event === "harness.notice") runNotice(payload.params);
       if (payload.event === "telegram.changed") tg = payload.params ?? { state: "off" };
       // FR-93: the daemon verified a limit signal from the agent's own hook; the pane's buttons wait for a mockup
-      if (payload.event === "pane.limit" && payload.params?.limit) notice(payload.params.pane, "limit");
+      if (payload.event === "pane.limit") {
+        syncHold(payload.params.pane, payload.params.limit ?? null, meta[payload.params.pane]?.loginStep ?? null);
+        if (payload.params.limit) notice(payload.params.pane, "limit");
+      }
       // FR-32: Claude's hook says the login is no longer good; the next step is in pane.info.login (a card waits for a mockup)
-      if (payload.event === "pane.login" && payload.params?.login) notice(payload.params.pane, "failed");
+      if (payload.event === "pane.login") {
+        syncHold(payload.params.pane, meta[payload.params.pane]?.limit ?? null, payload.params.login?.step ?? null);
+        if (payload.params.login) notice(payload.params.pane, "failed");
+      }
       if (payload.event === "usage.changed") usageRows = Array.isArray(payload.params?.rows) ? payload.params.rows : [];
       if (payload.event === "models.changed") void refreshOpenModels(JSON.stringify([payload.params.agent, payload.params.account]));
       if (payload.event === "update.changed") upd = payload.params;
@@ -3794,6 +3834,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                     <button class="chip pcode" title={tt("pane.copyCode", { name: paneCode(pane) })} onclick={() => copy(paneCode(pane))}>{paneCode(pane)}</button>
                   {/if}
                 {/if}
+                {#if meta[pane]?.limit}<span class="chip lim" title={tt("limit.chipHint")}>{meta[pane].limit?.reset_at ? tt("limit.chipAt", { at: resetClock(meta[pane].limit?.reset_at ?? null) }) : tt("limit.chip")}</span>{/if}
                 {#if acctOf(pane)}<span class="chip acc c-acc" title={tt("pane.accountTip")}>{acctOf(pane)}</span>{/if}
                 {#if meta[pane]?.owner && agentOf(pane) === "claude"}<span class="chip rwarn" title={tt("pane.ownerTip", { name: meta[pane].owner.name })}>{tt("pane.owner", { name: meta[pane].owner.name })}</span>{/if}
                 {#if meta[pane]?.roleWarn}<span class="chip rwarn" title={tt("pane.roleWarnTip")}>{tt("pane.roleWarn")}</span>{/if}
@@ -3869,6 +3910,32 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 <span class="acts">
                   <button class="mini" onclick={() => call("report.discard", { id: r.id }).then(refreshMsgs)}>{tt("rep.discard")}</button>
                   <button class="mini pri" onclick={() => (reportDraft = { title: r.title, body: r.body, from: r.from, id: r.id })}>{tt("rep.review")}</button>
+                </span>
+              </div>
+            {:else if stack.front?.kind === "limit" && meta[pane]?.limit}
+              {@const lim = meta[pane].limit!}
+              <!-- FR-93: the agent said it hit a limit; the queue waits, and the user picks what happens next (never automatic, C-9) -->
+              <div class="card limit" role="alert">
+                <b>{tt("limit.title", { agent: agentName(meta[pane].profile) })}</b>
+                <span>{lim.reset_at ? tt("limit.when", { at: resetClock(lim.reset_at) }) : tt("limit.whenUnknown")} {tt("limit.held", { n: lim.queued })}</span>
+                <span class="acts">
+                  <button class="mini" class:pri={lim.at_reset} onclick={() => limitAct(pane, "reset")}>{lim.at_reset ? tt("limit.atResetOn") : tt("limit.atReset")}</button>
+                  <button class="mini" onclick={() => limitAct(pane, "retry")}>{tt("limit.retry")}</button>
+                  {#if moveTargets(pane).length}
+                    <select class="mini" bind:value={movePick[pane]} aria-label={tt("limit.moveTo")}>
+                      {#each moveTargets(pane) as t (t.name)}<option value={t.name}>{t.label}</option>{/each}
+                    </select>
+                    <button class="mini" onclick={() => limitAct(pane, "move")}>{tt("limit.move")}</button>
+                  {/if}
+                </span>
+              </div>
+            {:else if stack.front?.kind === "login" && meta[pane]?.loginStep}
+              <!-- FR-32: logged out; the command is only shown as text, Gembala never runs a login -->
+              <div class="card login" role="alert">
+                <b>{tt("login.title", { agent: agentName(meta[pane].profile) })}</b>
+                <span>{tt("login.body")}</span>
+                <span class="acts"><small>{meta[pane].loginStep}</small>
+                  <button class="mini pri" onclick={() => copy(meta[pane].loginStep ?? "")}>{tt("login.copy")}</button>
                 </span>
               </div>
             {:else if stack.front?.kind === "offer"}
@@ -6012,6 +6079,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     color: var(--fg);
     font-weight: 600;
   }
+  .chip.lim { background: #3b0d0d; color: #fca5a5; }
   .chip.pcode {
     flex-shrink: 0;
     color: var(--muted);
@@ -6179,6 +6247,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     color: var(--fg);
     font: 13px system-ui, -apple-system, sans-serif;
   }
+  .card.limit { border-color: #3f1d1d; background: #170c0c; }
+  .card.login { border-color: #3a2e0b; background: #16120a; }
+  .card select.mini { max-width: 160px; }
   .card.offer {
     border-color: var(--blue, #3b82f6);
   }

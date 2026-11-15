@@ -525,13 +525,13 @@ impl Run {
 pub struct Criterion {
     pub text: String,
     pub proof: Vec<String>,
-    /// "terbukti", "gagal" or "belum diuji"; without a named artifact it is never "terbukti"
+    /// "proven", "failed" or "untested"; without a named artifact it is never "proven"
     pub status: &'static str,
 }
 
 /// FR-94 / TECH 47: the criteria are the bullets under a "Kriteria" or "Acceptance criteria" heading of the request;
 /// `[bukti: a.md, test.log]` at the end of a bullet names the artifacts that prove it. `has` = artifact exists and is not empty;
-/// `test_failed` = the last test stage failed, which turns a criterion proven by `test.log` into "gagal".
+/// `test_failed` = the last test stage failed, which turns a criterion proven by `test.log` into "failed".
 pub fn criteria(request: &str, has: impl Fn(&str) -> bool, test_failed: bool) -> Vec<Criterion> {
     let mut out = Vec::new();
     let mut inside = false;
@@ -549,11 +549,11 @@ pub fn criteria(request: &str, has: impl Fn(&str) -> bool, test_failed: bool) ->
         };
         let proof: Vec<String> = names.split(',').map(str::trim).filter(|n| !n.is_empty() && n.len() <= 64 && !n.contains('/') && !n.starts_with('.')).take(5).map(String::from).collect();
         let status = if proof.iter().any(|n| n == "test.log") && test_failed {
-            "gagal"
+            "failed"
         } else if !proof.is_empty() && proof.iter().all(|n| has(n)) {
-            "terbukti"
+            "proven"
         } else {
-            "belum diuji"
+            "untested"
         };
         if !text.is_empty() {
             out.push(Criterion { text: text.chars().take(300).collect(), proof, status });
@@ -960,13 +960,13 @@ human = true
         let has = |n: &str| n == "hasil.md" || n == "test.log";
         let c = criteria(req, has, false);
         let got: Vec<(&str, &str)> = c.iter().map(|c| (c.text.as_str(), c.status)).collect();
-        assert_eq!(got, [("login jalan", "terbukti"), ("error tampil", "belum diuji"), ("tes lulus", "terbukti"), ("tanpa nama bukti", "belum diuji")]);
+        assert_eq!(got, [("login jalan", "proven"), ("error tampil", "untested"), ("tes lulus", "proven"), ("tanpa nama bukti", "untested")]);
         // the artifact is missing = not tested; the last test failed = failed, even though the log exists
-        assert_eq!(criteria(req, |_| false, false)[0].status, "belum diuji");
-        assert_eq!(criteria(req, has, true)[2].status, "gagal");
-        assert_eq!(criteria(req, has, true)[0].status, "terbukti");
+        assert_eq!(criteria(req, |_| false, false)[0].status, "untested");
+        assert_eq!(criteria(req, has, true)[2].status, "failed");
+        assert_eq!(criteria(req, has, true)[0].status, "proven");
         assert!(criteria("# Tugas\n- bukan di bagian kriteria", has, false).is_empty());
         // a path is not an artifact name
-        assert_eq!(criteria("## Kriteria\n- x [bukti: ../a, .b]", |_| true, false)[0].status, "belum diuji");
+        assert_eq!(criteria("## Kriteria\n- x [bukti: ../a, .b]", |_| true, false)[0].status, "untested");
     }
 }

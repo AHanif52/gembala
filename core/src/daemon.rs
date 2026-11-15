@@ -1514,6 +1514,34 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             (&pane.terminal()?.master).write_all(b"\r").map_err(|_| "io")?;
             Ok(json!({"result": "sent"}))
         }
+        // FR-93 "Lempar ke agent lain": the user moves what waits in a limited pane's queue to another agent pane of their choice;
+        // nothing moves by itself (C-9), the target's own access rules still apply to later messages
+        "pane.limit_move" => {
+            let from_id = p["pane"].as_u64().ok_or("bad_params")?;
+            let from = st.pane(p)?;
+            if from.limit.lock().unwrap().is_none() {
+                return Err("no_limit");
+            }
+            let name = p["to"].as_str().filter(|t| valid_name(t)).ok_or("bad_params")?;
+            let (to_id, to) = st.panes.lock().unwrap().iter().find(|(_, x)| *x.name.lock().unwrap() == name).map(|(i, x)| (*i, x.clone())).ok_or("no_such_pane")?;
+            if to_id == from_id || to.messaging().is_err() || to.agent_name().is_none() {
+                return Err("bad_params");
+            }
+            let to_name = to.name.lock().unwrap().clone();
+            let mut eng = st.engine.lock().unwrap();
+            let moved: Vec<bus::Queued> = eng.queues.remove(&from_id).map(Vec::from_iter).unwrap_or_default();
+            let n = moved.len();
+            for mut q in moved {
+                q.msg.to = to_id;
+                q.msg.to_name = to_name.clone();
+                q.approved = true;
+                q.since = std::time::Instant::now();
+                eng.queues.entry(to_id).or_default().push_back(q);
+            }
+            drop(eng);
+            clear_limit(st, from_id, &from);
+            Ok(json!({"moved": n}))
+        }
         "pane.limit_retry" => {
             let pane = st.pane(p)?;
             clear_limit(st, p["pane"].as_u64().unwrap_or_default(), &pane);
@@ -1524,7 +1552,9 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             let mut cur = pane.limit.lock().unwrap();
             let l = cur.as_mut().ok_or("no_limit")?;
             l.at_reset = p["on"].as_bool().unwrap_or(true);
-            Ok(limit_json(l))
+            let l = limit_json(l);
+            drop(cur);
+            Ok(l)
         }
         "pane.resize" => {
             let pane = st.pane(p)?;
@@ -1644,7 +1674,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 "last": *pane.last_preview.lock().unwrap(),
                 "subagents": pane.subagents.load(Ordering::Relaxed),
                 "waiting_shell": waiting_shell, "reason": reason,
-                "limit": pane.limit.lock().unwrap().as_ref().map(limit_json), // FR-93
+                "limit": pane.limit.lock().unwrap().as_ref().map(|l| limit_json_q(st, p["pane"].as_u64().unwrap_or_default(), l)), // FR-93
                 "login": *pane.login.lock().unwrap(), // FR-32
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "session": *pane.session.lock().unwrap(), // FR-68: resume card even if the daemon stopped
@@ -2670,6 +2700,13 @@ fn limit_json(l: &Limit) -> Value {
     json!({"reset_at": l.reset_at, "at_reset": l.at_reset, "left": limit_left(l).as_secs()})
 }
 
+/// `limit_json` plus how many messages wait in this pane's queue (the card says "2 pesan ditahan")
+fn limit_json_q(st: &State, id: u64, l: &Limit) -> Value {
+    let mut v = limit_json(l);
+    v["queued"] = json!(st.engine.lock().unwrap().queue_len(id));
+    v
+}
+
 fn limit_event(st: &State, id: u64, limit: Value) {
     ui_pane_event(st, "pane.limit", json!({"pane": id, "limit": limit}));
 }
@@ -2686,7 +2723,7 @@ fn set_limit(st: &State, id: u64, pane: &Pane) {
     let reset_at = usage::rows(st).iter().filter(|r| r.agent == "claude" && r.login == login).flat_map(|r| r.windows.iter())
         .filter(|w| w.used_pct >= 100.0).filter_map(|w| w.resets_at).filter(|t| *t > now).max();
     let l = Limit { since: std::time::Instant::now(), reset_at, at_reset: false };
-    let json = limit_json(&l);
+    let json = limit_json_q(st, id, &l);
     *pane.limit.lock().unwrap() = Some(l);
     limit_event(st, id, json);
     // FR-96: a request an owner is waiting on from this pane ends as "limit" instead of leaving the owner waiting for the hold
