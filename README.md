@@ -188,6 +188,7 @@ Every shortcut can be changed in Settings > Shortcuts or in the `[keys]` section
 |---|---|
 | `gembala status` | List the other agents in this workspace |
 | `gembala send <pane> <message…>` | Send a message (`--queue` to queue it, `--note` for info that needs no answer, `--parent <id>` to say which request it belongs to, `--reply-to <id>` for a reply; `--model <id>` and `--effort <level>` apply when opening a new pane) |
+| `gembala cancel <id>` / `gembala edit <id> <text…>` | Take back or rewrite your own message while it is still queued (the user can do the same from the message drawer) |
 | `gembala wait [<pane>]` | Wait for a reply, a screen pattern, or a timeout |
 | `gembala read <pane> [-n <lines>]` | Read the pane's screen, secrets masked |
 | `gembala reply <msg_id> <text…>` | Reply to an incoming message |

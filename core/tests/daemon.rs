@@ -2993,3 +2993,67 @@ fn fr95_jenis_pesan_dan_nomor_tugas() {
     assert!(!out.contains("JAWABAN-AMBIGU"), "{out}");
     assert!(out.contains("[Gembala · note from Gembala"), "{out}");
 }
+
+/// FR-89: the sender or the user takes back / rewrites a queued message; sent ones are never touched.
+#[test]
+fn fr89_batal_dan_ubah_pesan_antre() {
+    let (d, mut ui, a, b, mut ca, mut cb) = agent_pair("fr89");
+    let status = |c: &mut Cli, s: &str| assert!(c.call("hook", json!({"agent": "omp", "status": s})).get("result").is_some());
+    let queue = |c: &mut Cli, body: &str| {
+        let r = c.call("send", json!({"to": "pb-1", "body": body, "queue": true}));
+        assert_eq!(r["result"]["result"], "queued", "{r}");
+        r["result"]["id"].as_str().unwrap().to_string()
+    };
+    let queued_body = |ui: &mut Cli, id: &str| {
+        ui.call("msg.list", json!({}))["result"]["queued"].as_array().unwrap().iter().find(|m| m["id"] == id).map(|m| m["body"].as_str().unwrap().to_string())
+    };
+    status(&mut cb, "working");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // the sender rewrites its own message, then the user rewrites it again: the user's change carries a mark
+    let id = queue(&mut ca, "versi satu");
+    assert_eq!(cb.call("edit", json!({"msg_id": id, "body": "x"}))["error"]["code"], "not_allowed", "bukan pengirim");
+    assert_eq!(cb.call("cancel", json!({"msg_id": id}))["error"]["code"], "not_allowed");
+    assert_eq!(ca.call("edit", json!({"msg_id": id, "body": "versi dua\x1b[201~\r"}))["result"]["result"], "edited");
+    assert_eq!(queued_body(&mut ui, &id).as_deref(), Some("versi dua[201~"), "disaring seperti pesan biasa (SEC-7)");
+    assert_eq!(ui.call("msg.edit", json!({"id": id, "body": "versi pengguna"}))["result"]["result"], "edited");
+    assert_eq!(queued_body(&mut ui, &id).as_deref(), Some("versi pengguna"));
+    // delivered: the edited text arrives with the origin label plus the mark
+    status(&mut cb, "idle");
+    let out = ui.attach_until(b, &["versi pengguna"]);
+    assert!(out.contains(&format!("[Gembala · from pa-1 · edited by user · {id}]")) && !out.contains("versi satu") && !out.contains("versi dua"), "{out}");
+    // already typed into the pane: refused, text and state untouched
+    let r = ca.call("cancel", json!({"msg_id": id}));
+    assert_eq!((r["result"]["result"].as_str(), r["result"]["reason"].as_str()), (Some("rejected"), Some("already_sent")), "{r}");
+    let r = ui.call("msg.edit", json!({"id": id, "body": "terlambat"}));
+    assert_eq!(r["result"]["reason"], "already_sent", "{r}");
+    assert_eq!(ui.call("msg.cancel", json!({"id": "msg_tidak_ada"}))["error"]["code"], "no_such_msg");
+
+    // cancelled by the sender: gone from the queue, logged, and its `wait --reply` ends with `cancelled`
+    std::thread::sleep(Duration::from_millis(600));
+    status(&mut cb, "working");
+    std::thread::sleep(Duration::from_millis(300));
+    let id2 = queue(&mut ca, "batalin ini");
+    let mut waiter = pane_client(&d, "a");
+    let wid = id2.clone();
+    let handle = std::thread::spawn(move || waiter.call("wait", json!({"reply": wid, "timeout_ms": 8000})));
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(ca.call("cancel", json!({"msg_id": id2}))["result"]["result"], "cancelled");
+    assert_eq!(handle.join().unwrap()["result"]["cancelled"], true);
+    assert!(queued_body(&mut ui, &id2).is_none());
+    assert_ne!(history_row(&mut ui, "cancelled", &id2), Value::Null);
+
+    // cancelled by the user: the sending agent hears it from Gembala; a confirm card can be rewritten and cancelled too
+    let id3 = queue(&mut ca, "user batalin");
+    assert_eq!(ui.call("msg.cancel", json!({"id": id3}))["result"]["result"], "cancelled");
+    ui.attach_until(a, &["dibatalin user"]);
+    ui.call("pane.policy", json!({"pane": b, "policy": "confirm"}));
+    let r = ca.call("send", json!({"to": "pb-1", "body": "kartu", "queue": true}));
+    assert_eq!(r["result"]["reason"], "needs_confirmation", "{r}");
+    let id4 = r["result"]["id"].as_str().unwrap().to_string();
+    assert_eq!(ui.call("msg.edit", json!({"id": id4, "body": "kartu diubah"}))["result"]["result"], "edited");
+    let pending = ui.call("msg.list", json!({}))["result"]["pending"].clone();
+    assert_eq!(pending[0]["body"], "kartu diubah", "{pending}");
+    assert_eq!(ui.call("msg.cancel", json!({"id": id4}))["result"]["result"], "cancelled");
+    assert!(ui.call("msg.list", json!({}))["result"]["pending"].as_array().unwrap().is_empty());
+}

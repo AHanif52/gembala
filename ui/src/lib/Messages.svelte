@@ -40,11 +40,20 @@
   let failed = $state("");
   const act = (method: string, params: object) =>
     call(method, params)
-      .then(() => (failed = ""))
+      // FR-89: "already sent" comes back as a normal answer, not an error
+      .then((r: any) => (failed = r?.result === "rejected" ? tOr(`msg.reason.${r.reason}`, r.reason) : ""))
       .then(onchange, (e) => {
         failed = errText(e);
         onchange();
       });
+  // FR-89: a queued message can be taken back or rewritten until it is typed into the pane
+  let editId = $state("");
+  let editBody = $state("");
+  const save = () => {
+    const id = editId;
+    editId = "";
+    void act("msg.edit", { id, body: editBody });
+  };
   const muted = $derived(new Set<string>(data?.muted ?? []));
   /// FR-10: last task per agent = the last message sent to that agent
   const lastTask = $derived(
@@ -139,7 +148,22 @@
       <h4>{t("msg.queue")}</h4>
       <section>
         {#each data.queued as m (m.id)}
-          <div class="row"><span class="grow"><b>{m.from}</b> → <b>{m.to}</b><small>{m.preview}</small></span></div>
+          {#if editId === m.id}
+            <div class="msg">
+              <span><b>{m.from}</b> → <b>{m.to}</b></span>
+              <textarea aria-label={t("msg.editAria", { to: m.to })} rows="4" bind:value={editBody}></textarea>
+              <span class="acts">
+                <button class="mini" onclick={() => (editId = "")}>{t("msg.cancel")}</button>
+                <button class="mini pri" onclick={save}>{t("msg.save")}</button>
+              </span>
+            </div>
+          {:else}
+            <div class="row">
+              <span class="grow"><b>{m.from}</b> → <b>{m.to}</b>{#if m.edited}<span class="m"> · {t("msg.edited")}</span>{/if}<small>{m.preview}</small></span>
+              <button class="mini" onclick={() => ((editId = m.id), (editBody = m.body ?? m.preview))}>{t("msg.edit")}</button>
+              <button class="mini" onclick={() => act("msg.cancel", { id: m.id })}>{t("msg.cancel")}</button>
+            </div>
+          {/if}
         {/each}
       </section>
     {/if}
@@ -269,6 +293,15 @@
     font-size: 12.5px;
     white-space: pre-wrap;
   }
+  textarea {
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 12.5px system-ui, -apple-system, sans-serif;
+    resize: vertical;
+  }
   .mini.pri {
     border-color: #1d4ed8;
     background: #1e3a8a;
@@ -285,6 +318,7 @@
     color: var(--muted);
   }
   .kind.rejected,
+  .kind.cancelled,
   .kind.expired {
     color: var(--tx-red, #dc2626);
   }

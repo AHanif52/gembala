@@ -113,6 +113,10 @@ pub struct Engine {
     delivered: HashSet<String>,
     closed: HashSet<String>,
     pub queues: HashMap<u64, VecDeque<Queued>>,
+    /// FR-89: the message `deliver_loop` took off a queue and is deciding on right now; cancel/edit wait for it to settle
+    pub limbo: Option<Msg>,
+    /// FR-89: cancelled ids, for the sender's `wait --reply` (taken by the first waiter)
+    pub cancelled: HashSet<String>,
     sent: HashMap<u64, VecDeque<Instant>>,
     pub paused: bool,
     pub muted: HashSet<u64>,
@@ -230,6 +234,66 @@ impl Engine {
     pub fn overdue_replies(&mut self) -> Vec<Msg> {
         let old: Vec<Msg> = self.undelivered_replies.values().filter(|m| m.at.elapsed().is_ok_and(|age| age > Duration::from_secs(120))).cloned().collect();
         old.into_iter().filter(|m| self.reply_alerted.insert(m.id.clone())).collect()
+    }
+}
+
+/// FR-89: what cancel/edit found
+pub enum Held {
+    /// it was queued (or a confirm card) and is now cancelled / changed; the message as it is now
+    Msg(Box<Msg>),
+    /// the delivery loop holds it this instant: ask again in a moment
+    InFlight,
+    /// it was typed into the pane already (or ended another way); never touched
+    Gone,
+}
+
+impl Engine {
+    fn held_ref(&self, id: &str) -> Option<&Msg> {
+        self.queues.values().flatten().map(|q| &q.msg).chain(self.pending.iter()).find(|m| m.id == id)
+    }
+
+    /// who may change it: `by` = the asking pane, `None` = the user through the UI channel (any message)
+    fn owner_check(by: Option<u64>, m: &Msg) -> Result<(), &'static str> {
+        if by.is_some_and(|p| p != m.from) { Err("not_allowed") } else { Ok(()) }
+    }
+
+    /// Where is `id` right now? Decided under the caller's engine lock, so a message is never reported as sent while it
+    /// still waits, nor changed after it left.
+    fn locate(&self, id: &str, by: Option<u64>) -> Result<Option<Held>, &'static str> {
+        if let Some(m) = self.held_ref(id) {
+            return Self::owner_check(by, m).map(|()| None);
+        }
+        if let Some(m) = self.limbo.as_ref().filter(|m| m.id == id) {
+            return Self::owner_check(by, m).map(|()| Some(Held::InFlight));
+        }
+        let m = self.find(id).ok_or("no_such_msg")?;
+        Self::owner_check(by, m).map(|()| Some(Held::Gone))
+    }
+
+    pub fn cancel(&mut self, id: &str, by: Option<u64>) -> Result<Held, &'static str> {
+        if let Some(h) = self.locate(id, by)? {
+            return Ok(h);
+        }
+        let queued = self.queues.values_mut().find_map(|q| q.iter().position(|x| x.msg.id == id).and_then(|i| q.remove(i))).map(|q| q.msg);
+        let m = match queued {
+            Some(m) => m,
+            None => self.pending.remove(self.pending.iter().position(|m| m.id == id).ok_or("no_such_msg")?),
+        };
+        self.cancelled.insert(m.id.clone());
+        self.undelivered_replies.remove(id);
+        Ok(Held::Msg(Box::new(m)))
+    }
+
+    /// New text for a queued message (already through `msg::sanitize`). Place in the queue and age stay; a change by the
+    /// user is marked, one by the sender is not.
+    pub fn edit(&mut self, id: &str, body: String, by: Option<u64>) -> Result<Held, &'static str> {
+        if let Some(h) = self.locate(id, by)? {
+            return Ok(h);
+        }
+        let m = self.queues.values_mut().flatten().map(|q| &mut q.msg).chain(self.pending.iter_mut()).find(|m| m.id == id).ok_or("no_such_msg")?;
+        m.body = body;
+        m.tag.edited = by.is_none();
+        Ok(Held::Msg(Box::new(m.clone())))
     }
 }
 
@@ -382,6 +446,43 @@ mod tests {
         e.close("a");
         let t = e.tag_for(2, Kind::Request, None, "n6").unwrap();
         assert_eq!(t.parent.as_deref(), Some("b"), "yang sudah dijawab tidak dihitung");
+    }
+
+    fn queued(e: &mut Engine, id: &str) {
+        e.queues.entry(2).or_default().push_back(Queued { msg: msg(id, 0), since: Instant::now(), approved: false });
+    }
+
+    /// FR-89: only the sender (or the user) can cancel or edit; sent = untouched; a message the delivery loop holds this
+    /// instant is "in flight", not "sent", until it settles
+    #[test]
+    fn batal_dan_ubah_pesan_antre() {
+        let mut e = Engine::default();
+        queued(&mut e, "a");
+        e.remember(&msg("a", 0));
+        assert_eq!(e.cancel("a", Some(9)).err(), Some("not_allowed"), "bukan pengirim");
+        assert_eq!(e.edit("a", "x".into(), Some(9)).err(), Some("not_allowed"));
+        assert!(matches!(e.edit("a", "baru".into(), Some(1)), Ok(Held::Msg(m)) if m.body == "baru" && !m.tag.edited), "pengirim: tanpa tanda");
+        assert!(matches!(e.edit("a", "versi pengguna".into(), None), Ok(Held::Msg(m)) if m.tag.edited));
+        assert_eq!(e.queues[&2][0].msg.body, "versi pengguna");
+        // delivery loop took it: neither Gone nor changed
+        let q = e.queues.get_mut(&2).unwrap().pop_front().unwrap();
+        e.limbo = Some(q.msg.clone());
+        assert!(matches!(e.cancel("a", None), Ok(Held::InFlight)));
+        assert!(matches!(e.edit("a", "z".into(), None), Ok(Held::InFlight)));
+        // it went back (target busy): now it can be cancelled
+        e.queues.get_mut(&2).unwrap().push_front(q);
+        e.limbo = None;
+        assert!(matches!(e.cancel("a", Some(1)), Ok(Held::Msg(m)) if m.id == "a"));
+        assert!(e.cancelled.contains("a") && e.queue_len(2) == 0);
+        // it was typed into the pane: refused, body kept
+        assert!(matches!(e.cancel("a", None), Ok(Held::Gone)));
+        assert!(matches!(e.edit("a", "z".into(), None), Ok(Held::Gone)));
+        assert_eq!(e.cancel("tidak-ada", None).err(), Some("no_such_msg"));
+        // a confirm card is a queued message too
+        e.remember(&msg("kartu", 0));
+        e.pending.push(msg("kartu", 0));
+        assert!(matches!(e.edit("kartu", "ubah".into(), None), Ok(Held::Msg(_))));
+        assert!(matches!(e.cancel("kartu", None), Ok(Held::Msg(_))) && e.pending.is_empty());
     }
 
     #[test]

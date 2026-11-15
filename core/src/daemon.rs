@@ -507,7 +507,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
                     Ok(json!({}))
                 }
-                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage", Some(me)) => pane_method_connected(&st, me, method, p, Some(r.get_ref())),
+                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage" | "cancel" | "edit", Some(me)) => pane_method_connected(&st, me, method, p, Some(r.get_ref())),
                 // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start", "substart", "substop"].into_iter().find(|s| *s == x)) {
                     // FR-101 item 1: a subagent started or ended; only the count changes, not the pane status
@@ -887,7 +887,8 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         "msg.list" => {
             let eng = st.engine.lock().unwrap();
             let names = st.names();
-            let queues: Vec<Value> = eng.queues.values().flatten().map(|q| q.msg.summary()).collect();
+            // FR-89: same exception as the confirm card: the edit box shows exactly what will be sent
+            let queues: Vec<Value> = eng.queues.values().flatten().map(|q| { let mut v = q.msg.summary(); v["body"] = json!(q.msg.body); v }).collect();
             // FR-86: the close card carries the target's status as it is now (SEC-28)
             let closes: Vec<Value> = {
                 let panes = st.panes.lock().unwrap();
@@ -935,6 +936,9 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 Ok(json!({"result": "rejected", "reason": "rejected_by_user"}))
             }
         }
+        // FR-89: the user takes back or rewrites a queued message, whoever sent it (UI channel only, SEC-20)
+        "msg.cancel" => change_queued(st, p["id"].as_str().ok_or("bad_params")?, None, None),
+        "msg.edit" => change_queued(st, p["id"].as_str().ok_or("bad_params")?, None, Some(p["body"].as_str().ok_or("bad_params")?)),
         // FR-106: the user pushes one waiting reply now instead of waiting for its sender to go idle (UI channel only, SEC-20)
         "msg.send_now" => {
             let id = p["id"].as_str().ok_or("bad_params")?;
@@ -1957,6 +1961,40 @@ fn open_target(st: &State, name: &str) -> Option<(String, String)> {
 
 /// FR-75: `send` to an agent not open yet = a card in the requester's pane, not an error. Max `HELPERS_MAX` helpers
 /// (alive + waiting cards) per requester, and a helper can't ask (depth 1). Counts to SEC-9 like a send.
+/// FR-89: cancel (`edit` = None) or change a message that is still queued or waiting for approval. `by` = the pane asking
+/// (only the sender) or `None` for the user's UI channel. The engine decides under its lock; a message the delivery loop holds
+/// this instant is asked again for up to a second, so "already sent" is never said about one that is still waiting.
+fn change_queued(st: &State, id: &str, by: Option<u64>, edit: Option<&str>) -> Res {
+    let body = edit.map(msg::sanitize).transpose()?;
+    for _ in 0..50 {
+        let r = {
+            let mut eng = st.engine.lock().unwrap();
+            match &body {
+                None => eng.cancel(id, by)?,
+                Some(b) => eng.edit(id, b.clone(), by)?,
+            }
+        };
+        match r {
+            bus::Held::InFlight => thread::sleep(Duration::from_millis(20)),
+            bus::Held::Gone => break,
+            bus::Held::Msg(m) => {
+                if body.is_some() {
+                    record(st, "edited", &m, None);
+                    return Ok(json!({"result": "edited", "id": m.id}));
+                }
+                record(st, "cancelled", &m, None);
+                // the sender hears it: a waiting `wait --reply` ends with `cancelled`; an agent not waiting gets a note
+                // when someone else (the user) cancelled
+                if by.is_none() && !m.is_reply && m.from != 0 {
+                    gembala_note(st, m.from, &m.id, &format!("Pesan lu {} ke {} dibatalin user sebelum sampai (cancelled).", m.id, m.to_name));
+                }
+                return Ok(json!({"result": "cancelled", "id": m.id}));
+            }
+        }
+    }
+    Ok(json!({"result": "rejected", "reason": "already_sent", "id": id}))
+}
+
 /// FR-95: kind, task and parent of a `send` from the pane channel; the sender only chooses `note` and `--parent`
 fn tag_of(eng: &bus::Engine, me: u64, p: &Value, id: &str) -> Result<bus::Tag, &'static str> {
     let kind = match p["kind"].as_str() {
@@ -2130,7 +2168,7 @@ fn spool(st: Arc<State>, dir: std::path::PathBuf) {
                 let method = v["method"].as_str().unwrap_or_default();
                 let r = match v["token"].as_str().and_then(|t| st.pane_of_token(t)) {
                     None => Err("unauthorized"),
-                    Some(me) if ["send", "reply", "wait", "read", "status", "token", "close", "report"].contains(&method) => pane_method(&st, me, method, &v["params"]),
+                    Some(me) if ["send", "reply", "wait", "read", "status", "token", "close", "report", "cancel", "edit"].contains(&method) => pane_method(&st, me, method, &v["params"]),
                     Some(_) => Err("not_allowed"),
                 };
                 let body = match r {
@@ -2242,10 +2280,12 @@ fn send_now(st: &State, q: bus::Queued) -> Value {
 /// SEC-7/8: origin label + bracketed paste + one Enter, written to the target PTY.
 fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
     let Ok(terminal) = to.terminal() else { record(st, "rejected", m, Some("unsupported_kind")); return false };
+    // FR-89: the origin stays the sender, with the mark that the user changed the text while it was queued
+    let from = if m.tag.edited { format!("{} · edited by user", m.from_name) } else { m.from_name.clone() };
     let bytes = match m.tag.kind {
-        bus::Kind::Note => msg::wrap_note(&m.from_name, &m.id, &m.body),
-        _ if m.is_reply => msg::wrap_reply(&m.from_name, m.reply_to.as_deref().unwrap_or_default(), &m.body),
-        _ => msg::wrap(&m.from_name, &m.id, &m.body),
+        bus::Kind::Note => msg::wrap_note(&from, &m.id, &m.body),
+        _ if m.is_reply => msg::wrap_reply(&from, m.reply_to.as_deref().unwrap_or_default(), &m.body),
+        _ => msg::wrap(&from, &m.id, &m.body),
     };
     if (&terminal.master).write_all(&bytes).is_ok() {
         st.engine.lock().unwrap().mark_delivered(&m.id);
@@ -2271,7 +2311,14 @@ fn deliver_loop(st: Arc<State>) {
         for m in overdue { record(&st, "reply_pending", &m, None); }
         let targets: Vec<u64> = st.engine.lock().unwrap().queues.keys().copied().collect();
         for to_id in targets {
-            let head = st.engine.lock().unwrap().queues.get_mut(&to_id).and_then(|q| q.pop_front());
+            // FR-89: while this lap decides on the head, cancel/edit see it as in flight, not as sent
+            let head = {
+                let mut eng = st.engine.lock().unwrap();
+                let head = eng.queues.get_mut(&to_id).and_then(|q| q.pop_front());
+                eng.limbo = head.as_ref().map(|q| q.msg.clone());
+                head
+            };
+            let _limbo = Limbo(&st);
             let Some(q) = head else { continue };
             let to = st.panes.lock().unwrap().get(&to_id).cloned();
             let requeue = |q: bus::Queued| st.engine.lock().unwrap().queues.entry(to_id).or_default().push_front(q);
@@ -2386,6 +2433,15 @@ fn token_saver(st: &State, reader: u64) -> bool {
 /// Pane channel (SEC-3): `me` = the calling pane from kernel identity, not from message content.
 fn pane_method(st: &Arc<State>, me: u64, method: &str, p: &Value) -> Res {
     pane_method_connected(st, me, method, p, None)
+}
+
+/// FR-89: clears `Engine::limbo` when the lap is done with the message (delivered, dropped, or back in the queue)
+struct Limbo<'a>(&'a State);
+
+impl Drop for Limbo<'_> {
+    fn drop(&mut self) {
+        self.0.engine.lock().unwrap().limbo = None;
+    }
 }
 
 struct ReplyWait<'a>(&'a State, Option<String>);
@@ -2522,6 +2578,9 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             }
             ask_close(st, me, &my_name, tid, &name)
         }
+        // FR-89: the sender takes back or rewrites a message that is still queued
+        "cancel" => change_queued(st, p["msg_id"].as_str().ok_or("bad_params")?, Some(me), None),
+        "edit" => change_queued(st, p["msg_id"].as_str().ok_or("bad_params")?, Some(me), Some(p["body"].as_str().ok_or("bad_params")?)),
         "reply" => {
             // FR-106: only the recipient can reply; an active waiter takes priority over typing into the sender pane.
             let orig = st.engine.lock().unwrap().find(p["msg_id"].as_str().ok_or("bad_params")?).cloned().ok_or("no_such_msg")?;
@@ -2652,6 +2711,9 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                 }) { return Err("disconnected"); }
                 if let Some(r) = &reply {
                     let mut eng = st.engine.lock().unwrap();
+                    if eng.cancelled.remove(r) {
+                        return Ok(json!({"cancelled": true}));
+                    }
                     if let Some(m) = eng.replies.remove(r) {
                         eng.undelivered_replies.remove(&m.id);
                         eng.reply_alerted.remove(&m.id);

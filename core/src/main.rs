@@ -31,6 +31,8 @@ const USAGE: &str = "usage: gembala daemon [--secret-fd N | --secret-sock <path>
        gembala wait [<pane>] [--reply <msg_id> [--while-working]] [--pattern <regex>] [--timeout <seconds>]
        gembala read <pane> [-n <lines>]
        gembala reply <msg_id> <text…>
+       gembala cancel <msg_id>
+       gembala edit <msg_id> <text…>
        gembala close <pane>
        gembala report <title> [text…] [--screenshot]
        gembala status
@@ -56,7 +58,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // FR-78: `addons <agent>` is called by the zsh `claude`/`codex` functions (internal, not in USAGE)
-        cmd @ ("send" | "wait" | "read" | "reply" | "close" | "report" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
+        cmd @ ("send" | "wait" | "read" | "reply" | "cancel" | "edit" | "close" | "report" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -270,6 +272,8 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     let params = match cmd {
         "send" if rest.len() >= 2 => json!({"to": rest[0], "body": text(1), "queue": opt.get("queue"), "reply_to": opt.get("reply-to"), "kind": opt.get("note").map(|_| "note"), "parent": opt.get("parent"), "model": opt.get("model"), "effort": opt.get("effort")}),
         "reply" if rest.len() >= 2 => json!({"msg_id": rest[0], "body": text(1)}),
+        "cancel" if rest.len() == 1 => json!({"msg_id": rest[0]}),
+        "edit" if rest.len() >= 2 => json!({"msg_id": rest[0], "body": text(1)}),
         "close" if rest.len() == 1 => json!({"target": rest[0]}),
         // FR-100: a draft for the user to review; Gembala never sends it anywhere (SEC-40)
         "report" if !rest.is_empty() => json!({"title": rest[0], "body": text(1), "screenshot": opt.get("screenshot")}),
@@ -343,7 +347,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
                 _ if cmd == "addons" => out["args"].as_array().into_iter().flatten().filter_map(Value::as_str).for_each(|a| println!("{a}")),
                 _ => println!("{out}"),
             }
-            let ok = v.get("result").is_some_and(|r| r["result"] != "rejected" && r.get("timeout").is_none() && r.get("gone").is_none());
+            let ok = v.get("result").is_some_and(|r| r["result"] != "rejected" && r.get("timeout").is_none() && r.get("gone").is_none() && r.get("cancelled").is_none());
             ExitCode::from(if ok { 0 } else { 1 })
         }
         Err(e) => {
