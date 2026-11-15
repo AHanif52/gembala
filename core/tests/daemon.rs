@@ -2491,6 +2491,92 @@ fn harness_runs_a_recipe_with_fallback_and_a_gate() {
     assert_eq!(ui.call("harness.state", json!({"run": run}))["result"]["state"], "done");
 }
 
+/// 3b B4 + B5 (criterion 13, last sentence): a stage described in words goes through `recipe.step_draft_*`, the recipe the
+/// builder holds is rendered, saved with the reviewed hash and run on fake agents; the order the daemon runs the stages in
+/// is the order of the cards on screen (here: the custom stage dragged before Plan), and Ship still waits for the user.
+#[test]
+fn harness_runs_the_recipe_the_builder_made_in_screen_order() {
+    let d = start_with_agents("harness-b5");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(cfg.join("recipes")).unwrap();
+    std::fs::set_permissions(cfg.join("recipes"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap(); // the daemon refuses to write into a wider folder
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    script(
+        &cfg.join("worker-omp.sh"),
+        &format!(
+            "#!/bin/sh\n'{g}' hook omp end </dev/null\nIFS= read -r l; id=$(printf '%s' \"$l\" | sed -n 's/.*· \\(msg_[a-z0-9]*\\)\\].*/\\1/p')\nout=''\n\
+             while IFS= read -r b; do case \"$b\" in *'Write your result to '*) out=$(printf '%s' \"$b\" | sed -n 's/.*to \"\\(.*\\)\"\\..*/\\1/p');; *'When you are done'*) break;; esac; done\n\
+             '{g}' hook omp start </dev/null\nsleep 1\necho done > \"$out\"\n'{g}' reply \"$id\" done\n'{g}' hook omp end </dev/null\nsleep 60\n"
+        ),
+    );
+    let toml = format!("{}[[profile]]\nid = \"omp\"\ncommand = {}\n", sh_profile("cat", "stty raw -echo; cat -v"), json!(cfg.join("worker-omp.sh")));
+    profiles(&d, &mut ui, &toml, "worker-omp");
+
+    // "Tahap kustom": the need goes to the agent pane, the draft it writes is checked (a foreign key is refused, then a good one fills the card)
+    let t = ui.call("pane.create", json!({"profile": "cat", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let r = ui.call("recipe.step_draft_new", json!({"pane": t, "need": "cek desain UI, jangan ubah file"}))["result"].clone();
+    let (draft, path) = (r["draft"].as_str().unwrap().to_string(), r["path"].as_str().unwrap().to_string());
+    let shown = ui.attach_until(t, &["cek desain UI", "draft written"]);
+    assert!(shown.contains(" from user]") && shown.contains(&draft), "{shown}");
+    assert_eq!(ui.call("recipe.step_draft_get", json!({"draft": draft}))["result"]["exists"], false);
+    std::fs::write(&path, r#"{"name":"Audit UI","kind":"work","instruction":"Cek diff.","output":"desain.md","pass":"file","shell":true}"#).unwrap();
+    let got = ui.call("recipe.step_draft_get", json!({"draft": draft}))["result"].clone();
+    assert!(got["step"].is_null() && got["errors"][0]["code"] == "step_draft_key", "{got}");
+    std::fs::write(&path, r#"{"name":"Audit UI","kind":"work","instruction":"Cek diff.","output":"desain.md","pass":"file"}"#).unwrap();
+    let got = ui.call("recipe.step_draft_get", json!({"draft": draft}))["result"].clone();
+    assert_eq!(got["errors"], json!([]), "{got}");
+    let f = got["step"].clone();
+
+    // what the builder sends: the custom card (Kustom defaults) dragged before Plan, Ship last
+    let lib = ui.call("recipe.library", json!({}))["result"].clone();
+    let card = |id: &str| lib["steps"].as_array().unwrap().iter().find(|s| s["id"] == id).unwrap_or_else(|| panic!("{lib}")).clone();
+    let mut plan = card("plan");
+    plan["agents"] = json!(["omp"]);
+    plan["model"] = json!("");
+    plan["effort"] = json!("");
+    plan["inputs"] = json!([]);
+    plan["output"] = json!("plan.md");
+    plan["pass"] = json!("file");
+    plan["timeout_secs"] = json!(60);
+    let custom = json!({"id": "tahap-audit-ui", "kind": f["kind"], "name": f["name"], "need": "cek desain UI, jangan ubah file", "instruction": f["instruction"],
+        "agents": ["omp"], "model": "", "models": {}, "effort": "", "output": f["output"], "inputs": [], "pass": f["pass"], "timeout_secs": 60,
+        "gate": false, "human": false, "shell": false, "max_cost": null});
+    let mut recipe = lib["templates"][0]["recipe"].clone();
+    recipe["name"] = json!("Dari builder");
+    recipe["steps"] = json!([custom, plan, card("ship")]);
+    let r = ui.call("recipe.render", json!({"id": "dari-builder", "recipe": recipe}))["result"].clone();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let text = r["text"].as_str().unwrap();
+    let at = |id: &str| text.find(&format!("id = \"{id}\"")).unwrap_or_else(|| panic!("{text}"));
+    assert!(at("tahap-audit-ui") < at("plan") && at("plan") < at("ship"), "{text}");
+    assert!(text.contains("need = \"cek desain UI"), "{text}");
+    assert_eq!(ui.call("recipe.save", json!({"id": "dari-builder", "hash": r["hash"]}))["result"], json!({}));
+    assert_eq!(ui.call("recipe.get", json!({"id": "dari-builder"}))["result"]["status"], "approved");
+
+    let repo = d.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    let s = ui.call("harness.start", json!({"recipe": "dari-builder", "request": "cek UI", "cwd": repo, "workspace": "w", "test": "true"}))["result"].clone();
+    let run = s["run"].as_str().unwrap_or_else(|| panic!("{s}")).to_string();
+    let s = wait_state(&mut ui, &run, &["gate", "halted"]);
+    assert_eq!(s["state"], "gate", "{s}");
+    // the daemon runs the cards in the order of the screen, one pass each, and stops at Ship
+    let ids: Vec<&str> = s["steps"].as_array().unwrap().iter().filter_map(|x| x["id"].as_str()).collect();
+    assert_eq!(ids, ["tahap-audit-ui", "plan", "ship"], "{s}");
+    // Plan's own gate (a library card has one) holds the run before Ship
+    assert_eq!(s["gate"], 1, "{s}");
+    let passed: Vec<u64> = s["trace"].as_array().unwrap().iter().filter(|e| e["code"] == "pass").filter_map(|e| e["step"].as_u64()).collect();
+    assert_eq!(passed, [0, 1], "{s}");
+    let art = cfg.join("harness").join(&run).join("artefak");
+    assert!(art.join("desain.md").exists() && art.join("plan.md").exists());
+    // approving Plan moves straight to Ship's gate: the last card, waiting for the user
+    let s = ui.call("harness.gate", json!({"run": run}))["result"].clone();
+    assert_eq!((s["state"].as_str(), s["gate"].as_u64()), (Some("gate"), Some(2)), "{s}");
+    assert_eq!(ui.call("harness.gate", json!({"run": run}))["result"]["state"], "done");
+}
+
 fn gone(ui: &mut Cli, pane: u64) {
     let t0 = Instant::now();
     while ui.call("pane.info", json!({"pane": pane}))["error"]["code"] != "no_such_pane" {
