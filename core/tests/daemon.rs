@@ -877,6 +877,43 @@ fn subagent_dari_hook() {
     assert!(seen.iter().all(|n| *n <= 3), "{seen:?}");
 }
 
+/// FR-99 P5: a turn keeps the agent's last message (from the stop hook) as a one-line summary, secrets masked; a turn of an
+/// agent that said nothing keeps none.
+#[test]
+fn turn_keeps_the_last_agent_message_as_its_summary() {
+    let d = start("turn-summary");
+    let mut ui = Cli::ui(&d);
+    let exe = env!("CARGO_BIN_EXE_gembala");
+    let cfg = d.dir.join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let repo = d.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |a: &[&str]| assert!(std::process::Command::new("git").args(a).current_dir(&repo).status().unwrap().success());
+    git(&["init", "-q"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"]);
+    let hook = |ev: &str, body: &str| format!("printf '%s' '{body}' | '{exe}' hook claude {ev}\n");
+    let msg = r#"{"last_assistant_message":"Dock cuma memantul saat butuh izin.\n\nToken ghp_abcdefghijklmnopqrstuvwxyz0123456789 jangan bocor."}"#;
+    let fake = cfg.join("turn-claude.sh");
+    std::fs::write(&fake, format!("#!/bin/sh\ncd '{}'\n{}sleep 1\necho one > a.txt\n{}sleep 1\n{}sleep 1\necho two > b.txt\n{}sleep 60\n", repo.display(), hook("prompt", "{}"), hook("stop", msg), hook("prompt", "{}"), hook("stop", "{}"))).unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    profiles(&d, &mut ui, &format!("[[profile]]\nid = \"claude\"\ncommand = {}\n", json!(fake)), "turn-claude");
+    let pane = ui.call("pane.create", json!({"profile": "claude", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let t0 = Instant::now();
+    let turns = loop {
+        let r = ui.call("git.turns", json!({"pane": pane}))["result"].clone();
+        if r.as_array().is_some_and(|a| a.len() >= 2) {
+            break r;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "turns: {r}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    // newest first: the second turn said nothing, the first one's message is one clean line
+    assert_eq!(turns[0]["summary"], "", "{turns}");
+    let first = turns[1]["summary"].as_str().unwrap();
+    assert!(first.starts_with("Dock cuma memantul saat butuh izin. Token ") && !first.contains("ghp_abc") && !first.contains('\n'), "{first}");
+}
+
 /// FR-48: reset deletes only Gembala-owned files, then the daemon exits; other files in that folder aren't touched.
 #[test]
 fn reset_hanya_data_gembala() {

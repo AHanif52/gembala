@@ -31,6 +31,8 @@ pub struct Turn {
     pub after: String,
     pub head: String,
     pub title: String,
+    /// FR-99 P5: the agent's last message of the turn (hook text, secrets already masked, clipped); empty without one
+    pub summary: String,
     pub skipped: Vec<String>,
 }
 
@@ -179,9 +181,23 @@ pub fn restore(root: &str, before: &str, files: &[(&str, String)]) -> Option<usi
 }
 
 /// Turn done = snapshot after
-pub fn finish(o: Open, end: u64, title: String) -> Option<Turn> {
+pub fn finish(o: Open, end: u64, title: String, summary: String) -> Option<Turn> {
     let (after, skipped) = take(&o.root)?;
-    Some(Turn { start: o.start, end, root: o.root, before: o.before, after, head: o.head, title, skipped })
+    Some(Turn { start: o.start, end, root: o.root, before: o.before, after, head: o.head, title, summary, skipped })
+}
+
+pub const SUMMARY_MAX: usize = 300;
+
+/// FR-99 P5: one short line from an agent's last message: control characters dropped, whitespace collapsed, cut at
+/// `SUMMARY_MAX` characters (on a word when it can, with an ellipsis). Masking secrets is the caller's job.
+pub fn clip_summary(text: &str) -> String {
+    let flat = text.chars().filter(|c| !c.is_control() || c.is_whitespace()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= SUMMARY_MAX {
+        return flat;
+    }
+    let cut: String = flat.chars().take(SUMMARY_MAX).collect();
+    let word = cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a);
+    format!("{}…", word.trim_end_matches([',', ';', ':', '.']))
 }
 
 /// One queue for every snapshot: turn start/end order holds, agent hooks don't wait for git
@@ -213,6 +229,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn summary_is_one_clipped_line() {
+        assert_eq!(clip_summary("  Bikin layar\n\nharness.\t48 tes lewat. \x1b[0m"), "Bikin layar harness. 48 tes lewat. [0m");
+        assert_eq!(clip_summary(""), "");
+        let long = "kata ".repeat(100);
+        let s = clip_summary(&long);
+        assert!(s.ends_with('…') && s.chars().count() <= SUMMARY_MAX + 1, "{s}");
+        assert!(!s.contains("kat…"), "cut on a word: {s}");
+        assert_eq!(clip_summary(&"x".repeat(500)).chars().count(), SUMMARY_MAX + 1, "one long word is cut hard");
+    }
+
+    #[test]
     fn giliran_dipotret_dan_dikembalikan() {
         let base = std::env::temp_dir().join(format!("gembala-snap-{}", std::process::id()));
         let repo = base.join("repo");
@@ -232,7 +259,7 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "dua\n").unwrap();
         std::fs::write(repo.join("b.txt"), "baru\n").unwrap();
         std::fs::write(repo.join("rahasia.txt"), "x").unwrap();
-        let turn = &finish(open, 2, "uji".into()).unwrap();
+        let turn = &finish(open, 2, "uji".into(), String::new()).unwrap();
         assert_eq!(stat(turn), (2, 2, 1));
         assert!(diff(turn)["diff"].as_str().unwrap().contains("+dua"));
         let files = preview(&root, &turn.before).unwrap();

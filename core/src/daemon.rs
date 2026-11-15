@@ -849,7 +849,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             let done = pane.turns.lock().unwrap().done.clone();
             Ok(json!(done.iter().enumerate().rev().map(|(i, t)| {
                 let (files, add, del) = snap::stat(t);
-                json!({"i": i, "start": t.start, "end": t.end, "title": t.title, "files": files, "add": add, "del": del, "skipped": t.skipped})
+                json!({"i": i, "start": t.start, "end": t.end, "title": t.title, "files": files, "add": add, "del": del, "summary": t.summary, "skipped": t.skipped})
             }).collect::<Vec<_>>()))
         }
         "git.turn_diff" | "git.turn_preview" | "git.turn_restore" => {
@@ -3079,6 +3079,11 @@ fn set_status(st: &State, id: u64, pane: &Pane, status: &'static str, only_from:
     status_changed(st, id, pane, status);
 }
 
+/// FR-99 P5: the agent's last message as the turn's one-line summary: secrets masked (SEC-38, SEC-12) before it is clipped
+fn turn_summary(text: &str) -> String {
+    snap::clip_summary(&git::redact(&telegram::mask_secrets(text)))
+}
+
 /// FR-70: turn start (working) and end (idle/done) = snapshot of the agent's working folder, in the queue
 fn turn_edge(pane: &Pane, prev: &str, status: &str) {
     let Ok(terminal) = pane.terminal() else { return };
@@ -3096,9 +3101,11 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
         });
     } else if busy(prev) && matches!(status, "idle" | "done") {
         let title = pane.title.lock().unwrap().clone();
+        // FR-99 P5: what the agent said at the end of the turn (hook text; none for an agent without one), kept with the turn
+        let summary = pane.last_msg.lock().unwrap().as_deref().map(turn_summary).unwrap_or_default();
         snap::queue(move || {
             let Some(open) = turns.lock().unwrap().open.take() else { return };
-            if let Some(t) = snap::finish(open, history::now(), title) {
+            if let Some(t) = snap::finish(open, history::now(), title, summary) {
                 let mut cur = turns.lock().unwrap();
                 cur.done.push(t);
                 if cur.done.len() > snap::MAX_TURNS {
