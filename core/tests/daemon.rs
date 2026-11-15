@@ -2633,6 +2633,12 @@ fn harness_runs_a_recipe_with_fallback_and_a_gate() {
     assert_eq!((s["state"].clone(), s["gate"].clone()), (json!("gate"), json!(2)), "{s}");
     assert!(cfg.join("harness").join(&run2).join("artefak/plan.md").exists());
     assert_eq!(std::fs::read_to_string(cfg.join("harness").join(&run2).join("artefak/permintaan.md")).unwrap(), "make a plan");
+    // FR-99 P3 `skip_shell`: no test command and the user said skip it = the Test stage is dropped instead of refused
+    let none = json!({"recipe": "t", "request": "make a plan", "cwd": repo, "workspace": "w2", "test": ""});
+    assert_eq!(ui.call("harness.preflight", none.clone())["result"]["ok"], false);
+    let mut skip = none.clone();
+    skip["skip_shell"] = json!(true);
+    assert_eq!(ui.call("harness.preflight", skip)["result"]["ok"], true);
     // a live run cannot be restarted; Ship is no place to begin
     assert_eq!(ui.call("harness.restart", json!({"run": run2}))["error"]["code"], "run_active");
     ui.call("harness.stop", json!({"run": run2}));

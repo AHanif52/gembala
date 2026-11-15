@@ -75,6 +75,8 @@ pub struct Live {
     cwd: PathBuf,
     dir: PathBuf,
     test: String,
+    /// FR-99 P3: started without the shell stage; a restart keeps it so the stage numbers still match
+    skip_shell: bool,
     run: harness::Run,
     from: u64,
     t0: Instant,
@@ -455,6 +457,7 @@ fn snapshot(st: &State, l: &Live) -> Value {
 fn save(st: &State, l: &Live) {
     let mut v = snapshot(st, l);
     v["test"] = json!(l.test);
+    v["skip_shell"] = json!(l.skip_shell);
     let _ = config::write_atomic(&l.dir.join("run.json"), format!("{v}\n").as_bytes());
 }
 
@@ -815,7 +818,8 @@ pub fn preflight(st: &State, p: &Value) -> Result<(Vec<Value>, Option<recipe::Re
         let run = harness::Run::new(r.clone(), &inst);
         let missing: Vec<&str> = run.recipe.steps.iter().filter(|s| !s.human && !s.shell && s.agents.is_empty()).map(|s| s.id.as_str()).collect();
         items.push(item("agents_installed", missing.is_empty(), true, missing.join(", ")));
-        let need_test = r.steps.iter().any(|s| s.shell);
+        // FR-99 P3: the user left Test empty in the simple mode: the shell stage is dropped, nothing to run
+        let need_test = r.steps.iter().any(|s| s.shell) && p["skip_shell"] != true;
         let test = p["test"].as_str().unwrap_or_default().trim();
         items.push(item("test_command", !need_test || (!test.is_empty() && test.len() <= 500 && !test.chars().any(char::is_control)), true, ""));
         if r.steps.iter().any(|s| s.agents.iter().any(|a| a == "claude")) {
@@ -868,7 +872,10 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
     if let Some(bad) = items.iter().find(|i| i["ok"] == false && i["blocking"] == true) {
         return Ok(json!({"error": "preflight", "args": {"check": bad["check"], "detail": bad["detail"]}}));
     }
-    let recipe = recipe.ok_or("bad_params")?;
+    let mut recipe = recipe.ok_or("bad_params")?;
+    if p["skip_shell"] == true {
+        recipe.steps.retain(|s| !s.shell);
+    }
     let request = msg::sanitize(p["request"].as_str().ok_or("bad_params")?)?;
     if request.trim().is_empty() || request.len() > MAX_REQUEST {
         return Err("bad_params");
@@ -907,6 +914,7 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
         cwd,
         dir,
         test: p["test"].as_str().unwrap_or_default().trim().to_string(),
+        skip_shell: p["skip_shell"] == true,
         run,
         from,
         t0: Instant::now(),
@@ -972,7 +980,7 @@ fn restart(st: &Arc<State>, p: &Value) -> Res {
     let prev = steps.get(..from).and_then(|s| s.iter().rev().find(|s| s["kind"] == "work" && s["human"] != true && s["shell"] != true));
     let request = fs::read_to_string(dir.join("artefak").join(REQUEST_FILE)).map_err(|_| "no_such_run")?;
     let mut np = json!({
-        "recipe": old["recipe"], "workspace": old["workspace"], "cwd": old["cwd"], "test": old["test"], "request": request,
+        "recipe": old["recipe"], "workspace": old["workspace"], "cwd": old["cwd"], "test": old["test"], "skip_shell": old["skip_shell"], "request": request,
         "from": from, "copy_from": id, "worker": prev.and_then(|s| s["pane_agent"].as_str()),
     });
     np["from_pane"] = p["from_pane"].clone();
