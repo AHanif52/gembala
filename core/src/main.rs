@@ -35,6 +35,7 @@ const USAGE: &str = "usage: gembala daemon [--secret-fd N | --secret-sock <path>
        gembala reply <msg_id> <text…>
        gembala cancel <msg_id>
        gembala edit <msg_id> <text…>
+       gembala handoff [<pane>]
        gembala close <pane>
        gembala report <title> [text…] [--screenshot]
        gembala status
@@ -60,7 +61,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // FR-78: `addons <agent>` is called by the zsh `claude`/`codex` functions (internal, not in USAGE)
-        cmd @ ("send" | "wait" | "read" | "reply" | "cancel" | "edit" | "close" | "report" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
+        cmd @ ("send" | "wait" | "read" | "reply" | "cancel" | "edit" | "handoff" | "close" | "report" | "status" | "watch" | "token" | "addons") => agent_cli(cmd, &args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -276,6 +277,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
         "reply" if rest.len() >= 2 => json!({"msg_id": rest[0], "body": text(1)}),
         "cancel" if rest.len() == 1 => json!({"msg_id": rest[0]}),
         "edit" if rest.len() >= 2 => json!({"msg_id": rest[0], "body": text(1)}),
+        "handoff" if rest.len() <= 1 => json!({"to": rest.first()}),
         "close" if rest.len() == 1 => json!({"target": rest[0]}),
         // FR-100: a draft for the user to review; Gembala never sends it anywhere (SEC-40)
         "report" if !rest.is_empty() => json!({"title": rest[0], "body": text(1), "screenshot": opt.get("screenshot")}),

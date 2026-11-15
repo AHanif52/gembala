@@ -64,7 +64,150 @@ impl Msg {
         // FR-99 P2: seconds since the epoch, so the "Butuh lu" strip can put the longest wait on top
         let at = self.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         json!({"id": self.id, "from": self.from_name, "to": self.to_name, "hop": self.hop, "reply_to": self.reply_to, "preview": preview, "at": at,
-               "kind": self.tag.kind.name(), "task": self.tag.task, "parent": self.tag.parent, "edited": self.tag.edited})
+               "kind": self.tag.kind.name(), "task": self.tag.task, "parent": self.tag.parent, "edited": self.tag.edited,
+               "outcome": (self.tag.kind == Kind::Result).then(|| result_status(&self.body).unwrap_or("unspecified"))})
+    }
+}
+
+/// FR-95 (5), FR-91: the outcome a `result` states itself, `Status: done|partial|blocked` on one of its first lines. Nothing is
+/// guessed from prose: no such line = `None` (shown as "nggak disebut").
+pub fn result_status(body: &str) -> Option<&'static str> {
+    body.lines().take(6).find_map(|l| {
+        let v = l.trim().trim_start_matches(['*', '#', '-', ' ']).to_ascii_lowercase();
+        let v = v.strip_prefix("status")?.trim_start_matches(['*', ' ']).strip_prefix(':')?.trim().trim_matches('*').trim().to_string();
+        ["done", "partial", "blocked"].into_iter().find(|s| v == *s || v.starts_with(&format!("{s} ")) || v.starts_with(&format!("{s}.")))
+    })
+}
+
+/// FR-96: how long results of one group wait for the slowest helper
+pub const GROUP_HOLD: Duration = Duration::from_secs(30 * 60);
+
+/// FR-96: where one request to a helper stands
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fin {
+    Waiting,
+    /// its `result` is held until the whole group has an end
+    Answered { rid: String, body: String },
+    /// the owner got it already (an explicit `wait --reply`, or a group of one)
+    Delivered,
+    /// failed or ended: rejected, expired, cancelled, pane closed, agent exited (reason as a code)
+    Ended(String),
+    /// the owner cancelled it itself: ends the wait, nothing to tell
+    Silent,
+}
+
+#[derive(Clone, Debug)]
+pub struct Member {
+    pub id: String,
+    pub to: u64,
+    pub to_name: String,
+    pub fin: Fin,
+}
+
+/// FR-96: requests one owner sent while serving the same parent request (or none) and before the first was answered
+pub struct Group {
+    owner: u64,
+    parent: Option<String>,
+    task: String,
+    pub members: Vec<Member>,
+    last_request: Instant,
+}
+
+/// FR-96: what goes to the owner as one message
+#[derive(Debug)]
+pub struct Flush {
+    pub owner: u64,
+    pub task: String,
+    /// id of the first request, the one the combined message "replies" to
+    pub first: String,
+    pub items: Vec<Member>,
+    /// helpers still waited on when the hold ran out
+    pub pending: Vec<String>,
+}
+
+impl Group {
+    fn flush(self, pending: bool) -> Flush {
+        let first = self.members.first().map(|m| m.id.clone()).unwrap_or_default();
+        let (done, wait): (Vec<Member>, Vec<Member>) = self.members.into_iter().partition(|m| m.fin != Fin::Waiting);
+        Flush { owner: self.owner, task: self.task, first, items: done, pending: if pending { wait.into_iter().map(|m| m.to_name).collect() } else { vec![] } }
+    }
+}
+
+impl Engine {
+    /// FR-96: a `request` an agent sent is followed until it has an end
+    pub fn track(&mut self, m: &Msg) {
+        if m.tag.kind != Kind::Request || m.is_reply || m.from == 0 {
+            return;
+        }
+        let member = Member { id: m.id.clone(), to: m.to, to_name: m.to_name.clone(), fin: Fin::Waiting };
+        match self.groups.iter_mut().find(|g| g.owner == m.from && g.parent == m.tag.parent && g.members.iter().all(|x| x.fin == Fin::Waiting)) {
+            Some(g) => {
+                g.members.push(member);
+                g.last_request = Instant::now();
+            }
+            None => self.groups.push(Group { owner: m.from, parent: m.tag.parent.clone(), task: m.tag.task.clone(), members: vec![member], last_request: Instant::now() }),
+        }
+        if self.groups.len() > 200 {
+            self.groups.remove(0);
+        }
+    }
+
+    /// FR-96: `id` is a request still followed
+    pub fn is_tracked(&self, id: &str) -> bool {
+        self.groups.iter().any(|g| g.members.iter().any(|m| m.id == id && m.fin == Fin::Waiting))
+    }
+
+    /// FR-96: the group `id` belongs to fans out to more than one helper (its results are held). Two requests to the same
+    /// helper are a queue, not a fan-out: each answer goes straight back.
+    pub fn grouped(&self, id: &str) -> bool {
+        self.groups.iter().any(|g| {
+            g.members.iter().any(|m| m.id == id && m.fin == Fin::Waiting) && g.members.iter().any(|m| m.to_name != g.members[0].to_name)
+        })
+    }
+
+    /// FR-96: `id` got an end. `Some` when that was the last one the group waited for.
+    pub fn settle(&mut self, id: &str, fin: Fin) -> Option<Flush> {
+        let gi = self.groups.iter().position(|g| g.members.iter().any(|m| m.id == id && m.fin == Fin::Waiting))?;
+        self.groups[gi].members.iter_mut().find(|m| m.id == id)?.fin = fin;
+        if self.groups[gi].members.iter().all(|m| m.fin != Fin::Waiting) {
+            return Some(self.groups.remove(gi).flush(false));
+        }
+        None
+    }
+
+    /// FR-96: a held `result` an explicit `wait --reply <id>` asks for now: handed over, no longer part of the combined message
+    pub fn take_held(&mut self, id: &str) -> Option<(String, String, String, Option<Flush>)> {
+        let gi = self.groups.iter().position(|g| g.members.iter().any(|m| m.id == id && matches!(m.fin, Fin::Answered { .. })))?;
+        let m = self.groups[gi].members.iter_mut().find(|m| m.id == id)?;
+        let Fin::Answered { rid, body } = std::mem::replace(&mut m.fin, Fin::Delivered) else { return None };
+        let name = m.to_name.clone();
+        let flush = self.groups[gi].members.iter().all(|m| m.fin != Fin::Waiting).then(|| self.groups.remove(gi).flush(false));
+        Some((rid, name, body, flush))
+    }
+
+    /// FR-96: requests still waiting whose pane is `gone` (checked by the delivery loop); the ends they cause
+    pub fn fail_where(&mut self, gone: impl Fn(&Member) -> Option<&'static str>) -> Vec<Flush> {
+        let hits: Vec<(String, &'static str)> = self.groups.iter().flat_map(|g| g.members.iter()).filter(|m| m.fin == Fin::Waiting).filter_map(|m| gone(m).map(|r| (m.id.clone(), r))).collect();
+        hits.into_iter().filter_map(|(id, r)| self.settle(&id, Fin::Ended(r.into()))).collect()
+    }
+
+    /// FR-96: groups that waited `GROUP_HOLD` since their last request and have something to say go with a "still waiting" list
+    pub fn due_groups(&mut self) -> Vec<Flush> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.groups.len() {
+            let g = &self.groups[i];
+            if g.last_request.elapsed() < GROUP_HOLD {
+                i += 1;
+            } else if g.members.iter().any(|m| m.fin != Fin::Waiting) {
+                out.push(self.groups.remove(i).flush(true));
+            } else if g.last_request.elapsed() > GROUP_HOLD * 4 {
+                self.groups.remove(i); // nothing came back for two hours: stop following
+            } else {
+                i += 1;
+            }
+        }
+        out
     }
 }
 
@@ -128,6 +271,8 @@ pub struct Engine {
     /// FR-100: problem reports an agent drafted with `gembala report`; only the user sends them (SEC-40)
     pub reports: Vec<Msg>,
     pub history: VecDeque<Value>,
+    /// FR-96: requests agents sent, until each has an end (memory only: a restart makes them FR-90 cards)
+    groups: Vec<Group>,
 }
 
 impl Engine {
@@ -584,5 +729,97 @@ mod tests {
         assert_eq!(f.metadata().unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(dir.join("audit/audit.key")).unwrap().permissions().mode() & 0o777, 0o600);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn req(id: &str, to: u64, name: &str) -> Msg {
+        Msg { to, to_name: name.into(), body: "x".into(), ..msg(id, 0) }
+    }
+
+    /// FR-95 (5): only a stated `Status:` line counts; prose never decides
+    #[test]
+    fn hasil_menyebut_status_sendiri() {
+        assert_eq!(result_status("Status: done
+Goal: x"), Some("done"));
+        assert_eq!(result_status("**Status:** blocked
+Unblock: key"), Some("blocked"));
+        assert_eq!(result_status("- status: Partial (2 of 3)"), Some("partial"));
+        assert_eq!(result_status("Selesai semua, done!"), None);
+        assert_eq!(result_status("Status: kayaknya beres"), None);
+        let r = Msg { tag: Tag { kind: Kind::Result, ..Default::default() }, body: "Status: done".into(), ..msg("r", 0) };
+        assert_eq!(r.summary()["outcome"], "done");
+        assert_eq!(Msg { tag: Tag { kind: Kind::Result, ..Default::default() }, ..msg("r2", 0) }.summary()["outcome"], "unspecified");
+        assert!(msg("q", 0).summary()["outcome"].is_null());
+    }
+
+    /// FR-96: results of one group wait for the last end, failures count as ends, then one message
+    #[test]
+    fn jawaban_pembantu_digabung() {
+        let mut e = Engine::default();
+        for (id, to, n) in [("a", 2, "h-1"), ("b", 3, "h-2"), ("c", 4, "h-3")] {
+            e.track(&req(id, to, n));
+        }
+        assert!(e.grouped("a") && e.grouped("c"));
+        assert!(e.settle("a", Fin::Answered { rid: "ra".into(), body: "hasil A".into() }).is_none());
+        assert!(!e.grouped("a"), "sudah punya akhir");
+        assert!(e.settle("b", Fin::Ended("expired".into())).is_none());
+        let f = e.settle("c", Fin::Answered { rid: "rc".into(), body: "hasil C".into() }).unwrap();
+        assert_eq!((f.owner, f.first.as_str(), f.items.len(), f.pending.len()), (1, "a", 3, 0));
+        assert_eq!(f.items[1].fin, Fin::Ended("expired".into()));
+        assert!(e.settle("a", Fin::Delivered).is_none(), "grup sudah bubar");
+    }
+
+    /// FR-96: a request sent after another one was answered starts its own group; other owners and parents stay apart
+    #[test]
+    fn kelompok_dipisah() {
+        let mut e = Engine::default();
+        e.track(&req("a", 2, "h-1"));
+        e.track(&req("a2", 2, "h-1"));
+        assert!(!e.grouped("a"), "same helper twice is no fan-out");
+        e.track(&req("b", 3, "h-2"));
+        assert!(e.grouped("a2"));
+        assert!(e.settle("a", Fin::Delivered).is_none());
+        e.track(&req("c", 4, "h-3"));
+        assert!(!e.grouped("c"), "yang pertama sudah dijawab: grup baru");
+        let child = Msg { tag: Tag { parent: Some("p".into()), ..Default::default() }, ..req("d", 5, "h-4") };
+        e.track(&child);
+        assert!(!e.grouped("d"));
+        e.track(&Msg { from: 9, ..req("e", 5, "h-4") });
+        assert!(!e.grouped("e"));
+        // a note and a reply are never followed
+        e.track(&Msg { tag: Tag { kind: Kind::Note, ..Default::default() }, ..req("n", 2, "h-1") });
+        e.track(&Msg { is_reply: true, ..req("r", 2, "h-1") });
+        assert!(e.settle("n", Fin::Delivered).is_none() && e.settle("r", Fin::Delivered).is_none());
+    }
+
+    /// FR-96: a group of one still reports its end; closed panes and exited agents end what waited on them
+    #[test]
+    fn akhir_tunggal_dan_pane_hilang() {
+        let mut e = Engine::default();
+        e.track(&req("a", 2, "h-1"));
+        let f = e.settle("a", Fin::Ended("cancelled".into())).unwrap();
+        assert_eq!(f.items.len(), 1);
+        e.track(&req("b", 2, "h-1"));
+        e.track(&req("c", 3, "h-2"));
+        let out = e.fail_where(|m| (m.to == 2).then_some("pane_closed"));
+        assert!(out.is_empty(), "c masih ditunggu");
+        let f = e.settle("c", Fin::Answered { rid: "rc".into(), body: "ok".into() }).unwrap();
+        assert_eq!(f.items.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["b", "c"]);
+    }
+
+    /// FR-96: a held result can be fetched by an explicit wait, and the hold ends after 30 minutes with a pending list
+    #[test]
+    fn hasil_tertahan_diambil_wait_dan_batas_waktu() {
+        let mut e = Engine::default();
+        e.track(&req("a", 2, "h-1"));
+        e.track(&req("b", 3, "h-2"));
+        e.settle("a", Fin::Answered { rid: "ra".into(), body: "hasil A".into() });
+        let (rid, name, body, flush) = e.take_held("a").unwrap();
+        assert_eq!((rid.as_str(), name.as_str(), body.as_str()), ("ra", "h-1", "hasil A"));
+        assert!(flush.is_none() && e.take_held("a").is_none());
+        assert!(e.due_groups().is_empty());
+        e.groups[0].last_request = Instant::now() - GROUP_HOLD - Duration::from_secs(1);
+        let due = e.due_groups();
+        assert_eq!((due.len(), due[0].pending.clone()), (1, vec!["h-2".to_string()]));
+        assert!(e.settle("b", Fin::Delivered).is_none(), "grup sudah dikirim");
     }
 }

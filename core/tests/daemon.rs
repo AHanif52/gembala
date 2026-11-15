@@ -3127,6 +3127,98 @@ fn fr95_jenis_pesan_dan_nomor_tugas() {
     assert!(out.contains("[Gembala · note from Gembala"), "{out}");
 }
 
+/// Three agent panes (`pa-1` owner, `pb-1`, `pc-1` helpers, all idle) with a pane-channel client each (FR-96 tests).
+fn agent_trio(tag: &str) -> (Daemon, Cli, [u64; 3], [Cli; 3]) {
+    let d = start(tag);
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = |n: &str| format!("stty -echo; '{g}' token > '{}/{n}.token'; cat", d.dir.display());
+    profiles(&d, &mut ui, &(sh_profile("pa", &script("a")) + &sh_profile("pb", &script("b")) + &sh_profile("pc", &script("c"))), "pc");
+    let ids: Vec<u64> = ["pa", "pb", "pc"].iter().map(|p| ui.call("pane.create", json!({"profile": p, "workspace": "w"}))["result"]["pane"].as_u64().unwrap()).collect();
+    let mut cs = [pane_client(&d, "a"), pane_client(&d, "b"), pane_client(&d, "c")];
+    for c in &mut cs {
+        assert!(c.call("hook", json!({"agent": "omp", "status": "idle"})).get("result").is_some());
+    }
+    std::thread::sleep(Duration::from_millis(600));
+    (d, ui, [ids[0], ids[1], ids[2]], cs)
+}
+
+/// FR-96: the owner's requests to two helpers; their results wait for each other and arrive as one labelled message, a
+/// helper whose pane closes ends its request with a failure line, and a held result can still be fetched with `wait --reply`.
+#[test]
+fn fr96_jawaban_pembantu_digabung() {
+    let (_d, mut ui, [a, _b, _c], [mut ca, mut cb, mut cc]) = agent_trio("fr96");
+    let id = |r: &Value| r["result"]["id"].as_str().unwrap_or_else(|| panic!("{r}")).to_string();
+    // two helpers, the first answers: held, nothing is typed into the owner
+    let (ib, ic) = (id(&ca.call("send", json!({"to": "pb-1", "body": "kerjain B", "queue": true}))), id(&ca.call("send", json!({"to": "pc-1", "body": "kerjain C", "queue": true}))));
+    std::thread::sleep(Duration::from_millis(600));
+    let r = cb.call("reply", json!({"msg_id": ib, "body": "Status: done\nGoal: B\nHASIL-B-LENGKAP"}));
+    assert_eq!((r["result"]["result"].as_str(), r["result"]["reason"].as_str()), (Some("stored"), Some("group_wait")), "{r}");
+    let held = ui.attach_until(a, &["tidak-ada"]);
+    assert!(!held.contains("HASIL-B-LENGKAP") && !held.contains("reply from"), "{held}");
+    // the second answers: one message with both, labelled, status stated or not
+    let r = cc.call("reply", json!({"msg_id": ic, "body": "HASIL-C-TANPA-STATUS"}));
+    assert_eq!(r["result"]["delivered_via"], "group", "{r}");
+    let out = ui.attach_until(a, &["HASIL-C-TANPA-STATUS"]);
+    for want in ["[Gembala · reply from Gembala", "pb-1 · done", "HASIL-B-LENGKAP", "pc-1 · nggak disebut", "HASIL-C-TANPA-STATUS"] {
+        assert!(out.contains(want), "{want}: {out}");
+    }
+    // round two: pb's pane closes before it answers = a failure line, together with pc's result
+    let (ib, ic) = (id(&ca.call("send", json!({"to": "pb-1", "body": "lagi B", "queue": true}))), id(&ca.call("send", json!({"to": "pc-1", "body": "lagi C", "queue": true}))));
+    std::thread::sleep(Duration::from_millis(600));
+    ui.call("pane.close", json!({"pane": _b}));
+    std::thread::sleep(Duration::from_millis(2500)); // the delivery loop notices once a second
+    let r = cc.call("reply", json!({"msg_id": ic, "body": "HASIL-C-DUA"}));
+    assert!(r["result"].is_object(), "{r} {ib}");
+    let out = ui.attach_until(a, &["HASIL-C-DUA", "pane-nya ditutup"]);
+    assert!(out.contains("pb-1 · gagal") && out.contains("pane-nya ditutup") && out.contains("HASIL-C-DUA"), "{out}");
+}
+
+/// FR-96: `wait --reply` on a held result hands it over at once, and it then stays out of the combined message.
+#[test]
+fn fr96_wait_mengambil_hasil_tertahan() {
+    let (_d, mut ui, [a, _, _], [mut ca, mut cb, mut cc]) = agent_trio("fr96-wait");
+    let id = |r: &Value| r["result"]["id"].as_str().unwrap_or_else(|| panic!("{r}")).to_string();
+    let (ib, ic) = (id(&ca.call("send", json!({"to": "pb-1", "body": "B", "queue": true}))), id(&ca.call("send", json!({"to": "pc-1", "body": "C", "queue": true}))));
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(cb.call("reply", json!({"msg_id": ib, "body": "Status: partial\nHASIL-B-DIAMBIL"}))["result"]["reason"], "group_wait");
+    let w = ca.call("wait", json!({"reply": ib, "timeout_ms": 3000}));
+    assert!(w["result"]["reply"]["body"].as_str().is_some_and(|b| b.contains("HASIL-B-DIAMBIL")), "{w}");
+    cc.call("reply", json!({"msg_id": ic, "body": "HASIL-C-SENDIRI"}));
+    let out = ui.attach_until(a, &["HASIL-C-SENDIRI"]);
+    assert!(!out.contains("HASIL-B-DIAMBIL"), "{out}");
+}
+
+/// FR-91 + FR-95 (5): a `result` that states `Status:` shows it in the history row; one that doesn't says so; the handover
+/// brief reaches the agent, and an agent can ask for the file itself.
+#[test]
+fn fr91_serah_terima_dan_status_hasil() {
+    let (_d, mut ui, _a, b, mut ca, mut cb) = agent_pair("fr91");
+    let id = |r: &Value| r["result"]["id"].as_str().unwrap_or_else(|| panic!("{r}")).to_string();
+    let i1 = id(&ca.call("send", json!({"to": "pb-1", "body": "satu", "queue": true})));
+    std::thread::sleep(Duration::from_millis(600));
+    let r = id(&cb.call("reply", json!({"msg_id": i1, "body": "Status: blocked\nUnblock: kunci API"})));
+    assert_eq!(history_row(&mut ui, "sent", &r)["msg"]["outcome"], "blocked");
+    let i2 = id(&ca.call("send", json!({"to": "pb-1", "body": "dua", "queue": true})));
+    std::thread::sleep(Duration::from_millis(600));
+    let r = id(&cb.call("reply", json!({"msg_id": i2, "body": "beres kok"})));
+    assert_eq!(history_row(&mut ui, "sent", &r)["msg"]["outcome"], "unspecified");
+    // the user's button: the brief (format, path, target) is typed into the agent when it is idle; a shell is refused
+    let h = ui.call("pane.handoff", json!({"pane": b, "to": "pa-1"}));
+    let path = h["result"]["path"].as_str().unwrap_or_else(|| panic!("{h}")).to_string();
+    assert!(path.contains("/handoff/") && path.ends_with(".md"), "{path}");
+    let out = ui.attach_until(b, &["gembala send pa-1"]);
+    for want in ["Hand your work over to `pa-1`", path.as_str(), "Status: done | partial | blocked", "Unblock:"] {
+        assert!(out.contains(want), "{want}: {out}");
+    }
+    assert_eq!(ui.call("pane.handoff", json!({"pane": b, "to": "bad name;"}))["error"]["code"], "bad_params");
+    let shell = ui.call("pane.create", json!({}))["result"]["pane"].as_u64().unwrap();
+    assert_eq!(ui.call("pane.handoff", json!({"pane": shell, "to": "pa-1"}))["error"]["code"], "not_an_agent");
+    // an agent hands over by itself: the file to write and the format
+    let r = ca.call("handoff", json!({"to": "pb-1"}));
+    assert!(r["result"]["path"].as_str().is_some_and(|p| p.ends_with(".md")) && r["result"]["format"].as_str().is_some_and(|f| f.contains("Remaining:")), "{r}");
+}
+
 /// FR-89: the sender or the user takes back / rewrites a queued message; sent ones are never touched.
 #[test]
 fn fr89_batal_dan_ubah_pesan_antre() {

@@ -278,7 +278,11 @@ pub fn marks(b: &[u8]) -> Vec<Mark> {
 
 /// History and log files untouched for more than 14 days are deleted.
 pub fn sweep() {
-    let Ok(entries) = std::fs::read_dir(dir()) else { return };
+    sweep_in(&dir());
+}
+
+pub fn sweep_in(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
     let limit = std::time::Duration::from_secs(KEEP_DAYS * 86400);
     for e in entries.flatten() {
         if e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|d| d > limit)) {

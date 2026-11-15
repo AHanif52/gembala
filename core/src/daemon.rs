@@ -532,7 +532,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     st.pane_subs.lock().unwrap().push((me, tx.clone()));
                     Ok(json!({}))
                 }
-                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage" | "cancel" | "edit", Some(me)) => pane_method_connected(&st, me, method, p, Some(r.get_ref())),
+                ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage" | "cancel" | "edit" | "handoff", Some(me)) => pane_method_connected(&st, me, method, p, Some(r.get_ref())),
                 // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
                 ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start", "substart", "substop"].into_iter().find(|s| *s == x)) {
                     // FR-101 item 1: a subagent started or ended; only the count changes, not the pane status
@@ -1085,6 +1085,17 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             let id = st.engine.lock().unwrap().new_id(&st.boot);
             (&to.terminal()?.master).write_all(&msg::wrap("user", "", &body)).map_err(|_| "io")?;
             Ok(json!({"result": "accepted", "id": id}))
+        }
+        // FR-91: the user asks the agent in this pane to write its handover summary and send the path to `to`
+        "pane.handoff" => {
+            let pane = st.pane(p)?;
+            if pane.agent_name().is_none() {
+                return Err("not_an_agent");
+            }
+            let to = p["to"].as_str().filter(|t| valid_name(t)).ok_or("bad_params")?;
+            let path = handoff_path(&pane)?;
+            queue_user(st, p["pane"].as_u64().ok_or("bad_params")?, &pane, handoff_brief(&path, to))?;
+            Ok(json!({"path": path.to_string_lossy()}))
         }
         "pane.policy" => {
             let pane = st.pane(p)?;
@@ -1971,6 +1982,121 @@ fn record(st: &State, kind: &str, m: &bus::Msg, reason: Option<&str>) {
         a.write(kind, m, reason);
     }
     bus_event(st, ev);
+    // FR-96: a request that ends without an answer (the cancel path reports itself, see `change_queued`)
+    if kind == "rejected" && !m.is_reply {
+        group_end(st, &m.id, reason.unwrap_or("rejected"));
+    }
+}
+
+/// FR-96: `id` (a request an agent sent) ended without an answer. Returns whether it was followed at all.
+fn group_end(st: &State, id: &str, reason: &str) -> bool {
+    let fin = if reason == "owner_cancelled" { bus::Fin::Silent } else { bus::Fin::Ended(reason.to_string()) };
+    let (tracked, flush) = {
+        let mut eng = st.engine.lock().unwrap();
+        let tracked = eng.is_tracked(id);
+        (tracked, eng.settle(id, fin))
+    };
+    if let Some(f) = flush {
+        deliver_flush(st, f);
+    }
+    tracked
+}
+
+/// FR-96, once a second: requests whose helper pane is closed or whose agent exited end here, and groups past their hold go
+/// out with what they have
+fn group_scan(st: &State) {
+    thread_local!(static LAP: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+    if LAP.with(|l| { l.set(l.get() + 1); l.get() % 5 != 0 }) {
+        return;
+    }
+    let alive: HashMap<u64, bool> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.agent_name().is_some())).collect();
+    let flushes = {
+        let mut eng = st.engine.lock().unwrap();
+        let mut out = eng.fail_where(|m| match alive.get(&m.to) {
+            _ if m.to == 0 => None, // still an FR-75 card: the card's own end reports it
+            None => Some("pane_closed"),
+            Some(false) => Some("agent_exited"),
+            Some(true) => None,
+        });
+        out.extend(eng.due_groups());
+        out
+    };
+    for f in flushes {
+        deliver_flush(st, f);
+    }
+}
+
+/// FR-91: handover summaries live in Gembala's own folder (0700), next to the history files, swept after 14 days
+fn handoff_dir() -> std::path::PathBuf {
+    config::path().with_file_name("handoff")
+}
+
+fn handoff_path(pane: &Pane) -> Result<std::path::PathBuf, &'static str> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = handoff_dir();
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|_| "io")?;
+    let name: String = pane.name.lock().unwrap().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    Ok(dir.join(format!("{name}-{}.md", history::now())))
+}
+
+/// FR-91: what the agent is asked to do; its own words, never a summary Gembala builds from the screen (SEC-15)
+fn handoff_brief(path: &std::path::Path, to: &str) -> String {
+    format!(
+        "Hand your work over to `{to}`. Write a summary of this task to {} in this format (max ~4000 characters; put long details in a separate file and list its path):\n{}\n\
+         When the file is written, run `gembala send {to} \"Continue this task. Handover summary: {} (read it first). <one line on what to do next>\"`. \
+         If `{to}` is not open, that send asks the user to open it. Then tell the user it is done.",
+        path.display(),
+        profile::HANDOFF_FORMAT,
+        path.display()
+    )
+}
+
+/// FR-96: why a helper's request ended, in the words the owner reads
+fn end_text(reason: &str) -> String {
+    match reason {
+        "expired" => "kedaluwarsa, nggak sempat diketik ke pane-nya".into(),
+        "target_gone" | "pane_closed" => "pane-nya ditutup".into(),
+        "agent_exited" | "target_unknown" | "target_shell" => "agent-nya sudah keluar".into(),
+        "cancelled" => "dibatalin user sebelum sampai".into(),
+        r => format!("ditolak ({r})"),
+    }
+}
+
+/// FR-96: what a group has by now goes to its owner as one message: the helpers' results with their labels, then the failures
+/// and what is still waited on. Only failures = a `note` from Gembala; with a result in it, a `result`.
+fn deliver_flush(st: &State, f: bus::Flush) {
+    const EACH: usize = 3000;
+    let mut parts: Vec<String> = Vec::new();
+    let mut answered = 0;
+    for m in &f.items {
+        match &m.fin {
+            bus::Fin::Answered { body, .. } => {
+                answered += 1;
+                let status = bus::result_status(body).unwrap_or("nggak disebut");
+                let text: String = body.chars().take(EACH).collect();
+                parts.push(format!("--- {} · {status} (request {}) ---\n{text}", m.to_name, m.id));
+            }
+            bus::Fin::Ended(r) => parts.push(format!("--- {} · gagal (request {}) ---\n{}", m.to_name, m.id, end_text(r))),
+            _ => {}
+        }
+    }
+    if parts.is_empty() {
+        return;
+    }
+    if !f.pending.is_empty() {
+        parts.push(format!("Masih ditunggu: {}.", f.pending.join(", ")));
+    }
+    let n = parts.len();
+    let body = if answered == 0 && n == 1 {
+        parts.remove(0).replacen("--- ", "Gembala: ", 1).replacen(" ---\n", ": ", 1)
+    } else {
+        format!("Hasil dari pembantu lu (satu tugas, digabung):\n{}", parts.join("\n"))
+    };
+    let Some(pane) = st.panes.lock().unwrap().get(&f.owner).cloned() else { return };
+    let id = st.engine.lock().unwrap().new_id(&st.boot);
+    let tag = bus::Tag { kind: if answered > 0 { bus::Kind::Result } else { bus::Kind::Note }, task: f.task.clone(), parent: Some(f.first.clone()), edited: false };
+    let m = bus::Msg { id, from: 0, from_name: "Gembala".into(), to: f.owner, to_name: pane.name.lock().unwrap().clone(), body, reply_to: Some(f.first.clone()), hop: 0, is_reply: true, at: std::time::SystemTime::now(), tag };
+    try_send(st, m, true, true);
 }
 
 fn reject(st: &State, m: &bus::Msg, reason: &'static str) -> Value {
@@ -2097,8 +2223,12 @@ fn change_queued(st: &State, id: &str, by: Option<u64>, edit: Option<&str>) -> R
                 record(st, "cancelled", &m, None);
                 // the sender hears it: a waiting `wait --reply` ends with `cancelled`; an agent not waiting gets a note
                 // when someone else (the user) cancelled
-                if by.is_none() && !m.is_reply && m.from != 0 {
-                    gembala_note(st, m.from, &m.id, &format!("Pesan lu {} ke {} dibatalin user sebelum sampai (cancelled).", m.id, m.to_name));
+                if !m.is_reply && m.from != 0 {
+                    // FR-96: a followed request tells its owner (and its group) through the combined message instead
+                    let followed = group_end(st, &m.id, if by.is_none() { "cancelled" } else { "owner_cancelled" });
+                    if by.is_none() && !followed {
+                        gembala_note(st, m.from, &m.id, &format!("Pesan lu {} ke {} dibatalin user sebelum sampai (cancelled).", m.id, m.to_name));
+                    }
                 }
                 return Ok(json!({"result": "cancelled", "id": m.id}));
             }
@@ -2159,6 +2289,7 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
         return Ok(reject(st, &m, r));
     }
     eng.note_sent(me);
+    eng.track(&m);
     eng.opens.push(bus::Open { msg: m.clone(), profile, account, model: model.into(), effort: effort.into(), cwd, workspace: my_ws.to_string(), since: std::time::Instant::now() });
     drop(eng);
     record(st, "confirm", &m, Some("needs_open"));
@@ -2307,7 +2438,7 @@ fn spool(st: Arc<State>, dir: std::path::PathBuf) {
                 let method = v["method"].as_str().unwrap_or_default();
                 let r = match v["token"].as_str().and_then(|t| st.pane_of_token(t)) {
                     None => Err("unauthorized"),
-                    Some(me) if ["send", "reply", "wait", "read", "status", "token", "close", "report", "cancel", "edit"].contains(&method) => pane_method(&st, me, method, &v["params"]),
+                    Some(me) if ["send", "reply", "wait", "read", "status", "token", "close", "report", "cancel", "edit", "handoff"].contains(&method) => pane_method(&st, me, method, &v["params"]),
                     Some(_) => Err("not_allowed"),
                 };
                 let body = match r {
@@ -2486,6 +2617,7 @@ fn deliver_loop(st: Arc<State>) {
         let overdue = st.engine.lock().unwrap().overdue_replies();
         for m in overdue { record(&st, "reply_pending", &m, None); }
         check_submits(&st);
+        group_scan(&st);
         let targets: Vec<u64> = st.engine.lock().unwrap().queues.keys().copied().collect();
         for to_id in targets {
             // FR-89: while this lap decides on the head, cancel/edit see it as in flight, not as sent
@@ -2709,7 +2841,12 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             let to_name = to.name.lock().unwrap().clone();
             let m = bus::Msg { id, from: me, from_name: my_name, to: to_id, to_name: to_name.clone(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now(), tag };
             // FR-79: the current name goes in the answer, so a sender using an old name switches over
+            let tracked = m.clone();
             let mut r = try_send(st, m, p["queue"].as_bool() == Some(true), false);
+            // FR-96: an accepted or queued request is followed until it has an end
+            if matches!(r["result"].as_str(), Some("accepted" | "queued")) {
+                st.engine.lock().unwrap().track(&tracked);
+            }
             r["to"] = json!(to_name);
             if !model.is_empty() || !effort.is_empty() { r["note"] = json!("model_ignored"); }
             // FR-86: a new message restarts the quiet count of a helper that already replied
@@ -2718,6 +2855,12 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                 *at = Some(std::time::Instant::now());
             }
             Ok(r)
+        }
+        // FR-91: an agent handing its work over itself gets the file to write and the format
+        "handoff" => {
+            let pane = st.panes.lock().unwrap().get(&me).cloned().ok_or("not_a_pane")?;
+            let path = handoff_path(&pane)?;
+            Ok(json!({"path": path.to_string_lossy(), "format": profile::HANDOFF_FORMAT, "to": p["to"]}))
         }
         "report" => {
             // FR-100, SEC-40: an agent only drafts. The draft waits as a card for the user, who opens GitHub in the browser
@@ -2798,10 +2941,30 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             }
             eng.note_sent(me);
             eng.close(&orig.id);
-            eng.replies.insert(orig.id.clone(), r.clone());
             let waiting = eng.waiting.contains(&orig.id);
+            // FR-96: a helper's `result` waits for the other requests of its group, unless the owner waits on this one itself
+            if !waiting && eng.grouped(&orig.id) {
+                let flush = eng.settle(&orig.id, bus::Fin::Answered { rid: r.id.clone(), body: r.body.clone() });
+                drop(eng);
+                record(st, "reply", &r, Some("group_wait"));
+                if let Some(pane) = st.panes.lock().unwrap().get(&me) {
+                    *pane.replied_at.lock().unwrap() = Some(std::time::Instant::now());
+                }
+                return Ok(match flush {
+                    Some(f) => {
+                        deliver_flush(st, f);
+                        json!({"result": "delivered", "delivered_via": "group", "id": r.id})
+                    }
+                    None => json!({"result": "stored", "reason": "group_wait", "id": r.id}),
+                });
+            }
+            let flush = eng.settle(&orig.id, bus::Fin::Delivered);
+            eng.replies.insert(orig.id.clone(), r.clone());
             drop(eng);
             record(st, "reply", &r, None);
+            if let Some(f) = flush {
+                deliver_flush(st, f);
+            }
             if let Some(pane) = st.panes.lock().unwrap().get(&me) {
                 *pane.replied_at.lock().unwrap() = Some(std::time::Instant::now());
             }
@@ -2898,6 +3061,14 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                     let mut eng = st.engine.lock().unwrap();
                     if eng.cancelled.remove(r) {
                         return Ok(json!({"cancelled": true}));
+                    }
+                    // FR-96: its result was held for the group; asking for it here hands it over now
+                    if let Some((rid, name, body, flush)) = eng.take_held(r) {
+                        drop(eng);
+                        if let Some(f) = flush {
+                            deliver_flush(st, f);
+                        }
+                        return Ok(json!({"reply": {"id": rid, "from": name, "body": body}}));
                     }
                     if let Some(m) = eng.replies.remove(r) {
                         eng.undelivered_replies.remove(&m.id);
@@ -3302,6 +3473,7 @@ fn save_logs_loop(st: Arc<State>) {
     for n in (0..5760u32).cycle() {
         if n == 0 {
             history::sweep(); // at start, then daily (5760 x 15 s)
+            history::sweep_in(&handoff_dir());
             snap::sweep();
         }
         thread::sleep(Duration::from_secs(15));
