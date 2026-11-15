@@ -1587,7 +1587,7 @@ claude-baru --resume x
     fn claude_diketik_rtk_hanya_saat_hemat_dan_rtk_ada() {
         let dir = std::env::temp_dir().join(format!("gembala-rtk-typed-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
-        for (name, body) in [("claude", "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --settings ] && printf '%s' \"$2\"; shift; done\n"), ("rtk", "#!/bin/sh\n"), ("uuidgen", "#!/bin/sh\necho 0000\n"), ("gembala", "#!/bin/sh\n")] {
+        for (name, body) in [("claude", "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --settings ] && printf '%s' \"$2\"; shift; done\n"), ("rtk", "#!/bin/sh\n"), ("uuidgen", "#!/bin/sh\necho 0000\n"), ("gembala", "#!/bin/sh\n# Linux wraps the agent in `gembala jail -- <agent>`: run what follows the `--`\n[ \"$1\" = jail ] && { shift 2; exec \"$@\"; }\n")] {
             let f = dir.join("bin").join(name);
             std::fs::write(&f, body).unwrap();
             std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
