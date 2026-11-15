@@ -34,7 +34,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
-  import { frontCard, needPanes, needRows, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed } from "$lib/attention";
+  import { frontCard, needPanes, needRows, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed, type ReplyNeed } from "$lib/attention";
   import type { UsageRow } from "$lib/usage";
   import { splitRows, subtabRows } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
@@ -2313,6 +2313,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       : [];
     const messages: MsgNeed[] = (msgData?.pending ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, from: m.from, to: m.to, pane: byName(m.to) ?? null }));
     const opens: OpenNeed[] = (msgData?.opens ?? []).map((o: any) => ({ id: o.id, at: (o.at ?? 0) * 1000, from: o.from, to: agentName(o.profile), pane: o.from_pane ?? null }));
+    const replies: ReplyNeed[] = (msgData?.reply_pending ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, from: m.from, to: m.to, pane: byName(m.to) ?? null, queued: !!m.queued }));
     const gates: GateNeed[] = Object.entries(runs)
       .filter(([, s]) => s.state === "gate")
       .map(([id, s]) => ({
@@ -2322,7 +2323,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         ship: !!s.steps[s.gate ?? 0]?.human,
         name: s.name,
       }));
-    return needRows({ panes, messages, opens, gates, simple });
+    return needRows({ panes, messages, opens, replies, gates, simple });
   });
   /// the strip's panes in order: ⌘⇧U and the row click use the same list
   const queue = $derived(needPanes(needList).map((p) => ({ p })));
@@ -2349,17 +2350,17 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   /// the icon of a row: the sender's agent for a message row (the receiver's own icon is the pane it lands in)
   function needIcon(r: NeedRow) {
-    if (r.kind === "message" || r.kind === "open") {
+    if (r.kind === "message" || r.kind === "open" || r.kind === "reply") {
       const p = byName(r.params.from);
       return p == null ? "" : agentOf(p) || meta[p]?.agent || "";
     }
     return needAgent(r);
   }
   /// dot color of a strip row: the same colors as the bell (FR-87), so one kind looks the same everywhere
-  const dotOf = (k: NeedRow["kind"]) => (k === "password" ? "password" : k === "answer" ? "answer" : k === "message" || k === "open" || k === "gate" || k === "ship" ? "approve" : "permission");
+  const dotOf = (k: NeedRow["kind"]) => (k === "password" ? "password" : k === "answer" ? "answer" : k === "message" || k === "open" || k === "reply" || k === "gate" || k === "ship" ? "approve" : "permission");
   /// the bold first line: `agent · task` in Sederhana (like the tab), `shell-9 · task` in Lengkap; a gate is the run's name
   function needTitle(r: NeedRow) {
-    if (r.kind === "message" || r.kind === "open") {
+    if (r.kind === "message" || r.kind === "open" || r.kind === "reply") {
       if (simple) return whoOf(r.params.from);
       return r.kind === "message" ? `${r.params.from} → ${r.params.to}` : r.params.from;
     }
@@ -2399,6 +2400,13 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     // the gate row has no pane: open that workspace's flow, where the gate card and its button live
     at = { ws: r.ws, tab: at.ws === r.ws ? at.tab : 0 };
     flow = true;
+  }
+  /// FR-106: "Kirim sekarang" on a stuck reply; what could not go now is said in a line, the strip row stays until it does
+  async function sendNow(r: NeedRow) {
+    const res = await call("msg.send_now", { id: r.msgId }).catch((e) => ({ error: String(e) }));
+    if (res?.error) say(errText(res.error));
+    else if (res?.result !== "delivered") say(tt("need.reply.later", { why: tOr(`msg.reason.${res?.reason}`, res?.reason ?? "") }));
+    refreshMsgs();
   }
   let barError = $state<Record<number, string>>({});
   let answerText = $state<Record<number, string>>({});
@@ -2873,7 +2881,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     {/if}
     <!-- FR-44/FR-65/FR-99 P2: the wait strip has its own component; the pane and flow actions stay with this page. -->
     <NeedStrip rows={needList} {simple} nextKey={combo("pane.attention.next")} titleOf={needTitle} iconOf={needIcon} dotOf={dotOf}
-      paramsOf={rowParams} subOf={needSub} ageOf={(at) => ago(now - at)} onneed={goNeed} />
+      paramsOf={rowParams} subOf={needSub} ageOf={(at) => ago(now - at)} onneed={goNeed} onsend={sendNow} />
     {#each wss as w, wi (w.id)}
       <!-- FR-44: click the title = expand/collapse; rename through right click or the palette -->
       {@const liftWs = dragging?.kind === "ws" && dragging.wi === wi}

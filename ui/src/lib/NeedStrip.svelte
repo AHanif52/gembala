@@ -3,7 +3,7 @@
   import { t, tOr } from "./i18n/state.svelte";
   import type { Key } from "./i18n";
 
-  let { rows, simple, nextKey, titleOf, iconOf, dotOf, paramsOf, subOf, ageOf, onneed }: {
+  let { rows, simple, nextKey, titleOf, iconOf, dotOf, paramsOf, subOf, ageOf, onneed, onsend }: {
     rows: NeedRow[];
     simple: boolean;
     nextKey: string;
@@ -14,6 +14,7 @@
     subOf: (row: NeedRow) => string;
     ageOf: (at: number) => string;
     onneed: (row: NeedRow) => void;
+    onsend: (row: NeedRow) => void;
   } = $props();
 
   const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦", commandcode: "⌘" };
@@ -39,7 +40,7 @@
               </span>
               <span class="k">{ageOf(r.at)}</span>
             </button>
-            <button class="act" onclick={() => onneed(r)}>{tOr(`need.act.${r.act}`, "")}</button>
+            <button class="act" onclick={() => (r.act === "send" ? onsend(r) : onneed(r))}>{tOr(`need.act.${r.act}`, "")}</button>
           </div>
         {/each}
       {/if}

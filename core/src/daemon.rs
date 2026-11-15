@@ -931,6 +931,15 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 Ok(json!({"result": "rejected", "reason": "rejected_by_user"}))
             }
         }
+        // FR-106: the user pushes one waiting reply now instead of waiting for its sender to go idle (UI channel only, SEC-20)
+        "msg.send_now" => {
+            let id = p["id"].as_str().ok_or("bad_params")?;
+            let q = {
+                let mut eng = st.engine.lock().unwrap();
+                eng.queues.values_mut().find_map(|q| q.iter().position(|x| x.msg.id == id && x.msg.is_reply).and_then(|i| q.remove(i)))
+            };
+            Ok(send_now(st, q.ok_or("no_such_msg")?))
+        }
         // FR-100: the user dropped an agent's draft, or opened it in the report dialog (it leaves the list either way)
         "report.discard" => {
             let id = p["id"].as_str().ok_or("bad_params")?;
@@ -2113,6 +2122,48 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
             record(st, "confirm", &m, None);
             json!({"result": "queued", "reason": "needs_confirmation", "id": m.id})
         }
+    }
+}
+
+/// FR-106: like one lap of `deliver_loop` for a single queued reply, except that a `working` target no longer waits.
+/// Everything else still decides: a blocked or unknown target, paused/muted, the user typing in it, and a target that is
+/// no longer an agent. Whatever cannot go now returns to the queue.
+fn send_now(st: &State, q: bus::Queued) -> Value {
+    let id = q.msg.to;
+    let back = |q: bus::Queued, reason: &str| {
+        st.engine.lock().unwrap().queues.entry(id).or_default().push_front(q);
+        json!({"result": "queued", "reason": reason})
+    };
+    let Some(to) = st.panes.lock().unwrap().get(&id).cloned() else { return reject(st, &q.msg, "target_gone") };
+    // `facts_for` shows a blocked reply target as working; typing into a permission prompt is never wanted (SEC-6)
+    match *to.status.lock().unwrap() {
+        "blocked" => return back(q, "target_blocked"),
+        "" => return back(q, "target_unknown"),
+        _ => {}
+    }
+    let from_ws = st.workspace_of(q.msg.from);
+    let mut f = match facts_for(st, &q.msg, &to, &from_ws, true, q.approved, true) {
+        Ok(facts) => facts,
+        Err(reason) => {
+            record(st, "stored", &q.msg, Some(reason));
+            return json!({"result": "stored", "reason": reason, "id": q.msg.id});
+        }
+    };
+    f.queue_len = 0;
+    if f.target_status == "working" {
+        f.target_status = "idle";
+        f.stable_for = msg::STABLE;
+    }
+    match msg::decide(&f) {
+        msg::Decision::Send if deliver(st, &q.msg, &to) => json!({"result": "delivered", "id": q.msg.id}),
+        msg::Decision::Send => json!({"result": "stored", "reason": "io", "id": q.msg.id}),
+        msg::Decision::Queue => back(q, "target_busy"),
+        msg::Decision::Confirm => {
+            st.engine.lock().unwrap().pending.push(q.msg.clone());
+            record(st, "confirm", &q.msg, None);
+            json!({"result": "queued", "reason": "needs_confirmation", "id": q.msg.id})
+        }
+        msg::Decision::Reject(r) => reject(st, &q.msg, r),
     }
 }
 

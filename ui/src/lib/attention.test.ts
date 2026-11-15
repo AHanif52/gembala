@@ -115,3 +115,17 @@ test("kartu satu pane: yang paling lama di depan, sisanya lipatan; 'Lihat' memin
   assert.equal(frontCard(cards, "gone").front.id, "msg");
   assert.deepEqual(frontCard([], "x"), { front: null, rest: [] });
 });
+
+test("strip: balasan nyangkut = kelompok 2, tombol Kirim sekarang cuma kalau masih antre", () => {
+  const rows = needRows({
+    panes: [], messages: [], opens: [], gates: [], simple: false,
+    replies: [
+      { id: "r1", at: at(5), from: "codex-1", to: "shell-8", pane: 8, queued: true },
+      { id: "r2", at: at(4), from: "omp-1", to: "shell-8", pane: 8, queued: false },
+    ],
+  });
+  assert.deepEqual(rows.map((r) => [r.key, r.group, r.act, r.msgId]), [["reply:r2", 2, "see", "r2"], ["reply:r1", 2, "send", "r1"]]);
+  assert.equal(rows[1].what, "need.reply");
+  assert.deepEqual(rows[1].params, { from: "codex-1", to: "shell-8" });
+  assert.deepEqual(needPanes(rows), [8]);
+});

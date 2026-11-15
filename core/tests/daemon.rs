@@ -2570,3 +2570,70 @@ fn harness_stop_and_stale_run() {
     assert_eq!((s["state"].as_str(), s["halt"].as_str()), (Some("halted"), Some("daemon_restart")), "{s}");
     assert_eq!(ui.call("harness.state", json!({"run": "../x"}))["error"]["code"], "no_such_run");
 }
+
+#[test]
+fn fr106_kirim_sekarang_membalas_antre() {
+    let d = start("sendnow106");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = |name: &str| format!("stty -echo; '{g}' token > '{}/{}.token'; {}", d.dir.display(), name, if name == "b" { "while IFS= read -r line; do :; done" } else { "cat" });
+    let stub = d.dir.join("commandcode-test");
+    std::fs::write(&stub, format!("#!/bin/sh\n{}\n", script("a"))).unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let config = format!("[[profile]]\nid = \"commandcode\"\ncommand = {}\n", json!(stub));
+    profiles(&d, &mut ui, &(config + &sh_profile("hasil", &script("b"))), "b.token");
+    let a = ui.call("pane.create", json!({"profile":"commandcode", "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    ui.call("pane.create", json!({"profile":"hasil", "workspace":"w"}));
+    let client = |name: &str| {
+        let path = d.dir.join(format!("{name}.token"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let token = loop {
+            if let Ok(t) = std::fs::read_to_string(&path) && !t.trim().is_empty() { break t; }
+            assert!(Instant::now() < deadline, "token missing");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let mut c = Cli::connect(&d, "pane.sock");
+        assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
+        c
+    };
+    let (mut ca, mut cb) = (client("a"), client("b"));
+    let status = |c: &mut Cli, s: &str| { assert!(c.call("hook", json!({"agent":"omp","status":s})).get("result").is_some()); };
+    status(&mut ca, "idle");
+    status(&mut cb, "idle");
+    std::thread::sleep(Duration::from_millis(600));
+    let queued = |ui: &mut Cli, id: &str| ui.call("msg.list", json!({}))["result"]["queued"].as_array().unwrap().iter().any(|q| q["id"] == id);
+
+    let id = ca.call("send", json!({"to":"hasil-1","body":"task","queue":true}))["result"]["id"].as_str().unwrap().to_string();
+    status(&mut ca, "working");
+    let r = cb.call("reply", json!({"msg_id":id,"body":"RESULT-NOW"}));
+    assert_eq!(r["result"]["result"], "queued", "{r}");
+    let reply_id = r["result"]["id"].as_str().unwrap().to_string();
+    assert!(queued(&mut ui, &reply_id));
+
+    assert_eq!(ui.call("msg.send_now", json!({"id":"nope"}))["error"]["code"], "no_such_msg");
+    assert_eq!(ui.call("msg.send_now", json!({}))["error"]["code"], "bad_params");
+    // only a queued reply can be pushed: an ordinary queued message stays where it is
+    let plain = cb.call("send", json!({"to":"commandcode-1","body":"plain","queue":true}))["result"]["id"].as_str().unwrap().to_string();
+    assert_eq!(ui.call("msg.send_now", json!({"id":plain}))["error"]["code"], "no_such_msg");
+    assert!(queued(&mut ui, &plain));
+
+    // a blocked target (permission prompt) never gets typed into, the reply keeps its place
+    status(&mut ca, "blocked");
+    let r = ui.call("msg.send_now", json!({"id":reply_id}));
+    assert_eq!(r["result"]["result"], "queued", "{r}");
+    assert_eq!(r["result"]["reason"], "target_blocked");
+    assert!(queued(&mut ui, &reply_id));
+
+    // working: goes now, with the reply label, and the queue and the stuck-reply list are clear
+    status(&mut ca, "working");
+    let r = ui.call("msg.send_now", json!({"id":reply_id}));
+    assert_eq!(r["result"]["result"], "delivered", "{r}");
+    let output = ui.attach_until(a, &["RESULT-NOW"]);
+    assert!(output.contains(&format!("[Gembala · reply from hasil-1 · {id}]")), "{output}");
+    assert!(!queued(&mut ui, &reply_id));
+    assert!(ui.call("msg.list", json!({}))["result"]["reply_pending"].as_array().unwrap().is_empty());
+    assert_eq!(ui.call("msg.send_now", json!({"id":reply_id}))["error"]["code"], "no_such_msg");
+
+    // a pane's agent cannot call it: UI channel only
+    assert_eq!(cb.call("msg.send_now", json!({"id":reply_id}))["error"]["code"], "not_allowed");
+}

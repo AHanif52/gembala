@@ -6,7 +6,7 @@ import { type NoticeKind, wordKey } from "./notice.ts";
 
 /// one shape per thing that waits; `permission`/`answer`/`password`/`trust` are a blocked pane, `message`/`open` are the
 /// message engine's confirm cards, `gate`/`ship` are a harness run stopped at a step that needs the user.
-export type NeedKind = "permission" | "answer" | "password" | "trust" | "message" | "open" | "gate" | "ship";
+export type NeedKind = "permission" | "answer" | "password" | "trust" | "message" | "open" | "reply" | "gate" | "ship";
 
 /// why the order is what it is: group 1 stops the agent completely, 2 holds the next step, 3 holds a run
 export type NeedGroup = 1 | 2 | 3;
@@ -18,6 +18,7 @@ export const GROUP: Record<NeedKind, NeedGroup> = {
   trust: 1,
   message: 2,
   open: 2,
+  reply: 2,
   gate: 3,
   ship: 3,
 };
@@ -31,6 +32,7 @@ const WORD_OF: Record<NeedKind, NoticeKind> = {
   trust: "permission",
   message: "approve",
   open: "approve",
+  reply: "approve",
   gate: "approve",
   ship: "approve",
 };
@@ -47,7 +49,9 @@ export type NeedRow = {
   what: string;
   params: Record<string, string>;
   /// label of the hover button: jawab / buka / lihat / baca rencana
-  act: "answer" | "open" | "see" | "plan";
+  act: "answer" | "open" | "see" | "plan" | "send";
+  /// the engine message id, for the rows that act on one (`reply`)
+  msgId?: string;
 };
 
 /// a blocked pane; `ask`/`question` come from the screen (`pane.dialogs`), empty when the dialog wasn't read
@@ -56,8 +60,11 @@ export type PaneNeed = { pane: number; kind: "permission" | "answer" | "password
 export type MsgNeed = { id: string; at: number; from: string; to: string; pane: number | null };
 /// FR-75: an agent asking for a helper that isn't open; `to` = the agent it wants
 export type OpenNeed = { id: string; at: number; from: string; to: string; pane: number | null };
+/// FR-106: a reply that has not reached its sender for 2 minutes; `from` answered, `to` is the one still waiting. `queued` =
+/// it sits in the engine queue and "send now" can push it; otherwise it is stored for `wait --reply` only.
+export type ReplyNeed = { id: string; at: number; from: string; to: string; pane: number | null; queued: boolean };
 export type GateNeed = { run: string; ws: number; at: number; ship: boolean; name: string };
-export type NeedInput = { panes: PaneNeed[]; messages: MsgNeed[]; opens: OpenNeed[]; gates: GateNeed[]; simple: boolean };
+export type NeedInput = { panes: PaneNeed[]; messages: MsgNeed[]; opens: OpenNeed[]; replies?: ReplyNeed[]; gates: GateNeed[]; simple: boolean };
 
 const clean = (s: string, n = 90) => {
   const one = s.split("\n").map((x) => x.trim()).filter(Boolean).join(" · ");
@@ -119,6 +126,19 @@ export function needRows(i: NeedInput): NeedRow[] {
       what: i.simple ? "need.open" : "need.openFull",
       params: { from: o.from, agent: o.to },
       act: "see",
+    });
+  for (const r of i.replies ?? [])
+    rows.push({
+      key: `reply:${r.id}`,
+      kind: "reply",
+      group: GROUP.reply,
+      at: r.at,
+      pane: r.pane,
+      ws: 0,
+      what: "need.reply",
+      params: { from: r.from, to: r.to },
+      act: r.queued ? "send" : "see",
+      msgId: r.id,
     });
   for (const g of i.gates)
     rows.push({
