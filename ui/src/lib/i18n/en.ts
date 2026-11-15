@@ -1104,6 +1104,8 @@ export default {
   "open.effortUnsupported": "{agent} doesn't support effort selection.",
   "open.modelUnsupported": "{agent} doesn't support model selection.",
   "open.where": "Folder {cwd} · the new pane opens in this tab, max 4 helper panes per pane",
+  "open.worktree": "In a new worktree of the asker's repo",
+  "men.fresh": "(open new)",
   "open.go": "Open and send",
   "close.reqTitle": "{from} wants to close {name}",
   "close.reqAsk": "Close the pane? Its agent stops; the session stays listed like any pane you close yourself.",

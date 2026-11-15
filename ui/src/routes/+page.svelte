@@ -414,7 +414,15 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (!t || opening.has(o.id) || !(msgData?.opens ?? []).some((x: any) => x.id === o.id)) return;
     opening.add(o.id);
     try {
-      const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd: o.cwd || undefined, model: o.model, effort: o.effort });
+      let cwd: string | undefined = o.cwd || undefined;
+      // FR-71 + FR-75: "in a worktree" = a new worktree of the asker's repo first, the helper opens there
+      if (o.worktree) {
+        const name = `${o.profile}-${Date.now().toString(36).slice(-4)}`;
+        const wr = await call("git.worktree_add", { pane: o.from_pane, name }).catch((e) => ({ error: String(e?.message ?? e) }));
+        if (wr.error) return void say(tOr(`wt.err.${wr.error}`, errText(wr.error, wr.args)));
+        cwd = wr.dir;
+      }
+      const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd, model: o.model, effort: o.effort });
       quietAt[id] = Date.now();
       const child: Tab = { id: uid(), title: "", tree: { pane: id }, focus: id, parent: t.id };
       w!.tabs.splice(w!.tabs.indexOf(t) + 1 + w!.tabs.filter((x) => x.parent === t.id).length, 0, child);
@@ -948,9 +956,16 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   // picked = names already completed from this `@@` list (pick several agents at once)
   let mention = $state<{ pane: number; q: string; sel: number; editor?: boolean; inline?: boolean; picked?: string[] } | null>(null);
   let lempar = $state<{ pane: number; to: number; name: string; body: string; error: string } | null>(null);
+  /// FR-57: in an agent prompt, installed agents with no pane in this workspace yet are listed too ("(buka baru)"): the
+  /// agent's `gembala send <profile>` then asks for the "Buka dan kirim" card (FR-75). Negative pane = not a real pane.
+  const freshTargets = $derived(
+    (cfg?.values.profiles ?? [])
+      .filter((p) => p.agent !== "shell" && installed.includes(p.agent) && !rows.some((r) => r.agent === p.agent))
+      .map((p, i) => ({ pane: -(i + 1), name: p.id, agent: p.agent, status: "", fresh: true }) as (typeof rows)[number] & { fresh?: boolean }),
+  );
   const mentionItems = $derived(
     mention
-      ? targets.filter(
+      ? [...targets, ...(mention.inline ? freshTargets : [])].filter(
           (r) => !mention!.picked?.includes(r.name) && [r.name, r.agent, meta[r.pane]?.busy ?? ""].some((s) => s.toLowerCase().startsWith(mention!.q.toLowerCase())),
         )
       : [],
@@ -3686,7 +3701,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                     onpointerdown={(e) => e.preventDefault()} onclick={() => chooseMention(i)}>
                     <span class="dot {r.status}"></span>
                     <span>{r.name}</span>
-                    <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {stText(r.status) || r.status || "?"}</span>
+                    <span class="keys">{"fresh" in r ? `${r.agent} · ${tt("men.fresh")}` : `${r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · ${stText(r.status) || r.status || "?"}`}</span>
                   </button>
                 {/each}
                 {#if mentionItems.length}<span class="keys"
@@ -3855,6 +3870,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   <span class="sub">{tt("open.modelUnsupported", { agent: openAgent ?? o.profile })}</span>
                 {/if}
                 <span class="sub" title={o.cwd}>{simple ? tt("open.whereSimple", { cwd: short(o.cwd) }) : tt("open.where", { cwd: short(o.cwd) })}</span>
+                {#if meta[o.from_pane]?.git?.root}
+                  <label class="sub"><input type="checkbox" bind:checked={o.worktree} /> {tt("open.worktree")}</label>
+                {/if}
                 <span class="acts">
                   {#if installedAgent(o.profile)}<button class="mini" onclick={() => call("open.reject", { id: o.id }).then(refreshMsgs)}>{tt("msg.reject")}</button>
                   {:else}<span class="sub">{tt("open.notInstalled", { name: openWho(o) })}</span>{/if}
@@ -3974,7 +3992,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       onsent={() => ((reportDraft = null), d.id && call("report.discard", { id: d.id }).then(refreshMsgs))} />
   {/if}
   {#if drawer}
-    <Messages data={msgData} {rows} models={modelsForOpen} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} onreport={(r: any) => (reportDraft = { title: r.title, body: r.body, from: r.from, id: r.id })} who={openWho}
+    <Messages data={msgData} {rows} models={modelsForOpen} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} canWorktree={(o: any) => !!meta[o.from_pane]?.git?.root} onreport={(r: any) => (reportDraft = { title: r.title, body: r.body, from: r.from, id: r.id })} who={openWho}
       person={whoOf} {simple} width={drawerW} right={changes ? panelW : 0} />
   {/if}
   {#if compose}

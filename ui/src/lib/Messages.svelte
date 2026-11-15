@@ -13,6 +13,7 @@
     onclose,
     onopen,
     onreport,
+    canWorktree,
     who,
     models,
     efforts,
@@ -28,6 +29,7 @@
     onclose: () => void;
     onopen: (o: any) => void;
     onreport: (r: any) => void;
+    canWorktree: (o: any) => boolean;
     who: (o: any) => string;
     models: (o: any) => { id: string; label: string }[];
     efforts: string[];
@@ -172,6 +174,9 @@
           {:else}
             <span>{t("open.modelUnsupported", { agent: agentOf(o) ?? o.profile })}</span>
           {/if}
+            {#if canWorktree(o)}
+              <label class="sub"><input type="checkbox" bind:checked={o.worktree} /> {t("open.worktree")}</label>
+            {/if}
             <span class="acts">
               <button class="mini" onclick={() => act("open.reject", { id: o.id })}>{t("msg.reject")}</button>
               <button class="mini pri" onclick={() => onopen(o)}>{simple ? tOr("open.goSimple", "", {}) : tOr("open.go", "", {})}</button>
