@@ -3919,7 +3919,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 <b>{tt("limit.title", { agent: agentName(meta[pane].profile) })}</b>
                 <span>{lim.reset_at ? tt("limit.when", { at: resetClock(lim.reset_at) }) : tt("limit.whenUnknown")} {tt("limit.held", { n: lim.queued })}</span>
                 <span class="acts">
-                  <button class="mini" class:pri={lim.at_reset} onclick={() => limitAct(pane, "reset")}>{lim.at_reset ? tt("limit.atResetOn") : tt("limit.atReset")}</button>
+                  <!-- no reset time from the agent = nothing to wait for, so no "send at reset" (user decision 15 Nov) -->
+                  {#if lim.reset_at || lim.at_reset}<button class="mini" class:pri={lim.at_reset} onclick={() => limitAct(pane, "reset")}>{lim.at_reset ? tt("limit.atResetOn") : tt("limit.atReset")}</button>{/if}
                   <button class="mini" onclick={() => limitAct(pane, "retry")}>{tt("limit.retry")}</button>
                   {#if moveTargets(pane).length}
                     <select class="mini" bind:value={movePick[pane]} aria-label={tt("limit.moveTo")}>
