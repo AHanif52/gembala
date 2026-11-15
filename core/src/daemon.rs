@@ -127,6 +127,8 @@ struct Pane {
     /// The agent in front has exited (`agent_done`): until one runs again (`agent-start`, a hook, one typed by
     /// hand), the pane is a plain shell for `agent_name` — send/read/wait reject like a shell pane (11 Nov 2026)
     exited: std::sync::atomic::AtomicBool,
+    /// `close_pane` ran: the pane is on its way out (HUP, then SIGKILL after 3 s), so it counts as gone for `agent_name`
+    closing: std::sync::atomic::AtomicBool,
     /// FR-84: the agent's folder-trust dialog was on screen at the last check (`screen_watch`), and when it went away
     trust: std::sync::atomic::AtomicBool,
     trust_off: Mutex<Option<std::time::Instant>>,
@@ -191,7 +193,7 @@ impl Pane {
     /// and read like any other agent. A plain shell pane still falls under SEC-21. None once the agent exited
     /// (`exited`): the pane is a shell again, so `status` doesn't list it and `send` is rejected (target_unknown).
     fn agent_name(&self) -> Option<String> {
-        if self.exited.load(Ordering::Relaxed) {
+        if self.exited.load(Ordering::Relaxed) || self.closing.load(Ordering::Relaxed) {
             return None;
         }
         if self.agent != "shell" {
@@ -1813,6 +1815,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
         at_prompt: std::sync::atomic::AtomicBool::new(false),
         hooked: std::sync::atomic::AtomicBool::new(false),
         exited: std::sync::atomic::AtomicBool::new(false),
+        closing: std::sync::atomic::AtomicBool::new(false),
         trust: std::sync::atomic::AtomicBool::new(false),
         trust_off: Mutex::new(None),
         // FR-68: Codex only has the `notify` hook (done); working and needs-permission come from the screen
@@ -2293,6 +2296,7 @@ fn deliver_loop(st: Arc<State>) {
 /// like closing a terminal window: SIGHUP to the foreground job and the pane session (FR-38 ×, FR-86); the pane's
 /// pump then sends `pane.exit` and the UI drops it from its tab
 fn close_pane(st: &State, id: u64, pane: &Pane) {
+    pane.closing.store(true, Ordering::Relaxed);
     let Ok(terminal) = pane.terminal() else { return commandcode::close(st, id, pane) };
     unsafe {
         let fg = libc::tcgetpgrp(terminal.master.as_raw_fd());
