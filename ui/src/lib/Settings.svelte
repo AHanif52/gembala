@@ -114,6 +114,16 @@
     accErr = r?.error ? errText(r.error, r.args) : "";
     loadAccounts();
   }
+  /// GESEKAN 26: "cek koneksi LAN" in Diagnostik: host:port typed by the user, tried from the daemon
+  let lan = $state({ addr: "", busy: false, out: "" });
+  async function lanCheck() {
+    const m = /^\[?([0-9a-fA-F:.]+)\]?:(\d{1,5})$/.exec(lan.addr.trim());
+    if (!m) return void (lan.out = t("set.diag.lanBad"));
+    lan.busy = true;
+    const r = await call("lan.check", { host: m[1], port: Number(m[2]) }).catch(() => ({ error: "bad" }));
+    lan.busy = false;
+    lan.out = r.result ? tOr(`set.diag.lan.${r.result}`, t("set.diag.lan.error")) : t("set.diag.lanBad");
+  }
   let daemon = $state<{ daemon: string; proto: number; msg?: { rate_per_min: number; hop_max: number }; polkit?: boolean } | null>(null);
   // FR-29: edit a profile from the screen; one line = one argument / one env
   type Form = {
@@ -1452,6 +1462,18 @@
           <div class="row"><span>{t("set.diag.cfgFile")}</span><span class="m">{cfg.path}</span></div>
           <div class="row"><span>{t("set.diag.cfgState")}</span><span class="m">{cfg.errors.length ? tn("set.diag.problems", cfg.errors.length) : t("set.sec.clean")}</span></div>
           <div class="row"><span>{t("set.diag.sock")}<small>{t("set.diag.sockSub")}</small></span><span class="m">$TMPDIR/gembala</span></div>
+        </section>
+        <h4>{t("set.diag.lan")}</h4>
+        <section>
+          <div class="row col">
+            <span>{t("set.diag.lanSub")}</span>
+            <div class="envrow">
+              <input class="tin mono" bind:value={lan.addr} placeholder="192.168.1.10:5432" spellcheck="false" aria-label={t("set.diag.lan")}
+                onkeydown={(e) => e.key === "Enter" && lanCheck()} />
+              <button class="mini" disabled={lan.busy} onclick={lanCheck}>{t("set.diag.lanBtn")}</button>
+            </div>
+            {#if lan.out}<small role="status">{lan.out}</small>{/if}
+          </div>
         </section>
         <h4>{t("set.diag.agents")}</h4>
         <section>

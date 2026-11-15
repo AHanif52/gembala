@@ -1238,6 +1238,8 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             Ok(json!({}))
         }
         "addon.status" => Ok(json!({"rtk": profile::rtk_version()})),
+        // GESEKAN 26: can this daemon (the parent of every pane) reach a LAN address? Only tells; never touches the permission
+        "lan.check" => Ok(lan_check(p["host"].as_str().unwrap_or_default(), p["port"].as_u64().unwrap_or(0))?),
         // FR-16, FR-73: harness runs. UI channel only (SEC-20): the pane channel has no harness method.
         "harness.preflight" | "harness.start" | "harness.state" | "harness.runs" | "harness.stop" | "harness.gate" | "harness.takeover" | "harness.release" | "harness.close_panes" => runner::method(st, m, p),
         // FR-74, SEC-27: harness recipes. Approve and delete exist on the UI channel only; the pane channel has no recipe method.
@@ -2190,6 +2192,29 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
         want_queue,
         queue_len: eng.queue_len(m.to),
         approved: approved || trusted,
+    })
+}
+
+/// GESEKAN 26: one TCP connect from the daemon, 3 s. Private (RFC 1918, link-local, ULA) address literals only, so the button
+/// can't be used to probe the internet. `blocked` = macOS's own answer when Local Network privacy refuses (EHOSTUNREACH
+/// "No route to host" / EPERM), the case the user fixes in System Settings.
+fn lan_check(host: &str, port: u64) -> Result<Value, &'static str> {
+    use std::net::{IpAddr, SocketAddr, TcpStream};
+    let ip: IpAddr = host.trim().parse().map_err(|_| "bad_params")?;
+    let private = match ip {
+        IpAddr::V4(a) => a.is_private() || a.is_link_local(),
+        IpAddr::V6(a) => (a.segments()[0] & 0xfe00) == 0xfc00 || (a.segments()[0] & 0xffc0) == 0xfe80,
+    };
+    let port = u16::try_from(port).ok().filter(|p| *p > 0).ok_or("bad_params")?;
+    if !private {
+        return Err("bad_params");
+    }
+    Ok(match TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_secs(3)) {
+        Ok(_) => json!({"result": "open"}),
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => json!({"result": "refused"}),
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => json!({"result": "timeout"}),
+        Err(e) if matches!(e.raw_os_error(), Some(1 | 65)) => json!({"result": "blocked"}),
+        Err(_) => json!({"result": "error"}),
     })
 }
 
@@ -3643,6 +3668,13 @@ mod tests {
         assert_eq!(validate_model_effort("--yolo", ""), Err("bad_args"));
         assert_eq!(validate_model_effort("opus", "extreme"), Err("bad_args"));
         assert_eq!(model_effort(&json!({"model": 3})), Err("bad_args"));
+    }
+
+    #[test]
+    fn lan_check_only_local_network_addresses() {
+        for (h, port) in [("8.8.8.8", 53), ("127.0.0.1", 80), ("example.com", 80), ("192.168.1.1", 0), ("192.168.1.1", 70000), ("2001:db8::1", 80)] {
+            assert_eq!(lan_check(h, port), Err("bad_params"), "{h}:{port}");
+        }
     }
 
     #[test]
