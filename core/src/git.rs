@@ -100,10 +100,21 @@ fn in_head(root: &Path, path: &str) -> bool {
         .is_some_and(|s| s.split('\0').any(|e| e.split_once('\t').is_some_and(|(meta, name)| name == path && meta.contains(" blob "))))
 }
 
-/// FR-23: per path, `mod` (HEAD has it: restore and commit) or `new` (commit only), for the confirmation card.
+/// FR-23: per path, `mod` (HEAD has it: restore and commit) or `new` (commit only), plus the added/removed line
+/// counts from HEAD so the restore card can say how much a discard throws away. Same `--no-textconv --no-ext-diff`
+/// read as `status` (SEC-29: no repo-owned program runs).
 pub fn file_kinds(cwd: &Path, paths: &[String]) -> Result<Value, &'static str> {
     let root = act_root(cwd, paths)?;
-    Ok(json!(paths.iter().map(|p| json!({"path": p, "kind": if in_head(&root, p) { "mod" } else { "new" }})).collect::<Vec<_>>()))
+    Ok(json!(paths.iter().map(|p| {
+        let (mut add, mut del) = (0u64, 0u64);
+        if let Some(s) = git(&root, &["--literal-pathspecs", "diff", "--numstat", "--no-textconv", "--no-ext-diff", "HEAD", "--", p]) {
+            // "-" in a numstat count means binary: no line numbers to offer
+            let mut f = s.lines().next().unwrap_or_default().split('\t');
+            add = f.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            del = f.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        }
+        json!({"path": p, "kind": if in_head(&root, p) { "mod" } else { "new" }, "add": add, "del": del})
+    }).collect::<Vec<_>>()))
 }
 
 /// FR-23 (SEC-29): one file back to HEAD, staged and unstaged changes both dropped. UI channel only.
@@ -330,7 +341,8 @@ mod tests {
         assert!(d.join("baru.txt").exists() && d.join("idx.txt").exists());
         assert_eq!(restore_file(&d, "../luar"), Err("bad_path"));
         assert_eq!(restore_file(&d, "/etc/hosts"), Err("bad_path"));
-        assert_eq!(file_kinds(&d, &[p("a.txt"), p("baru.txt")]).unwrap(), json!([{"path": "a.txt", "kind": "mod"}, {"path": "baru.txt", "kind": "new"}]));
+        // counts ride along for the restore card's "how much goes away"; an untracked file has no HEAD to differ from
+        assert_eq!(file_kinds(&d, &[p("a.txt"), p("baru.txt")]).unwrap(), json!([{"path": "a.txt", "kind": "mod", "add": 1, "del": 1}, {"path": "baru.txt", "kind": "new", "add": 0, "del": 0}]));
 
         // commit: message required, only the given paths go in, an untracked file is added
         assert_eq!(commit_files(&d, &[p("a.txt")], "  ").unwrap_err().code, "empty_message");

@@ -1832,6 +1832,7 @@ export default {
   "chg.discardFile": "Discard this file's changes…",
   "chg.discardTitle": "Discard the changes in this file?",
   "chg.discardSub": "goes back to the last saved content. The changes are gone and can't be brought back.",
+  "chg.lost": "{add} new lines and {del} removed lines go with it.",
   "chg.discardBtn": "Discard changes",
   "chg.saveTitle.one": "Save a version of {n} file",
   "chg.saveTitle.other": "Save a version of {n} files",

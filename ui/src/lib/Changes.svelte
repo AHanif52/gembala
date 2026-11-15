@@ -44,7 +44,7 @@
     onconfirm?: () => void;
     oncancel?: () => void;
     // FR-23: confirmation card for restoring or committing files (UI channel only)
-    act?: { op: "restore" | "commit"; files: { path: string; kind: "mod" | "new" }[]; others: string[]; message: string; error?: string; args?: any } | null;
+    act?: { op: "restore" | "commit"; files: { path: string; kind: "mod" | "new"; add: number; del: number }[]; others: string[]; message: string; error?: string; args?: any } | null;
     onact?: (op: "restore" | "commit", paths: string[]) => void;
     onactdo?: () => void;
     onactcancel?: () => void;
@@ -169,6 +169,7 @@
       {#if act.op === "restore"}
         <b>{t("chg.discardTitle")}</b>
         <span class="m"><code>{act.files[0]?.path ?? ""}</code> {t("chg.discardSub")}</span>
+        {#if act.files[0] && (act.files[0].add || act.files[0].del)}<span class="m">{t("chg.lost", { add: String(act.files[0].add), del: String(act.files[0].del) })}</span>{/if}
       {:else}
         <b>{tn(simple ? "chg.saveTitle" : "chg.commitTitle", act.files.length)}</b>
         <div class="flist">

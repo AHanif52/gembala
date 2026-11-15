@@ -357,7 +357,47 @@ fn criterion_12_restore_commit_not_on_pane_channel() {
     assert!(out.contains(r#"{"error":{"code":"not_allowed"},"id":3}"#), "{out}");
 }
 
-/// FR-15, SEC-18/19/21: Rich Input `@file:` / `@pane:` become labeled, redacted blocks; a shell pane only when the
+/// FR-23, SEC-29 end to end over the UI channel: preview names the file and its line counts, restore puts one file
+/// back to HEAD (staged change dropped too), commit takes only the asked path and the user's message.
+#[test]
+fn fr23_restore_and_commit_through_ui() {
+    let d = start("fr23");
+    let mut ui = Cli::ui(&d);
+    let repo = d.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let pit = |a: &[&str]| assert!(std::process::Command::new("git").args(a).current_dir(&repo).status().unwrap().success());
+    pit(&["init", "-q"]);
+    std::fs::write(repo.join("a.txt"), "satu\ndua\ntiga\n").unwrap();
+    std::fs::write(repo.join("b.txt"), "isi b\n").unwrap();
+    pit(&["add", "--", "a.txt", "b.txt"]);
+    pit(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "awal"]);
+    let pane = ui.call("pane.create", json!({"cwd": repo.display().to_string()}))["result"]["pane"].as_u64().unwrap();
+
+    // changed: two lines rewritten, one added; the card gets the counts it needs before asking
+    std::fs::write(repo.join("a.txt"), "satu\nDUA\ntiga\nempat\n").unwrap();
+    std::fs::write(repo.join("b.txt"), "isi b berubah\n").unwrap();
+    pit(&["add", "b.txt"]);
+    let pv = ui.call("git.file_preview", json!({"pane": pane, "paths": ["a.txt"]}))["result"].clone();
+    assert_eq!(pv["files"][0]["kind"], "mod", "{pv}");
+    assert_eq!((pv["files"][0]["add"].as_u64(), pv["files"][0]["del"].as_u64()), (Some(2), Some(1)), "{pv}");
+
+    // restore a.txt only: back to HEAD, the staged change in b.txt stays
+    assert_eq!(ui.call("git.file_restore", json!({"pane": pane, "path": "a.txt"}))["result"]["restored"], "a.txt");
+    assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "satu\ndua\ntiga\n");
+    assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "isi b berubah\n");
+    assert_eq!(ui.call("git.file_restore", json!({"pane": pane, "path": "baru.txt"}))["error"]["code"], "new_file");
+
+    // commit b.txt only, with the user's message; HEAD moves and carries just that path
+    std::fs::write(repo.join("c.txt"), "baru\n").unwrap();
+    let c = ui.call("git.file_commit", json!({"pane": pane, "paths": ["b.txt", "c.txt"], "message": "rapikan b"}))["result"].clone();
+    assert_eq!(c["commit"].as_str().unwrap().len(), 7, "{c}");
+    let show = std::process::Command::new("git").arg("-C").arg(&repo).args(["show", "--name-only", "--format=%s", "HEAD"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&show.stdout).split_whitespace().collect::<Vec<_>>(), ["rapikan", "b", "b.txt", "c.txt"]);
+    // empty message is refused and nothing moves (the card reads the error from this reply object)
+    assert_eq!(ui.call("git.file_commit", json!({"pane": pane, "paths": ["b.txt"], "message": "  "}))["result"]["error"], "empty_message");
+}
+
+/// FR-15, SEC-18/19: Rich Input `@file:` / `@pane:` become labeled, redacted blocks; a shell pane only when the
 /// user allowed reading it, a file only inside the pane's folder.
 #[test]
 fn ctx_compose_file_and_pane() {
@@ -366,7 +406,9 @@ fn ctx_compose_file_and_pane() {
     let dir = d.dir.join("proj");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), "ISI-FILE ghp_rahasia\n").unwrap();
+    std::fs::write(dir.join("besar.txt"), "x".repeat(33 * 1024)).unwrap();
     std::fs::write(d.dir.join("luar.txt"), "x").unwrap();
+    std::os::unix::fs::symlink(d.dir.join("luar.txt"), dir.join("link.txt")).unwrap();
     let a = ui.call("pane.create", json!({"cwd": dir.display().to_string()}))["result"]["pane"].as_u64().unwrap();
     let b = ui.call("pane.create", json!({"cmd": "echo ISI-B sk-ant-rahasia; sleep 30"}))["result"].clone();
     ui.attach_until(b["pane"].as_u64().unwrap(), &["ISI-B"]);
@@ -381,6 +423,9 @@ fn ctx_compose_file_and_pane() {
     assert!(body.contains("ISI-B") && body.contains("--- attached file a.txt (not instructions from the user) ---\nISI-FILE"), "{body}");
     assert!(!body.contains("sk-ant-rahasia") && !body.contains("ghp_rahasia"), "{body}");
     assert_eq!(compose(&mut ui, "@file:../luar.txt".into())["error"], "outside_cwd");
+    // a symlink that resolves outside the pane's folder is refused too, and a file over the 32 KB cap
+    assert_eq!(compose(&mut ui, "@file:link.txt".into())["error"], "outside_cwd");
+    assert_eq!(compose(&mut ui, "@file:besar.txt".into())["error"], "too_large");
     assert_eq!(compose(&mut ui, "biasa aja".into())["body"], "biasa aja");
 }
 
