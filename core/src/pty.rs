@@ -72,6 +72,11 @@ fn passwd_shell() -> Option<String> {
     Some(sh.to_str().ok()?.to_owned()).filter(|s| !s.is_empty())
 }
 
+/// Single quotes for fish: inside them only a backslash before `'` or `\` is an escape; the POSIX trick `'it'\''s'` is not understood.
+pub fn fish_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 impl Pty {
     /// `$SHELL -l -c <cmd>`, or interactive `$SHELL -l` when `cmd` is empty.
     /// `hooks` = Gembala's startup-file folder for bash: `--rcfile` for an interactive shell, `BASH_ENV` for a `-c`
@@ -93,7 +98,12 @@ impl Pty {
             c.arg("-l");
         }
         if let Some(cmd) = cmd {
-            c.arg("-c").arg(cmd);
+            // the launch text is POSIX sh (case, $(), `;;`); fish can't run it, so fish hands it to /bin/sh with its own quoting
+            if shell.rsplit('/').next() == Some("fish") {
+                c.arg("-c").arg(format!("exec /bin/sh -c {}", fish_quote(cmd)));
+            } else {
+                c.arg("-c").arg(cmd);
+            }
         }
         scrub_env(&mut c);
         // an app from Finder/Dock inherits cwd `/` from launchd; without a folder from the profile/pane, start in home
@@ -323,6 +333,13 @@ pub fn read_to_end(mut r: impl io::Read) -> io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fish_quote_escapes_only_quote_and_backslash() {
+        assert_eq!(super::fish_quote("plain $x `y` \"z\" ;; \n"), "'plain $x `y` \"z\" ;; \n'");
+        assert_eq!(super::fish_quote("it's"), r"'it\'s'");
+        assert_eq!(super::fish_quote(r"a\b'"), r"'a\\b\''");
+    }
+
     use super::*;
     use std::io::Write;
 

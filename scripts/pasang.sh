@@ -8,6 +8,7 @@ cd "$(dirname "$0")/../ui"
 PATH="/opt/homebrew/opt/rustup/bin:$PATH" npm run tauri build -- --bundles app
 new=../target/release/bundle/macos/Gembala.app
 codesign -v --deep --strict "$new"
+"$(dirname "$0")/check-runtime.sh" "$new"
 dst=/Applications/Gembala.app
 tmp=/Applications/.Gembala-baru.app
 rm -rf "$tmp"

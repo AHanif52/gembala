@@ -26,6 +26,7 @@ cd "$root/ui"
 PATH="/opt/homebrew/opt/rustup/bin:$PATH" npm run tauri build -- --bundles app
 app=$root/target/release/bundle/macos/Gembala.app
 codesign -v --deep --strict "$app"
+"$(dirname "$0")/check-runtime.sh" "$app"
 # helper/build.sh falls back to an ad-hoc signature without the certificate: never ship that (SEC-20 checks the signer)
 for b in "$app" "$app/Contents/Helpers/Gembala Daemon.app"; do
   codesign -dvv "$b" 2>&1 | grep -qx "Authority=Gembala Dev" || { echo "$b tidak ditandatangani Gembala Dev."; exit 1; }

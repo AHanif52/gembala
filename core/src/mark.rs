@@ -16,6 +16,8 @@ pub struct MarkFilter {
 
 /// `ESC ] ` + number + `;` of the markers the filter looks at.
 const PREFIXES: [&[u8]; 2] = [b"\x1b]133;", b"\x1b]777;"];
+/// what follows an 8-bit OSC introducer in a forged marker
+const C1_MARKS: [&[u8]; 2] = [b"133;", b"777;gembala;"];
 
 impl MarkFilter {
     pub fn new(nonce: &str) -> Self {
@@ -32,10 +34,31 @@ impl MarkFilter {
         };
         let mut out = Vec::with_capacity(data.len());
         let mut i = 0;
-        while let Some(off) = data[i..].iter().position(|&c| c == 0x1b) {
+        while let Some(off) = data[i..].iter().position(|&c| c == 0x1b || c == 0x9d) {
             let p = i + off;
             out.extend_from_slice(&data[i..p]);
             let rest = &data[p..];
+            if rest[0] == 0x9d {
+                // 8-bit OSC introducer (U+009D, `C2 9D` in UTF-8; xterm.js reads it like `ESC ]`): a marker through this door is
+                // always a forgery, the hooks write the 7-bit form
+                let tail = &rest[1..];
+                if C1_MARKS.iter().any(|x| x.starts_with(tail) && tail.len() < x.len()) {
+                    // the lead byte already went out: take it back so the next read sees the whole U+009D
+                    let lead = if out.last() == Some(&0xc2) { out.pop(); vec![0xc2] } else { Vec::new() };
+                    self.carry = [lead.as_slice(), rest].concat();
+                    return out;
+                }
+                if C1_MARKS.iter().any(|x| tail.starts_with(x)) {
+                    if out.last() == Some(&0xc2) {
+                        out.pop();
+                    }
+                    out.extend_from_slice(NEUTRAL.as_bytes());
+                } else {
+                    out.push(0x9d);
+                }
+                i = p + 1;
+                continue;
+            }
             // a read cut inside the prefix (even a lone ESC): hold it for the next read
             if rest.len() < 6 && PREFIXES.iter().any(|x| x.starts_with(rest)) {
                 self.carry = rest.to_vec();
@@ -72,6 +95,12 @@ impl MarkFilter {
                 }
             }
             i = next;
+        }
+        // a read cut between the two bytes of U+009D
+        if data.last() == Some(&0xc2) {
+            self.carry = vec![0xc2];
+            out.extend_from_slice(&data[i..data.len() - 1]);
+            return out;
         }
         out.extend_from_slice(&data[i..]);
         out
@@ -122,6 +151,20 @@ mod tests {
         // an OSC 777 of another tool and other OSCs pass untouched
         let other = "\x1b]777;notify;hi;there\x07\x1b]0;title\x07\x1b[31mred\x1b[0m";
         assert_eq!(run(&[other.as_bytes()]), other);
+    }
+
+    /// The 8-bit OSC introducer is no way around the filter (xterm.js reads U+009D like ESC ]).
+    #[test]
+    fn c1_osc_palsu_dinetralkan() {
+        for forged in ["\u{9d}133;D;3\x07", "\u{9d}777;gembala;agent-exit;0\x07"] {
+            let out = run(&[forged.as_bytes()]);
+            assert!(!out.contains('\u{9d}') && out.starts_with('␛'), "{forged:?} -> {out:?}");
+        }
+        // cut between the two UTF-8 bytes, or inside the number
+        assert!(!run(&[b"x\xc2", b"\x9d133;D;3\x07"]).contains('\u{9d}'));
+        assert!(!run(&[b"\xc2\x9d13", b"3;D;3\x07"]).contains('\u{9d}'));
+        // text that merely contains the byte or an unrelated C1 OSC passes
+        assert_eq!(run(&["ŝ \u{9d}0;title\x07 end".as_bytes()]), "ŝ \u{9d}0;title\x07 end");
     }
 
     /// Dropping a forged marker must not let its neighbours join into a new one.

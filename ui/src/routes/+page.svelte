@@ -3074,6 +3074,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       if (payload.event === "telegram.changed") tg = payload.params ?? { state: "off" };
       // FR-93: the daemon verified a limit signal from the agent's own hook; the pane's buttons wait for a mockup
       if (payload.event === "pane.limit" && payload.params?.limit) notice(payload.params.pane, "limit");
+      // FR-32: Claude's hook says the login is no longer good; the next step is in pane.info.login (a card waits for a mockup)
+      if (payload.event === "pane.login" && payload.params?.login) notice(payload.params.pane, "failed");
       if (payload.event === "usage.changed") usageRows = Array.isArray(payload.params?.rows) ? payload.params.rows : [];
       if (payload.event === "models.changed") void refreshOpenModels(JSON.stringify([payload.params.agent, payload.params.account]));
       if (payload.event === "update.changed") upd = payload.params;

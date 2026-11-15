@@ -197,7 +197,7 @@ pub fn from_config(tables: &[&dyn toml_edit::TableLike]) -> (Vec<Profile>, Vec<D
     (out, errors)
 }
 
-/// Single quotes for POSIX shells.
+/// Single quotes for POSIX shells: launch text always runs under sh (fish gets `exec /bin/sh -c` in `Pty::spawn`).
 fn q(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -528,10 +528,12 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
     // FR-4, FR-61: typed Claude = same hooks as the profile (status, session id + owning account); the daemon doesn't read its screen
     let start = q(&claude_hooks(exe, false).to_string());
+    // FR-27: a typed Claude gets the RTK hook when the pane was opened with the saver on (`GEMBALA_SAVER=1`) and `rtk` is on PATH
+    let start_rtk = q(&claude_hooks(exe, true).to_string());
     let jail = if cfg!(target_os = "linux") { "gembala jail -- " } else { "" };
     let gemini = if cfg!(target_os = "linux") { "function gemini { command gembala jail -- gemini \"$@\" }\n" } else { "" };
     format!(
-        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=(); [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command {jail}claude --append-system-prompt \"$(<{f})\" --settings {start} ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
+        "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=() cfg={start}; [[ $GEMBALA_SAVER == 1 ]] && (( $+commands[rtk] )) && cfg={start_rtk}; [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command {jail}claude --append-system-prompt \"$(<{f})\" --settings \"$cfg\" ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command {jail}omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
          function codex {{ GEMBALA_SPOOL=\"$(command gembala token 2>/dev/null)\" command {jail}codex -c {notify} -c \"$(<{f}.codex)\" ${{(f)\"$(command gembala addons codex 2>/dev/null)\"}} \"$@\" }}\n\
          function opencode {{ OPENCODE_CONFIG=${{OPENCODE_CONFIG:-{oc}}} command {jail}opencode \"$@\" }}\n\
@@ -563,16 +565,18 @@ fn bash_agents(dir: &std::path::Path, exe: &str) -> String {
     let cc = q(&dir.join("commandcode-gembala.mjs").to_string_lossy());
     let (fo, hook) = (q(&dir.join("gembala.md.omp").to_string_lossy()), q(&format!("--hook={}", dir.join("omp-gembala.ts").to_string_lossy())));
     let start = q(&claude_hooks(exe, false).to_string());
+    let start_rtk = q(&claude_hooks(exe, true).to_string());
     format!(
         "# FR-9/FR-98: typed agents get the same flags as the profiles; SEC-20 wraps each one in `gembala jail --`\n\
          __gembala_uuid() {{ cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-Z' 'a-z'; }}\n\
          function claude {{\n\
            [ -n \"$CLAUDE_CONFIG_DIR\" ] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null\n\
            if [ $# -eq 0 ] || [ \"${{1#-}}\" != \"$1\" ]; then\n\
-             local s=() a=()\n\
+             local s=() a=() cfg={start}\n\
+             [ \"$GEMBALA_SAVER\" = 1 ] && command -v rtk >/dev/null && cfg={start_rtk}\n\
              case \" $* \" in *\" -r \"*|*\" -c \"*|*\" --resume\"*|*\" --continue\"*|*\" --session-id\"*|*\" --fork-session\"*) ;; *) s=(--session-id \"$(__gembala_uuid)\");; esac\n\
              if command -v mapfile >/dev/null; then mapfile -t a < <(command gembala addons claude 2>/dev/null); fi\n\
-             command gembala jail -- claude --append-system-prompt \"$(cat {f})\" --settings {start} \"${{a[@]}}\" \"${{s[@]}}\" \"$@\"\n\
+             command gembala jail -- claude --append-system-prompt \"$(cat {f})\" --settings \"$cfg\" \"${{a[@]}}\" \"${{s[@]}}\" \"$@\"\n\
            else command claude \"$@\"; fi\n\
          }}\n\
          function omp {{\n\
@@ -793,6 +797,35 @@ pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
     f.iter().map(|s| s.to_string()).collect()
 }
 
+/// FR-32: the agent's own status command (it reads its login itself; Gembala never touches the token) and the login command to
+/// show as text. Only agents whose status command was seen to exit 1 when logged out (TECH 48): Claude `auth status`, Codex
+/// `login status`, Command Code `status`. OpenCode (`auth list` has no logged-out exit) and omp have none.
+fn login_check(agent: &str) -> Option<(&'static str, &'static str)> {
+    match agent {
+        "claude" => Some(("auth status", "claude auth login")),
+        "codex" => Some(("login status", "codex login")),
+        "commandcode" => Some(("status", "cmd login")),
+        _ => None,
+    }
+}
+
+/// FR-32, right after the agent's subshell: when the agent stopped with 1..125, say so in the pane; when its own status command
+/// (run with the same non-secret env, so the same account) says it is logged out, say that and the login command. Nothing
+/// runs for exit 0, 127 (not installed, its own message) or a signal. A profile with `secret_env` (an API key may be the
+/// login) never gets the "logged out" claim.
+fn exit_note(p: &Profile, exports: &str) -> String {
+    let stopped = format!("printf '\\n%s %s. %s\\n' {} \"$s\" {}", q(&format!("{} stopped with exit code", p.name)), q("Run it again in this pane, or scroll up for its own message."));
+    let body = match login_check(&p.agent).filter(|_| p.secret_env.is_empty()) {
+        Some((status, login)) => format!(
+            "if ( {exports}{} {status} ) >/dev/null 2>&1; then {stopped}; else printf '\\n%s\\n' {}; fi",
+            q(&p.command),
+            q(&format!("{} isn't logged in. Next step: run `{login}` in this pane, then start it again.", p.name))
+        ),
+        None => stopped,
+    };
+    format!("if [ \"$s\" -ne 0 ] && [ \"$s\" -lt 126 ]; then {body}; fi; ")
+}
+
 /// Text run by `$SHELL -l -c` (TECH section 6). `None` = interactive login shell.
 /// The agent runs in a subshell so secret env doesn't linger in the pane shell after the agent exits;
 /// then `exec $SHELL -l` keeps the pane alive (FR-18). Exit 127 = install message (FR-32).
@@ -810,9 +843,13 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
     // interactive PATH (already taken by detect at daemon start), so agents only on the `.zshrc` PATH are found;
     // the app's own PATH after it (`/etc/profile` on Debian/Ubuntu resets PATH)
     s += &pane_path(USER_PATH.get().cloned().flatten().as_deref());
+    // the same exports again for FR-32's status check, which runs after the subshell (the agent has to stay its last command)
+    let mut exports = pane_path(USER_PATH.get().cloned().flatten().as_deref());
     for (k, v) in p.env.iter().chain(&hook_env) {
         // `~/…` outside the quotes so it becomes the home folder (e.g. CLAUDE_CONFIG_DIR per account)
-        s += &format!("export {k}={}; ", home_q(v));
+        let e = format!("export {k}={}; ", home_q(v));
+        s += &e;
+        exports += &e;
     }
     for (k, r) in &p.secret_env {
         // secrets are resolved by the pane shell; their values never pass through the daemon (SEC-32)
@@ -842,6 +879,7 @@ pub fn launch(p: &Profile, h: Option<&Hooks>, session: Option<&Session>, saver: 
         None => format!("Command {} isn't in the login shell PATH.", p.command),
     };
     s += " ); s=$?; ";
+    s += &exit_note(p, &exports);
     if p.summarize {
         s += "printf '\\033]777;%s;gembala;agent-exit;%d\\007' \"$GEMBALA_MARK\" \"$s\"; ";
     }
@@ -1053,6 +1091,35 @@ mod tests {
         assert!(s.ends_with("exec \"$SHELL\" -l"), "{s}");
         assert!(s.contains("brew install --cask claude-code"), "{s}");
         assert_eq!(launch(&builtin()[0], None, None, false), None);
+    }
+
+    /// FR-32: a failed start says what happened; only the agent's own status command can make it "not logged in".
+    #[test]
+    fn exit_note_says_logged_out_only_when_status_command_says_so() {
+        let dir = std::env::temp_dir().join(format!("gembala-fr32-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = |name: &str, status_exit: i32, run_exit: i32| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\nif [ \"$1\" = auth ]; then exit {status_exit}; fi\nexit {run_exit}\n")).unwrap();
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let run = |command: String, agent: &str| {
+            let p = Profile { command, agent: agent.into(), name: "Claude Code".into(), ..builtin()[1].clone() };
+            let out = Command::new("/bin/sh").env("SHELL", "/usr/bin/true").arg("-c").arg(launch(&p, None, None, false).unwrap()).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let out = run(fake("out", 1, 1), "claude");
+        assert!(out.contains("isn't logged in") && out.contains("claude auth login"), "{out}");
+        let out = run(fake("in", 0, 1), "claude");
+        assert!(out.contains("stopped with exit code 1") && !out.contains("logged in"), "{out}");
+        // no status command known for this agent: only the plain note; a clean exit says nothing
+        assert!(run(fake("omp", 1, 1), "omp").contains("stopped with exit code 1"));
+        assert!(!run(fake("ok", 1, 0), "claude").contains("stopped"));
+        // an API key from `secret_env` may be the login: no "logged out" claim then
+        let p = Profile { command: fake("key", 1, 1), agent: "claude".into(), name: "Claude Code".into(), secret_env: vec![("K".into(), "keychain:a/b".into())], ..builtin()[1].clone() };
+        assert!(!exit_note(&p, "").contains("isn't logged in"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1488,8 +1555,38 @@ claude-baru --resume x
     #[test]
     fn claude_diketik_membawa_session_start() {
         let rc = zsh_agents(std::path::Path::new("/cfg/hooks"), "/Apps/Gem bala/gembala");
-        assert!(rc.contains("--settings '{\"hooks\":{") && rc.contains("\"SessionStart\"") && rc.contains("hook claude start") && rc.contains("hook claude stop"), "{rc}");
+        assert!(rc.contains("cfg='{\"hooks\":{") && rc.contains("\"SessionStart\"") && rc.contains("hook claude start") && rc.contains("hook claude stop"), "{rc}");
         assert_eq!(hook_status("claude", "start", "{}"), Some("start"));
+    }
+
+    /// FR-27: typed Claude gets the RTK hook only with the saver switch on (pane env) and `rtk` on PATH.
+    #[test]
+    fn claude_diketik_rtk_hanya_saat_hemat_dan_rtk_ada() {
+        let dir = std::env::temp_dir().join(format!("gembala-rtk-typed-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        for (name, body) in [("claude", "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --settings ] && printf '%s' \"$2\"; shift; done\n"), ("rtk", "#!/bin/sh\n"), ("uuidgen", "#!/bin/sh\necho 0000\n"), ("gembala", "#!/bin/sh\n")] {
+            let f = dir.join("bin").join(name);
+            std::fs::write(&f, body).unwrap();
+            std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+        std::fs::create_dir_all(dir.join("hooks")).unwrap();
+        std::fs::write(dir.join("hooks/gembala.md"), "hint").unwrap();
+        let rc = zsh_agents(&dir.join("hooks"), "/x/gembala");
+        let run = |saver: Option<&str>, path: &str| {
+            let mut c = std::process::Command::new("zsh");
+            c.args(["-f", "-c", &format!("{rc}\nclaude")]).env("PATH", path).env_remove("GEMBALA_SAVER");
+            if let Some(v) = saver { c.env("GEMBALA_SAVER", v); }
+            String::from_utf8_lossy(&c.output().unwrap().stdout).into_owned()
+        };
+        let with = format!("{}:/usr/bin:/bin", dir.join("bin").display());
+        assert!(run(Some("1"), &with).contains("rtk hook claude"));
+        assert!(!run(None, &with).contains("rtk hook claude"));
+        assert!(!run(Some("0"), &with).contains("rtk hook claude"));
+        // saver on but no rtk installed: Gembala's own hooks only
+        std::fs::remove_file(dir.join("bin/rtk")).unwrap();
+        let out = run(Some("1"), &with);
+        assert!(out.contains("hook claude start") && !out.contains("rtk hook claude"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

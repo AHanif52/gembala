@@ -10,4 +10,5 @@ v=$(node -p "require('./src-tauri/tauri.conf.json').version")
 plutil -replace CFBundleVersion -string "$v" "$app/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$v" "$app/Contents/Info.plist"
 cp ../target/release/gembala "$app/Contents/MacOS/gembala"
-codesign --force -s "Gembala Dev" "$app" 2>/dev/null || codesign --force -s - "$app"
+# hardened runtime (TECH 48): DYLD_INSERT_LIBRARIES and friends are ignored by the daemon; it needs no entitlements
+codesign --force --options runtime -s "Gembala Dev" "$app" 2>/dev/null || codesign --force --options runtime -s - "$app"

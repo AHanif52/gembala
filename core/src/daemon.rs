@@ -155,6 +155,8 @@ struct Pane {
     sent_check: Mutex<Option<SentCheck>>,
     /// FR-93: set by a verified limit signal, cleared by the user, the end of the hold, or the agent working again
     limit: Mutex<Option<Limit>>,
+    /// FR-32: Claude's own hook said the login failed (`authentication_failed`); the next step as text, cleared when it works again
+    login: Mutex<Option<String>>,
     /// The agent in front has exited (`agent_done`): until one runs again (`agent-start`, a hook, one typed by
     /// hand), the pane is a plain shell for `agent_name` — send/read/wait reject like a shell pane (11 Nov 2026)
     exited: std::sync::atomic::AtomicBool,
@@ -273,7 +275,7 @@ struct State {
     hooks: profile::Hooks,
     engine: Mutex<bus::Engine>,
     /// FR-8: status event subscriptions from the pane channel (subscriber, its queue), filtered by SEC-21 on send
-    pane_subs: Mutex<Vec<(u64, SyncSender<String>)>>,
+    pane_subs: Mutex<Vec<(u64, u64, SyncSender<String>)>>,
     audit: Option<bus::Audit>,
     /// FR-16/17: active harness runs, panes they hold, sender ids (runner.rs)
     harness: Mutex<runner::Registry>,
@@ -542,7 +544,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             }
             let r = match (method, me) {
                 ("subscribe", Some(me)) => {
-                    st.pane_subs.lock().unwrap().push((me, tx.clone()));
+                    subscribe_pane(&st, me, conn, tx.clone());
                     Ok(json!({}))
                 }
                 ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage" | "cancel" | "edit" | "handoff", Some(me)) => pane_method_connected(&st, me, method, p, Some(r.get_ref())),
@@ -601,6 +603,15 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                             if matches!(status, "working" | "start") {
                                 pane.claude.lock().unwrap().clear();
                                 clear_limit(&st, me, &pane);
+                                if pane.login.lock().unwrap().take().is_some() {
+                                    ui_pane_event(&st, "pane.login", json!({"pane": me, "login": null}));
+                                }
+                            }
+                            // FR-32: the same hook, error `authentication_failed`: Claude says its login is no longer good
+                            if p["agent"].as_str() == Some("claude") && p["limit"].as_str() == Some("authentication_failed") {
+                                let step = "Claude Code isn't logged in (or the login expired). Type /login in this pane, or run `claude auth login`.".to_string();
+                                *pane.login.lock().unwrap() = Some(step.clone());
+                                ui_pane_event(&st, "pane.login", json!({"pane": me, "login": {"step": step}}));
                             }
                             // FR-93: only a limit error the agent's own hook names (Claude `StopFailure`), never screen text
                             if p["agent"].as_str() == Some("claude") && matches!(p["limit"].as_str(), Some("rate_limit" | "billing_error")) {
@@ -1623,6 +1634,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 "subagents": pane.subagents.load(Ordering::Relaxed),
                 "waiting_shell": waiting_shell, "reason": reason,
                 "limit": pane.limit.lock().unwrap().as_ref().map(limit_json), // FR-93
+                "login": *pane.login.lock().unwrap(), // FR-32
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "session": *pane.session.lock().unwrap(), // FR-68: resume card even if the daemon stopped
                 "title": *pane.title.lock().unwrap(), // FR-69: label pane
@@ -1807,6 +1819,10 @@ fn create_pane(st: &Arc<State>, p: &Value, extra_args: &[String]) -> Res {
     // SEC-40: this pane's marker nonce; the hook scripts and the launch command put it into their OSC 133/777 markers
     let nonce = new_secret().map_err(|_| "io")?[..32].to_string();
     env.push(("GEMBALA_MARK", nonce.as_str()));
+    // FR-27: the typed-agent wrappers read this to add the RTK hook (a shell pane has no profile, so only the global switch)
+    if st.config.lock().unwrap()["values"]["harness"]["token_saver"].as_bool().unwrap_or(false) {
+        env.push(("GEMBALA_SAVER", "1"));
+    }
     let acct_dir = shell_acct.as_ref().map(|(_, v)| v.strip_prefix("~/").map_or_else(|| v.clone(), |rest| format!("{home}/{rest}")));
     if let (Some((k, _)), Some(d)) = (&shell_acct, &acct_dir) {
         env.push((k.as_str(), d.as_str()));
@@ -1903,6 +1919,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
         hooked: std::sync::atomic::AtomicBool::new(false),
         sent_check: Mutex::new(None),
         limit: Mutex::new(None),
+        login: Mutex::new(None),
         exited: std::sync::atomic::AtomicBool::new(false),
         closing: std::sync::atomic::AtomicBool::new(false),
         trust: std::sync::atomic::AtomicBool::new(false),
@@ -2641,7 +2658,11 @@ fn limit_json(l: &Limit) -> Value {
 }
 
 fn limit_event(st: &State, id: u64, limit: Value) {
-    let ev = line(json!({"event": "pane.limit", "params": {"pane": id, "limit": limit}}));
+    ui_pane_event(st, "pane.limit", json!({"pane": id, "limit": limit}));
+}
+
+fn ui_pane_event(st: &State, event: &str, params: Value) {
+    let ev = line(json!({"event": event, "params": params}));
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
 }
 
@@ -3451,6 +3472,17 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
     }
 }
 
+/// FR-8: one subscription per pane connection; a second `subscribe` on the same connection replaces the first, so a pane can't
+/// pile up duplicates (and double events) by calling it in a loop
+fn subscribe_pane(st: &State, me: u64, conn: u64, tx: SyncSender<String>) {
+    put_sub(&mut st.pane_subs.lock().unwrap(), me, conn, tx);
+}
+
+fn put_sub(subs: &mut Vec<(u64, u64, SyncSender<String>)>, me: u64, conn: u64, tx: SyncSender<String>) {
+    subs.retain(|(who, c, _)| !(*who == me && *c == conn));
+    subs.push((me, conn, tx));
+}
+
 /// Tell the UI and pane channel subscribers (FR-8). A subscriber only gets panes it may read (SEC-21).
 fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     telegram::on_status(st, id, pane, status);
@@ -3464,9 +3496,9 @@ fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     let visible = pane.agent_name().is_some() || pane.readable.load(Ordering::Relaxed);
     let name = pane.name.lock().unwrap().clone();
     let ev = line(json!({"event": "pane.status", "params": {"name": name, "status": status, "shell": shell, "reason": reason}}));
-    let subs: Vec<(u64, SyncSender<String>)> = st.pane_subs.lock().unwrap().clone();
+    let subs: Vec<(u64, u64, SyncSender<String>)> = st.pane_subs.lock().unwrap().clone();
     let mut dead = vec![];
-    for (who, tx) in &subs {
+    for (who, _, tx) in &subs {
         if *who == id || !visible || st.workspace_of(*who) != ws {
             continue;
         }
@@ -3475,7 +3507,7 @@ fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
         }
     }
     if !dead.is_empty() {
-        st.pane_subs.lock().unwrap().retain(|(who, _)| !dead.contains(who));
+        st.pane_subs.lock().unwrap().retain(|(who, _, _)| !dead.contains(who));
     }
 }
 
@@ -4001,13 +4033,43 @@ pub fn new_secret() -> io::Result<String> {
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
+/// `GEMBALA_RUNDIR` moves the sockets and run folder for tests and demo daemons; a release build ignores it, so a hostile
+/// environment can't point an installed daemon or UI at a folder the attacker holds (TECH 18)
 pub fn default_dir() -> PathBuf {
-    std::env::var_os("GEMBALA_RUNDIR").map(PathBuf::from).unwrap_or_else(crate::rundir::default_dir)
+    rundir_override().unwrap_or_else(crate::rundir::default_dir)
+}
+
+pub fn rundir_override() -> Option<PathBuf> {
+    cfg!(debug_assertions).then(|| std::env::var_os("GEMBALA_RUNDIR").map(PathBuf::from)).flatten()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A release build must not honour the variable; the debug build (tests, demo daemons) does.
+    #[test]
+    fn rundir_env_only_in_debug_builds() {
+        let got = std::thread::spawn(|| {
+            // ponytail: reads the process env set by this one test only
+            unsafe { std::env::set_var("GEMBALA_RUNDIR", "/tmp/gembala-rundir-test") };
+            let r = rundir_override();
+            unsafe { std::env::remove_var("GEMBALA_RUNDIR") };
+            r
+        }).join().unwrap();
+        assert_eq!(got, cfg!(debug_assertions).then(|| PathBuf::from("/tmp/gembala-rundir-test")));
+    }
+
+    #[test]
+    fn pane_subscribe_replaces_on_the_same_connection() {
+        let mut subs = Vec::new();
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<String>(1);
+        put_sub(&mut subs, 1, 10, tx.clone());
+        put_sub(&mut subs, 1, 10, tx.clone());
+        put_sub(&mut subs, 1, 11, tx.clone());
+        put_sub(&mut subs, 2, 10, tx);
+        assert_eq!(subs.len(), 3);
+    }
 
     #[test]
     fn helper_limit_ends_the_owners_request_in_words() {

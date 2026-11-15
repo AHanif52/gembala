@@ -3514,3 +3514,28 @@ fn fr93_limit_from_hook_holds_queue_until_retry() {
     ch.call("hook", json!({"agent":"claude","status":"working"}));
     assert!(ui.call("pane.info", json!({"pane":held}))["result"]["limit"].is_null());
 }
+
+/// FR-32: Claude's `StopFailure` with `authentication_failed` (and nothing else) puts the next step on the pane; working again clears it.
+#[test]
+fn fr32_login_failure_from_hook_shows_next_step() {
+    let d = start("login32");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    profiles(&d, &mut ui, &sh_profile("loginp", &format!("stty raw -echo; '{g}' token > '{}/p.token'; cat -v", d.dir.display())), "loginp");
+    let pane = ui.call("pane.create", json!({"profile":"loginp", "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let token = loop {
+        if let Ok(t) = std::fs::read_to_string(d.dir.join("p.token")) && !t.trim().is_empty() { break t; }
+        assert!(Instant::now() < deadline, "token missing");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut c = Cli::connect(&d, "pane.sock");
+    assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
+    c.call("hook", json!({"agent":"claude","status":"done","limit":"server_error"}));
+    assert!(ui.call("pane.info", json!({"pane":pane}))["result"]["login"].is_null());
+    c.call("hook", json!({"agent":"claude","status":"done","limit":"authentication_failed"}));
+    let step = ui.call("pane.info", json!({"pane":pane}))["result"]["login"].as_str().unwrap_or_default().to_string();
+    assert!(step.contains("/login") && step.contains("claude auth login"), "{step}");
+    c.call("hook", json!({"agent":"claude","status":"working"}));
+    assert!(ui.call("pane.info", json!({"pane":pane}))["result"]["login"].is_null());
+}

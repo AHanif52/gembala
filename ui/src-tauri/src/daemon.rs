@@ -102,7 +102,8 @@ fn ui_stream(dir: &std::path::Path) -> io::Result<UnixStream> {
 
 /// Same folder as the daemon's `core::os::runtime_dir`: `$TMPDIR/gembala` on macOS, `$XDG_RUNTIME_DIR/gembala` on Linux.
 pub fn rundir() -> PathBuf {
-    if let Some(p) = std::env::var_os("GEMBALA_RUNDIR") {
+    // tests and demo daemons only: a release build ignores it (core `rundir_override`)
+    if cfg!(debug_assertions) && let Some(p) = std::env::var_os("GEMBALA_RUNDIR") {
         return p.into();
     }
     // macOS TMPDIR is already per user; the /tmp fallback is still checked by the daemon's `ensure_private_dir`
