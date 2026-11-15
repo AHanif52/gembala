@@ -523,7 +523,13 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     crate::rundir::ensure_private_dir(dir)?;
     let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
     let tmp = dir.join(format!(".{name}.{}", std::process::id()));
-    let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    // a leftover from a crashed run with the same pid goes first; then O_EXCL (which also never follows a symlink) means
+    // this file is created here, not planted
+    match fs::remove_file(&tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;
     fs::rename(&tmp, path)
@@ -706,6 +712,19 @@ mod tests {
         let d = std::env::temp_dir().join(format!("gembala-cfg-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d.join("config.toml")
+    }
+
+    #[test]
+    fn write_atomic_tidak_mengikuti_symlink_tmp() {
+        let p = scratch("excl");
+        crate::rundir::ensure_private_dir(p.parent().unwrap()).unwrap();
+        let victim = p.with_file_name("victim");
+        fs::write(&victim, b"asli").unwrap();
+        let tmp = p.with_file_name(format!(".{}.{}", p.file_name().unwrap().to_string_lossy(), std::process::id()));
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+        write_atomic(&p, b"baru").unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"asli");
+        assert_eq!(fs::read(&p).unwrap(), b"baru");
     }
 
     #[test]
