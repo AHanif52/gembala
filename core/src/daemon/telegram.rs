@@ -1220,8 +1220,12 @@ fn api(token: &str, method: &str, body: &Value, secs: u64) -> Result<Value, (i64
     if v["ok"] == true {
         Ok(v["result"].clone())
     } else {
-        // Telegram's own reason (e.g. "message is not modified"); never the token, it's only in the URL
-        log(format_args!("{method} failed {}: {}", v["error_code"], v["description"].as_str().unwrap_or_default()));
+        // Telegram's own reason; never the token, it's only in the URL. "message is not modified" = a progress tick
+        // with the same text, harmless and once per tick, so not logged
+        let why = v["description"].as_str().unwrap_or_default();
+        if !why.contains("message is not modified") {
+            log(format_args!("{method} failed {}: {why}", v["error_code"]));
+        }
         Err((v["error_code"].as_i64().unwrap_or_default(), v["parameters"]["retry_after"].as_u64()))
     }
 }

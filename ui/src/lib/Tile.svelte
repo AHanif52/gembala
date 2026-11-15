@@ -167,6 +167,9 @@
     online(line);
   }
   export const focus = () => term.focus();
+  /// history being written back (attach, pane.replace): queries in it (OSC 11, DA, kitty `?u`) were answered long ago,
+  /// a fresh answer now would land in the agent's input as typed text
+  let replaying = false;
   /// FR-107: a line for the person, written into the screen only (never to the PTY); held until the attach snapshot is in
   let notes: string[] = [];
   let showNotes = false;
@@ -538,7 +541,7 @@
     for (const prefix of ["?", ">", "<", "="])
       term.parser.registerCsiHandler({ prefix, final: "u" }, (params) => {
         const reply = onCsi(kitty, prefix, params.map((p) => (Array.isArray(p) ? p[0] : p)));
-        if (reply) call("pane.write", { pane, data: b64(enc.encode(reply)) });
+        if (reply && !replaying) call("pane.write", { pane, data: b64(enc.encode(reply)) });
         return true;
       });
     term.textarea?.addEventListener("focus", () => onfocusin());
@@ -608,16 +611,21 @@
       const segs: { rows: number; cols: number; data: string }[] = a.segments ?? [];
       const raw = segs.map((s) => unb64(s.data));
       const snap = unb64(a.snapshot ?? "");
-      for (let i = 0; i < segs.length; i++) {
+      replaying = true;
+      try {
+        for (let i = 0; i < segs.length; i++) {
+          if (!live()) return [];
+          term.resize(segs[i].cols, segs[i].rows);
+          await put(raw[i]);
+        }
         if (!live()) return [];
-        term.resize(segs[i].cols, segs[i].rows);
-        await put(raw[i]);
+        // TECH 19 #10: the tail is written at the daemon grid size (e.g. 80 columns before the UI attached), then fitted to the pane;
+        // xterm rewraps long rows, while a daemon grid (vt100) shrunk first would cut them
+        if (a.cols && a.rows) term.resize(a.cols, a.rows);
+        await put(snap);
+      } finally {
+        replaying = false;
       }
-      if (!live()) return [];
-      // TECH 19 #10: the tail is written at the daemon grid size (e.g. 80 columns before the UI attached), then fitted to the pane;
-      // xterm rewraps long rows, while a daemon grid (vt100) shrunk first would cut them
-      if (a.cols && a.rows) term.resize(a.cols, a.rows);
-      await put(snap);
       if (!live()) return [];
       sized = true;
       if (el.offsetParent) fit.fit();
@@ -736,6 +744,8 @@
       return false;
     });
     term.onData((d) => {
+      // xterm's own answers (DA, OSC 11 colour) to queries in replayed history start with ESC
+      if (replaying && d.startsWith("\x1b")) return;
       // FR-59: editor shown = plain letters go to the editor (focus can be left in the terminal, e.g. after a TUI exits)
       if (!/[\x00-\x1f\x7f]/.test(d) && ontype(d)) return;
       track(d);
