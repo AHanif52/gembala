@@ -1369,6 +1369,71 @@ fn sh_profile(id: &str, script: &str) -> String {
     format!("[[profile]]\nid = \"{id}\"\ncommand = \"sh\"\nargs = [\"-c\", {}]\n", json!(script))
 }
 
+/// `wait --reply --while-working`: the limit restarts while the recipient works; the wait ends with `gone` when its pane closes.
+#[test]
+fn wait_reply_while_working() {
+    let d = start("waitwork");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = |name: &str| format!("stty -echo; '{g}' token > '{}/{}.token'; {}", d.dir.display(), name, if name == "b" { "while IFS= read -r line; do :; done" } else { "cat" });
+    let stub = d.dir.join("commandcode-test");
+    std::fs::write(&stub, format!("#!/bin/sh\n{}\n", script("a"))).unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let config = format!("[[profile]]\nid = \"commandcode\"\ncommand = {}\n", json!(stub));
+    profiles(&d, &mut ui, &(config + &sh_profile("hasil", &script("b"))), "b.token");
+    let _a = ui.call("pane.create", json!({"profile":"commandcode", "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    let b = ui.call("pane.create", json!({"profile":"hasil", "workspace":"w"}))["result"]["pane"].as_u64().unwrap();
+    let client = |name: &str| {
+        let path = d.dir.join(format!("{name}.token"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let token = loop {
+            if let Ok(t) = std::fs::read_to_string(&path) && !t.trim().is_empty() { break t; }
+            assert!(Instant::now() < deadline, "token missing");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let mut c = Cli::connect(&d, "pane.sock");
+        assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
+        c
+    };
+    let mut ca = client("a");
+    let mut cb = client("b");
+    let status = |c: &mut Cli, s: &str| { assert!(c.call("hook", json!({"agent":"omp","status":s})).get("result").is_some()); };
+    status(&mut ca, "idle");
+    status(&mut cb, "idle");
+    std::thread::sleep(Duration::from_millis(600));
+    let send = |c: &mut Cli| {
+        let r = c.call("send", json!({"to":"hasil-1","body":"task","queue":true}));
+        assert!(matches!(r["result"]["result"].as_str(), Some("accepted" | "queued")), "{r}");
+        r["result"]["id"].as_str().unwrap().to_string()
+    };
+    let reply = |c: &mut Cli, id: &str, text: &str| c.call("reply", json!({"msg_id":id,"body":text}));
+    let wait = |id: &str| {
+        let mut w = client("a");
+        let id = id.to_string();
+        std::thread::spawn(move || w.call("wait", json!({"reply":id,"timeout_ms":300,"while_working":true})))
+    };
+    // working: well past the 300 ms limit the wait is still on, and the reply reaches it
+    status(&mut cb, "working");
+    let id = send(&mut ca);
+    let h = wait(&id);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!h.is_finished());
+    assert_eq!(reply(&mut cb, &id, "HASIL-LAMA")["result"]["delivered_via"], "wait");
+    assert_eq!(h.join().unwrap()["result"]["reply"]["body"], "HASIL-LAMA");
+    // idle recipient: the limit applies as before
+    status(&mut cb, "idle");
+    std::thread::sleep(Duration::from_millis(600));
+    let id = send(&mut ca);
+    assert_eq!(wait(&id).join().unwrap()["result"]["timeout"], true);
+    // recipient pane closed: `gone`, not a timeout
+    status(&mut cb, "working");
+    let id = send(&mut ca);
+    let h = wait(&id);
+    std::thread::sleep(Duration::from_millis(500));
+    ui.call("pane.close", json!({"pane": b}));
+    assert_eq!(h.join().unwrap()["result"]["gone"], true);
+}
+
 /// FR-106: authenticated pane clients exercise the real reply/queue/wait paths without personal sessions.
 #[test]
 fn fr106_balasan_tanpa_wait_dan_dengan_wait() {

@@ -28,7 +28,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage: gembala daemon [--secret-fd N | --secret-sock <path>]
        gembala send <pane> <message…> [--queue] [--reply-to <msg_id>] [--model <id>] [--effort <level>]
-       gembala wait [<pane>] [--reply <msg_id>] [--pattern <regex>] [--timeout <seconds>]
+       gembala wait [<pane>] [--reply <msg_id> [--while-working]] [--pattern <regex>] [--timeout <seconds>]
        gembala read <pane> [-n <lines>]
        gembala reply <msg_id> <text…>
        gembala close <pane>
@@ -256,6 +256,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--queue" => drop(opt.insert("queue", Value::Bool(true))),
+            "--while-working" => drop(opt.insert("while_working", Value::Bool(true))),
             "--screenshot" => drop(opt.insert("screenshot", Value::Bool(true))),
             "--reply-to" | "--reply" | "--pattern" | "--timeout" | "-n" | "--model" | "--effort" => match it.next() {
                 Some(v) => drop(opt.insert(a.trim_start_matches('-'), json!(v))),
@@ -273,7 +274,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
         "report" if !rest.is_empty() => json!({"title": rest[0], "body": text(1), "screenshot": opt.get("screenshot")}),
         "read" if rest.len() == 1 => json!({"target": rest[0], "lines": opt.get("n").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok())}),
         "wait" if rest.len() <= 1 => json!({
-            "target": rest.first(), "reply": opt.get("reply"), "pattern": opt.get("pattern"),
+            "target": rest.first(), "reply": opt.get("reply"), "pattern": opt.get("pattern"), "while_working": opt.get("while_working"),
             "timeout_ms": opt.get("timeout").and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok()).map(|s| s * 1000),
         }),
         "status" | "watch" | "token" => json!({}),
@@ -341,7 +342,7 @@ fn agent_cli(cmd: &str, args: &[String]) -> ExitCode {
                 _ if cmd == "addons" => out["args"].as_array().into_iter().flatten().filter_map(Value::as_str).for_each(|a| println!("{a}")),
                 _ => println!("{out}"),
             }
-            let ok = v.get("result").is_some_and(|r| r["result"] != "rejected" && r.get("timeout").is_none());
+            let ok = v.get("result").is_some_and(|r| r["result"] != "rejected" && r.get("timeout").is_none() && r.get("gone").is_none());
             ExitCode::from(if ok { 0 } else { 1 })
         }
         Err(e) => {
@@ -361,6 +362,7 @@ fn spool_call(sock: &std::path::Path, token: &str, method: &str, params: &serde_
     std::fs::rename(&tmp, &req)?;
     // `wait` waits on its own in the daemon; the limit is a bit above its timeout (default 10 minutes)
     let limit = match params["timeout_ms"].as_u64() {
+        _ if params["while_working"] == true => Duration::from_secs(7 * 86400),
         Some(ms) => Duration::from_millis(ms) + Duration::from_secs(10),
         None if method == "wait" => Duration::from_secs(600),
         None => Duration::from_secs(30),

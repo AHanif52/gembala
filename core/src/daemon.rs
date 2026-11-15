@@ -2522,6 +2522,9 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             // 11 Nov: an executor's task ran past the old 1 h cap and the coordinator read the timeout as a failure)
             let timeout = std::time::Duration::from_millis(p["timeout_ms"].as_u64().unwrap_or(600_000).min(21_600_000));
             let reply = p["reply"].as_str().map(String::from);
+            // --while-working (reply only): the limit restarts while the recipient is working/blocked; the wait ends
+            // with `gone` when its pane is closed or its agent exited (GESEKAN 11 Nov)
+            let while_working = reply.is_some() && p["while_working"].as_bool() == Some(true);
             let pattern = match p["pattern"].as_str() {
                 Some(pat) if pat.len() > 256 => return Err("bad_params"),
                 Some(pat) => Some(regex_lite::Regex::new(pat).map_err(|_| "bad_params")?),
@@ -2548,7 +2551,8 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                 }
                 Ok(v)
             };
-            let t0 = std::time::Instant::now();
+            let recipient = reply.as_ref().and_then(|r| st.engine.lock().unwrap().find(r).map(|m| m.to));
+            let mut t0 = std::time::Instant::now();
             loop {
                 if connection.is_some_and(|socket| {
                     let mut byte = 0u8;
@@ -2572,6 +2576,14 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                         if matches!(s, "idle" | "done" | "blocked") && pane.status_at.lock().unwrap().elapsed() >= msg::STABLE {
                             return done(json!({"status": s}));
                         }
+                    }
+                }
+                if while_working {
+                    let pane = recipient.and_then(|id| st.panes.lock().unwrap().get(&id).cloned());
+                    match pane.filter(|p| p.agent_name().is_some()) {
+                        None => return done(json!({"gone": true})),
+                        Some(p) if t0.elapsed() > timeout && matches!(*p.status.lock().unwrap(), "working" | "blocked") => t0 = std::time::Instant::now(),
+                        Some(_) => {}
                     }
                 }
                 if t0.elapsed() > timeout {
