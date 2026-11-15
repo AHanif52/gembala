@@ -15,6 +15,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import NewTask from "$lib/NewTask.svelte";
   import Report from "$lib/Report.svelte";
   import HarnessFlow from "$lib/HarnessFlow.svelte";
+  import RecipeBuilder from "$lib/RecipeBuilder.svelte";
   import { live as runLive, stagePanes, type AiAsk, type AiDraft, type Snap } from "$lib/harness";
   import ContextMenu, { type MenuAt, type MItem } from "$lib/ContextMenu.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -301,6 +302,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   let drawer = $state(false);
   // FR-16, FR-26, FR-73: harness. `runs` = latest run per workspace id (the daemon pushes harness.state)
   let newTask = $state(false);
+  let builder = $state<{ id: string; tpl: string } | null>(null); // 3b: the recipe card builder
   let flow = $state(false);
   let runs = $state<Record<string, Snap>>({});
   const runOwner: Record<string, string> = {}; // run id -> owner tab id, for stages opened after the first
@@ -1507,7 +1509,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   function run(id: string) {
     if (id === "app.quit_all") return askQuitAll();
     if (id === "app.settings") return void (settingsOpen = !settingsOpen);
-    if (settingsOpen || picker || editing || rich || pal || lempar || newTask) return;
+    if (settingsOpen || builder || picker || editing || rich || pal || lempar || newTask) return;
     if (confirm || quitAsk || linkAsk || wsAsk) return;
     // one key can arrive through the menu and keydown at once; don't run twice
     if (id === last.id && performance.now() - last.at < 150) return;
@@ -1977,6 +1979,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       }
       return; // controls in Settings take keys as usual
     }
+    if (builder) return; // the card builder handles its own keys
     if (rich || pal || lempar) return; // the Rich Input textarea, palette, and hand-off bar handle their own keys
     if (compose) {
       if (e.key === "Escape") (compose = null), stop(e);
@@ -3851,6 +3854,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         flow = true;
       }}
       onmanual={startManual}
+      onrecipe={(id: string) => ((newTask = false), (builder = { id, tpl: "" }))}
     />
   {/if}
   {#if reportDraft}
@@ -4109,10 +4113,13 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 {#if __GEMBALA_DEBUG__}<span class="devtag" title={__GEMBALA_DEBUG__}>{__GEMBALA_DEBUG__}</span>{/if}
 <!-- outside .grid: a fixed .grid is its own stacking layer, so inside it Settings (z-index 10) lost to the sidebar grip (4) and the rail (6) -->
 {#if settingsOpen && cfg}
-  <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
+  <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} onbuilder={(id: string, tpl = "") => ((settingsOpen = false), (builder = { id, tpl }))} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
     onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
     oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)}
     onresetHints={() => { helperTip = true; hintReset += 1; try { localStorage.removeItem(TIP_KEY); } catch {} }} onwhatsnew={() => (settingsOpen = false, openWhatsNew())} />
+{/if}
+{#if builder}
+  <RecipeBuilder id={builder.id} tpl={builder.tpl} names={Object.fromEntries((cfg?.values.profiles ?? []).filter((p) => p.agent !== "shell").map((p) => [p.agent, `${GLYPH[p.agent] ?? ""} ${p.name}`.trim()]))} onclose={() => (builder = null)} />
 {/if}
 {#if quitAsk}
   <!-- also opened from Settings > General (z-index 10): sits above it (9 Nov: covered, Esc first to see it) -->

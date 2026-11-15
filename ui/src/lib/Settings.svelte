@@ -24,6 +24,7 @@
     upd = null,
     drafts = [],
     onai = () => {},
+    onbuilder = () => {},
     aiOpen = null,
     onpane = () => {},
     ondraft = () => {},
@@ -40,6 +41,7 @@
     upd?: Upd | null; // FR-82: `update.status` / `update.changed`
     drafts?: AiDraft[]; // FR-77 (H5): Atur pakai AI drafts the page started; `ready` = the agent wrote the file
     onai?: (r: AiAsk) => void; // opens the agent tab and sends the brief
+    onbuilder?: (id: string, tpl?: string) => void; // 3b: the card builder, an existing recipe or a new one from a template
     aiOpen?: string | null; // palette / section header: open Atur pakai AI right away ("" = recipe, else a settings section)
     onpane?: (pane: number) => void;
     ondraft?: (draft: string) => void; // reviewed (saved or rejected): drop it from the list
@@ -414,6 +416,12 @@
   const usedAt = (s: number) => new Date(s * 1000).toLocaleString(loc(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   let recipes = $state<Rec[]>([]);
   let delAsk = $state("");
+  let tpls = $state<{ id: string; recipe: { name: string; steps: { id: string; name: string }[] } }[] | null>(null);
+  async function openTemplates() {
+    if (tpls) return void (tpls = null);
+    const lib = await call("recipe.library").catch(() => null);
+    tpls = lib?.templates ?? [];
+  }
   let ai = $state<{ target: AiAsk["target"]; id: string; fresh: string; ask: string; profile: string; section: string; file: string } | null>(null);
   let review = $state<{ id: string; who?: string; ask?: string; draft?: AiDraft; text: string; current: string; hash: string; errors: any[]; warnings: any[] } | null>(null);
   const agentProfiles = $derived(cfg.values.profiles.filter((p) => p.agent !== "shell"));
@@ -1164,7 +1172,17 @@
           {/if}
           <h4>{t("hn.set.recipes")}<span class="hint">{t("hn.set.where")}</span>
             <button class="mini" onclick={() => reveal("recipes")}>{t("hn.set.showFolder")}</button>
-            <button class="mini" onclick={() => openAi()}>{t("hn.set.newAi")}</button></h4>
+            <button class="mini" onclick={() => openAi()}>{t("hn.set.newAi")}</button>
+            <button class="mini pri" onclick={openTemplates}>{t("rb.new")}</button></h4>
+          {#if tpls}
+            <section>
+              <div class="row"><span>{t("rb.newFrom")}</span></div>
+              {#each tpls as tp (tp.id)}
+                <div class="row"><span>{tp.recipe.name}<small class="chain">{tp.recipe.steps.map((x) => x.name || x.id).join(" → ")}</small></span>
+                  <span class="acts"><button class="mini pri" onclick={() => onbuilder("", tp.id)}>{t("rb.edit")}…</button></span></div>
+              {/each}
+            </section>
+          {/if}
           <section>
             {#each recipes as r (r.id)}
               <div class="row">
@@ -1175,6 +1193,7 @@
                 {:else}
                   <span class="acts">
                     {#if r.status === "changed" || r.status === "needs_approval"}<button class="mini pri" onclick={() => reviewFile(r.id)}>{t("hn.set.review")}…</button>{/if}
+                    <button class="mini" onclick={() => onbuilder(r.id)}>{t("rb.edit")}</button>
                     <button class="mini" onclick={() => openAi(r.id)}>{t("hn.set.editAi")}</button>
                     <button class="mini" onclick={() => duplicate(r.id)}>{t("hn.set.dup")}</button>
                     <button class="mini" onclick={() => (delAsk = r.id)}>{t("hn.set.delete")}</button>

@@ -20,6 +20,7 @@
     onclose,
     onstarted,
     onmanual,
+    onrecipe,
   }: {
     ws: { id: string; name: string };
     cwd: string;
@@ -34,6 +35,8 @@
     onclose: () => void;
     onstarted: (snap: any) => void;
     onmanual: (o: { agent: string; task: string; cwd: string }) => void;
+    /// 3b: open the card builder on the picked recipe
+    onrecipe?: (id: string) => void;
   } = $props();
 
   // the dialog is opened fresh each time, so these start from the props once on purpose
@@ -176,6 +179,7 @@
       <select bind:value={recipeId}>
         {#each rows as r (r.id)}<option value={r.id}>{r.recipe?.name ?? r.id}{r.status === "approved" ? "" : ` · ${tOr(`hn.status.${r.status}`, r.status)}`}</option>{/each}
       </select>
+      {#if onrecipe && recipeId}<button type="button" class="mini" onclick={(e) => (e.preventDefault(), onrecipe(recipeId))}>{t("rb.setRecipe")}</button>{/if}
     </label>
     {#if row}
       <div class="chain">{row.recipe ? chain(row) : ""}</div>
