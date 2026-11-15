@@ -102,13 +102,11 @@ pub struct Engine {
     seq: u64,
     /// messages received so far, for hops and reply owners (capped at the last 1000)
     known: VecDeque<Msg>,
-    /// ids written to the recipient's pane (same cap): only these can be replied to (TECH 18 lead 7)
-    delivered: VecDeque<String>,
     pub replies: HashMap<String, Msg>,
     pub waiting: HashSet<String>,
     pub undelivered_replies: HashMap<String, Msg>,
     pub reply_alerted: HashSet<String>,
-    /// FR-95: ids typed into a pane / ids that ended another way (answered, rejected, cancelled): a request still open
+    /// FR-95 + TECH 18 lead 7: ids typed into a pane (only these can be replied to) / ids that ended another way (answered, rejected, cancelled): a request still open
     /// for its recipient is delivered and not closed. Kept in step with `known`.
     delivered: HashSet<String>,
     closed: HashSet<String>,
@@ -175,15 +173,8 @@ impl Engine {
         })
     }
 
-    pub fn mark_delivered(&mut self, id: &str) {
-        self.delivered.push_back(id.to_string());
-        while self.delivered.len() > 1000 {
-            self.delivered.pop_front();
-        }
-    }
-
     pub fn is_delivered(&self, id: &str) -> bool {
-        self.delivered.iter().any(|d| d == id)
+        self.delivered.contains(id)
     }
 
     /// FR-95: this request is answered (or ended another way), whatever happens to the reply later
@@ -538,9 +529,10 @@ mod tests {
     #[test]
     fn hanya_pesan_terkirim_bisa_dibalas() {
         let mut e = Engine::default();
-        e.remember(&msg("tertolak", 0));
+        let m = msg("tertolak", 0);
+        e.remember(&m);
         assert!(!e.is_delivered("tertolak"));
-        e.mark_delivered("tertolak");
+        e.log("sent", &m, None);
         assert!(e.is_delivered("tertolak"));
     }
 

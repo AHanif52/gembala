@@ -2377,7 +2377,6 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
         _ => msg::wrap(&from, &m.id, &m.body),
     };
     if (&terminal.master).write_all(&bytes).is_ok() {
-        st.engine.lock().unwrap().mark_delivered(&m.id);
         if m.is_reply && m.tag.kind == bus::Kind::Result {
             let mut eng = st.engine.lock().unwrap();
             if let Some(reply_to) = &m.reply_to { eng.replies.remove(reply_to); }
