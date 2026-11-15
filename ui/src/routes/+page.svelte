@@ -4264,7 +4264,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 <!-- 3b: builder tabs stay mounted (their edits survive a switch to a pane tab) and are only shown while current -->
 {#each rtabs as r (r.key)}
   <div class="rpane" hidden={showKey !== r.key} style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right="{rightPad}px">
-    <RecipeBuilder id={r.rid} tpl={r.tpl} names={agentNames} profiles={stepProfiles} active={showKey === r.key} onformulate={(profile, need) => formulateStep(r.key, profile, need)} onopenpane={jumpTo} onduplicate={(rid) => openRecipeTab(rid)} bind:this={rrefs[r.key]}
+    <RecipeBuilder id={r.rid} tpl={r.tpl} names={agentNames} {simple} profiles={stepProfiles} active={showKey === r.key} onformulate={(profile, need) => formulateStep(r.key, profile, need)} onopenpane={jumpTo} onduplicate={(rid) => openRecipeTab(rid)} bind:this={rrefs[r.key]}
       onstate={(x) => (rtabs = patchRecipe(rtabs, r.key, x))} onclose={() => dropRecipe(r.key)} />
   </div>
 {/each}

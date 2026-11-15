@@ -9,6 +9,7 @@
   import { pretty, type Account, type Agent, type Config, type Profile, type Ui } from "./config";
   import { newer, type Upd } from "./update";
   import { lineDiff } from "./diff";
+  import RecipeSummary from "./RecipeSummary.svelte";
   import type { AiAsk, AiDraft } from "./harness";
   import { errText, loc, t, tn, tOr } from "./i18n/state.svelte";
   import { combo, isMac, keyText, modLabel, quitKey } from "./keys.svelte";
@@ -437,7 +438,7 @@
     tpls = lib?.templates ?? [];
   }
   let ai = $state<{ target: AiAsk["target"]; id: string; fresh: string; ask: string; profile: string; section: string; file: string } | null>(null);
-  let review = $state<{ id: string; who?: string; ask?: string; draft?: AiDraft; text: string; current: string; hash: string; errors: any[]; warnings: any[] } | null>(null);
+  let review = $state<{ id: string; who?: string; ask?: string; draft?: AiDraft; text: string; current: string; hash: string; errors: any[]; warnings: any[]; full?: any } | null>(null);
   const agentProfiles = $derived(cfg.values.profiles.filter((p) => p.agent !== "shell"));
   const chain = (r: Rec) => (r.recipe?.steps ?? []).map((s) => s.name || s.id).join(" → ");
   async function loadRecipes() {
@@ -477,11 +478,11 @@
   /// a recipe edited outside the app: its text, approved as is (no diff to show)
   async function reviewFile(id: string) {
     const r = await call("recipe.get", { id }).catch(() => null);
-    if (r) review = { id, text: r.text, current: r.text, hash: r.hash, errors: r.errors ?? [], warnings: r.warnings ?? [] };
+    if (r) review = { id, text: r.text, current: r.text, hash: r.hash, errors: r.errors ?? [], warnings: r.warnings ?? [], full: r.full };
   }
   async function reviewDraft(d: AiDraft) {
     const r = await call(d.kind === "config" ? "config.draft_get" : "recipe.draft_get", { draft: d.draft, id: d.id }).catch(() => null);
-    if (r?.exists) review = { id: d.id, who: d.who, ask: d.ask, draft: d, text: r.text, current: r.current, hash: r.hash, errors: r.errors ?? [], warnings: r.warnings ?? [] };
+    if (r?.exists) review = { id: d.id, who: d.who, ask: d.ask, draft: d, text: r.text, current: r.current, hash: r.hash, errors: r.errors ?? [], warnings: r.warnings ?? [], full: r.full };
   }
   async function approveReview() {
     if (!review) return;
@@ -1129,8 +1130,12 @@
           <h4>{t("hn.set.reviewTitle", { id: review.id.endsWith(".toml") ? review.id : `${review.id}.toml` })}{#if review.who}<span class="hint">{t("hn.set.by", { who: review.who })}</span>{/if}
             {#if review.draft}<button class="mini" onclick={() => review?.draft && onpane(review.draft.pane)}>{t("hn.set.openPane")}</button>{/if}</h4>
           {#if review.ask}<p class="note">{t("hn.set.need")}: {review.ask}</p>{/if}
-          <pre class="rdiff">{#each lines as l, i (i)}<span class={l.t === "+" ? "add" : l.t === "-" ? "del" : ""}>{l.t} {l.s}
+          {#if review.full}<RecipeSummary recipe={review.full} names={Object.fromEntries((cfg?.values.profiles ?? []).map((p) => [p.agent, p.name]))} />{/if}
+          <details open={ui.mode !== "simple" || !review.full}>
+            <summary>{t("hn.sumFile")}</summary>
+            <pre class="rdiff">{#each lines as l, i (i)}<span class={l.t === "+" ? "add" : l.t === "-" ? "del" : ""}>{l.t} {l.s}
 </span>{/each}</pre>
+          </details>
           <section>
             {#if review.errors.length}
               {#each review.errors as e}<div class="row"><span class="bad">✕ {errText(e)}</span></div>{/each}

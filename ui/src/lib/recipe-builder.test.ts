@@ -1,7 +1,8 @@
 // @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { customStep, formErrors, openRecipe, patchRecipe, addAgent, addStep, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, setModel, setPrimary, skipped, slugId } from "./recipe-builder.ts";
+import { translate } from "./i18n/index.ts";
+import { describeLimits, describeRecipe, customStep, formErrors, openRecipe, patchRecipe, addAgent, addStep, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, setModel, setPrimary, skipped, slugId } from "./recipe-builder.ts";
 
 const st = (id, o = {}) => ({ id, kind: "work", name: id, need: "", instruction: "", agents: ["claude"], model: "", models: {}, effort: "", output: "", inputs: [], pass: "reply", timeout_secs: 900, gate: false, human: false, shell: false, max_cost: null, ...o });
 const ship = st("ship", { human: true, agents: [], gate: true, timeout_secs: 0 });
@@ -138,4 +139,46 @@ test("customStep: Kustom defaults, need kept, id free among the flow", () => {
   // lands before Ship
   const steps = addStep([{ id: "plan", human: false, kind: "work" }, { id: "ship", human: true }], s);
   assert.deepEqual(steps.map((x) => x.id), ["plan", s.id, "ship"]);
+});
+
+const NAMES = { claude: "Claude Code", codex: "Codex", omp: "Oh My Pi" };
+const nm = (a) => NAMES[a] ?? a;
+const tr = (k, p) => translate("id", k, p);
+const rec = (steps, o = {}) => ({ name: "r", fallback_on: [], token_saver: false, max_rounds: 2, after_max: "stop", on_limit: "fallback", total_secs: 7200, steps, ...o });
+
+test("describeRecipe: one sentence per stage, agents and limits spelled out", () => {
+  const r = rec([
+    st("plan", { name: "Plan", gate: true, timeout_secs: 900 }),
+    st("execute", { name: "Execute", agents: ["claude", "codex"], timeout_secs: 2400 }),
+    st("scan", { name: "Scan Security", kind: "check", agents: ["omp"], timeout_secs: 0 }),
+    st("test", { name: "Test", kind: "check", shell: true, agents: [] }),
+    st("ship", { name: "Ship", human: true, agents: [], gate: true, timeout_secs: 0 }),
+  ]);
+  const [plan, exec, scan, test, shipS] = describeRecipe(r, nm, tr);
+  assert.deepEqual([plan.title, plan.kind, plan.sentence], ["Plan", "work", "Claude Code bikin rencana (maks 15 menit)."]);
+  assert.match(plan.note, /setujui rencananya/);
+  assert.equal(exec.sentence, "Claude Code ngerjain sesuai rencana (maks 40 menit).");
+  assert.match(exec.note, /Kalau Claude Code gagal atau kena limit, Codex yang nerusin\./);
+  assert.equal(scan.kind, "check");
+  assert.equal(scan.sentence, "Oh My Pi ngecek hasilnya.", "no limit = no parenthesis, no stray space");
+  assert.match(scan.note, /Claude Code benerin dulu \(maks 2 kali\)/);
+  assert.equal(test.sentence, "Gembala jalanin perintah test repo ini.");
+  assert.deepEqual([shipS.kind, shipS.sentence, shipS.note], ["gate", "Lu yang commit hasilnya.", "Gembala nggak pernah commit atau push sendiri."]);
+  // no word "gate" in the Indonesian sentences (BRD 11, simple mode)
+  assert.ok(![plan, exec, scan, test, shipS].some((x) => /gate/i.test(x.sentence + x.note)));
+});
+
+test("describeRecipe: unknown stage id keeps the name, a checker is never the worker, no rounds = no fix note", () => {
+  const r = rec([st("execute", { agents: ["claude"] }), st("zzz", { name: "Tahap Aneh", agents: ["codex"], timeout_secs: 7200 }), st("review", { name: "Review", kind: "check", agents: ["claude", "codex"] })], { max_rounds: 0 });
+  const out = describeRecipe(r, nm, tr);
+  assert.equal(out[1].title, "Tahap Aneh");
+  assert.equal(out[1].sentence, "Codex ngerjain tahap ini (maks 2 jam).");
+  assert.equal(out[2].sentence.startsWith("Codex ngecek"), true, "Claude did the work, so Codex checks");
+  assert.equal(out[2].note, "");
+  assert.equal(describeRecipe(rec([st("x", { name: "", id: "x" })]), nm, tr)[0].title, "x");
+});
+
+test("describeLimits joins rounds, total and saver", () => {
+  assert.equal(describeLimits(rec([], { token_saver: true }), tr), "Berhenti kalau 2 kali perbaikan belum lulus · Total maks 2 jam · Hemat token nyala");
+  assert.equal(describeLimits(rec([], { max_rounds: 0, total_secs: 5400 }), tr), "Total maks 90 menit");
 });

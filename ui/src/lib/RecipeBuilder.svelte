@@ -7,18 +7,21 @@
   import { call } from "./daemon";
   import { lineDiff } from "./diff";
   import { errText, t, tOr } from "./i18n/state.svelte";
+  import RecipeSummary from "./RecipeSummary.svelte";
   import {
     MAX_CHAIN, NAME_MAX, PASSES, addAgent, customStep, formErrors, addStep, canAddAgent, canMove, diagsFor, diagsRecipe, dropIndex, modelOf, moveAgent, moveStep, removeAgent, removeStep, same,
     setModel, setPrimary, skipped, slugId, used, type BRecipe, type BStep, type Diag, type LibAgent, type StepForm,
   } from "./recipe-builder";
 
-  let { id, tpl = "", names = {}, profiles = [], active = true, onclose, onstate = () => {}, onformulate = async () => null, onopenpane = () => {}, onduplicate = () => {} }: {
+  let { id, tpl = "", names = {}, simple = false, profiles = [], active = true, onclose, onstate = () => {}, onformulate = async () => null, onopenpane = () => {}, onduplicate = () => {} }: {
     /// recipe id (file name); ignored for a new recipe
     id: string;
     /// template id from `recipe.library`: a new recipe (not a file yet)
     tpl?: string;
     /// agent kind -> "✳ Claude Code"
     names?: Record<string, string>;
+    /// FR-97: the file under "Lihat file" starts folded
+    simple?: boolean;
     /// agent profiles that can formulate a custom stage (no shell)
     profiles?: { id: string; name: string; agent: string }[];
     /// B4: open the "Rumuskan tahap" tab with the brief; the page keeps this builder on screen. null = it failed
@@ -57,6 +60,8 @@
   let menu = $state<string | null>(null);
   let tplMenu = $state(false);
   let leaving = $state(false);
+  // FR-99 P3: the TOML of the review is behind "Lihat file"; open from the start in the full mode
+  let showFile = $state(false);
   let fail = $state("");
   let busy = $state(false);
   let saved = $state(false);
@@ -165,6 +170,7 @@
     warns = r.warnings ?? [];
     prev = { text: r.text, hash: r.hash, base: r.diff_base ?? "" };
     chain = null;
+    showFile = !simple;
     mode = "review";
   }
 
@@ -395,11 +401,17 @@
     {:else if rec && mode === "review" && prev}
       <div class="pad col">
         <button class="back" onclick={() => (mode = "edit")}>← {t("rb.toBuilder")}</button>
-        <div class="head"><b>recipes/{fileId}.toml</b>
+        <div class="head"><b>{t("hn.sumTitle", { name: rec.name })}</b>
           <span class="pill">{prev.base ? t("rb.changed") : t("rb.newFile")}</span><span class="grow"></span></div>
-        <div class="diff">
-          {#each lines as l}<div class="dl {l.t === '+' ? 'a' : l.t === '-' ? 'r' : ''}">{l.t}{l.s}</div>{/each}
-        </div>
+        <small>{t("hn.sumSub")}</small>
+        <RecipeSummary recipe={rec} {names} />
+        <div class="head"><button class="mini" aria-expanded={showFile} onclick={() => (showFile = !showFile)}>{showFile ? "▾ " + t("hn.sumFileHide") : "▸ " + t("hn.sumFile")}</button>
+          <span class="fid">recipes/{fileId}.toml</span></div>
+        {#if showFile}
+          <div class="diff">
+            {#each lines as l}<div class="dl {l.t === '+' ? 'a' : l.t === '-' ? 'r' : ''}">{l.t}{l.s}</div>{/each}
+          </div>
+        {/if}
         {#if diags.length}
           <section class="diag" role="alert">
             <div class="row"><span class="pill bad">{t("rb.errCount", { n: diags.length })}</span></div>

@@ -186,3 +186,44 @@ export function openRecipe(tabs: RTab[], ws: string, rid: string, tpl: string, k
 /// builder -> sidebar: name, saved id and state of a tab (a new recipe gets its id once it is saved, so opening it again finds the tab)
 export const patchRecipe = (tabs: RTab[], key: string, p: Partial<RTab>): RTab[] =>
   tabs.map((x) => (x.key === key && Object.entries(p).some(([k, v]) => x[k as keyof RTab] !== v) ? { ...x, ...p } : x));
+
+// ---- FR-99 P3: the recipe in sentences, one per stage ("Tinjau resep"), for people who cannot judge a TOML file ----
+export type Tr = (key: string, p?: Record<string, string | number>) => string;
+export type Sentence = { id: string; title: string; kind: "work" | "check" | "gate"; sentence: string; note: string };
+
+/// "maks 15 menit" / "maks 2 jam"; no limit = ""
+const spell = (secs: number, tr: Tr) => (secs % 3600 === 0 ? tr("hn.set.hours", { n: secs / 3600 }) : tr("hn.set.mins", { n: Math.max(1, Math.round(secs / 60)) }));
+const limitOf = (s: BStep, tr: Tr) => (s.timeout_secs > 0 ? tr("hn.sum.limit", { t: spell(s.timeout_secs, tr) }) : "");
+
+/// one sentence per stage; a stage id it does not know keeps the recipe's own name and a general sentence. Pure: the words
+/// come from `tr` (the i18n keys `hn.sum.*`), the agent names from `name`.
+export function describeRecipe(r: BRecipe, name: (agent: string) => string, tr: Tr): Sentence[] {
+  const exec = r.steps.find((s) => s.id === "execute");
+  return r.steps.map((s) => {
+    const title = s.name || s.id;
+    // a check never runs on the agent that did the work (BRD 8 rule 4), so that one is not in the chain the sentence tells
+    const chain = s.kind === "check" && s.agents.some((a) => !exec?.agents.includes(a)) ? s.agents.filter((a) => !exec?.agents.includes(a)) : s.agents;
+    const who = name(chain[0] ?? "");
+    const lim = limitOf(s, tr);
+    const notes: string[] = [];
+    let sentence: string;
+    let kind: Sentence["kind"] = s.kind;
+    if (s.human) {
+      kind = "gate";
+      sentence = tr("hn.sum.ship");
+      notes.push(tr("hn.sum.shipNote"));
+    } else if (s.shell) {
+      sentence = tr("hn.sum.shell");
+    } else {
+      sentence = s.kind === "check" ? tr("hn.sum.check", { who, limit: lim }) : tr(s.id === "plan" ? "hn.sum.plan" : s.id === "execute" ? "hn.sum.execute" : "hn.sum.other", { who, limit: lim });
+      if (s.gate) notes.push(tr(s.id === "plan" ? "hn.sum.gatePlan" : "hn.sum.gate"));
+      if (chain.length > 1) notes.push(tr("hn.sum.fallback", { first: name(chain[0]), rest: chain.slice(1).map(name).join(" › ") }));
+    }
+    if (s.kind === "check" && exec && r.max_rounds > 0) notes.push(tr("hn.sum.fix", { who: name(exec.agents[0] ?? ""), n: r.max_rounds }));
+    return { id: s.id, title, kind, sentence: sentence.replace(/\s+([.,])/g, "$1"), note: notes.join(" ") };
+  });
+}
+
+/// the line under the stages: fix rounds, total time, token saver
+export const describeLimits = (r: BRecipe, tr: Tr): string =>
+  [r.max_rounds > 0 ? tr("hn.sum.rounds", { n: r.max_rounds }) : "", r.total_secs > 0 ? tr("hn.sum.total", { t: spell(r.total_secs, tr) }) : "", r.token_saver ? tr("hn.sum.saver") : ""].filter(Boolean).join(" · ");
