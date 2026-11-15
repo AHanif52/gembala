@@ -58,6 +58,8 @@ const HELPERS_MAX: usize = 4;
 /// A helper's first task waits for proof the agent's prompt is up: its first hook (`hooked`), or for an agent without
 /// hooks the screen gone quiet (`HELPER_QUIET`) at least `HELPER_GRACE` after launch; `HELPER_MAX` = give up waiting
 const HELPER_GRACE: Duration = Duration::from_secs(4);
+/// FR-93: how long a limited pane holds its queue at most (no reset time known, or one further away)
+const LIMIT_MAX: Duration = Duration::from_secs(5 * 3600);
 /// TECH 43: a hooked agent's prompt hook should answer a typed message within this; else the Enter is sent once more
 const SUBMIT_WAIT: Duration = Duration::from_millis(1500);
 const HELPER_QUIET: Duration = Duration::from_secs(1);
@@ -82,6 +84,15 @@ struct Terminal {
     sid: i32,
     /// Grid and subscribers share a lock so attach cannot miss output.
     view: Mutex<(Grid, Vec<Sub>)>,
+}
+
+/// FR-93: the agent reported a usage limit through its own hook; queued messages wait instead of expiring
+struct Limit {
+    since: std::time::Instant,
+    /// unix seconds, only from the agent's own numbers (Claude status line `rate_limits`)
+    reset_at: Option<i64>,
+    /// the user chose "send when it resets": the queue goes out when the hold ends instead of expiring
+    at_reset: bool,
 }
 
 /// TECH 43: a delivered message waiting for proof of submit (status hook after `seq`)
@@ -142,6 +153,8 @@ struct Pane {
     hooked: std::sync::atomic::AtomicBool,
     /// TECH 43: the last message typed into this hooked pane, until its prompt hook proves the agent took it
     sent_check: Mutex<Option<SentCheck>>,
+    /// FR-93: set by a verified limit signal, cleared by the user, the end of the hold, or the agent working again
+    limit: Mutex<Option<Limit>>,
     /// The agent in front has exited (`agent_done`): until one runs again (`agent-start`, a hook, one typed by
     /// hand), the pane is a plain shell for `agent_name` — send/read/wait reject like a shell pane (11 Nov 2026)
     exited: std::sync::atomic::AtomicBool,
@@ -587,6 +600,11 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                             }
                             if matches!(status, "working" | "start") {
                                 pane.claude.lock().unwrap().clear();
+                                clear_limit(&st, me, &pane);
+                            }
+                            // FR-93: only a limit error the agent's own hook names (Claude `StopFailure`), never screen text
+                            if p["agent"].as_str() == Some("claude") && matches!(p["limit"].as_str(), Some("rate_limit" | "billing_error")) {
+                                set_limit(&st, me, &pane);
                             }
                             if status == "done" {
                                 *pane.hook_done.lock().unwrap() = Some(std::time::Instant::now());
@@ -1472,6 +1490,20 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         }
         "telegram.pair" => telegram::pair(st, p["token"].as_str().unwrap_or_default()),
         "telegram.unpair" => Ok(telegram::unpair(st)),
+        // FR-93: "Coba sekarang" ends the hold at once (the queue goes out on the next lap); "Kirim pas reset" keeps it
+        // until the reset and then delivers instead of letting the messages expire
+        "pane.limit_retry" => {
+            let pane = st.pane(p)?;
+            clear_limit(st, p["pane"].as_u64().unwrap_or_default(), &pane);
+            Ok(json!({}))
+        }
+        "pane.limit_at_reset" => {
+            let pane = st.pane(p)?;
+            let mut cur = pane.limit.lock().unwrap();
+            let l = cur.as_mut().ok_or("no_limit")?;
+            l.at_reset = p["on"].as_bool().unwrap_or(true);
+            Ok(limit_json(l))
+        }
         "pane.resize" => {
             let pane = st.pane(p)?;
             let terminal = pane.terminal()?;
@@ -1590,6 +1622,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 "last": *pane.last_preview.lock().unwrap(),
                 "subagents": pane.subagents.load(Ordering::Relaxed),
                 "waiting_shell": waiting_shell, "reason": reason,
+                "limit": pane.limit.lock().unwrap().as_ref().map(limit_json), // FR-93
                 "policy": pane.policy.lock().unwrap().name(), "readable": pane.readable.load(Ordering::Relaxed),
                 "session": *pane.session.lock().unwrap(), // FR-68: resume card even if the daemon stopped
                 "title": *pane.title.lock().unwrap(), // FR-69: label pane
@@ -1869,6 +1902,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
         saver: Mutex::new(None),
         hooked: std::sync::atomic::AtomicBool::new(false),
         sent_check: Mutex::new(None),
+        limit: Mutex::new(None),
         exited: std::sync::atomic::AtomicBool::new(false),
         closing: std::sync::atomic::AtomicBool::new(false),
         trust: std::sync::atomic::AtomicBool::new(false),
@@ -2332,7 +2366,7 @@ fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_que
     let mut eng = st.engine.lock().unwrap();
     let typing = to.typed_at.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
     Ok(msg::Facts {
-        target_status: match *to.status.lock().unwrap() { "" => "unknown", "blocked" if m.is_reply => "working", status => status },
+        target_status: match *to.status.lock().unwrap() { _ if limit_active(to) => "working", "" => "unknown", "blocked" if m.is_reply => "working", status => status },
         stable_for: to.status_at.lock().unwrap().elapsed(),
         // SEC-5: skip-permission flags from the profile are set when the pane is created; one typed in the pane is read from the process arguments
         policy: msg::effective_policy(*to.policy.lock().unwrap(), &pty::busy(&terminal.master, terminal.sid).map(|(pid, _)| pty::args_of(pid)).unwrap_or_default()),
@@ -2517,6 +2551,9 @@ fn send_now(st: &State, q: bus::Queued) -> Value {
         json!({"result": "queued", "reason": reason})
     };
     let Some(to) = st.panes.lock().unwrap().get(&id).cloned() else { return reject(st, &q.msg, "target_gone") };
+    if limit_active(&to) {
+        return back(q, "target_limit");
+    }
     // `facts_for` shows a blocked reply target as working; typing into a permission prompt is never wanted (SEC-6)
     match *to.status.lock().unwrap() {
         "blocked" => return back(q, "target_blocked"),
@@ -2584,6 +2621,64 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
     }
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default()
+}
+
+/// FR-93: time left in the hold: until the reset the agent reported, at most `LIMIT_MAX` from the signal
+fn limit_left(l: &Limit) -> Duration {
+    let cap = LIMIT_MAX.saturating_sub(l.since.elapsed());
+    l.reset_at.map_or(cap, |t| Duration::from_secs((t - unix_now()).max(0) as u64).min(cap))
+}
+
+fn limit_active(pane: &Pane) -> bool {
+    pane.limit.lock().unwrap().as_ref().is_some_and(|l| !limit_left(l).is_zero())
+}
+
+fn limit_json(l: &Limit) -> Value {
+    json!({"reset_at": l.reset_at, "at_reset": l.at_reset, "left": limit_left(l).as_secs()})
+}
+
+fn limit_event(st: &State, id: u64, limit: Value) {
+    let ev = line(json!({"event": "pane.limit", "params": {"pane": id, "limit": limit}}));
+    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+}
+
+/// FR-93: the reset time is the exhausted window of that login's Claude status line numbers; none = unknown
+fn set_limit(st: &State, id: u64, pane: &Pane) {
+    let login = match pane.account.lock().unwrap().as_str() { "" => "utama".to_string(), a => a.to_string() };
+    let now = unix_now();
+    let reset_at = usage::rows(st).iter().filter(|r| r.agent == "claude" && r.login == login).flat_map(|r| r.windows.iter())
+        .filter(|w| w.used_pct >= 100.0).filter_map(|w| w.resets_at).filter(|t| *t > now).max();
+    let l = Limit { since: std::time::Instant::now(), reset_at, at_reset: false };
+    let json = limit_json(&l);
+    *pane.limit.lock().unwrap() = Some(l);
+    limit_event(st, id, json);
+}
+
+fn clear_limit(st: &State, id: u64, pane: &Pane) {
+    if pane.limit.lock().unwrap().take().is_some() {
+        limit_event(st, id, Value::Null);
+    }
+}
+
+/// FR-93: a hold that ran out ends; with "send when it resets" the queued messages start their 10 minutes again, without it
+/// they expire as they always do (retry stays the user's choice)
+fn check_limits(st: &State) {
+    let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(i, p)| (*i, p.clone())).collect();
+    for (id, pane) in panes {
+        let at_reset = match pane.limit.lock().unwrap().as_ref() {
+            Some(l) if limit_left(l).is_zero() => l.at_reset,
+            _ => continue,
+        };
+        clear_limit(st, id, &pane);
+        if at_reset {
+            let mut eng = st.engine.lock().unwrap();
+            for q in eng.queues.entry(id).or_default() { q.since = std::time::Instant::now(); }
+        }
+    }
+}
+
 /// TECH 43: a message typed into a hooked agent that never turned `working` after `SUBMIT_WAIT` gets one more Enter;
 /// still nothing after another wait = logged as `unconfirmed` (the text sits in the prompt), never silently "sent"
 fn check_submits(st: &State) {
@@ -2618,6 +2713,7 @@ fn deliver_loop(st: Arc<State>) {
         for m in overdue { record(&st, "reply_pending", &m, None); }
         check_submits(&st);
         group_scan(&st);
+        check_limits(&st);
         let targets: Vec<u64> = st.engine.lock().unwrap().queues.keys().copied().collect();
         for to_id in targets {
             // FR-89: while this lap decides on the head, cancel/edit see it as in flight, not as sent
@@ -2635,7 +2731,8 @@ fn deliver_loop(st: Arc<State>) {
                 reject(&st, &q.msg, "target_gone");
                 continue;
             };
-            if q.since.elapsed() > msg::QUEUE_TTL {
+            // FR-93: a limited pane holds its queue, so the 10 minutes do not run while it is held
+            if q.since.elapsed() > msg::QUEUE_TTL && to.limit.lock().unwrap().is_none() {
                 reject(&st, &q.msg, "expired");
                 continue;
             }
@@ -3905,6 +4002,16 @@ pub fn default_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limit_hold_ends_at_the_reset_and_never_after_five_hours() {
+        let l = |reset_at| Limit { since: std::time::Instant::now(), reset_at, at_reset: false };
+        assert!(limit_left(&l(None)) > Duration::from_secs(5 * 3600 - 5));
+        assert!(limit_left(&l(Some(unix_now() + 600))) <= Duration::from_secs(600));
+        assert!(limit_left(&l(Some(unix_now() + 3600))) > Duration::from_secs(3590));
+        assert!(limit_left(&l(Some(unix_now() + 24 * 3600))) <= LIMIT_MAX);
+        assert!(limit_left(&l(Some(unix_now() - 5))).is_zero());
+    }
 
     #[test]
     fn model_effort_are_validated_at_boundaries() {

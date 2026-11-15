@@ -3072,6 +3072,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       if (payload.event === "harness.state") onRun(payload.params);
       if (payload.event === "harness.notice") runNotice(payload.params);
       if (payload.event === "telegram.changed") tg = payload.params ?? { state: "off" };
+      // FR-93: the daemon verified a limit signal from the agent's own hook; the pane's buttons wait for a mockup
+      if (payload.event === "pane.limit" && payload.params?.limit) notice(payload.params.pane, "limit");
       if (payload.event === "usage.changed") usageRows = Array.isArray(payload.params?.rows) ? payload.params.rows : [];
       if (payload.event === "models.changed") void refreshOpenModels(JSON.stringify([payload.params.agent, payload.params.account]));
       if (payload.event === "update.changed") upd = payload.params;

@@ -140,6 +140,8 @@ fn hook(args: &[String]) -> ExitCode {
         _ => None,
     };
     let source = json()["source"].as_str().map(String::from);
+    // FR-93: Claude's StopFailure hook names the error; only its `error` field counts, never the message text
+    let limit = (agent == "claude" && json()["hook_event_name"] == "StopFailure").then(|| json()["error"].as_str().map(String::from)).flatten();
     // FR-80: the turn's last answer for the Telegram "done" message, from the hook input itself (see `hook_last`)
     let last = profile::hook_last(agent, &payload);
     let dir = std::env::var("CLAUDE_CONFIG_DIR").ok().filter(|_| agent == "claude");
@@ -152,7 +154,7 @@ fn hook(args: &[String]) -> ExitCode {
         let mut l = String::new();
         writeln!(s, "{}", serde_json::json!({"id": 1, "method": "hello", "params": {"proto": daemon::PROTO, "client": "hook"}}))?;
         r.read_line(&mut l)?;
-        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "hook", "params": {"status": status, "reply": reply, "last": last, "agent": agent, "session": session, "source": source, "dir": dir}}))?;
+        writeln!(s, "{}", serde_json::json!({"id": 2, "method": "hook", "params": {"status": status, "reply": reply, "last": last, "agent": agent, "session": session, "source": source, "dir": dir, "limit": limit}}))?;
         r.read_line(&mut l)?;
         Ok(())
     };

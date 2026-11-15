@@ -15,7 +15,7 @@ const ALLOWED: &[&str] =
       "addon.plugin", "addon.mcp.get", "addon.mcp.set", "addon.status", "lan.check",
       "recipe.list", "recipe.get", "recipe.approve", "recipe.delete", "recipe.duplicate", "recipe.draft_new", "recipe.draft_get", "recipe.draft_apply", "config.draft_new", "config.draft_get", "config.draft_apply", "agent_file.brief", "recipe.validate", "recipe.library", "recipe.render", "recipe.save", "recipe.step_draft_new", "recipe.step_draft_get",
       "harness.preflight", "harness.start", "harness.restart", "harness.artifact", "harness.state", "harness.runs", "harness.stop", "harness.gate", "harness.takeover", "harness.release", "harness.close_panes",
-      "telegram.status", "telegram.pair", "telegram.unpair", "usage.list", "models.list", "pane.dialogs", "pane.answer",
+      "telegram.status", "telegram.pair", "telegram.unpair", "usage.list", "pane.limit_retry", "pane.limit_at_reset", "models.list", "pane.dialogs", "pane.answer",
       // PLAN-CC-PANE: structured Command Code pane (UI channel only; the daemon guards kind and access itself)
       "cc.create", "cc.run", "cc.attach", "cc.detach", "cc.cancel", "cc.sessions", "cc.resume", "cc.access", "cc.stale"];
 
