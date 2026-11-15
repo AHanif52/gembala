@@ -11,6 +11,8 @@
     onreload,
     onwidth,
     pname = "",
+    simple = false,
+    tabName = "",
     turns = [],
     turn = null,
     ask = null,
@@ -31,6 +33,9 @@
     onwidth: (w: number) => void;
     // FR-70: this pane's agent turns (newest first), the selected turn, the restore card
     pname?: string;
+    /// FR-99 P5: everyday words (Simpan versi, Lihat isi), the diff folded, the technical notes left out
+    simple?: boolean;
+    tabName?: string;
     turns?: { i: number; start: number; end: number; title: string; files: number; add: number; del: number; skipped: string[] }[];
     turn?: number | null;
     ask?: { i: number; files: { kind: string; path: string }[]; others: string[]; head_moved: boolean; skipped: string[] } | null;
@@ -97,6 +102,8 @@
     return out;
   }
 
+  /// the ⋯ menu of one file (path), closed by a click anywhere else
+  let menu = $state("");
   let copied = $state("");
   const copy = (text: string, what: string) =>
     invoke("copy_text", { text }).then(() => (copied = what), () => (copied = t("chg.copyFailed")));
@@ -105,16 +112,16 @@
 <aside class="panel" aria-label={t("chg.aria")} style:width="{width}px">
   <div class="grip" onpointerdown={grip} role="separator" aria-orientation="vertical" aria-label={t("chg.width")}></div>
   <header>
-    {#if status?.repo}
+    {#if simple}
+      <span class="repo">{t("chg.headS", { name: tabName || pname })}</span>
+      <span class="m">{#if status?.repo}{tn("chg.filesDone", status.files)} <span class="add">+{status.add}</span> <span class="del">−{status.del}</span>{/if}</span>
+    {:else if status?.repo}
       <span class="repo">{status.root?.split("/").at(-1)}</span>
       <span class="m">{status.branch ?? t("chg.detached")} · {tn("chg.files", status.files)} <span class="add">+{status.add}</span> <span class="del">−{status.del}</span></span>
     {:else}
       <span class="repo">{t("chg.title")}</span>
     {/if}
     <span class="m">{copied}</span>
-    {#if diff?.repo && turn == null && (files.length || diff.untracked?.length)}
-      <button class="mini" onclick={() => onact("commit", [...files.map((f) => f.path), ...(diff?.untracked ?? [])])}>{t("chg.commitAll")}</button>
-    {/if}
     <button class="mini" onclick={onreload} title={t("chg.reload")} aria-label={t("chg.reloadAria")}>↻</button>
     <button class="mini" onclick={onclose} title={t("chg.closeTip", { key: combo("pane.diff.toggle") })} aria-label={t("chg.close")}>×</button>
   </header>
@@ -132,7 +139,7 @@
         </button>
       {/each}
       {#if turn != null}
-        <button class="mini undo" onclick={() => onrestore(turn!)}>{t("chg.restoreBtn")}</button>
+        <button class="mini ghost" onclick={() => onrestore(turn!)}>{t("chg.restoreBtn")}</button>
       {/if}
     </div>
   {/if}
@@ -154,12 +161,12 @@
     </div>
   {/if}
   {#if act}
-    <div class="ask" role="alertdialog" aria-label={act.op === "restore" ? t("chg.restore") : t("chg.commit")}>
+    <div class="ask" class:danger={act.op === "restore"} role="alertdialog" aria-label={act.op === "restore" ? t("chg.restore") : t("chg.commit")}>
       {#if act.op === "restore"}
-        <b>{t("chg.restoreTitle", { file: act.files[0]?.path ?? "" })}</b>
-        <span class="m">{t("chg.restoreSub")}</span>
+        <b>{t("chg.discardTitle")}</b>
+        <span class="m"><code>{act.files[0]?.path ?? ""}</code> {t("chg.discardSub")}</span>
       {:else}
-        <b>{tn("chg.commitTitle", act.files.length)}</b>
+        <b>{tn(simple ? "chg.saveTitle" : "chg.commitTitle", act.files.length)}</b>
         <div class="flist">
           {#each act.files.slice(0, 40) as f (f.path)}<div><span class={f.kind}>{t(f.kind === "new" ? "chg.kind.new" : "chg.kind.mod")}</span> {f.path}</div>{/each}
           {#if act.files.length > 40}<div class="m">… {act.files.length - 40}</div>{/if}
@@ -167,16 +174,16 @@
         <!-- svelte-ignore a11y_autofocus -->
         <textarea rows="3" placeholder={t("chg.message")} aria-label={t("chg.message")} bind:value={act.message} autofocus
           onkeydown={(e) => e.key === "Enter" && mod(e) && (e.preventDefault(), onactdo())}></textarea>
-        <span class="m">{t("chg.commitSub")}</span>
+        {#if !simple}<span class="m">{t("chg.commitSub")}</span>{:else}<span class="m">{t("chg.saveSub")}</span>{/if}
       {/if}
       {#if act.others.length}<span class="warn">{t("chg.others", { names: act.others.join(", ") })}</span>{/if}
       {#if act.error}<span class="warn err">{errText(act.error, act.args)}</span>{/if}
       <span class="acts">
         <button class="mini" onclick={onactcancel}>{t("chg.cancel")} <span class="keys">Esc</span></button>
         {#if act.op === "restore"}
-          <button class="mini undo" onclick={onactdo}>{t("chg.restore")}</button>
+          <button class="mini rm" onclick={onactdo}>{t("chg.discardBtn")}</button>
         {:else}
-          <button class="mini" disabled={!act.message.trim()} onclick={onactdo}>{t("chg.commit")} <span class="keys">{keyText("Cmd+Enter")}</span></button>
+          <button class="mini" disabled={!act.message.trim()} onclick={onactdo}>{simple ? t("chg.saveVer") : t("chg.commit")} <span class="keys">{keyText("Cmd+Enter")}</span></button>
         {/if}
       </span>
     </div>
@@ -190,14 +197,20 @@
       <p class="m">{t("chg.none")}</p>
     {:else}
       {#each files as f (f.path)}
-        <details open={files.length <= 5}>
+        <details open={!simple && files.length <= 5}>
           <summary>
             <span class="path">{f.path}</span>
             <span class="m"><span class="add">+{f.add}</span> <span class="del">−{f.del}</span></span>
-            <button class="mini" onclick={(e) => (e.preventDefault(), copy(f.path, t("chg.pathCopied")))}>{t("chg.copyPath")}</button>
-            {#if turn == null}
-              {#if !f.isNew}<button class="mini" onclick={(e) => (e.preventDefault(), onact("restore", [f.path]))}>{t("chg.restore")}</button>{/if}
-              <button class="mini" onclick={(e) => (e.preventDefault(), onact("commit", [f.path]))}>{t("chg.commit")}</button>
+            {#if simple}<span class="m view">▸ {t("chg.viewBody")}</span>{/if}
+            <button class="mini" aria-haspopup="menu" aria-expanded={menu === f.path} aria-label={t("chg.fileMenu", { file: f.path })} onclick={(e) => (e.preventDefault(), e.stopPropagation(), (menu = menu === f.path ? "" : f.path))}>⋯</button>
+            {#if menu === f.path}
+              <span class="fmenu" role="menu">
+                <button role="menuitem" onclick={(e) => (e.preventDefault(), (menu = ""), copy(f.path, t("chg.pathCopied")))}>{t("chg.copyPath")}</button>
+                {#if turn == null}
+                  <button role="menuitem" onclick={(e) => (e.preventDefault(), (menu = ""), onact("commit", [f.path]))}>{simple ? t("chg.saveFile") : t("chg.commitFile")}</button>
+                  {#if !f.isNew}<button role="menuitem" class="dn" onclick={(e) => (e.preventDefault(), (menu = ""), onact("restore", [f.path]))}>{t("chg.discardFile")}</button>{/if}
+                {/if}
+              </span>
             {/if}
           </summary>
           <pre>{#each compact(f.lines) as l}{#if typeof l === "number"}<span class="skip">{tn("chg.same", l)}</span>{"\n"}{:else}<span
@@ -211,7 +224,7 @@
           <summary><span class="path">{t("chg.untracked")}</span><span class="m">{diff.untracked.length}</span></summary>
           <div class="ulist">
             {#each diff.untracked as u (u)}
-              <div><span class="path">{u}</span><button class="mini" onclick={() => onact("commit", [u])}>{t("chg.commit")}</button></div>
+              <div><span class="path">{u}</span><button class="mini" onclick={() => onact("commit", [u])}>{simple ? t("chg.saveVer") : t("chg.commit")}</button></div>
             {/each}
           </div>
         </details>
@@ -220,6 +233,14 @@
       {#if diff.diff}<button class="mini" onclick={() => copy(diff?.diff ?? "", t("chg.diffCopied"))}>{t("chg.copyDiff")}</button>{/if}
     {/if}
   </div>
+  {#if diff?.repo && turn == null && (files.length || diff.untracked?.length)}
+    <!-- FR-99 P5: the save action sits at the foot, away from the discard actions at the head of the turns and in the file menus -->
+    {@const all = [...files.map((f) => f.path), ...(diff?.untracked ?? [])]}
+    <footer>
+      <span class="m">{simple ? t("chg.saveNote") : t("chg.commitNote")}</span>
+      <button class="mini go" onclick={() => onact("commit", all)}>{simple ? t("chg.saveAll", { n: all.length }) : t("chg.commitAllN", { n: all.length })}</button>
+    </footer>
+  {/if}
 </aside>
 
 <style>
@@ -357,6 +378,60 @@
     border-color: rgba(217, 119, 6, 0.5);
     background: none;
     color: var(--tx-amber, #fbbf24);
+  }
+  footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--line);
+  }
+  footer .m {
+    flex: 1;
+  }
+  .mini.go {
+    border-color: var(--accent, #3b82f6);
+  }
+  .mini.rm {
+    border-color: var(--tx-red, #dc2626);
+    color: var(--tx-red, #dc2626);
+  }
+  .ask.danger {
+    border-color: var(--tx-red, #dc2626);
+  }
+  .view {
+    margin-left: auto;
+  }
+  summary {
+    position: relative;
+  }
+  .fmenu {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+  }
+  .fmenu button {
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: var(--fg);
+    font: 12px system-ui, -apple-system, sans-serif;
+    text-align: left;
+  }
+  .fmenu button:hover {
+    background: var(--hover, rgba(127, 127, 127, 0.2));
+  }
+  .fmenu .dn {
+    color: var(--tx-red, #dc2626);
   }
   .ask {
     display: flex;

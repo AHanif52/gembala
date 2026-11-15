@@ -1090,6 +1090,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     return !c || c === root ? "" : base(c);
   };
   /// FR-52: default title = agent running in the focused pane, then the folder (`~` for home)
+  /// FR-99 P5: the tab that holds a pane, by the name the sidebar shows
+  const tabNameOf = (pane: number) => {
+    const t = wss.flatMap((w) => w.tabs).find((x) => panes(x.tree).includes(pane));
+    return t ? title(t) : "";
+  };
   const title = (t: Tab) => {
     const m = meta[t.focus];
     if (t.title) return t.title;
@@ -3159,7 +3164,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   {:else if c === "attach"}
     <button class="chip box c-attach" title={tt("chip.attachTip")} aria-label={tt("chip.attach")} onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
   {:else if c === "diff" && g?.repo && g.files}
-    <button class="chip box c-diff" title={tt("chip.diffTip", { key: combo("pane.diff.toggle") })} onclick={() => openChanges(pane)}>{@render icon("file")}{g.files} • <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
+    <button class="chip box c-diff" title={tt("chip.diffTip", { key: combo("pane.diff.toggle") })} onclick={() => openChanges(pane)}>{@render icon("file")}{tt("chip.changes", { n: g.files })} <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
     <button class="chip box c-rich" onclick={() => openRich(pane)}>{@render icon("rich")}Rich Input <span class="n">{combo("pane.input.rich")}</span></button>
   {:else if c === "cwd"}
@@ -4048,7 +4053,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   {/if}
   {#if changes}
     <Changes status={meta[changes.pane]?.git} diff={changes.diff} width={panelW} onwidth={(w: number) => (panelW = w)}
-      pname={meta[changes.pane]?.name ?? ""} turns={changes.turns ?? []} turn={changes.turn ?? null} ask={changes.ask ?? null}
+      pname={meta[changes.pane]?.name ?? ""} {simple} tabName={tabNameOf(changes.pane)} turns={changes.turns ?? []} turn={changes.turn ?? null} ask={changes.ask ?? null}
       onturn={pickTurn} onrestore={askRestore} onconfirm={doRestore} oncancel={() => changes && (changes.ask = null)}
       act={changes.act ?? null} onact={askFiles} onactdo={doFiles} onactcancel={() => changes && (changes.act = null)}
       onreload={() => changes && loadChanges(changes.pane)} onclose={() => (changes = null)} />
