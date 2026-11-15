@@ -128,7 +128,7 @@
     busy = true;
     try {
       const r = await call("harness.start", { ...pfParams(), request: task });
-      if (r.error) error = r.error === "preflight" ? tOr(`hn.check.${r.args?.check}`, r.args?.check) : errText(r.error, r.args);
+      if (r.error) error = r.error === "preflight" ? todo(r.args?.check) : errText(r.error, r.args);
       else onstarted(r);
     } catch (e) {
       error = errText(e);
@@ -139,6 +139,8 @@
   const chain = (r?: Row) => r?.recipe?.steps.filter((s) => !(skipTest && s.shell)).map((s) => s.name).join(" → ") ?? "";
   /// "Tanya agent": the default agent gets one question in a pane of its own; the answer is typed here by the user, never read back
   const askAgent = () => onmanual({ agent, task: t("hn.testAsk"), cwd: folder });
+  /// a failed check reads as what to do ("Isi perintah test dulu"), a passed one as the fact (audit u4 #20)
+  const todo = (check: string) => tOr(`hn.fix.${check}`, tOr(`hn.check.${check}`, check));
   /// the reason the start button is off, next to it (audit #23)
   const why = $derived.by(() => {
     if (!task.trim()) return t("hn.why.task");
@@ -146,7 +148,7 @@
     if (mode === "manual") return agent ? "" : t("hn.why.agent");
     if (mode === "team") return "";
     const bad = items?.find((i) => !i.ok && i.blocking);
-    return bad ? tOr(`hn.check.${bad.check}`, bad.check) : items ? "" : "…";
+    return bad ? todo(bad.check) : items ? "" : "…";
   });
   const diag = (d: any) => errText(d.code, d.args);
   function key(e: KeyboardEvent) {
@@ -206,7 +208,7 @@
     {#if row}
       <div class="chain">{row.recipe ? chain(row) : ""}</div>
       {#each row.errors as d}<div class="bad">{diag(d)}</div>{/each}
-      {#each row.warnings as d}<div class="warn">{diag(d)}</div>{/each}
+      {#if !simple}{#each row.warnings as d}<div class="warn">{diag(d)}</div>{/each}{/if}
       {#if row.status !== "approved" && row.status !== "broken"}
         <div class="line"><span class="m grow">{tOr(`hn.status.${row.status}Sub`, row.status)}</span><button class="mini" onclick={() => open(row.id)}>{t("hn.review")}</button></div>
       {/if}
@@ -226,7 +228,7 @@
         {#each items as i (i.check)}
           <li class:ok={i.ok} class:bad={!i.ok && i.blocking} class:warn={!i.ok && !i.blocking}>
             <span aria-hidden="true">{i.ok ? "✓" : i.blocking ? "✕" : "!"}</span>
-            {tOr(`hn.check.${i.check}`, i.check)}{#if i.detail && !i.ok}<span class="m"> · {tOr(`hn.detail.${i.detail}`, i.detail)}</span>{/if}
+            {i.ok ? tOr(`hn.check.${i.check}`, i.check) : todo(i.check)}{#if i.detail && !i.ok}<span class="m"> · {tOr(`hn.detail.${i.detail}`, i.detail)}</span>{/if}
           </li>
         {/each}
       </ul>

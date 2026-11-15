@@ -1100,6 +1100,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (t.title) return t.title;
     if (labels[t.focus]) return labels[t.focus]; // FR-69
     if (m?.busy && AGENTS.includes(m.busy)) return m.busy;
+    // Sederhana: a bare terminal tab says what it is ("Terminal · gembala"), not "~" (audit u1 #15)
+    if (simple) return home(m?.cwd) === "~" ? tt("tab.termHome") : `${tt("tab.term")} · ${base(m?.cwd) || "~"}`;
     return home(m?.cwd) === "~" ? "~" : base(m?.cwd) || "~";
   };
   /// Global tab order for ⌘1–⌘9
@@ -1728,7 +1730,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       // one workspace = shortcuts only (Gembala.pen 03); more than one = workspace name too, so twin tabs can be told apart
       const key = i < 9 ? combo(`tab.goto.${i + 1}`) : "";
       return {
-        label: [meta[o.t.focus]?.name ?? "", title(o.t), stText(st)].filter(Boolean).join(" · "),
+        label: [paneLabel(o.t.focus), title(o.t), stText(st)].filter(Boolean).join(" · "),
         hint: wss.length > 1 ? [wss[o.wi].name, key].filter(Boolean).join(" · ") : key,
         kind: "tab",
         agent,
@@ -1738,7 +1740,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const profiles: PalItem[] = [
       ...(cfg?.values.profiles ?? []).map((p) => ({
         label: p.name,
-        hint: p.command || "$SHELL",
+        hint: simple ? "" : p.command || "$SHELL",
         kind: "profile" as const,
         agent: p.agent === "shell" ? "" : p.agent,
         go: () => newTab(p.id === "shell" ? undefined : p.id),
@@ -1754,13 +1756,13 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     ];
     const actions: PalItem[] = [
       ...pal.keys.filter(([id]) => !id.startsWith("tab.goto.") && id !== "tab.search").map(([id, label, key]) => ({ label, hint: pretty(key), kind: "action" as const, go: () => run(id) })),
-      { label: tt("act.worktree"), hint: tt("act.worktreeHint"), kind: "action", go: () => openWorktree() },
+      ...(simple ? [] : [{ label: tt("act.worktree"), hint: tt("act.worktreeHint"), kind: "action" as const, go: () => openWorktree() }]),
       { label: tt("act.template"), hint: tt("act.templateHint"), kind: "action", go: () => openTemplate() },
       ...pickable.map((p) => ({ label: tt("act.pickSessionOf", { name: p.label }), hint: tt("act.pickSessionHint"), kind: "action" as const, go: () => newTab(p.id, at.ws, p.account, { pick: true }) })),
       { label: tt("hn.newTask"), hint: "", kind: "action", go: () => (newTask = true) },
       { label: tt("rep.title"), hint: "", kind: "action", go: () => (reportDraft = { title: "", body: "" }) },
       { label: tt("act.newWs"), hint: "", kind: "action", go: addWorkspace },
-      { label: editorOn ? tt("act.editorOff") : tt("act.editorOn"), hint: "", kind: "action", go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) },
+      ...(simple ? [] : [{ label: editorOn ? tt("act.editorOff") : tt("act.editorOn"), hint: "", kind: "action" as const, go: () => call("config.set", { section: "ui", key: "input_editor", value: !editorOn }).catch(() => {}) }]),
       { label: tt("act.renameTab"), hint: "", kind: "action", go: () => tab && (editing = { kind: "tab", id: tab.id, value: title(tab) }) },
       { label: tt("act.renameWs"), hint: "", kind: "action", go: () => ws && (editing = { kind: "ws", id: ws.id, value: ws.name }) },
       { label: tt("set.title"), hint: keyText("Cmd+,"), kind: "action", go: () => (settingsOpen = true) },
@@ -3366,7 +3368,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           <button class="nrow" class:seen={g.every((o) => o.seen)} class:past onclick={() => (g.forEach((o) => (o.seen = true)), (bell = false), meta[n.pane] && !dead[n.pane] && jumpTo(n.pane))}>
             <span class="dot {n.kind}" aria-hidden="true"></span>
             <span class="nmain">
-              <span class="ntitle">{#if GLYPH[n.agent]}<span class="aico {n.agent}">{GLYPH[n.agent]}</span>{/if}{n.name}{n.task && n.task !== n.tab ? ` · ${n.task}` : ""}</span>
+              <span class="ntitle">{#if GLYPH[n.agent]}<span class="aico {n.agent}">{GLYPH[n.agent]}</span>{/if}{simple ? paneLabel(n.pane) : n.name}{n.task && n.task !== n.tab ? ` · ${n.task}` : ""}</span>
               <span class="nwhat">{noteText(n)}{#if past}{` · ${meta[n.pane] && !dead[n.pane] ? tt("bell.answered") : tt("bell.closed")}`}{/if}</span>
             </span>
             <span class="k">{noteTime(n.at)}</span>
@@ -3732,7 +3734,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   <button class="opt" class:on={i === mention.sel} role="option" aria-selected={i === mention.sel}
                     onpointerdown={(e) => e.preventDefault()} onclick={() => chooseMention(i)}>
                     <span class="dot {r.status}"></span>
-                    <span>{r.name}</span>
+                    <span>{simple ? whoOf(r.name) : r.name}</span>
                     <span class="keys">{"fresh" in r ? `${r.agent} · ${tt("men.fresh")}` : `${r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · ${stText(r.status) || r.status || "?"}`}</span>
                   </button>
                 {/each}
@@ -3998,7 +4000,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     <div class="paused" role="status">{tt("main.paused", { key: combo("msg.stop") })}</div>
   {/if}
   {#if flow && ws && runs[ws.id]}
-    <HarnessFlow snap={runs[ws.id]} has={(p: number) => !!meta[p]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onchanges={(p: number) => ((flow = false), showChanges(p))} onrecipe={(id: string) => ((flow = false), openRecipeTab(id))} onclose={() => (flow = false)} />
+    <HarnessFlow snap={runs[ws.id]} has={(p: number) => !!meta[p]} onchange={(s: Snap) => onRun(s)} onjump={jumpTo} onchanges={(p: number) => ((flow = false), showChanges(p))} onrecipe={(id: string) => ((flow = false), openRecipeTab(id))} onclose={() => (flow = false)} {simple} {agentName} />
   {/if}
   {#if newTask && ws}
     <NewTask
@@ -4037,8 +4039,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {#each targets as r (r.pane)}
           <button class="opt" class:on={compose.to === r.pane} role="option" aria-selected={compose.to === r.pane} onclick={() => compose && (compose.to = r.pane)}>
             <span class="dot {r.status}"></span>
-            <span>{r.name}</span>
-            <span class="keys">{r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · {stText(r.status) || r.status || "?"}</span>
+            <span>{simple ? whoOf(r.name) : r.name}</span>
+            <span class="keys">{simple ? "" : `${r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · `}{stText(r.status) || r.status || "?"}</span>
           </button>
         {:else}
           <span class="keys">{tt("cmp.none")}</span>

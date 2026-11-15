@@ -1139,7 +1139,7 @@ fn blocked_word(reason: &str, id_l: bool) -> String {
 
 fn t(id: bool, k: &str) -> &'static str {
     let (i, e) = match k {
-        "unsupported_kind" => ("unsupported_kind: pane terstruktur belum mendukung Telegram.", "unsupported_kind: structured panes do not support Telegram yet."),
+        "unsupported_kind" => ("unsupported_kind: tugas jenis ini belum bisa lewat Telegram.", "unsupported_kind: this kind of task does not work over Telegram yet."),
         // FR-87 (TECH 27.1): the same words as the macOS banner, the bell and the "Butuh lu" strip
         "blocked" => ("butuh izin", "needs permission"),
         "answer" => ("nunggu jawaban", "waiting for an answer"),
@@ -1155,43 +1155,43 @@ fn t(id: bool, k: &str) -> &'static str {
         "gone" => ("udah lewat", "already answered"),
         "sent" => ("terkirim", "sent"),
         "answered" => ("dijawab", "answered"),
-        "no_pane" => ("Pane itu nggak ada.", "No such pane."),
-        "exited" => ("agent-nya udah keluar, pane balik jadi shell. Nyalain lagi: /buka <agent>", "the agent exited, the pane is a shell now. Start one again: /open <agent>"),
+        "no_pane" => ("Tugas itu nggak ada.", "No such task."),
+        "exited" => ("agent-nya udah keluar, tinggal terminal biasa. Nyalain lagi: /buka <agent>", "the agent exited, it is a plain terminal now. Start one again: /open <agent>"),
         "shell" => (
-            "Pane shell nggak nerima ketikan dari HP. Nyalain agent di situ: /buka claude <pane>.",
-            "Shell panes don't take typing from the phone. Start an agent there: /open claude <pane>.",
+            "Terminal biasa nggak nerima ketikan dari HP. Nyalain agent di situ dulu: /buka claude <nama>.",
+            "A plain terminal doesn't take typing from the phone. Start an agent there first: /open claude <name>.",
         ),
         "open_which" => ("Yang bisa dibuka:", "You can start:"),
-        "open_pick" => ("Pane mana buat", "Which pane for"),
+        "open_pick" => ("Terminal mana buat", "Which terminal for"),
         "open_ws" => ("Workspace mana buat", "Which workspace for"),
         "opening" => ("Nyalain", "Starting"),
         "opened_hint" => ("Ketik aja prompt-nya begitu siap.", "Type your prompt once it's up."),
-        "already_agent" => ("Pane itu udah jalanin agent, ketik aja.", "That pane already runs an agent, just type."),
-        "busy_shell" => ("Pane itu lagi jalanin sesuatu. /buka cuma ke shell yang diam di prompt.", "That pane is busy. /open only uses a shell idle at its prompt."),
-        "no_idle" => ("Nggak ada pane shell yang lagi kosong.", "No shell pane is idle."),
+        "already_agent" => ("Di situ udah ada agent, ketik aja.", "An agent is already running there, just type."),
+        "busy_shell" => ("Terminal itu lagi jalanin sesuatu. /buka cuma buat terminal yang lagi kosong.", "That terminal is busy. /open only uses one that is idle."),
+        "no_idle" => ("Nggak ada terminal yang lagi kosong.", "No terminal is idle."),
         "pw" => ("Lagi nunggu password, jawab di Mac.", "It's waiting for a password, answer on the Mac."),
         "too_long" => ("Kepanjangan, maks 4.000 karakter.", "Too long, 4,000 characters max."),
         "bad" => ("Teksnya kosong setelah dibersihin.", "Nothing left after cleaning the text."),
-        "old_reply" => ("Pane pesan itu udah nggak ada. Ketik biasa buat ke pane aktif, atau /ke <pane>.", "That message's pane is gone. Type plainly for the active pane, or /to <pane>."),
+        "old_reply" => ("Tugas buat pesan itu udah nggak ada. Ketik biasa buat ke tugas yang aktif, atau /ke <nama>.", "The task for that message is gone. Type plainly for the active task, or /to <name>."),
         "snip_off" => ("Potongan layar dimatiin buat workspace ini.", "Screen snippets are off for this workspace."),
         "unread" => (
             "jawaban belum kebaca — layarnya lagi nampilin pilihan/dialog. Lihat: /lihat {pane}",
             "the answer wasn't read — the screen is showing a picker or dialog. Look: /look {pane}",
         ),
-        "pick" => ("Ke pane mana?", "Which pane?"),
+        "pick" => ("Ke tugas mana?", "Which task?"),
         "p_now" => ("lagi ngerjain", "is working"),
         "p_ran" => ("udah jalan", "running"),
         "p_eta" => ("biasanya kelar", "usually done in"),
         "p_late" => ("lebih lama dari biasanya", "longer than usual"),
         "p_none" => ("belum ada perkiraan, ini giliran pertamanya", "no estimate yet, first turn"),
         "p_queued" => ("Pesan lu antre di belakang giliran yang lagi jalan.", "Your message is queued behind the turn in progress."),
-        "no_agent" => ("Belum ada pane agent.", "No agent pane yet."),
+        "no_agent" => ("Belum ada agent yang jalan.", "No agent running yet."),
         "now_to" => ("Sekarang ngetik ke", "Now typing into"),
         "dl_fail" => ("Gagal ngunduh filenya (maks 20 MB).", "Couldn't download the file (20 MB max)."),
-        "none" => ("Belum ada pane.", "No panes yet."),
+        "none" => ("Belum ada tugas.", "No tasks yet."),
         _ => (
-            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif (caption /ke <pane> buat pane lain).\n/ke <pane> [teks] — ganti pane aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah / yang bukan milik bot (/exit, /compact, /clear, /model) diteruskan ke pane aktif; yang namanya sama dgn bot (/help, /status): awali // (//help)\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode/commandcode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
-            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane (caption /to <pane> for another).\n/to <pane> [text] — switch the active pane (and send the text); /to alone = pick from buttons\nA / command that isn't the bot's (/exit, /compact, /clear, /model) goes to the active pane; one named like the bot's (/help, /status): start with // (//help)\n/open <agent> [pane] — start claude/codex/omp/opencode/commandcode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
+            "Ketik biasa = masuk ke tugas yang aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke tugas pesan itu.\nFoto/file = path-nya diketik ke tugas yang aktif (caption /ke <nama> buat tugas lain).\n/ke <nama> [teks] — ganti tugas aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah / yang bukan milik bot (/exit, /compact, /clear, /model) diteruskan ke tugas yang aktif; yang namanya sama dgn bot (/help, /status): awali // (//help)\n/buka <agent> [nama] — nyalain claude/codex/omp/opencode/commandcode di terminal yang kosong\n/status — semua tugas\n/lihat <nama> — layar terbaru",
+            "Plain text = goes to the active task (last used or last to send a notice).\nReply to a bot message = that message's task.\nPhoto/file = its path is typed into the active task (caption /to <name> for another task).\n/to <name> [text] — switch the active task (and send the text); /to alone = pick from buttons\nA / command that isn't the bot's (/exit, /compact, /clear, /model) goes to the active task; one named like the bot's (/help, /status): start with // (//help)\n/open <agent> [name] — start claude/codex/omp/opencode/commandcode in an idle terminal\n/status — every task\n/look <name> — latest screen",
         ),
     };
     if id { i } else { e }
@@ -2607,7 +2607,7 @@ mod tests {
         assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, "claude-1".into())), text: "bikin changelog".into(), msg: 5 });
         r["message"]["reply_to_message"]["text"] = json!("⏳ omp-1 · udah jalan 1m 30s · biasanya kelar ±2m");
         assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, "omp-1".into())), text: "bikin changelog".into(), msg: 5 });
-        r["message"]["reply_to_message"]["text"] = json!("Ke pane mana?");
+        r["message"]["reply_to_message"]["text"] = json!("Ke tugas mana?");
         assert_eq!(parse(&r, Some(&l), n), In::Type { to: Some(To::Reply(77, String::new())), text: "bikin changelog".into(), msg: 5 });
         // plain text = active pane, no command needed
         assert_eq!(parse(&msg(42, 7, "lanjut bikin test", n), Some(&l), n), In::Type { to: None, text: "lanjut bikin test".into(), msg: 5 });
@@ -2975,7 +2975,7 @@ mod tests {
             ("gembala".to_string(), vec![(true, "shell-25".to_string(), "idle ← active".to_string()), (false, "omp-1".to_string(), "needs permission (1m 5s)".to_string())], 4),
         ];
         assert_eq!(status_body(rows, false), "<b>gembala</b>\nomp-1 — needs permission (1m 5s)\nshell-25 — idle ← active\n4 shell\n\n<b>Issue Prod</b>\n3 shell");
-        assert_eq!(status_body(vec![], true), "Belum ada pane.");
+        assert_eq!(status_body(vec![], true), "Belum ada tugas.");
     }
 
     /// FR-99 P2: the bar above the pane reads the same dialog as the bot: same ask line, same buttons and words. Folder

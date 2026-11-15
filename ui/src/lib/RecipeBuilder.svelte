@@ -340,6 +340,13 @@
 
 <svelte:window onkeydown={onkey} onpointerdown={(e) => (e.target as HTMLElement).closest?.(".menu, .mbtn, .tplbtn") || ((menu = null), (tplMenu = false))} />
 
+{#snippet advanced(s: any, i: number, a0: string)}
+  {#if flags(a0).model}<label class="fld"><span class="fl">{t("rb.model")}</span>
+          <input value={s.model} placeholder={t("rb.default")} aria-label={t("rb.model")} onchange={(e) => patch(i, (x) => setModel(x, a0, e.currentTarget.value))} /></label>{/if}
+  {#if flags(a0).effort}<label class="fld"><span class="fl">{t("rb.effort")}</span>
+          <select value={s.effort} aria-label={t("rb.effort")} onchange={(e) => patch(i, (x) => ({ ...x, effort: e.currentTarget.value }))}>
+            <option value="">{t("rb.default")}</option>{#each EFFORTS as ef}<option value={ef}>{ef}</option>{/each}</select></label>{/if}
+{/snippet}
 {#snippet card(s: BStep, i: number)}
   {@const errs = diagsFor(diags, s.id)}
   {@const a0 = s.agents[0]}
@@ -363,11 +370,7 @@
         <label class="fld"><span class="fl">{t("rb.agent")}</span>
           <select value={a0} onchange={(e) => patch(i, (x) => setPrimary(x, e.currentTarget.value))} aria-label={t("rb.agent")}>
             {#each [...new Set([...installed.map((a) => a.agent), ...s.agents])] as a}<option value={a}>{label(a)}</option>{/each}</select></label>
-        {#if flags(a0).model}<label class="fld"><span class="fl">{t("rb.model")}</span>
-          <input value={s.model} placeholder={t("rb.default")} aria-label={t("rb.model")} onchange={(e) => patch(i, (x) => setModel(x, a0, e.currentTarget.value))} /></label>{/if}
-        {#if flags(a0).effort}<label class="fld"><span class="fl">{t("rb.effort")}</span>
-          <select value={s.effort} aria-label={t("rb.effort")} onchange={(e) => patch(i, (x) => ({ ...x, effort: e.currentTarget.value }))}>
-            <option value="">{t("rb.default")}</option>{#each EFFORTS as ef}<option value={ef}>{ef}</option>{/each}</select></label>{/if}
+        {#if simple}<details class="adv"><summary>{t("rb.adv")}</summary>{@render advanced(s, i, a0)}</details>{:else}{@render advanced(s, i, a0)}{/if}
         <button class="chainlink" class:on={chain?.id === s.id} onclick={() => openChain(s.id, i)}>
           {s.agents.length > 1 ? t("rb.chainTo", { list: s.agents.slice(1).map(short).join(", ") }) : t("rb.chainAdd")}</button>
       {/if}
@@ -376,7 +379,7 @@
         {#if !s.shell}<button class="gt" class:on={s.gate} aria-pressed={s.gate} title={t("rb.gate")} onclick={() => patch(i, (x) => ({ ...x, gate: !x.gate }))}>{s.gate ? t("rb.gateOn") : t("rb.gateOff")}</button>{/if}
         <select class="tm" value={s.timeout_secs} aria-label={t("rb.timeout")} onchange={(e) => patch(i, (x) => ({ ...x, timeout_secs: +e.currentTarget.value }))}>
           {#each timeouts(s.timeout_secs) as n}<option value={n}>{mins(n)}</option>{/each}</select>
-        {#if s.output}<span class="out" title={tOr(`rb.pass.${s.pass || "reply"}`, s.pass)}>{s.pass === "first_line_pass" ? "PASS · " : ""}{s.output}</span>{/if}
+        {#if s.output && !simple}<span class="out" title={tOr(`rb.pass.${s.pass || "reply"}`, s.pass)}>{s.pass === "first_line_pass" ? "PASS · " : ""}{s.output}</span>{/if}
       </div>
     {/if}
   </div>
@@ -637,6 +640,11 @@
 </div>
 
 <style>
+  .adv summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
   .rb {
     width: 100%;
     height: 100%;

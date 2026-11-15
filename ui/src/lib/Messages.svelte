@@ -202,7 +202,7 @@
             </div>
           {:else}
             <div class="row">
-              <span class="grow"><span><b>{m.from}</b> → <b>{m.to}</b>{#if m.edited}<span class="m"> · {t("msg.edited")}</span>{/if}</span><small>{m.preview}</small></span>
+              <span class="grow"><span><b>{simple ? person(m.from) : m.from}</b> → <b>{simple ? person(m.to) : m.to}</b>{#if simple}<span class="m"> · {t("msg.waitsFor", { to: person(m.to) })}</span>{/if}{#if m.edited}<span class="m"> · {t("msg.edited")}</span>{/if}</span><small>{m.preview}</small></span>
               <button class="mini" onclick={() => ((editId = m.id), (editBody = m.body ?? m.preview))}>{t("msg.edit")}</button>
               <button class="mini" onclick={() => act("msg.cancel", { id: m.id })}>{t("msg.cancel")}</button>
             </div>
@@ -216,11 +216,11 @@
       {#each [...(data?.history ?? [])].reverse() as h, i (i)}
         <div class="row">
           <span class="grow"
-            ><span class="kind {h.kind}">{tOr(`msg.kind.${h.kind}`, h.kind)}</span> <b>{h.msg.from}</b> → <b>{h.msg.to}</b>{#if h.reason}<span class="m">
+            ><span class="kind {h.kind}">{tOr(`msg.kind.${h.kind}`, h.kind)}</span> <b>{simple ? person(h.msg.from) : h.msg.from}</b> → <b>{simple ? person(h.msg.to) : h.msg.to}</b>{#if h.reason}<span class="m">
                 · {tOr(`msg.reason.${h.reason}`, h.reason)}</span
               >{/if}<small>{h.msg.preview}</small></span
           >
-          <span class="m">{h.msg.hop ? `hop ${h.msg.hop}` : ""}</span>
+          <span class="m">{!simple && h.msg.hop ? `hop ${h.msg.hop}` : ""}</span>
         </div>
       {:else}
         <div class="row"><span class="m">{t("msg.none")}</span></div>

@@ -7,7 +7,7 @@
   import { errText, t, tOr } from "./i18n/state.svelte";
 
   // `has`: the pane is still open (FR-86: a finished run's panes close, a stopped one's stay until the user closes them)
-  let { snap, has, onchange, onjump, onchanges, onrecipe = () => {}, onclose }: { snap: Snap; has: (pane: number) => boolean; onchange: (s: Snap) => void; onjump: (pane: number) => void; onchanges: (pane: number) => void; onrecipe?: (id: string) => void; onclose: () => void } = $props();
+  let { snap, has, onchange, onjump, onchanges, onrecipe = () => {}, onclose, simple = false, agentName = (a: string) => a }: { snap: Snap; has: (pane: number) => boolean; onchange: (s: Snap) => void; onjump: (pane: number) => void; onchanges: (pane: number) => void; onrecipe?: (id: string) => void; onclose: () => void; simple?: boolean; agentName?: (a: string) => string } = $props();
 
   /// FR-23/FR-26: the Ship card opens the changes panel for the run's work pane (all stage panes share the run folder)
   const lastPane = (s: Snap) => stagePanes(s).at(-1)?.pane ?? null;
@@ -24,7 +24,7 @@
     call("harness.restart", { run: snap.run, from: again })
       .then((r) => {
         if (!r.error) return ((again = null), onchange(r));
-        error = r.error === "preflight" ? tOr(`hn.check.${r.args?.check}`, r.args?.check) : errText(r.error, r.args);
+        error = r.error === "preflight" ? tOr(`hn.fix.${r.args?.check}`, tOr(`hn.check.${r.args?.check}`, r.args?.check)) : errText(r.error, r.args);
       })
       .catch((e) => (error = errText(e)));
   const act = (method: string) =>
@@ -42,13 +42,17 @@
       .then((r) => (r.error ? (error = errText(r.error, r.args)) : onchange(r)))
       .catch((e) => (error = errText(e)));
   const stepName = (i: number | null) => (i == null ? "" : (snap.steps[i]?.name ?? ""));
+  /// finished stages that left a file (plan.md, security.md, laporan.md…): each is one click away, not only at the gate (audit u4 #32)
+  const results = $derived(snap.steps.map((s, i) => ({ s, i })).filter(({ s, i }) => s.output && !s.human && !s.shell && stepView(snap, i) === "done"));
   const gateStep = $derived(snap.state === "gate" && snap.gate != null ? snap.steps[snap.gate] : null);
   /// the gate's own output file (plan.md): a Ship gate has none, its door is the changes panel
   const gateFile = $derived(gateStep && !gateStep.human && gateStep.output ? gateStep.output : null);
   const stuck = $derived(snap.state === "halted" ? (stuckStep(snap) ?? snap.current) : null);
   const finding = $derived(snap.state === "halted" ? findingFile(snap) : null);
   const stuckPane = $derived(stuck != null ? (snap.steps[stuck]?.pane ?? null) : null);
-  const line = (e: Snap["trace"][number]) => [tOr(`hn.ev.${e.code}`, e.code), e.step != null ? stepName(e.step) : "", e.agent ?? ""].filter(Boolean).join(" · ");
+  /// Sederhana: "Claude Code (kalau macet: Codex, lalu Oh My Pi)" instead of "claude › codex › omp"
+  const chain = (agents: string[]) => (!simple || agents.length < 2 ? agents.join(" › ") : t("hn.chainS", { first: agentName(agents[0]), rest: agents.slice(1).map(agentName).join(t("hn.chainSep")) }));
+  const line = (e: Snap["trace"][number]) => [simple ? tOr(`hn.evS.${e.code}`, tOr(`hn.ev.${e.code}`, e.code)) : tOr(`hn.ev.${e.code}`, e.code), e.step != null ? stepName(e.step) : "", e.agent ? (simple ? agentName(e.agent) : e.agent) : ""].filter(Boolean).join(" · ");
 </script>
 
 <svelte:window onkeydowncapture={(e) => e.key === "Escape" && (e.stopPropagation(), reader ? (reader = null) : again != null ? (again = null) : onclose())} />
@@ -69,7 +73,7 @@
           <span class="grow">
             <b>{s.name}</b>
             <small>
-              {#if s.human}{t("hn.ship")}{:else if s.shell}{t("hn.shellStage")}{:else}{s.pane_agent ?? s.agents.join(" › ")}{/if}{s.gate && !s.human ? ` · ${t("hn.gate")}` : ""}{v === "now" && snap.round ? ` · ${t("hn.round", { n: snap.round, max: snap.max_rounds })}` : ""}
+              {#if s.human}{t("hn.ship")}{:else if s.shell}{t("hn.shellStage")}{:else}{s.pane_agent ? (simple ? agentName(s.pane_agent) : s.pane_agent) : chain(s.agents)}{/if}{s.gate && !s.human ? ` · ${t("hn.gate")}` : ""}{v === "now" && snap.round ? ` · ${t("hn.round", { n: snap.round, max: snap.max_rounds })}` : ""}
             </small>
           </span>
           {#if s.pane != null && has(s.pane)}<button class="mini" onclick={() => onjump(s.pane!)}>{t("hn.openPane")}</button>{/if}
@@ -83,13 +87,13 @@
         <div class="acts">
           {#if snap.steps[snap.gate ?? 0]?.human}
             {@const pane = lastPane(snap)}
-            <button class="mini" disabled={pane == null} title={t("hn.openChangesTip")}
+            <button class="mini go" disabled={pane == null} title={t("hn.openChangesTip")}
               onclick={() => { if (pane != null) { onchanges(pane); onclose(); } }}>{t("hn.openChanges")}</button>
           {/if}
           {#if gateFile}
             <button class="mini" onclick={() => readFile(gateFile, t(gateStep?.id === "plan" ? "hn.readTitle" : "hn.readTitleOther", { name: snap.name, step: gateStep?.name ?? "" }))}>{t(gateStep?.id === "plan" ? "hn.read" : "hn.readResult")}</button>
           {/if}
-          <button class="mini go" onclick={() => act("harness.gate")}>{snap.steps[snap.gate ?? 0]?.human ? t("hn.shipDone") : t("hn.gateGo")}</button>
+          <button class={snap.steps[snap.gate ?? 0]?.human ? "mini" : "mini go"} onclick={() => act("harness.gate")}>{snap.steps[snap.gate ?? 0]?.human ? t("hn.shipDone") : t("hn.gateGo")}</button>
         </div>
       </div>
       {#if snap.steps[snap.gate ?? 0]?.human}<p class="hint">{t("hn.shipHint")}</p>{:else}<p class="hint">{t("hn.gateNote")}</p>{/if}
@@ -142,6 +146,15 @@
     {/if}
     {#if error}<div class="bad" role="alert">{error}</div>{/if}
 
+    {#if results.length}
+      <h4>{t("hn.results")}</h4>
+      <section>
+        {#each results as { s } (s.id)}
+          <div class="row"><span class="grow"><b>{s.name}</b><small>{s.output}</small></span>
+            <button class="mini" onclick={() => readFile(s.output, t("hn.readTitleOther", { name: snap.name, step: s.name }))}>{t("hn.readResult")}</button></div>
+        {/each}
+      </section>
+    {/if}
     <h4>{t("hn.trail")}</h4>
     <section>
       {#each [...snap.trace].reverse() as e, i (i)}

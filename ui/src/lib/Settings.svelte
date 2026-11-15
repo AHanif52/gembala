@@ -659,7 +659,7 @@
       {#if failed}<div class="errs" role="alert"><span>{failed}</span></div>{/if}
       <!-- FR-77: "Atur pakai AI" in the head of each settings part, on its config.toml section -->
       {#if ["umum", "tampilan", "agent", "pintasan", "toolbar", "telegram"].includes(sec)}
-        <div class="aihead"><button class="mini" onclick={() => openAi("", "config", sec)}>{t("hn.set.aiTitle")}</button></div>
+        <div class="aihead"><button class="mini" title={tOr(`set.aiEx.${sec}`, t("set.aiEx.default"))} onclick={() => openAi("", "config", sec)}>{t("hn.set.aiTitle")}</button></div>
       {/if}
 
       {#if sec === "umum"}
@@ -803,6 +803,7 @@
             <span>{t("set.look.blink")}</span>
             <input type="checkbox" role="switch" aria-label={t("set.look.blink")} checked={ui.cursor_blink} onchange={(e) => set("cursor_blink", e.currentTarget.checked)} />
           </div>
+          {#if ui.mode !== "simple"}
           <div class="row">
             <span>{t("set.look.meta")}<small>{t("set.look.metaSub")}</small></span>
             <select aria-label={t("set.look.meta")} value={ui.option_as_meta} onchange={(e) => set("option_as_meta", e.currentTarget.value as Ui["option_as_meta"])}>
@@ -818,17 +819,19 @@
               {#each [1000, 2000, 5000, 10000, 50000] as n}<option value={n}>{t("set.look.lines", { n: n.toLocaleString(loc()) })}</option>{/each}
             </select>
           </div>
+          {/if}
           <div class="row">
             <span>{t("set.look.reader")}<small>{t("set.look.readerSub")}</small></span>
             <input type="checkbox" role="switch" aria-label={t("set.look.reader")} checked={ui.screen_reader} onchange={(e) => set("screen_reader", e.currentTarget.checked)} />
           </div>
-          <div class="row">
+          {#if ui.mode !== "simple"}          <div class="row">
             <span>Input editor<small>{t("set.look.editorSub")}</small></span>
             <input type="checkbox" role="switch" aria-label="Input editor" checked={ui.input_editor} onchange={(e) => set("input_editor", e.currentTarget.checked)} />
-          </div>
+          </div>{/if}
         </section>
         <!-- FR-58 (decision 4 Nov, mockup-blok-perintah option C): one global switch for the command block timeline;
              "ringkas output agent" tetap per profil (FR-56), bukan di grup ini -->
+        {#if ui.mode !== "simple"}
         <h4>{t("set.look.blocks")}</h4>
         <section>
           <div class="row">
@@ -844,6 +847,7 @@
             <input type="checkbox" role="switch" aria-label={t("set.look.ccStructured")} checked={ui.cc_structured} onchange={(e) => set("cc_structured", e.currentTarget.checked)} />
           </div>
         </section>
+        {/if}
       {:else if sec === "agent"}
         {#if agentPage === "akun"}
           <!-- Gembala.pen 31: the account page opens from the agent row; the Agents nav goes back to the parent page -->
@@ -999,17 +1003,18 @@
           </section>
           <p class="warnbox">⚠ {t("set.addon.warn")}</p>
         {:else}
+          <p class="note">{t("set.agent.intro")}</p>
           <h4>{t("set.agent.installedH")}<span class="hint">{t("set.agent.installedHint")}</span>
             <button class="mini" disabled={detecting} onclick={() => detect(true)}>{detecting ? t("set.agent.checkingBtn") : t("set.agent.recheck")}</button>
             <!-- Cross-agent add-ons (Claude plugins + MCP, Codex MCP), so in the group head, not on the Claude row -->
-            <button class="mini" onclick={() => (agentPage = "addon")}>Add-on ({addons.plugins.length + addons.mcp.length})…</button></h4>
+            <button class="mini" onclick={() => (agentPage = "addon")}>{ui.mode === "simple" ? t("set.addon.titleS") : "Add-on"} ({addons.plugins.length + addons.mcp.length})…</button></h4>
           <section>
             {#each agents as a (a.agent)}
               <div class="row">
                 <span
                   >{a.name}<small
                     >{a.installed
-                      ? `${a.version ?? t("set.agent.noVersion")} · ${a.tested ? t("set.agent.tested") : t("set.agent.untested")}${HOOK[a.agent] ? ` · ${tOr(HOOK[a.agent], HOOK[a.agent])}` : ""}`
+                      ? ui.mode === "simple" ? (a.tested ? "" : t("set.agent.untestedS")) : `${a.version ?? t("set.agent.noVersion")} · ${a.tested ? t("set.agent.tested") : t("set.agent.untested")}${HOOK[a.agent] ? ` · ${tOr(HOOK[a.agent], HOOK[a.agent])}` : ""}`
                       : ui.mode === "simple" ? t("set.agent.notYet") : t("set.agent.notFound", { install: a.install })}</small
                   ></span
                 >
@@ -1054,10 +1059,10 @@
             {/each}
             {#if form?.isNew}{@render editor()}{/if}
           </section>
-          <p class="note">
+          {#if ui.mode !== "simple"}<p class="note">
             {t("set.prof.note1")} <code>[[profile]]</code>{t("set.prof.note2")} <code>op://…</code> {t("common.or")}
             <code>keychain:service/{t("set.prof.secretAcct")}</code> {t("set.prof.note3")} <code>secret_env</code>.
-          </p>
+          </p>{/if}
         {/if}
       {:else if sec === "pintasan"}
         {#if keyErrors.length}
@@ -1418,25 +1423,25 @@
             <span>{t("set.sec.peek")}<small>{t("set.sec.peekSub")}</small></span>
             <span class="state">{t("set.sec.peekState")}</span>
           </div>
-          <div class="row">
+          {#if ui.mode !== "simple"}<div class="row">
             <span>{t("set.sec.brake")}<small>{t("set.sec.brakeSub", { rate: rate ?? "—", hops: hops ?? "—" })}</small></span>
             <span class="state">{t("set.sec.brakeState")}</span>
-          </div>
+          </div>{/if}
           <div class="row">
             <span>{t("set.sec.panic")}<small>{t("set.sec.panicSub")}</small></span>
             <kbd>{stopKey}</kbd>
           </div>
-          <div class="row">
+          {#if ui.mode !== "simple"}<div class="row">
             <span>{t("set.sec.stamp")}<small>{t("set.sec.stampSub")}</small></span>
             <span class="m nowrap">[Gembala · from shell-6]</span>
-          </div>
+          </div>{/if}
         </section>
         <h4>{t("set.sec.log")}<span class="hint">{t("set.sec.logHint")}</span></h4>
         <section>
-          <div class="row">
+          {#if ui.mode !== "simple"}<div class="row">
             <span>{t("set.sec.logAt")}<small>{t("set.sec.logAtSub")}</small></span>
             <span class="m">{auditDir}</span>
-          </div>
+          </div>{/if}
           <div class="row">
             <span>{t("set.sec.logAge")}<small>{t("set.sec.logAgeSub")}</small></span>
             <span class="m">{t("set.sec.days", { n: 14 })}</span>
@@ -1448,7 +1453,7 @@
         </section>
         <h4>{t("set.sec.behind")}<span class="hint">{t("set.sec.behindHint")}</span></h4>
         <section>
-          <div class="row"><span>{t("set.sec.door")}<small>{t("set.sec.doorSub")}</small></span><span class="m">$TMPDIR/gembala</span></div>
+          {#if ui.mode !== "simple"}<div class="row"><span>{t("set.sec.door")}<small>{t("set.sec.doorSub")}</small></span><span class="m">$TMPDIR/gembala</span></div>{/if}
           <div class="row"><span>{t("set.sec.buttons")}<small>{t("set.sec.buttonsSub")}</small></span><span class="m">{t("set.sec.locked")}</span></div>
           <div class="row"><span>{t("set.sec.newTerm")}<small>{t("set.sec.newTermSub")}</small></span><span class="m">{t("set.sec.clean")}</span></div>
           <div class="row"><span>{t("set.sec.links")}<small>{t("set.sec.linksSub")}</small></span><span class="m">{t("set.sec.askFirst")}</span></div>
