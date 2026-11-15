@@ -757,7 +757,7 @@ fn deteksi_agent() {
     let mut ui = Cli::ui(&d);
     let r = ui.call("agents.detect", json!({"refresh": true}))["result"].clone();
     let names: Vec<&str> = r.as_array().unwrap().iter().map(|a| a["agent"].as_str().unwrap()).collect();
-    assert_eq!(names, ["claude", "codex", "opencode", "omp", "commandcode"]);
+    assert_eq!(names, ["claude", "codex", "opencode", "omp", "commandcode", "gemini"]);
     for a in r.as_array().unwrap() {
         assert!(a["installed"].is_boolean() && a["install"].is_string(), "{a}");
     }

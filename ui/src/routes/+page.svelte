@@ -84,7 +84,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     ccEffort?: string;
     ccResume?: string; // PLAN-CC-PANE phase 4: session to reopen once the new structured pane mounts
   };
-  const AGENTS = ["claude", "codex", "opencode", "omp", "commandcode"];
+  const AGENTS = ["claude", "codex", "opencode", "omp", "commandcode", "gemini"];
   // FR-4/52: status dot + text label, not color alone (BRD section 11)
   const stText = (s?: string) => (s === "approve" ? tt(wordKey("approve")) : s === "blocked" || s === "done" || s === "working" ? tt(`status.${s}`) : "");
   // FR-52: tab color picked by the user (thin line on the left)
@@ -773,6 +773,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     omp: "https://github.com/can1357/oh-my-pi",
     opencode: "https://opencode.ai/docs",
     commandcode: "https://commandcode.ai/docs",
+    gemini: "https://github.com/google-gemini/gemini-cli",
   };
   let installing = $state(false);
   async function redetect() {
@@ -1492,7 +1493,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     else if (shell && m && !AGENTS.includes(m.agent) && m.busy && m.session) {
       // same as the daemon (FR-61): session owned by another account = `claude-<owner>`, otherwise the process account; plain `claude` = shell account
       const who = m.owner?.id ?? m.accountId;
-      const cmd = { claude: `${who ? `claude-${who}` : "claude"} --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}`, commandcode: `commandcode --resume ${m.session}` }[m.busy];
+      const cmd = { claude: `${who ? `claude-${who}` : "claude"} --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}`, commandcode: `commandcode --resume ${m.session}`, gemini: "gemini --resume latest" }[m.busy];
       if (safeResume(cmd)) meta[id].ended = { resume: cmd ?? null };
     }
     for (const w of wss)
@@ -5341,6 +5342,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   .aico.commandcode {
     color: var(--tx-commandcode, #ca8a04);
+  }
+  .aico.gemini {
+    color: var(--tx-gemini, #4285f4);
   }
   .st.blocked {
     color: var(--tx-amber, #d97706);
