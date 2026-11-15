@@ -191,7 +191,7 @@ Every shortcut can be changed in Settings > Shortcuts or in the `[keys]` section
 | `gembala wait [<pane>]` | Wait for a reply, a screen pattern, or a timeout |
 | `gembala read <pane> [-n <lines>]` | Read the pane's screen, secrets masked |
 | `gembala reply <msg_id> <text…>` | Reply to an incoming message |
-| `gembala close <pane>` | Close a helper pane you opened (not while it works or asks) |
+| `gembala close <pane>` | Close a pane: your own idle helper at once, any other pane (or a busy helper) after the user approves a card |
 | `gembala watch` | Watch status changes, one JSON line per event |
 
 Output is one JSON line. Exit code 0 = accepted, 1 = rejected/timeout, 2 = misuse.
