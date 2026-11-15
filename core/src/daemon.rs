@@ -523,10 +523,6 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                         Ok(json!({}))
                     }
                     Some(status) => {
-                        // FR-66: last message of a sandboxed agent's turn = reply to the waiting message
-                        if let Some(text) = p["reply"].as_str() {
-                            auto_reply(&st, me, text);
-                        }
                         let pane = st.panes.lock().unwrap().get(&me).cloned();
                         if let Some(pane) = pane {
                             // A short manually launched turn can stop before the process watcher finds its account.
@@ -579,6 +575,11 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                                 // of a typed `claude` = "working") is no longer corrected by the screen once the pane has hooks
                                 set_status(&st, me, &pane, "idle", None);
                             }
+                        }
+                        // FR-66: last message of a sandboxed agent's turn = reply to the waiting message. Last, so whoever
+                        // wakes on the reply already sees this turn's `last` and status.
+                        if let Some(text) = p["reply"].as_str() {
+                            auto_reply(&st, me, text);
                         }
                         Ok(json!({}))
                     }
