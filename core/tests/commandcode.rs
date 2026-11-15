@@ -64,8 +64,10 @@ elif p == 'malformed':
     print('not JSON', flush=True)
     time.sleep(60)
 elif p == 'ring':
-    for _ in range(600):
-        emit(dict(type='event', event=dict(type='text_delta', delta='x' * 16384)))
+    # same 9.6 MB (> the 8 MB ring) in a quarter of the events: the daemon re-serialises the 256 KB snapshot per event,
+    # so 600 events took ~8 s in a debug build and overran `finish()` on a loaded macOS runner
+    for _ in range(150):
+        emit(dict(type='event', event=dict(type='text_delta', delta='x' * 65536)))
     result()
 elif p == 'spoof':
     root = Path.cwd()
@@ -73,7 +75,12 @@ elif p == 'spoof':
     if address != str(root/'ui.sock'): address = '\0' + address
     s = socket.socket(socket.AF_UNIX)
     s.settimeout(3)
-    s.connect(address)
+    try:
+        s.connect(address)
+    except OSError:
+        # Linux with a Landlock scope: the pane's jail already refuses the abstract UI socket (EPERM)
+        result(text='unreachable')
+        sys.exit(0)
     s.sendall((json.dumps(dict(id=1,method='hello',params=dict(proto=1,secret=(root/'test-secret').read_text()))) + '\n').encode())
     answer = json.loads(s.makefile().readline())
     result(text=answer.get('error', {}).get('code', 'unexpected'))
@@ -289,7 +296,9 @@ fn ring_eviction_preserves_reduced_snapshot() {
 fn child_cannot_authenticate_as_ui_even_with_secret() {
     let d = start("spoof"); let mut c = Client::ui(&d); let pane = c.create(&d);
     c.run(pane, "spoof", "spoof");
-    assert_eq!(c.finish(pane)["snapshot"]["result"]["finalText"], "unauthorized");
+    let text = c.finish(pane)["snapshot"]["result"]["finalText"].clone();
+    // "unauthorized": it reached the socket and was refused; "unreachable": the Linux jail never let it connect
+    assert!(text == "unauthorized" || text == "unreachable", "{text}");
 }
 
 fn wait_pid(d: &Daemon) -> i32 {
