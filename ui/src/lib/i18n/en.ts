@@ -536,7 +536,7 @@ export default {
   "set.prof.saver.off": "Off",
   "set.prof.notify": "Notifications for panes from this profile",
   "set.prof.checkpoints": "Save a restore point each turn",
-  "set.prof.checkpointsSub": "Only in git folders. Lets you roll the folder back to before a turn.",
+  "set.prof.checkpointsSub": "Only in project folders with version history. Lets you roll the folder back to before a turn.",
   "set.prof.envSub": "Name and value; values aren't shown again, fill them in again to change",
   "set.prof.envNamePh": "NAME",
   "set.prof.envValuePh": "value",
