@@ -36,7 +36,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
-  import { frontCard, needPanes, needRows, type GateNeed, type HeldNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed, type ReplyNeed } from "$lib/attention";
+  import { frontCard, needPanes, needRows, type GateNeed, type HeldNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed, type ReplyNeed, type StuckNeed } from "$lib/attention";
   import type { UsageRow } from "$lib/usage";
   import { cleanGrid, GRID_MAX, type GridLine, gridInsert, gridLines, gridMove, gridRatio, gridRects, helperDots, helpersShown, splitRows, subtabRows, type HelperDot } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
@@ -2633,6 +2633,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const opens: OpenNeed[] = (msgData?.opens ?? []).map((o: any) => ({ id: o.id, at: (o.at ?? 0) * 1000, from: o.from, to: agentName(o.profile), pane: o.from_pane ?? null }));
     const held: HeldNeed[] = (msgData?.held ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, from: m.from, to: m.to }));
     const replies: ReplyNeed[] = (msgData?.reply_pending ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, from: m.from, to: m.to, pane: byName(m.to) ?? null, queued: !!m.queued }));
+    const stuck: StuckNeed[] = (msgData?.stuck ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, to: m.to, pane: m.pane ?? null }));
     const gates: GateNeed[] = Object.entries(runs)
       .filter(([, s]) => s.state === "gate")
       .map(([id, s]) => ({
@@ -2642,7 +2643,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         ship: !!s.steps[s.gate ?? 0]?.human,
         name: s.name,
       }));
-    return needRows({ panes, messages, opens, replies, held, gates, simple });
+    return needRows({ panes, messages, opens, replies, stuck, held, gates, simple });
   });
   /// the strip's panes in order: ⌘⇧U and the row click use the same list
   const queue = $derived(needPanes(needList).map((p) => ({ p })));
@@ -2676,7 +2677,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     return needAgent(r);
   }
   /// dot color of a strip row: the same colors as the bell (FR-87), so one kind looks the same everywhere
-  const dotOf = (k: NeedRow["kind"]) => (k === "password" ? "password" : k === "answer" ? "answer" : k === "message" || k === "open" || k === "reply" || k === "held" || k === "gate" || k === "ship" ? "approve" : "permission");
+  const dotOf = (k: NeedRow["kind"]) => (k === "password" ? "password" : k === "answer" ? "answer" : k === "message" || k === "open" || k === "reply" || k === "stuck" || k === "held" || k === "gate" || k === "ship" ? "approve" : "permission");
   /// the bold first line: `agent · task` in Sederhana (like the tab), `shell-9 · task` in Lengkap; a gate is the run's name
   function needTitle(r: NeedRow) {
     if (r.kind === "message" || r.kind === "open" || r.kind === "reply" || r.kind === "held") {
@@ -2724,6 +2725,12 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   /// FR-106: "Kirim sekarang" on a stuck reply; what could not go now is said in a line, the strip row stays until it does
   async function sendNow(r: NeedRow) {
+    // TECH 43: the message sits in the agent's prompt without its Enter
+    if (r.kind === "stuck") {
+      const res = await call("msg.enter_now", { pane: r.pane }).catch((e) => ({ error: String(e) }));
+      if (res?.error) say(errText(res.error));
+      return void refreshMsgs();
+    }
     const res = await call("msg.send_now", { id: r.msgId }).catch((e) => ({ error: String(e) }));
     if (res?.error) say(errText(res.error));
     else if (res?.result !== "delivered") say(tt("need.reply.later", { why: tOr(`msg.reason.${res?.reason}`, res?.reason ?? "") }));

@@ -8,6 +8,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// A message typed into an agent counts as the parent of what that agent sends next for this long (hop inheritance)
+const HOP_WINDOW: Duration = Duration::from_secs(600);
+
 /// FR-95: what a message asks of its recipient
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Kind {
@@ -285,9 +288,16 @@ impl Engine {
         self.known.iter().rev().find(|m| m.id == id)
     }
 
-    /// Hops are counted by the daemon: hop(reply_to) + 1; an unknown reply_to = a new chain.
-    pub fn hop_for(&self, reply_to: Option<&str>) -> u32 {
-        reply_to.and_then(|r| self.find(r)).map_or(0, |m| m.hop + 1)
+    /// Hops are counted by the daemon: hop(reply_to) + 1. Without a known `reply_to` the sender inherits from the newest message
+    /// another agent had typed into it within `HOP_WINDOW` (hop + 1), so dropping `reply_to` does not start a fresh chain; a
+    /// sender nothing was typed into lately (or only the user, notes, or requests it already answered) starts at 0.
+    pub fn hop_for(&self, from: u64, reply_to: Option<&str>) -> u32 {
+        if let Some(m) = reply_to.and_then(|r| self.find(r)) {
+            return m.hop + 1;
+        }
+        self.known.iter().rev()
+            .find(|m| m.to == from && m.from != from && m.from_name != "user" && m.tag.kind != Kind::Note && self.delivered.contains(&m.id) && !self.closed.contains(&m.id) && m.at.elapsed().is_ok_and(|a| a < HOP_WINDOW))
+            .map_or(0, |m| m.hop + 1)
     }
 
     /// FR-66, FR-95: `request`s typed into `to` that are not answered yet: not a reply, not answered or cancelled, younger
@@ -693,9 +703,25 @@ mod tests {
         let mut e = Engine::default();
         e.remember(&msg("a", 0));
         e.remember(&msg("b", 2));
-        assert_eq!(e.hop_for(Some("a")), 1);
-        assert_eq!(e.hop_for(Some("b")), 3);
-        assert_eq!(e.hop_for(Some("tidak-ada")), 0);
+        assert_eq!(e.hop_for(9, Some("a")), 1);
+        assert_eq!(e.hop_for(9, Some("b")), 3);
+        assert_eq!(e.hop_for(9, Some("tidak-ada")), 0);
+        // no reply_to: the sender inherits from what was typed into it, not from a message that never arrived or from the user
+        e.log("sent", &msg("b", 2), None); // b: 1 -> 2 at hop 2, delivered
+        assert_eq!(e.hop_for(2, None), 3);
+        assert_eq!(e.hop_for(2, Some("tidak-ada")), 3);
+        assert_eq!(e.hop_for(1, None), 0, "claude-1 was only a sender");
+        e.remember(&msg("c", 1));
+        assert_eq!(e.hop_for(2, None), 3, "c to the same pane never arrived");
+        let mut u = msg("u", 0);
+        u.from_name = "user".into();
+        u.from = 5;
+        e.remember(&u);
+        e.log("sent", &u, None);
+        assert_eq!(e.hop_for(2, None), 3, "a user message is no parent");
+        // answering the request ends that chain: the next message from the agent is a new one
+        e.close("b");
+        assert_eq!(e.hop_for(2, None), 0);
         for _ in 0..3 {
             e.note_sent(1);
         }

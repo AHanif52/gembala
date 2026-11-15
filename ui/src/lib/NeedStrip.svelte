@@ -40,7 +40,7 @@
               </span>
               <span class="k">{ageOf(r.at)}</span>
             </button>
-            <button class="act" onclick={() => (r.act === "send" ? onsend(r) : onneed(r))}>{tOr(`need.act.${r.act}`, "")}</button>
+            <button class="act" onclick={() => (r.act === "send" ? onsend(r) : onneed(r))}>{tOr(`need.act.${r.kind === "stuck" ? "enter" : r.act}`, "")}</button>
           </div>
         {/each}
       {/if}

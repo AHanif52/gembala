@@ -1647,7 +1647,9 @@ fn fr106_balasan_tanpa_wait_dan_dengan_wait() {
     let mut chain = send(&mut ca);
     for i in 0..3 {
         let (c, target) = if i == 1 { (&mut cb, "commandcode-1") } else { (&mut ca, "hasil-1") };
-        let r = c.call("send", json!({"to":target,"body":"chain","reply_to":chain,"queue":true}));
+        // the middle hop is a note: nobody answers it, and it is no parent for hop inheritance of what `a` sends later
+        let kind = if i == 1 { "note" } else { "request" };
+        let r = c.call("send", json!({"to":target,"body":"chain","reply_to":chain,"queue":true,"kind":kind}));
         assert_ne!(r["result"]["result"], "rejected", "{r}");
         chain = r["result"]["id"].as_str().unwrap().to_string();
     }
@@ -1670,7 +1672,8 @@ fn fr106_balasan_tanpa_wait_dan_dengan_wait() {
     // An exited agent stores the reply.
     let id = send(&mut ca);
     status(&mut ca, "working");
-    assert_eq!(reply(&mut cb, &id, "QUEUED-BEFORE-CLOSE")["result"]["result"], "queued");
+    let rr = reply(&mut cb, &id, "QUEUED-BEFORE-CLOSE");
+    assert_eq!(rr["result"]["result"], "queued", "{rr}");
     ui.call("pane.write", json!({"pane":a,"data":B64.encode(b"\x04")}));
     // Closing the pane also exercises target_gone; retain its authenticated client for the mailbox read.
     ui.call("pane.close", json!({"pane":a}));
@@ -3105,10 +3108,14 @@ fn fr95_jenis_pesan_dan_nomor_tugas() {
     assert_eq!((row["msg"]["kind"].as_str(), row["msg"]["task"].as_str(), row["msg"]["parent"].as_str()), (Some("result"), Some(id1.as_str()), Some(id1.as_str())), "{row}");
     // after the answer only id2 is open for pb, so it is the parent again
     let r = cb.call("send", json!({"to": "pa-1", "body": "soal dua", "queue": true}));
-    let row = history_row(&mut ui, "sent", &id(&r));
+    let soal_dua = id(&r);
+    let row = history_row(&mut ui, "sent", &soal_dua);
     assert_eq!(row["msg"]["parent"], id2, "{row}");
+    // answering what was typed into `pa` ends that chain for hop counting (the third request below is not a fourth hop)
+    ca.call("reply", json!({"msg_id": soal_dua, "body": "oke"}));
     // a third request: two are open, no --parent = a new task; with --parent it joins the one named; a stranger is refused
-    assert_eq!(ca.call("send", json!({"to": "pb-1", "body": "tiga", "queue": true}))["result"]["result"], "accepted");
+    let rr = ca.call("send", json!({"to": "pb-1", "body": "tiga", "queue": true}));
+    assert_eq!(rr["result"]["result"], "accepted", "{rr}");
     let r = cb.call("send", json!({"to": "pa-1", "body": "tugas baru", "queue": true}));
     let new_task = id(&r);
     let row = history_row(&mut ui, "sent", &new_task);
@@ -3462,6 +3469,16 @@ fn tech43_enter_lost_is_retried_once_then_reported() {
     assert_eq!(to, ["lost-1", "typed-1"], "{unconfirmed:?}");
     let out = ui.attach_until(typed, &["MARK", "half"]);
     assert_eq!(enters(&out), 1, "{out}");
+    // the strip: both stuck panes are listed, the button sends one more Enter, and only once
+    let stuck = ui.call("msg.list", json!({}))["result"]["stuck"].clone();
+    let mut names: Vec<&str> = stuck.as_array().unwrap().iter().map(|e| e["to"].as_str().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["lost-1", "typed-1"], "{stuck}");
+    assert_eq!(ui.call("msg.enter_now", json!({"pane":lost}))["result"]["result"], "sent");
+    let out = ui.attach_until(lost, &["MARK", "^[[201~^M^M^M"]);
+    assert!(out.contains("^[[201~^M^M^M") && !out.contains("^[[201~^M^M^M^M"), "{out}");
+    assert_eq!(ui.call("msg.enter_now", json!({"pane":lost}))["error"]["code"], "no_such_msg");
+    assert_eq!(ui.call("msg.list", json!({}))["result"]["stuck"].as_array().unwrap().len(), 1);
 }
 
 /// FR-93: Claude's StopFailure hook (`error` rate_limit) holds the pane's queue without letting it expire; "Coba sekarang"
@@ -3538,4 +3555,50 @@ fn fr32_login_failure_from_hook_shows_next_step() {
     assert!(step.contains("/login") && step.contains("claude auth login"), "{step}");
     c.call("hook", json!({"agent":"claude","status":"working"}));
     assert!(ui.call("pane.info", json!({"pane":pane}))["result"]["login"].is_null());
+}
+
+/// Hop inheritance: dropping `reply_to` does not start a fresh chain while the request typed into the sender is still open;
+/// answering it does.
+#[test]
+fn hop_is_inherited_without_reply_to_until_the_request_is_answered() {
+    let d = start("hopinh");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = |name: &str| format!("stty raw -echo; '{g}' token > '{}/{name}.token'; cat -v", d.dir.display());
+    profiles(&d, &mut ui, &(sh_profile("pinga", &script("pinga")) + &sh_profile("pingb", &script("pingb"))), "pingb");
+    for p in ["pinga", "pingb"] {
+        ui.call("pane.create", json!({"profile":p, "workspace":"w"}));
+    }
+    let client = |name: &str| {
+        let path = d.dir.join(format!("{name}.token"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let token = loop {
+            if let Ok(t) = std::fs::read_to_string(&path) && !t.trim().is_empty() { break t; }
+            assert!(Instant::now() < deadline, "token missing");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let mut c = Cli::connect(&d, "pane.sock");
+        assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
+        c
+    };
+    let (mut ca, mut cb) = (client("pinga"), client("pingb"));
+    for c in [&mut ca, &mut cb] {
+        assert!(c.call("hook", json!({"agent":"omp","status":"idle"})).get("result").is_some());
+    }
+    std::thread::sleep(Duration::from_millis(600));
+    let send = |c: &mut Cli, to: &str| c.call("send", json!({"to":to,"body":"x","queue":true}));
+    // a→b (hop 0), b→a (1), a→b (2), b→a (3), all without reply_to and all still open
+    let mut ids = Vec::new();
+    for (from_a, to) in [(true, "pingb-1"), (false, "pinga-1"), (true, "pingb-1"), (false, "pinga-1")] {
+        let r = if from_a { send(&mut ca, to) } else { send(&mut cb, to) };
+        assert_eq!(r["result"]["result"], "accepted", "{r}");
+        ids.push(r["result"]["id"].as_str().unwrap().to_string());
+    }
+    let r = send(&mut ca, "pingb-1");
+    assert_eq!(r["result"]["reason"], "hop_limit", "{r}");
+    // a answers the request that was typed into it: its next message is a new chain
+    let last_to_a = ids[3].clone();
+    assert!(ca.call("reply", json!({"msg_id": last_to_a, "body": "done"})).get("result").is_some());
+    let r = send(&mut ca, "pingb-1");
+    assert_eq!(r["result"]["result"], "accepted", "{r}");
 }

@@ -139,3 +139,10 @@ test("strip: pesan ketunda karena restart = kelompok 2, klik membuka laci (tanpa
   assert.deepEqual(rows[0].params, { from: "claude-1", to: "omp-1" });
   assert.deepEqual(needPanes(rows), []);
 });
+
+test("TECH 43: a stuck Enter is its own row with its own button, ahead of nothing else in the group", () => {
+  const rows = needRows({ panes: [], messages: [], opens: [], gates: [], simple: true, stuck: [{ id: "m1", at: 5, to: "claude-2", pane: 4 }] });
+  assert.deepEqual(rows.map((r) => [r.key, r.kind, r.group, r.act, r.msgId, r.pane]), [["stuck:m1", "stuck", 2, "send", "m1", 4]]);
+  assert.equal(rows[0].what, "need.stuck");
+  assert.deepEqual(rows[0].params, { to: "claude-2" });
+});

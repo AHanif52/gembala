@@ -153,6 +153,9 @@ struct Pane {
     hooked: std::sync::atomic::AtomicBool,
     /// TECH 43: the last message typed into this hooked pane, until its prompt hook proves the agent took it
     sent_check: Mutex<Option<SentCheck>>,
+    /// an Enter that never took (`unconfirmed`): the message and the status counter at the time; the strip offers "Kirim Enter"
+    /// until the agent's status moves on or the user presses it
+    stuck: Mutex<Option<(u64, bus::Msg)>>,
     /// FR-93: set by a verified limit signal, cleared by the user, the end of the hold, or the agent working again
     limit: Mutex<Option<Limit>>,
     /// FR-32: Claude's own hook said the login failed (`authentication_failed`); the next step as text, cleared when it works again
@@ -963,6 +966,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 "queued": queues,
                 // FR-90: "ketunda karena restart"
                 "held": eng.held.iter().map(outbox::Rec::summary).collect::<Vec<_>>(),
+                "stuck": st.panes.lock().unwrap().iter().filter_map(|(id, p)| p.stuck.lock().unwrap().as_ref().map(|(_, m)| { let mut v = m.summary(); v["pane"] = json!(id); v })).collect::<Vec<_>>(),
                 "reply_pending": eng.undelivered_replies.values().filter(|m| m.at.elapsed().is_ok_and(|age| age > Duration::from_secs(120))).map(|m| {
                     let mut v = m.summary();
                     v["queued"] = json!(eng.queues.get(&m.to).is_some_and(|q| q.iter().any(|q| q.msg.id == m.id)));
@@ -1503,6 +1507,13 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         "telegram.unpair" => Ok(telegram::unpair(st)),
         // FR-93: "Coba sekarang" ends the hold at once (the queue goes out on the next lap); "Kirim pas reset" keeps it
         // until the reset and then delivers instead of letting the messages expire
+        // TECH 43 strip: the Enter of a delivered message never took; one more, on the user's say
+        "msg.enter_now" => {
+            let pane = st.pane(p)?;
+            pane.stuck.lock().unwrap().take().ok_or("no_such_msg")?;
+            (&pane.terminal()?.master).write_all(b"\r").map_err(|_| "io")?;
+            Ok(json!({"result": "sent"}))
+        }
         "pane.limit_retry" => {
             let pane = st.pane(p)?;
             clear_limit(st, p["pane"].as_u64().unwrap_or_default(), &pane);
@@ -1918,6 +1929,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
         saver: Mutex::new(None),
         hooked: std::sync::atomic::AtomicBool::new(false),
         sent_check: Mutex::new(None),
+        stuck: Mutex::new(None),
         limit: Mutex::new(None),
         login: Mutex::new(None),
         exited: std::sync::atomic::AtomicBool::new(false),
@@ -2325,7 +2337,7 @@ fn ask_open(st: &State, me: u64, my_name: &str, my_ws: &str, target: &str, p: &V
         return Err("helper_limit");
     }
     let reply_to = p["reply_to"].as_str().map(String::from);
-    let hop = eng.hop_for(reply_to.as_deref());
+    let hop = eng.hop_for(me, reply_to.as_deref());
     let id = eng.new_id(&st.boot);
     let tag = tag_of(&eng, me, p, &id)?;
     let m = bus::Msg { id, from: me, from_name: my_name.to_string(), to: 0, to_name: target.to_string(), body, reply_to, hop, is_reply: false, at: std::time::SystemTime::now(), tag };
@@ -2713,24 +2725,34 @@ fn check_submits(st: &State) {
     let panes: Vec<Arc<Pane>> = st.panes.lock().unwrap().values().cloned().collect();
     for pane in panes {
         let mut slot = pane.sent_check.lock().unwrap();
+        let seq_now = pane.status_seq.load(Ordering::Relaxed);
+        if pane.stuck.lock().unwrap().as_ref().is_some_and(|(s, _)| *s != seq_now) {
+            *pane.stuck.lock().unwrap() = None;
+        }
         let Some(c) = slot.as_mut() else { continue };
-        if pane.status_seq.load(Ordering::Relaxed) != c.seq {
+        if seq_now != c.seq {
             *slot = None;
         } else if c.at.elapsed() >= SUBMIT_WAIT && !c.retried && pane.typed_at.lock().unwrap().is_some_and(|t| t.elapsed() < c.at.elapsed()) {
             // FR-11: the user typed here since the write; an Enter now would send their half-written line
-            let m = slot.take().map(|c| c.msg);
+            let c = slot.take();
             drop(slot);
-            if let Some(m) = m { record(st, "unconfirmed", &m, Some("no_enter")); }
+            if let Some(c) = c { mark_stuck(st, &pane, c); }
         } else if c.at.elapsed() >= SUBMIT_WAIT && !c.retried {
             c.retried = true;
             c.at = std::time::Instant::now();
             if let Ok(t) = pane.terminal() { let _ = (&t.master).write_all(b"\r"); }
         } else if c.at.elapsed() >= SUBMIT_WAIT {
-            let m = slot.take().map(|c| c.msg);
+            let c = slot.take();
             drop(slot);
-            if let Some(m) = m { record(st, "unconfirmed", &m, Some("no_enter")); }
+            if let Some(c) = c { mark_stuck(st, &pane, c); }
         }
     }
+}
+
+/// TECH 43: the Enter never took: logged, and kept on the pane for the "Butuh lu" strip (msg.list `stuck`, `msg.enter_now`)
+fn mark_stuck(st: &State, pane: &Pane, c: SentCheck) {
+    record(st, "unconfirmed", &c.msg, Some("no_enter"));
+    *pane.stuck.lock().unwrap() = Some((c.seq, c.msg));
 }
 
 /// Queue: expires after 10 minutes; every message is checked again right before writing (SEC-28).
@@ -2959,7 +2981,7 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
             let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;
             let reply_to = p["reply_to"].as_str().map(String::from);
             let mut eng = st.engine.lock().unwrap();
-            let hop = eng.hop_for(reply_to.as_deref());
+            let hop = eng.hop_for(me, reply_to.as_deref());
             let id = eng.new_id(&st.boot);
             let tag = tag_of(&eng, me, p, &id)?;
             drop(eng);
@@ -3061,6 +3083,11 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
                 None
             };
             if let Some(why) = why {
+                // hop inheritance: a reply the chain's end refuses still ends that request for `me`, or the agent that got a
+                // hop-3 message could neither answer it nor send anything new until the window runs out
+                if why == "hop_limit" {
+                    eng.close(&orig.id);
+                }
                 drop(eng);
                 return Ok(reject(st, &r, why));
             }
