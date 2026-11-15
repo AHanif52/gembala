@@ -1849,6 +1849,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "task.st.running": "lagi jalan",
   "task.st.waiting": "nunggu",
   "task.st.done": "selesai",
+  "task.st.partial": "sebagian",
   "task.st.failed": "gagal",
   "task.st.held": "ketunda",
   "task.st.limit": "kena limit",

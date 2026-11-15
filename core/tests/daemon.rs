@@ -3411,7 +3411,7 @@ fn fr92_panel_tugas() {
     cb.call("reply", json!({"msg_id": m1, "body": "Status: done\nTes sudah ditulis\ndetail"}));
     let t = tasks(&mut ui);
     let kid = &t[0]["kids"][0];
-    assert_eq!((kid["state"].as_str(), kid["result"].as_str(), kid["outcome"].as_str()), (Some("done"), Some("Status: done"), Some("done")), "{t:?}");
+    assert_eq!((kid["state"].as_str(), kid["result"].as_str(), kid["outcome"].as_str()), (Some("done"), Some("Tes sudah ditulis"), Some("done")), "{t:?}");
     assert!(t[0]["done"].is_null() && t[0]["waiting_on"].as_array().unwrap().is_empty(), "{t:?}");
     // a second child whose pane closes before it answers: failed
     assert!(cb.call("hook", json!({"agent": "omp", "status": "idle"})).get("result").is_some());
@@ -3425,7 +3425,7 @@ fn fr92_panel_tugas() {
     assert_eq!(kid["state"], "failed", "{t:?}");
     // on disk, private; then the daemon dies and the notes come back
     let file = d.dir.join("cfg/outbox/tasks.json");
-    wait_until("tasks.json", || std::fs::read_to_string(&file).is_ok_and(|x| x.contains("Migrasi tabel bucket") && x.contains("Status: done")));
+    wait_until("tasks.json", || std::fs::read_to_string(&file).is_ok_and(|x| x.contains("Migrasi tabel bucket") && x.contains("Tes sudah ditulis")));
     assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
     drop((ui, ca, cb));
     d.child.kill().unwrap();

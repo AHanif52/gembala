@@ -13,7 +13,7 @@ test("open tasks are the ones without a done time; done ones go to the fold", ()
 });
 
 test("tally: what the owner still waits for, and the three words that need a look", () => {
-  const t = task([kid("limit", { to: "c" }), kid("held", { to: "d" }), kid("failed", { to: "e" }), kid("done"), kid("stuck"), kid("running", { to: "f" })]);
+  const t = task([kid("limit", { to: "c" }), kid("held", { to: "d" }), kid("failed", { to: "e" }), kid("done"), kid("partial"), kid("stuck"), kid("running", { to: "f" })]);
   assert.deepEqual(tally(t), { waiting: 4, failed: 1, held: 1, limit: 1, names: ["c", "d", "e", "f"] });
   assert.equal(tally(task([kid("done")])).waiting, 0);
 });

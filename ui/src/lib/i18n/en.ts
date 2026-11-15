@@ -1866,6 +1866,7 @@ export default {
   "task.st.running": "working",
   "task.st.waiting": "waiting",
   "task.st.done": "done",
+  "task.st.partial": "partly done",
   "task.st.failed": "failed",
   "task.st.held": "held back",
   "task.st.limit": "at a limit",

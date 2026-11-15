@@ -1,6 +1,6 @@
 // FR-92: the task panel's view of `task.list`. Pure, so `node --test` can check it (TECH 50).
 
-export type KidState = "running" | "waiting" | "done" | "failed" | "held" | "limit" | "stuck";
+export type KidState = "running" | "waiting" | "done" | "partial" | "failed" | "held" | "limit" | "stuck";
 
 export type Kid = {
   id: string;
@@ -38,7 +38,7 @@ export type Task = {
 };
 
 /// the pill class of a state (mockup L1/L3)
-export const PILL: Record<KidState, string> = { running: "run", waiting: "wt", done: "ok", failed: "bad", held: "hold", limit: "lim", stuck: "wt" };
+export const PILL: Record<KidState, string> = { running: "run", waiting: "wt", done: "ok", partial: "ok", failed: "bad", held: "hold", limit: "lim", stuck: "wt" };
 
 export const isOpen = (t: Task) => t.done == null;
 export const openCount = (ts: Task[]) => ts.filter(isOpen).length;
@@ -48,7 +48,7 @@ export const split = (ts: Task[]) => ({ open: ts.filter(isOpen), done: ts.filter
 /// are failed, held or at a limit (the three L3 words)
 export function tally(t: Task) {
   const n = (s: KidState) => t.kids.filter((k) => k.state === s).length;
-  const live = t.kids.filter((k) => k.state !== "done" && k.state !== "stuck");
+  const live = t.kids.filter((k) => k.state !== "done" && k.state !== "partial" && k.state !== "stuck");
   return { waiting: live.length, failed: n("failed"), held: n("held"), limit: n("limit"), names: live.map((k) => k.to) };
 }
 

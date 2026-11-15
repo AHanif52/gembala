@@ -79,9 +79,9 @@
       {#if !simple && task.kind === "task"}<span class="kd">{k.result ? "RESULT" : "REQ"}</span>{#if k.from && k.from !== task.owner.name}<span class="kd">helper_of {k.from}</span>{/if}{/if}
       {#if task.kind === "flow" && k.to}<span class="m"> · {name(k.to)}</span>{/if}
       {#if task.kind === "task" || k.why}<span class="why">{line(k)}</span>{/if}
-      {#if k.result}<span class="res">{simple ? k.result.replace(/^status:\s*\w+\s*/i, "") || k.result : k.result}</span>{/if}
+      {#if k.result}<span class="res">{k.result}</span>{/if}
     </button>
-    <span class="pill {PILL[k.state]}">{simple ? t(`task.st.${k.state}`) : k.state}</span>
+    <span class="pill {PILL[k.state]}">{simple ? t(`task.st.${k.state}`) : k.result !== null && k.outcome && k.outcome !== "unspecified" ? k.outcome : k.state}</span>
     {#if k.state === "held"}
       <span class="res acts">
         <button class="mini" onclick={() => act("msg.resend", { id: k.id })}>{t("task.resend")}</button>

@@ -83,7 +83,9 @@ impl Tasks {
     /// the target answered request `id`
     pub fn result(&mut self, id: &str, body: &str) -> bool {
         let Some(k) = self.kid(id) else { return false };
-        k.result = Some(first_line(body));
+        // the `Status:` line (FR-91) is the outcome, not the summary: the summary is the first line after it
+        let rest = body.lines().skip_while(|l| l.trim().is_empty() || result_status(l).is_some()).collect::<Vec<_>>().join("\n");
+        k.result = Some(first_line(&rest));
         k.outcome = Some(result_status(body).unwrap_or("unspecified").into());
         true
     }
@@ -186,7 +188,11 @@ fn task_from(v: &Value) -> Option<Task> {
 /// `queued` = waiting in a queue or on a card, `target` = the target pane's status (`None` = no such pane).
 pub fn kid_state(k: &Child, held: bool, limit: bool, queued: bool, target: Option<&str>) -> &'static str {
     if k.result.is_some() {
-        return if k.outcome.as_deref() == Some("blocked") { "stuck" } else { "done" };
+        return match k.outcome.as_deref() {
+            Some("blocked") => "stuck",
+            Some("partial") => "partial",
+            _ => "done",
+        };
     }
     if k.end.is_some() {
         return "failed";
@@ -262,7 +268,7 @@ mod tests {
         // a helper finishing does not finish the task
         assert!(t.result("r1", "Status: done\nSudah beres\ndetail"));
         assert_eq!(t.list[0].done, None);
-        assert_eq!(t.list[0].kids[0].result.as_deref(), Some("Status: done"));
+        assert_eq!(t.list[0].kids[0].result.as_deref(), Some("Sudah beres"), "baris Status dilewati");
         assert_eq!(t.list[0].kids[0].outcome.as_deref(), Some("done"));
         // the owner answering the user finishes only its own tasks
         assert!(t.answered("keyA", 50));
@@ -285,12 +291,17 @@ mod tests {
         }
         assert!(t.end("r1", "expired"));
         assert!(t.end("r2", "owner_cancelled"));
-        assert!(t.result("r3", "Status: blocked\nbutuh izin"));
+        assert!(t.result("r3", "**Status:** blocked\n\nbutuh izin"));
+        assert_eq!(t.list[0].kids[2].result.as_deref(), Some("butuh izin"));
         assert!(!t.end("r3", "expired"), "yang sudah dijawab tidak gagal belakangan");
         let k = |i: usize| t.list[0].kids[i].clone();
         assert_eq!(kid_state(&k(0), false, false, false, Some("idle")), "failed");
         assert_eq!(k(1).end.as_deref(), Some("cancelled"));
         assert_eq!(kid_state(&k(2), false, false, false, Some("idle")), "stuck");
+        let part = Child { outcome: Some("partial".into()), ..k(2) };
+        assert_eq!(kid_state(&part, false, false, false, Some("idle")), "partial");
+        let plain = Child { outcome: Some("unspecified".into()), ..k(2) };
+        assert_eq!(kid_state(&plain, false, false, false, Some("idle")), "done");
         let open = Child { end: None, result: None, outcome: None, ..k(0) };
         assert_eq!(kid_state(&open, false, false, false, Some("working")), "running");
         assert_eq!(kid_state(&open, false, false, false, Some("idle")), "waiting");
