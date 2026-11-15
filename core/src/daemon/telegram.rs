@@ -278,9 +278,23 @@ fn turn_body(done: bool, agent: &str, answer: Option<&str>, screen: impl FnOnce(
         None if done && agent == "codex" => String::new(),
         None => {
             let snip = screen();
-            if snip.is_empty() { String::new() } else { format!("\n<pre>{}</pre>", esc(&snip)) }
+            if snip.is_empty() { String::new() } else { format!("\n<pre>{}</pre>{}", esc(&snip), links_under(&snip)) }
         }
     }
+}
+
+/// OpenCode and Gemini have no hook that carries the answer, so their card is the screen in `<pre>`, where Telegram
+/// doesn't link URLs (9 Nov: "kl bentuk script ga bisa gw klik"): the links of the snippet again below it as plain text.
+fn links_under(snip: &str) -> String {
+    let re = regex_lite::Regex::new(r#"https?://[^\s<>"'`)\]]+"#).unwrap();
+    let mut urls: Vec<&str> = Vec::new();
+    for m in re.find_iter(snip) {
+        let u = m.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?']);
+        if !urls.contains(&u) && urls.len() < 5 {
+            urls.push(u);
+        }
+    }
+    urls.iter().map(|u| format!("\n{}", esc(u))).collect()
 }
 
 /// agents whose stop hook carries the turn's own answer (`gembala hook` → `last`): their done card can wait for it
@@ -2775,6 +2789,11 @@ mod tests {
         assert_eq!(turn_body(true, "codex", None, || transcript.into()), "");
         // omp/OpenCode have no stop hook: the screen is all there is
         assert_eq!(turn_body(true, "omp", None, || "halo".into()), "\n<pre>halo</pre>");
+        // the screen fallback (OpenCode, Gemini) repeats its links outside the `<pre>` so they can be tapped
+        assert_eq!(
+            turn_body(true, "opencode", None, || "lihat https://x.y/a?b=1&c=2. dan https://x.y/a?b=1&c=2".into()),
+            "\n<pre>lihat https://x.y/a?b=1&amp;c=2. dan https://x.y/a?b=1&amp;c=2</pre>\nhttps://x.y/a?b=1&amp;c=2"
+        );
         // other cards (a long command finished) keep the screen
         assert_eq!(turn_body(false, "codex", None, || "ok".into()), "\n<pre>ok</pre>");
         // an empty screen adds nothing
