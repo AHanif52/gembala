@@ -36,12 +36,12 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
   import { frontCard, needPanes, needRows, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed, type ReplyNeed } from "$lib/attention";
   import type { UsageRow } from "$lib/usage";
-  import { splitRows, subtabRows } from "$lib/subtabs";
+  import { cleanGrid, GRID_MAX, type GridLine, gridInsert, gridLines, gridMove, gridRatio, gridRects, helperDots, helpersShown, splitRows, subtabRows, type HelperDot } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
   import { errText, i18n, loc, t as tt, tn as ttn, tOr } from "$lib/i18n/state.svelte";
   import type { Key } from "$lib/i18n";
 
-  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string; parent?: string; helpersOpen?: boolean; doneOpen?: boolean; shellsOpen?: boolean };
+  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string; parent?: string; helpersOpen?: boolean; shellsOpen?: boolean; grid?: string[]; gridRows?: boolean; gridRatio?: { x: number; y: number } };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: default account per agent; FR-44: block color; FR-13: brief
   /// Per-pane data to restore (FR-45): profile and folder, no screen content (SEC-13).
   type Meta = {
@@ -206,7 +206,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// `line` = insertion line (screen coordinates) where it drops
   let dragging = $state<{ kind: "tab" | "ws"; wi: number; ti: number; over: { wi: number; ti: number }; line: { top: number; left: number; width: number } } | null>(null);
   /// FR-37: drag a pane head; `zone` = highlight box (screen coordinates) + target label
-  let paneDrag = $state<{ zone: { left: number; top: number; width: number; height: number; label: string } | null } | null>(null);
+  let paneDrag = $state<{ zone: { left: number; top: number; width: number; height: number; label: string; bad?: boolean } | null } | null>(null);
+  let chipDrag = $state<{ from: number; over: number } | null>(null); // FR-101 varian B: reorder chips in the grid strip
   let editing = $state<{ kind: "tab" | "ws" | "pane"; id: string; value: string } | null>(null);
   let renameError = $state("");
   let welcome = $state<Agent[] | null>(null); // FR-43: short card on first open
@@ -224,9 +225,46 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   const ws = $derived(wss[at.ws]);
   const tab = $derived(ws?.tabs[at.tab]);
   const owner = $derived(tab?.parent ? ws?.tabs.find((t) => t.id === tab.parent) : null);
-  let compareId = $state(""); // temporary two-pane view; never saved to layout.json
-  const compareHelper = $derived(ws?.tabs.find((t) => t.id === compareId && t.parent));
-  const compareOwner = $derived(compareHelper ? ws?.tabs.find((t) => t.id === compareHelper.parent) : null);
+  /// FR-101 varian B (TECH 37): the active tab is shown as a grid when it is an owner with a `grid`, or a helper listed in it
+  const gridOwner = $derived.by(() => {
+    const root = owner ?? tab;
+    return root?.grid && (root === tab || root.grid.includes(tab!.id)) ? root : null;
+  });
+  const gridTabs = $derived(gridOwner ? gridOwner.grid!.flatMap((id) => ws?.tabs.find((t) => t.id === id) ?? []) : []);
+  const gridBox = $derived(gridRects(gridTabs.length, gridOwner?.gridRows, gridOwner?.gridRatio));
+  const gridDivs = $derived(gridLines(gridTabs.length, gridOwner?.gridRows, gridOwner?.gridRatio));
+  /// popover "Jejerin": `ids` = helpers ticked so far; the owner is always in
+  let jejerin = $state<{ owner: string; ids: string[] } | null>(null);
+  const setGrid = (o: Tab, ids: string[] | undefined) => { o.grid = ids; if (!ids) { o.gridRows = undefined; o.gridRatio = undefined; } };
+  const helpersOf = (o: Tab) => ws?.tabs.filter((t) => t.parent === o.id) ?? [];
+  const openJejerin = () => {
+    const o = owner ?? tab;
+    if (!o || o.parent || !helpersOf(o).length) return;
+    jejerin = { owner: o.id, ids: (o.grid ?? []).filter((id) => id !== o.id) };
+  };
+  const toggleJejerin = () => (jejerin ? (jejerin = null) : openJejerin());
+  const applyJejerin = () => {
+    const o = ws?.tabs.find((t) => t.id === jejerin?.owner);
+    if (o && jejerin && jejerin.ids.length) { setGrid(o, cleanGrid({ ...o, grid: [o.id, ...jejerin.ids] }, ws!.tabs)); at = { ws: at.ws, tab: ws!.tabs.indexOf(o) }; }
+    jejerin = null;
+  };
+  /// leave the grid: back to one screen on the tab that has focus
+  const singleScreen = () => {
+    if (!gridOwner || !ws) return;
+    const back = tab ?? gridOwner;
+    setGrid(gridOwner, undefined);
+    at = { ws: at.ws, tab: ws.tabs.indexOf(back) };
+  };
+  const leaveGrid = (o: Tab, id: string) => {
+    if (id === o.id) return;
+    setGrid(o, cleanGrid({ ...o, grid: o.grid!.filter((x) => x !== id) }, ws!.tabs));
+    if (tab?.id === id) at = { ws: at.ws, tab: ws!.tabs.indexOf(o) };
+  };
+  const helperDot = (t: Tab): HelperDot => {
+    const s = meta[t.focus]?.status;
+    return s === "blocked" ? "blocked" : s === "working" ? "working" : s === "done" && !helperQuiet(t) ? "done" : "idle";
+  };
+  const hasGridOf = (t: Tab) => !t.parent && !!t.grid;
   const TIP_KEY = "gembala.hint.helper";
   let latestHelper = $state<{ id: string; parent: string } | null>(null);
   let helperTip = $state((() => { try { return localStorage.getItem(TIP_KEY) !== "done"; } catch { return true; } })());
@@ -234,7 +272,6 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   const openTab = (wi: number, t: Tab) => {
     at = { ws: wi, tab: wss[wi].tabs.indexOf(t) };
     if (latestHelper?.id === t.id) latestHelper = null;
-    if (compareId) compareId = t.parent ? t.id : "";
     zoomed = false;
   };
   const goOwner = () => { if (owner && ws) openTab(at.ws, owner); };
@@ -245,7 +282,6 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const i = kids.findIndex((t) => t.id === tab?.id);
     openTab(at.ws, kids[i < 0 ? (step > 0 ? 0 : kids.length - 1) : (i + step + kids.length) % kids.length]);
   };
-  const toggleCompare = () => { if (compareId) { const t = compareHelper; if (t && ws) at = { ws: at.ws, tab: ws.tabs.indexOf(t) }; compareId = ""; } else if (tab?.parent) compareId = tab.id; };
   const helperQuiet = (t: Tab) => ["done", "idle"].includes(meta[t.focus]?.status ?? "") && (!quietAt[t.focus] || now - quietAt[t.focus] >= 60_000);
   const helperStatus = (p: number) => {
     const s = meta[p]?.status;
@@ -256,7 +292,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (s === "idle" && quietAt[p]) return tt("helper.idleFor", { time: ago(now - quietAt[p]) });
     return s === "done" ? tt("status.done") : paneStatusText(p) || tt("status.idle");
   };
-  const helperRows = (w: Ws) => subtabRows(w.tabs, helperQuiet, (t) => meta[t.focus]?.status === "blocked", tab?.id);
+  const helperBlocked = (t: Tab) => meta[t.focus]?.status === "blocked";
+  const helperUnseen = (t: Tab) => meta[t.focus]?.status === "done" && !helperQuiet(t);
+  const helperRows = (w: Ws) => subtabRows(w.tabs, helperQuiet, helperBlocked, tab?.id, helperUnseen);
   // FR-101 (4): only tabs on screen hold an xterm; every other tab is detached (the daemon keeps its panes and history),
   // so opening a tab re-attaches it from the daemon snapshot — scroll position and selection start fresh (TECH 24).
   // Phase 2: message drawer, manual send, message engine data from the daemon
@@ -334,7 +372,6 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       const id = await createPane({ workspace: o.workspace, profile: o.profile, account: o.account || undefined, cwd: o.cwd || undefined, model: o.model, effort: o.effort });
       quietAt[id] = Date.now();
       const child: Tab = { id: uid(), title: "", tree: { pane: id }, focus: id, parent: t.id };
-      t.helpersOpen = true;
       w!.tabs.splice(w!.tabs.indexOf(t) + 1 + w!.tabs.filter((x) => x.parent === t.id).length, 0, child);
       const r = await call("open.approve", { id: o.id, pane: id }).catch((e) => ({ error: String(e) }));
       // refused (already answered, gone): the pane would sit there unowned, so it goes again
@@ -941,7 +978,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   let error = $state("");
   let box = $state<HTMLDivElement>();
 
-  const lines = $derived(tab && !zoomed ? dividers(tab.tree) : []);
+  const lines = $derived(tab && !zoomed && !gridOwner ? dividers(tab.tree) : []);
   const uid = () => Math.random().toString(36).slice(2, 10);
   const base = (p: string | null | undefined) => (p ? p.split("/").filter(Boolean).at(-1) ?? "/" : "");
   const home = (p: string | null | undefined) => (p ?? "").replace(/^\/Users\/[^/]+/, "~");
@@ -1272,8 +1309,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         if (t.focus === pane || !panes(rest).includes(t.focus)) t.focus = next ?? panes(rest)[0];
       } else {
         w.tabs.splice(ti, 1);
+        const boss = w.tabs.find((x) => x.id === t.parent);
+        if (boss?.grid) boss.grid = cleanGrid({ ...boss, grid: boss.grid.filter((x) => x !== t.id) }, w.tabs);
         for (const child of w.tabs.filter((x) => x.parent === t.id)) child.parent = undefined;
-        if (compareId === t.id) compareId = "";
         if (at.ws === wi && at.tab >= ti) at.tab = Math.max(0, at.tab - 1);
       }
       if (at.ws === wi) zoomed = false;
@@ -1473,7 +1511,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (id === "tab.helper.owner") return void goOwner();
     if (id === "tab.helper.next") return void nextHelper(1);
     if (id === "tab.helper.prev") return void nextHelper(-1);
-    if (id === "tab.helper.compare") return void toggleCompare();
+    if (id === "tab.helper.compare") return void toggleJejerin();
     if (id === "pane.attention.next") {
       if (!queue.length) return;
       const i = queue.findIndex((q) => q.p === tab?.focus);
@@ -1922,6 +1960,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       if (e.key === "Escape") (compose = null), stop(e);
       return;
     }
+    if (jejerin && e.key === "Escape") return void ((jejerin = null), stop(e));
     if (drawer && e.key === "Escape") {
       drawer = false;
       return stop(e);
@@ -2021,6 +2060,92 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     zoomed = false;
   }
 
+  /// FR-101 varian B: one pointer drag for the helper rows and the strip chips: a ghost follows the cursor, `hit` says what
+  /// the cursor is over (zone to highlight + what dropping does), Esc cancels, a real drag eats the click that follows.
+  function pointerDrag(e: PointerEvent, label: string, hit: (m: PointerEvent) => { zone?: NonNullable<typeof paneDrag>["zone"]; drop?: () => void } | null, end?: () => void) {
+    if (e.button !== 0) return;
+    const [x0, y0] = [e.clientX, e.clientY];
+    let ghost: HTMLElement | null = null;
+    let moved = false;
+    let esc = false;
+    let drop: (() => void) | undefined;
+    const move = (m: PointerEvent) => {
+      if (esc || (!moved && Math.hypot(m.clientX - x0, m.clientY - y0) < 5)) return;
+      moved = true;
+      if (!ghost) {
+        ghost = document.createElement("div");
+        ghost.className = "dragghost panedrag";
+        ghost.textContent = label;
+        document.body.append(ghost);
+      }
+      Object.assign(ghost.style, { left: `${m.clientX + 12}px`, top: `${m.clientY + 12}px` });
+      const r = hit(m);
+      drop = r?.drop;
+      paneDrag = { zone: r?.zone ?? null };
+    };
+    const key = (k: KeyboardEvent) => {
+      if (k.key !== "Escape" || !moved) return;
+      k.preventDefault();
+      k.stopPropagation();
+      esc = true;
+      drop = undefined;
+      ghost?.remove();
+      paneDrag = null;
+      end?.();
+    };
+    const up = () => {
+      for (const [ev, fn] of [["pointermove", move], ["pointerup", up], ["pointercancel", up], ["keydown", key]] as const) window.removeEventListener(ev, fn as EventListener, true);
+      ghost?.remove();
+      paneDrag = null;
+      end?.();
+      if (!moved) return;
+      const eat = (c: MouseEvent) => c.stopPropagation();
+      window.addEventListener("click", eat, true);
+      setTimeout(() => window.removeEventListener("click", eat, true), 0);
+      drop?.();
+    };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("keydown", key, true);
+  }
+  const inBox = (m: PointerEvent, g: DOMRect) => m.clientX >= g.left && m.clientX <= g.right && m.clientY >= g.top && m.clientY <= g.bottom;
+  /// drag a helper row from the sidebar into the grid: the slot under the cursor lights up; full (4/4) = red zone, no drop
+  function startHelperDrag(e: PointerEvent, w: Ws, wi: number, t: Tab) {
+    const o = w.tabs.find((x) => x.id === t.parent);
+    if (!o || (e.target as HTMLElement).closest(".x")) return;
+    pointerDrag(e, meta[t.focus]?.name || title(t), (m) => {
+      const g = box?.getBoundingClientRect();
+      const cur = cleanGrid(o, w.tabs) ?? [o.id];
+      if (!g || !inBox(m, g) || cur.includes(t.id)) return null;
+      if (cur.length >= GRID_MAX) return { zone: { left: g.left, top: g.top, width: g.width, height: g.height, label: tt("grid.max"), bad: true } };
+      const [fx, fy] = [(m.clientX - g.left) / g.width, (m.clientY - g.top) / g.height];
+      const next = gridRects(cur.length + 1, o.gridRows, o.gridRatio);
+      const j = Math.max(0, next.findIndex((r) => fx >= r.x && fx < r.x + r.w && fy >= r.y && fy < r.y + r.h));
+      const r = next[j];
+      return {
+        zone: { left: g.left + r.x * g.width, top: g.top + r.y * g.height, width: r.w * g.width, height: r.h * g.height, label: tt("drag.intoGrid") },
+        drop: () => {
+          const ids = gridInsert(o, w.tabs, t.id, j);
+          if (!ids) return;
+          setGrid(o, ids);
+          at = { ws: wi, tab: w.tabs.indexOf(o) };
+        },
+      };
+    });
+  }
+  /// drag a chip in the grid strip to another chip's place
+  function startChipDrag(e: PointerEvent, o: Tab, from: number) {
+    if ((e.target as HTMLElement).closest(".gx")) return;
+    e.preventDefault(); // no text selection while dragging
+    const name = meta[gridTabs[from]?.focus]?.name || "pane";
+    pointerDrag(e, name, (m) => {
+      const j = +(document.elementFromPoint(m.clientX, m.clientY)?.closest<HTMLElement>("[data-chip]")?.dataset.chip ?? -1);
+      chipDrag = { from, over: j };
+      return j >= 0 && j !== from ? { drop: () => (o.grid = gridMove(o.grid!, from, j, false)) } : null;
+    }, () => (chipDrag = null));
+  }
+
   /// FR-37: drag a pane head (like Warp). Over another pane: left/right/top/bottom zone = split on that side, middle =
   /// swap places; over another tab in the sidebar = move to that tab. Esc = cancel. Same pointer pattern as `startDrag`.
   function startPaneDrag(e: PointerEvent, from: Tab, pane: number) {
@@ -2050,6 +2175,16 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           const r = row.getBoundingClientRect();
           zone = { left: r.left, top: r.top, width: r.width, height: r.height, label: tt("drag.toTab") };
           drop = () => movePaneToTab(from, pane, to);
+        }
+      } else if (g && gridOwner?.grid?.includes(from.id)) {
+        // FR-101 varian B: inside a grid only "swap places" is offered (no side splits)
+        const [fx, fy] = [(m.clientX - g.left) / g.width, (m.clientY - g.top) / g.height];
+        const [i, j] = [gridOwner.grid.indexOf(from.id), gridBox.findIndex((r) => fx >= r.x && fx < r.x + r.w && fy >= r.y && fy < r.y + r.h)];
+        if (j >= 0 && j !== i) {
+          const r = gridBox[j];
+          zone = { left: g.left + r.x * g.width, top: g.top + r.y * g.height, width: r.w * g.width, height: r.h * g.height, label: tt("drag.swap") };
+          const o = gridOwner;
+          drop = () => (o.grid = gridMove(o.grid!, i, j, true));
         }
       } else if (g) {
         // target pane = the box in this tab holding the cursor (grid fractions)
@@ -2161,6 +2296,22 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     }
   }
 
+  /// FR-101 varian B: grid dividers move `gridRatio` (same feel as FR-37 `setRatio`); double click = 0.5
+  function dragGrid(l: GridLine, e: PointerEvent) {
+    const o = gridOwner;
+    if (!o || !box) return;
+    const b = box.getBoundingClientRect();
+    const set = (v: number) => (o.gridRatio = { ...gridRatio(o.gridRatio), [l.axis]: gridRatio({ x: v, y: v })[l.axis] });
+    const move = (m: PointerEvent) => set(l.axis === "x" ? (m.clientX - b.left) / b.width : (m.clientY - b.top) / b.height);
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    e.preventDefault();
+  }
+
   function drag(d: Divider, e: PointerEvent) {
     if (!box) return;
     const b = box.getBoundingClientRect();
@@ -2204,11 +2355,14 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             focus: panes(t.tree).includes(t.focus) ? t.focus : panes(t.tree)[0],
             color: COLORS.some((c) => c === t.color) ? t.color : undefined,
             parent: typeof t.parent === "string" ? t.parent : undefined,
-            helpersOpen: t.helpersOpen === true,
-            doneOpen: t.doneOpen === true,
+            helpersOpen: typeof t.helpersOpen === "boolean" ? t.helpersOpen : undefined,
+            grid: Array.isArray(t.grid) ? t.grid.filter((x: unknown) => typeof x === "string") : undefined,
+            gridRows: t.gridRows === true ? true : undefined,
+            gridRatio: t.gridRatio ? gridRatio(t.gridRatio) : undefined,
           })),
       }));
     for (const w of out) for (const t of w.tabs) if (t.parent && !w.tabs.some((x) => x.id === t.parent && !x.parent)) t.parent = undefined;
+    for (const w of out) for (const t of w.tabs) t.grid = t.parent ? undefined : cleanGrid(t, w.tabs);
     for (const w of out) if (w.color === undefined) w.color = nextColor(out);
     return out;
   }
@@ -2470,7 +2624,6 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       for (const [ti, t] of w.tabs.entries())
         if (panes(t.tree).includes(p)) {
           at = { ws: wi, tab: ti };
-          if (compareId) compareId = t.parent ? t.id : "";
           t.focus = p;
           zoomed = false;
         }
@@ -2921,10 +3074,23 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {@const ti = w.tabs.indexOf(t)}
         {#if row.kind === "summary"}
           {@const children = w.tabs.filter((x) => x.parent === t.id)}
-          {@const waiting = children.filter((x) => meta[x.focus]?.status === "blocked").length}
-          <button class="helper-summary" aria-expanded={!!t.helpersOpen || waiting > 0} onclick={() => (t.helpersOpen = !t.helpersOpen)}>
-            <span>{t.helpersOpen || waiting ? "▾" : "▸"}</span>
-            {tt("helper.count", { n: children.length })}{waiting ? `, ${tt("helper.waiting", { n: waiting })}` : ""}
+          {@const waiting = children.filter(helperBlocked).length}
+          {@const shown = helpersShown(t, children, helperBlocked, helperUnseen, tab?.id)}
+          {@const dots = helperDots(children, helperDot)}
+          <button class="helper-summary" aria-expanded={shown} onclick={() => (t.helpersOpen = !shown)}>
+            <span class="chev">{shown ? "▾" : "▸"}</span>
+            {#if simple}
+              {waiting ? tt("helper.countSimple", { n: children.length, m: waiting }) : tt("helper.count", { n: children.length })}
+            {:else}
+              {tt("helper.count", { n: children.length })}
+              <span class="hdots">
+                {#each dots.shown as d (d.tab.id)}
+                  {@const ag = paneAgent(d.tab.focus)}
+                  <span class="hico" class:ingrid={t.grid?.includes(d.tab.id)} title="{meta[d.tab.focus]?.name || title(d.tab)} · {helperStatus(d.tab.focus)}"><span class="aico {ag}">{GLYPH[ag] ?? "›"}</span><i class="dot {d.dot}"></i></span>
+                {/each}
+                {#if dots.more}<span class="hmore">+{dots.more}</span>{/if}
+              </span>
+            {/if}
           </button>
           {#if latestHelper?.parent === t.id && !confirm && !picker && !askMode && !linkAsk}
             <div class="helper-tip" role="status">
@@ -2932,8 +3098,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <span class="helper-tip-actions"><button class="mini" onclick={() => { const child = w.tabs.find((x) => x.id === latestHelper?.id); if (child) openTab(wi, child); }}>{tt("helper.view")}</button>{#if helperTip}<button class="mini" onclick={dismissHelperTip}>{tt("helper.gotIt")}</button>{/if}</span>
             </div>
           {/if}
-        {:else if row.kind === "fold"}
-          <button class="helper-fold" aria-expanded={!!t.doneOpen} onclick={() => (t.doneOpen = !t.doneOpen)}>{t.doneOpen ? "▾" : "▸"} {tt(simple ? "helper.doneSimple" : "helper.done", { n: row.count ?? 0 })}</button>
+        {:else if row.kind === "rest"}
+          {@const rest = row.rest ?? []}
+          {@const nDone = rest.filter((x) => meta[x.focus]?.status === "done").length}
+          {@const nIdle = rest.length - nDone}
+          <span class="helper-rest" title={rest.map((x) => meta[x.focus]?.name || title(x)).join(", ")}>{nIdle && nDone ? tt("helper.rest", { idle: nIdle, done: nDone }) : nDone ? tt("helper.restDone", { n: nDone }) : tt("helper.restIdle", { n: nIdle })}</span>
         {:else}
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
@@ -2943,7 +3112,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         <button class="tab {t.color ?? ''}" class:helper={!!row.child} class:on={at.ws === wi && at.tab === ti} class:blocked={st === "blocked"} class:approve={st === "approve"} data-wi={wi} data-ti={ti}
           class:lift={(dragging?.kind === "tab" && dragging.wi === wi && dragging.ti === ti) || (dragging?.kind === "ws" && dragging.wi === wi)}
           data-k={t.id} title={row.child ? tt("helper.shortcut", { next: combo("tab.helper.next"), prev: combo("tab.helper.prev") }) : undefined}
-          onpointerdown={(e) => !row.child && startDrag(e, "tab", wi, ti)} oncontextmenu={(e) => tabMenu(e, wi, t)}
+          onpointerdown={(e) => (row.child ? startHelperDrag(e, w, wi, t) : startDrag(e, "tab", wi, ti))} oncontextmenu={(e) => tabMenu(e, wi, t)}
           onclick={() => openTab(wi, t)}
           ondblclick={() => (editing = { kind: "tab", id: t.id, value: t.title || title(t) })}>
           {#if editing?.kind === "tab" && editing.id === t.id}
@@ -2952,7 +3121,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           {:else}
             {@const ag = panes(t.tree).map(agentOf).find(Boolean) ?? ""}
             {#if sp}<span class="tt">{title(t)}</span>{:else}
-            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && !simple && meta[t.focus]?.name ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>{/if}
+            <span class="tt">{#if row.child || ag || stText(st)}<span class="dot {st || 'idle'}" aria-hidden="true"></span>{/if}{#if ag}<span class="aico {ag}" title={ag}>{GLYPH[ag]}</span>{/if}{#if hasGridOf(t)}<span class="gico" title={tt("grid.tabTip")}>▦</span>{/if}<span class="cname">{row.child && simple ? `${tt("helper.simple", { name: title(w.tabs.find((x) => x.id === t.parent) ?? t) })} · ` : ag && !simple && meta[t.focus]?.name && meta[t.focus].name !== title(t) ? `${meta[t.focus].name} · ` : ""}{title(t)}</span>{#if row.child}<span class="cst st {st}">{helperStatus(t.focus)}</span>{#if st === "blocked" || st === "approve"}<span class="hopen">{tt("helper.openShort")}</span>{/if}{/if}</span>{/if}
             <span class="n"><span class="k">{!row.child && n >= 0 && n < 9 ? combo(`tab.goto.${n + 1}`) : ""}</span><span class="x" role="button" tabindex="-1" aria-label={tt("side.closeTab", { name: title(t) })}
                 onclick={(e) => (e.stopPropagation(), closeTabs(wi, [t]))} onkeydown={(e) => e.key === "Enter" && closeTabs(wi, [t])}>×</span></span>
             {@const g = meta[t.focus]?.git}
@@ -2960,10 +3129,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             <!-- agents already show as an icon; other processes (npm, vim) are still named -->
             {@const idle = meta[t.focus]?.agent === "shell" && !meta[t.focus]?.busy ? meta[t.focus]?.shell : ""}
             {@const rest = [g?.repo ? (simple ? tt("helper.branch", { name: g.branch }) : g.branch) : "", where(meta[t.focus]?.cwd, w.root), ...agents.filter((a) => !AGENTS.includes(a!)), acctOf(t.focus), idle].filter((x) => x && x !== title(t)).join(" · ")}
-            {#if !sp && (row.child || ag || stText(st) || rest)}
+            {#if !sp && !row.child && (ag || stText(st) || rest)}
               <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {helperStatus(p)}"></span>{/each}{/if}{#if row.child || ag || stText(st)}<span class="st {st}">{helperStatus(t.focus)}</span>{/if}{st === "blocked" || st === "approve" ? ` · ${tt("helper.open")}` : ""}{#if rest}{row.child || ag || stText(st) || panes(t.tree).length > 1 ? " · " : ""}{rest}{/if}</span>
             {/if}
-            {#if !sp && previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
+            {#if !sp && !row.child && previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
           {/if}
         </button>
         {#if sp}
@@ -3044,20 +3213,70 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 
 {#if paneDrag?.zone}
   {@const z = paneDrag.zone}
-  <div class="dropzone" style:left="{z.left}px" style:top="{z.top}px" style:width="{z.width}px" style:height="{z.height}px"><span>{z.label}</span></div>
+  <div class="dropzone" class:bad={z.bad} style:left="{z.left}px" style:top="{z.top}px" style:width="{z.width}px" style:height="{z.height}px"><span>{z.label}</span></div>
 {/if}
-{#if (owner || compareHelper) && ws}
-  {@const parent = compareOwner ?? owner}
-  {@const helper = compareHelper ?? tab}
-  {#if parent && helper}
-    <div class="helper-head" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right="{rightPad}px">
-      <button class="mini" onclick={() => openTab(at.ws, parent)}>← {title(parent)}</button>
-      <span>› {simple ? tt("helper.simple", { name: title(parent) }) : title(helper)}</span>
-      <button class="mini" onclick={toggleCompare}>{compareId ? tt("helper.unsplit") : simple ? tt("helper.compareSimple", { name: title(parent) }) : tt("helper.compare")}</button>
+{#if gridOwner && ws}
+  {@const go = gridOwner}
+  <!-- FR-101 varian B: strip over the grid, one chip per pane (drag = reorder, ✕ = out of the grid) -->
+  <div class="helper-head gstrip" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right="{rightPad}px">
+    {#each gridTabs as t, i (t.id)}
+      {@const ag = paneAgent(t.focus)}
+      <div class="gchip" class:on={tab?.id === t.id} class:blocked={helperBlocked(t)} class:dropl={chipDrag && chipDrag.over === i && chipDrag.from > i} class:dropr={chipDrag && chipDrag.over === i && chipDrag.from < i}
+        data-chip={i} role="button" tabindex="0" title={helperBlocked(t) ? tt("grid.waiting") : undefined}
+        onpointerdown={(e) => startChipDrag(e, go, i)} onclick={() => openTab(at.ws, t)} onkeydown={(e) => e.key === "Enter" && openTab(at.ws, t)}>
+        {#if ag}<span class="aico {ag}">{GLYPH[ag] ?? "›"}</span>{/if}
+        <span class="gname">{meta[t.focus]?.name || title(t)}</span>
+        {#if t.id === go.id}<span class="gtag">{simple ? tt("grid.ownerSimple") : tt("grid.owner")}</span>
+        {:else}<button class="gx" aria-label={tt("grid.remove", { name: meta[t.focus]?.name || title(t) })} title={tt("grid.remove", { name: meta[t.focus]?.name || title(t) })} onclick={(e) => (e.stopPropagation(), leaveGrid(go, t.id))}>×</button>{/if}
+      </div>
+    {/each}
+    <button class="mini" onclick={openJejerin}>{tt("grid.addHelper")}</button>
+    <span class="grow"></span>
+    {#if simple}<span class="gcount">{tt("grid.count", { n: gridTabs.length })} ·</span>{/if}
+    {#if gridTabs.length < GRID_MAX}
+      <button class="mini" title={go.gridRows ? tt("grid.cols") : tt("grid.rows")} aria-label={go.gridRows ? tt("grid.cols") : tt("grid.rows")} onclick={() => (go.gridRows = go.gridRows ? undefined : true)}>{go.gridRows ? "◫" : "⊟"}</button>
+    {/if}
+    <button class="mini" onclick={singleScreen}>{simple ? tt("grid.singleSimple") : tt("grid.single")}</button>
+  </div>
+{:else if owner && ws}
+  <div class="helper-head" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? "0" : "28px"} style:right="{rightPad}px">
+    <button class="mini" onclick={() => openTab(at.ws, owner)}>← {title(owner)}</button>
+    <span>› {simple ? tt("helper.simple", { name: title(owner) }) : tab ? title(tab) : ""}</span>
+    <button class="mini" onclick={openJejerin}>▦ {tt("helper.jejerin")}</button>
+  </div>
+{/if}
+{#if jejerin && ws}
+  {@const jo = ws.tabs.find((t) => t.id === jejerin!.owner)}
+  {#if jo}
+    {@const kids = helpersOf(jo)}
+    {@const n = jejerin.ids.length + 1}
+    <div class="jback" onpointerdown={() => (jejerin = null)} role="presentation"></div>
+    <div class="jejerin" style:left={sidebar ? `${sideW + 56}px` : "56px"} style:top={sidebar ? "36px" : "64px"} role="dialog" aria-label={tt("helper.jejerin")}>
+      <b>{tt("helper.jejerinTitle")}</b>
+      {#each kids as k (k.id)}
+        {@const on = jejerin.ids.includes(k.id)}
+        {@const ag = paneAgent(k.focus)}
+        {@const full = !on && n >= GRID_MAX}
+        <label class="jrow" class:off={full} title={full ? tt("grid.max") : undefined}>
+          <input type="checkbox" checked={on} disabled={full} onchange={() => jejerin && (jejerin.ids = on ? jejerin.ids.filter((x) => x !== k.id) : [...jejerin.ids, k.id])} />
+          {#if ag}<span class="aico {ag}">{GLYPH[ag] ?? "›"}</span>{/if}
+          <span class="jname">{meta[k.focus]?.name || title(k)}</span>
+          <span class="st {stat(k.focus)}">{helperStatus(k.focus)}</span>
+        </label>
+      {/each}
+      <div class="jprev" aria-hidden="true">
+        {#each gridRects(n, jo.gridRows, jo.gridRatio) as r, i (i)}
+          <i style:left={pct(r.x)} style:top={pct(r.y)} style:width={pct(r.w)} style:height={pct(r.h)}>{i === 0 ? (simple ? tt("grid.ownerSimple") : tt("grid.owner")) : i}</i>
+        {/each}
+      </div>
+      <div class="jacts">
+        <button class="mini" onclick={() => (jejerin = null)}>{tt("common.cancel")} <span class="keys">Esc</span></button>
+        <button class="mini pri" disabled={!jejerin.ids.length} onclick={applyJejerin}>{tt("helper.jejerinN", { n })}</button>
+      </div>
     </div>
   {/if}
 {/if}
-<div class="grid" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? (owner || compareHelper ? "32px" : "0") : (owner || compareHelper ? "60px" : "28px")} style:right="{rightPad}px" bind:this={box}>
+<div class="grid" style:left={sidebar ? `${sideW + 44}px` : "44px"} style:top={sidebar ? (owner || gridOwner ? "32px" : "0") : (owner || gridOwner ? "60px" : "28px")} style:right="{rightPad}px" bind:this={box}>
   {#if ws && !tab}
     <div class="empty">
       <span>{tt("main.wsEmpty", { name: ws.name })}</span>
@@ -3067,11 +3286,13 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   {#if error}<p class="error">{error}</p>{/if}
   {#each wss as w, wi (w.id)}
     {#each w.tabs as t, ti (t.id)}
-      {@const compared = !!compareId && at.ws === wi && (t.id === compareId || t.id === compareOwner?.id)}
-      {@const active = (at.ws === wi && at.tab === ti) || compared}
+      {@const gi = at.ws === wi && gridOwner ? gridOwner.grid!.indexOf(t.id) : -1}
+      {@const compared = gi >= 0}
+      {@const here = at.ws === wi && at.tab === ti}
+      {@const active = here || compared}
       {#each [...rects(t.tree)] as [pane, r] (pane)}
-        {@const hidden = !active || (compared && pane !== t.focus) || (zoomed && pane !== t.focus)}
-        {@const rr = compared ? { x: t.id === compareOwner?.id ? 0 : 0.5, y: 0, w: 0.5, h: 1 } : zoomed ? { x: 0, y: 0, w: 1, h: 1 } : r}
+        {@const hidden = !active || (compared && pane !== t.focus) || (zoomed && (pane !== t.focus || !here))}
+        {@const rr = zoomed ? { x: 0, y: 0, w: 1, h: 1 } : compared ? gridBox[gi] : r}
         <!-- FR-55: toolbar for agent panes from a profile, and agents typed by hand while running -->
         {@const bar = !dead[pane] && ([...AGENTS, "custom"].includes(meta[pane]?.agent ?? "") || AGENTS.includes(meta[pane]?.busy ?? ""))}
         {@const split = panes(t.tree).length > 1}
@@ -3080,6 +3301,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         <div
           class="tile"
           class:dim={active && pane !== t.focus && panes(t.tree).length > 1}
+          class:gfocus={compared && here && pane === t.focus}
+          class:gwait={compared && helperBlocked(t) && pane === t.focus}
           style:display={hidden ? "none" : "block"}
           style:left={pct(rr.x)}
           style:top={pct(rr.y)}
@@ -3107,7 +3330,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 {#if addonsOf(pane).length}<span class="hadd" title="Add-on: {addonsOf(pane).join(', ')}">{ttn("pane.addons", addonsOf(pane).length)}</span>{/if}
                 <!-- the folder once is enough: the agent toolbar already shows it -->
                 {#if !(bar && [...toolbar.left, ...toolbar.right].includes("cwd"))}<span class="hcwd" title={home(meta[pane]?.cwd)}>{short(meta[pane]?.cwd)}</span>{/if}
+                {#if compared && t.id === gridOwner?.id}<span class="gtag">{simple ? tt("grid.ownerSimple") : tt("grid.owner")}</span>{/if}
+                {#if compared && helperBlocked(t) && pane === t.focus}<span class="gwaitl">{tt("grid.waiting")}</span>{/if}
                 <span class="grow"></span>
+                {#if !compared && !t.parent && pane === t.focus && helpersOf(t).length}<button class="hb jbtn" title="{tt("helper.jejerin")} {combo("tab.helper.compare")}" onclick={openJejerin}>▦ {tt("helper.jejerin")}</button>{/if}
                 <!-- FR-99 P2: the second door to the message box; the count = cards waiting in this pane -->
                 {#if cardsFor(pane).length}
                   <button class="hb msgbox" title={tt("msg.title")} onclick={() => ((drawer = !drawer), drawer && refreshMsgs())}>
@@ -3121,7 +3347,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 <button class="hb" title="{tt("menu.closePane")} {combo("pane.proc.close")}" aria-label={tt("menu.closePane")} onclick={() => askClose(pane)}>×</button>
               </div>
             {/if}
-            {@const ed = editorShown(pane)}
+            {@const ed = editorShown(pane) && (!compared || (here && pane === t.focus))}
             <div class="body" class:withbar={bar} class:withhead={head} class:withedit={ed} class:withpbar={barShown(pane)} oncontextmenu={(e) => paneMenu(e, pane)} role="presentation">
               <!-- FR-99 P2: the agent's own question, read from its screen; the buttons are the bot's buttons. The original
                    dialog stays visible in the terminal below. A pane whose bar is off keeps its own dialog as before. -->
@@ -3549,6 +3775,20 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       title={tt("main.dividerTip")}
       role="separator"
       aria-orientation={d.dir === "row" ? "vertical" : "horizontal"}
+    ></div>
+  {/each}
+  {#each gridOwner && !zoomed ? gridDivs : [] as l (l.axis)}
+    <div
+      class="divider {l.axis === 'x' ? 'row' : 'col'}"
+      style:left={pct(l.x)}
+      style:top={pct(l.y)}
+      style:width={l.axis === "x" ? "0" : pct(l.len)}
+      style:height={l.axis === "x" ? pct(l.len) : "0"}
+      onpointerdown={(e) => dragGrid(l, e)}
+      ondblclick={() => gridOwner && (gridOwner.gridRatio = { ...gridRatio(gridOwner.gridRatio), [l.axis]: 0.5 })}
+      title={tt("main.dividerTip")}
+      role="separator"
+      aria-orientation={l.axis === "x" ? "vertical" : "horizontal"}
     ></div>
   {/each}
   {#if upgrade}
@@ -4295,6 +4535,221 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     border-bottom: 1px solid var(--line);
     background: var(--bg);
     font: 12px system-ui, -apple-system, sans-serif;
+  }
+  .gstrip {
+    gap: 6px;
+  }
+  .gchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 180px;
+    padding: 2px 8px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .gchip.on {
+    border-color: #3b82f6;
+    box-shadow: inset 0 -2px 0 #3b82f6;
+  }
+  .gchip.blocked {
+    border-color: var(--tx-amber, #d97706);
+    color: var(--tx-amber, #d97706);
+  }
+  .gchip {
+    position: relative;
+    user-select: none;
+  }
+  .gchip.dropl::before,
+  .gchip.dropr::before {
+    content: "";
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 3px;
+    border-radius: 2px;
+    background: #3b82f6;
+  }
+  .gchip.dropl::before {
+    left: -5px;
+  }
+  .gchip.dropr::before {
+    right: -5px;
+  }
+  .gname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .gtag {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .gwaitl {
+    font-size: 11px;
+    color: var(--tx-amber, #d97706);
+    font-weight: 600;
+  }
+  .gcount {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .gx {
+    border: 0;
+    padding: 0 2px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+  }
+  .gx:hover {
+    color: var(--fg);
+  }
+  .tile.gfocus {
+    outline: 2px solid #3b82f6;
+    outline-offset: -2px;
+  }
+  .tile.gwait::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 2px;
+    background: #d97706;
+    z-index: 3;
+    pointer-events: none;
+  }
+  .jbtn {
+    width: auto;
+    padding: 0 8px;
+  }
+  .gico {
+    margin-right: 4px;
+    color: var(--muted);
+  }
+  .jback {
+    position: fixed;
+    inset: 0;
+    z-index: 29;
+  }
+  .jejerin {
+    position: fixed;
+    z-index: 30;
+    display: grid;
+    gap: 6px;
+    width: 280px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--side);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+    font: 13px system-ui, -apple-system, sans-serif;
+  }
+  .jrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .jrow.off {
+    opacity: 0.45;
+  }
+  .jname {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .jprev {
+    position: relative;
+    height: 80px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  .jprev i {
+    position: absolute;
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    border: 1px solid #3b82f6;
+    font: 11px system-ui, sans-serif;
+    font-style: normal;
+    color: var(--muted);
+    background: color-mix(in srgb, #3b82f6 12%, transparent);
+  }
+  .jacts {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .dropzone.bad {
+    border-color: #dc2626;
+    background: color-mix(in srgb, #dc2626 22%, transparent);
+  }
+  .dropzone.bad span {
+    background: #dc2626;
+  }
+  .hdots {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 6px;
+  }
+  .hico {
+    position: relative;
+    display: inline-block;
+    padding: 1px 2px;
+    border-radius: 4px;
+  }
+  .hico.ingrid {
+    box-shadow: 0 0 0 1px #3b82f6;
+  }
+  .hico .aico {
+    margin: 0;
+  }
+  .hico .dot {
+    position: absolute;
+    right: -2px;
+    bottom: -1px;
+    width: 6px;
+    height: 6px;
+    margin: 0;
+  }
+  .hmore,
+  .helper-rest {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .helper-rest {
+    padding: 2px 8px 4px 34px;
+  }
+  .cst {
+    margin-left: 8px;
+    font-size: 11px;
+  }
+  .tab.helper .tt {
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+  }
+  .tab.helper .cname,
+  .tab.helper .cst {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tab.helper .cst {
+    flex: 0 10 auto; /* the status gives way first, the name stays readable */
+  }
+  .tab.helper .hopen {
+    flex: none;
+  }
+  .hopen {
+    margin-left: 6px;
+    padding: 0 6px;
+    border: 1px solid var(--tx-amber, #d97706);
+    border-radius: 8px;
+    font-size: 10px;
+    color: var(--tx-amber, #d97706);
   }
   .helper-head > span {
     flex: 1;
@@ -5141,7 +5596,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     visibility: hidden;
   }
   /* FR-99 P2: waiting cards are an action, not a tool: this one stays visible (with its count) */
-  .head .hb.msgbox {
+  .head .hb.msgbox,
+  .head .hb.jbtn {
     visibility: visible;
   }
   .tile:hover .head .hb,
