@@ -82,6 +82,7 @@
           {#if r.agent === "shell"}
             <label class="sw"><input type="checkbox" checked={r.readable} onchange={(e) => act("pane.readable", { pane: r.pane, on: e.currentTarget.checked })} /> {t("msg.readable")}</label>
           {:else}
+            <small>{t("msg.policyLbl")}</small>
             <select aria-label={t("msg.policyAria", { name: r.name })} value={r.policy} onchange={(e) => act("pane.policy", { pane: r.pane, policy: e.currentTarget.value })}>
               <option value="auto">{t("policy.auto")}</option>
               <option value="confirm">{t("policy.confirm")}</option>
@@ -101,7 +102,7 @@
         {#each data.pending as m (m.id)}
           <div class="msg">
             <!-- FR-99 P2: the same sentence as the pane card, and no message id on screen -->
-            <span>{simple ? tOr("card.msgSimple", "", { from: person(m.from) }) : tOr("card.msgFull", "", { from: m.from, to: m.to })}</span>
+            <span>{simple ? tOr("card.msgSimple", "", { from: person(m.from), to: person(m.to) }) : tOr("card.msgFull", "", { from: m.from, to: m.to })}</span>
             <blockquote>{m.body}</blockquote>
             <span class="acts">
               <button class="mini" onclick={() => act("msg.reject", { id: m.id })}>{t("msg.reject")}</button>

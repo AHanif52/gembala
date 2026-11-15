@@ -686,7 +686,7 @@
             <span>{t("rep.setting")}<small>{t("rep.settingSub")}</small></span>
             <button class="mini" onclick={onreport}>{t("rep.title")}…</button>
           </div>
-          <div class="row"><span>{t("set.general.daemon")}<small>{t("set.general.daemonSub")}</small></span><span class="m">{t("set.general.daemonState")}</span></div>
+          {#if ui.mode !== "simple"}<div class="row"><span>{t("set.general.daemon")}<small>{t("set.general.daemonSub")}</small></span><span class="m">{t("set.general.daemonState")}</span></div>{/if}
           <!-- FR-86: helpers an agent opened (FR-75) close after sitting quiet this long past their first reply -->
           <div class="row">
             <span>{t("set.general.helperIdle")}<small>{t("set.general.helperIdleSub")}</small></span>
@@ -1101,7 +1101,7 @@
         </section>
         <p class="note">
           {#if isMac}{t("set.keys.note1")} <code>cmd</code>{:else}{t("set.keys.note1_linux", { mod: modLabel() })}{/if}. {t("set.keys.note2")}
-          <code>[keys]</code> {t("set.keys.note3")} <code>"{isMac ? "cmd+t" : "ctrl+shift+t"}" = "pane.split.right"</code>{t("set.keys.note4")}
+          {#if ui.mode !== "simple"}<code>[keys]</code> {t("set.keys.note3")} <code>"{isMac ? "cmd+t" : "ctrl+shift+t"}" = "pane.split.right"</code>{t("set.keys.note4")}{/if}
         </p>
       {:else if sec === "toolbar"}
         <!-- FR-55: drag chips to reorder or switch sides; × removes; available chips can be added back -->
@@ -1456,7 +1456,7 @@
         </section>
       {:else if sec === "versi"}
         <section>
-          <div class="row"><span>{t("set.diag.versions")}</span><span class="m">{version} · {daemon?.daemon ?? "?"} · {daemon?.proto ?? "?"}</span></div>
+          <div class="row"><span>{t("set.diag.versions")}</span><span class="m">{version} · {daemon?.daemon ?? t("set.diag.unknown")} · {daemon?.proto ?? t("set.diag.unknown")}</span></div>
           <div class="row"><span>{t("set.upd.via")}</span><span class="m">{upd?.brew ? "Homebrew" : t("set.upd.source")}</span></div>
           <div class="row">
             <span>{t("set.diag.release")}<small>{updLine}</small></span>

@@ -1864,6 +1864,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     popup(e, [
       [tt("menu.rename"), () => (editing = { kind: "tab", id: t.id, value: title(t) }), true, undefined, { icon: "rename" }],
       [tt("menu.color"), colorMenu(t.color, (c) => (t.color = c)), true, undefined, { icon: "color", title: tt("menu.tabColor"), hint: tt("menu.tabColorHint") }],
+      [tt("chip.send"), () => (compose = { to: targets[0]?.pane ?? null, body: "", force: false, error: "" }), true, undefined, { icon: "send" }],
       [tt("menu.closeTab"), () => closeTabs(wi, [t]), true, undefined, { icon: "close", key: closeKey ? pretty(closeKey) : "" }],
       [tt("menu.closeOthers"), () => closeTabs(wi, wss[wi].tabs.filter((x) => x !== t)), wss[wi].tabs.length > 1],
       [tt("menu.closeBelow"), () => closeTabs(wi, wss[wi].tabs.slice(ti + 1)), ti < wss[wi].tabs.length - 1],
@@ -3162,11 +3163,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   {#if meta[pane]?.kind && (c === "attach" || c === "rich_input")}
     <!-- PLAN-CC-PANE: both type into a PTY; a structured pane has its own input -->
   {:else if c === "attach"}
-    <button class="chip box c-attach" title={tt("chip.attachTip")} aria-label={tt("chip.attach")} onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}</button>
+    <button class="chip box c-attach" title={tt("chip.attachTip")} aria-label={tt("chip.attach")} onclick={async () => attach(pane, await invoke<string[]>("pick_files"), true)}>{@render icon("plus")}{#if simple}<span class="cl">{tt("chip.attach")}</span>{/if}</button>
   {:else if c === "diff" && g?.repo && g.files}
     <button class="chip box c-diff" title={tt("chip.diffTip", { key: combo("pane.diff.toggle") })} onclick={() => openChanges(pane)}>{@render icon("file")}{tt("chip.changes", { n: g.files })} <span class="plus">+{g.add}</span> <span class="minus">−{g.del}</span></button>
   {:else if c === "rich_input"}
-    <button class="chip box c-rich" onclick={() => openRich(pane)}>{@render icon("rich")}Rich Input <span class="n">{combo("pane.input.rich")}</span></button>
+    <button class="chip box c-rich" onclick={() => openRich(pane)}>{@render icon("rich")}{tt("chip.rich")} <span class="n">{combo("pane.input.rich")}</span></button>
   {:else if c === "cwd"}
     <span class="chip box quiet c-cwd" title={meta[pane]?.cwd ?? ""}>{@render icon("folder")}{short(meta[pane]?.cwd) || "~"}</span>
   {:else if c === "branch" && g?.repo && g.branch}
@@ -3661,7 +3662,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   {#if meta[pane]?.git?.repo && meta[pane].git.branch}
                     <span class="cchip">⎇ {meta[pane].git.branch}{meta[pane].git.files ? ` · ${ttn("chg.files", meta[pane].git.files)}` : ""}</span>
                   {/if}
-                  <span class="ehint" class:off={!active || pane !== t.focus}>{tt("ed.hint")}</span>
+                  <span class="ehint" class:off={!active || pane !== t.focus}>{simple ? tt("ed.hintS") : tt("ed.hint")}</span>
                 </div>
                 {#if dirs?.pane === pane}
                   <div class="mention complist acct dirs" role="listbox" aria-label={tt("ed.pickFolder")}>
@@ -3803,8 +3804,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             {#if rich?.pane === pane}
               <!-- pen 04: titled card; attachments as chips, sent as quoted paths after the text -->
               {@const agName = cfg?.values.profiles.find((p) => p.agent === agentOf(pane))?.name}
-              <div class="rich" role="dialog" aria-label="Rich Input" tabindex="-1" onkeydown={(e) => e.key === "Escape" && (e.preventDefault(), (rich = null))}>
-                <div class="rhead"><b>Rich Input</b><span class="rto">{tt("rich.to", { name: meta[pane]?.name ?? "" })}{agName ? ` · ${agName}` : ""}</span><span class="n">{combo("pane.input.rich")}</span></div>
+              <div class="rich" role="dialog" aria-label={tt("chip.rich")} tabindex="-1" onkeydown={(e) => e.key === "Escape" && (e.preventDefault(), (rich = null))}>
+                <div class="rhead"><b>{tt("chip.rich")}</b><span class="rto">{tt("rich.to", { name: meta[pane]?.name ?? "" })}{agName ? ` · ${agName}` : ""}</span><span class="n">{combo("pane.input.rich")}</span></div>
                 <!-- svelte-ignore a11y_autofocus -->
                 <textarea
                   bind:value={rich.text}
@@ -3830,7 +3831,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                 {#if rich.error}<span class="rerr">{errText(rich.error, rich.args)}</span>{/if}
                 <div class="rfoot">
                   <button class="mini" onclick={async () => addRichFiles(await invoke<string[]>("pick_files").catch(() => []))}>{tt("rich.attach")}</button>
-                  <span class="rhint">{tt("rich.ctxHint")}</span>
+                  {#if !simple}<span class="rhint">{tt("rich.ctxHint")}</span>{/if}
                   <span class="rhint">{tt("rich.hint")}</span>
                   <button class="mini pri" onclick={sendRich}>{tt("common.send")} <span class="keys">Enter</span></button>
                 </div>
