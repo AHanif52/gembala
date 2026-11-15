@@ -2092,6 +2092,7 @@ fn end_text(reason: &str) -> String {
         "target_gone" | "pane_closed" => "pane-nya ditutup".into(),
         "agent_exited" | "target_unknown" | "target_shell" => "agent-nya sudah keluar".into(),
         "cancelled" => "dibatalin user sebelum sampai".into(),
+        "limit" => "kena limit pemakaian, belum bisa jawab".into(),
         r => format!("ditolak ({r})"),
     }
 }
@@ -2654,6 +2655,11 @@ fn set_limit(st: &State, id: u64, pane: &Pane) {
     let json = limit_json(&l);
     *pane.limit.lock().unwrap() = Some(l);
     limit_event(st, id, json);
+    // FR-96: a request an owner is waiting on from this pane ends as "limit" instead of leaving the owner waiting for the hold
+    let flushes = st.engine.lock().unwrap().fail_where(|m| (m.to == id).then_some("limit"));
+    for f in flushes {
+        deliver_flush(st, f);
+    }
 }
 
 fn clear_limit(st: &State, id: u64, pane: &Pane) {
@@ -4002,6 +4008,16 @@ pub fn default_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_limit_ends_the_owners_request_in_words() {
+        let mut e = bus::Engine::default();
+        let m = bus::Msg { id: "a".into(), from: 1, from_name: "owner-1".into(), to: 2, to_name: "h-1".into(), body: "task".into(), reply_to: None, hop: 0, is_reply: false, at: std::time::SystemTime::now(), tag: Default::default() };
+        e.track(&m);
+        let out = e.fail_where(|x| (x.to == 2).then_some("limit"));
+        assert_eq!(out.len(), 1);
+        assert!(end_text("limit").contains("limit"));
+    }
 
     #[test]
     fn limit_hold_ends_at_the_reset_and_never_after_five_hours() {
