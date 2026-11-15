@@ -1815,7 +1815,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "chg.discardFile": "Buang perubahan file ini…",
   "chg.discardTitle": "Buang perubahan di file ini?",
   "chg.discardSub": "balik ke isi terakhir yang disimpan. Perubahannya hilang dan nggak bisa dibalikin.",
-  "chg.lost": "{add} baris baru dan {del} baris hilang ikut dibuang.",
+  "chg.lost": "{add} baris tambahan bakal ilang, {del} baris yang dihapus balik lagi.",
   "chg.discardBtn": "Buang perubahan",
   "chg.saveTitle.one": "Simpan versi {n} file",
   "chg.saveTitle.other": "Simpan versi {n} file",
