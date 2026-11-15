@@ -5,8 +5,8 @@
 
   let { recipe, names = {} }: { recipe: BRecipe; names?: Record<string, string> } = $props();
 
-  // "✳ Claude Code" -> the sentence reads better without the glyph
-  const name = (a: string) => (names[a] ?? a).replace(/^[^\p{L}\p{N}]+/u, "");
+  // "✳ Claude Code" / "π Oh My Pi" -> the sentence reads better without the one-character glyph
+  const name = (a: string) => (names[a] ?? a).replace(/^\S\s+(?=\S)/u, "");
   const tr = (k: string, p?: Record<string, string | number>) => t(k as never, p);
   const rows = $derived(describeRecipe(recipe, name, tr));
   const limits = $derived(describeLimits(recipe, tr));

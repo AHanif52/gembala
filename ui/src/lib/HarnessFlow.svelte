@@ -98,7 +98,7 @@
     {#if stuck != null && snap.halt !== "daemon_restart"}
       <div class="stuck" role="status">
         <b>{t("hn.stuckTitle", { name: stepName(stuck) })}</b>
-        <span>{snap.halt ? tOr(`hn.halt.${snap.halt}`, snap.halt) : ""}. {t("hn.stuckSub")}</span>
+        <span>{snap.halt ? `${tOr(`hn.halt.${snap.halt}`, snap.halt).replace(/^./u, (c) => c.toUpperCase())}. ` : ""}{t("hn.stuckSub")}</span>
       </div>
       <h4>{t("hn.stuckDo")}</h4>
       <section class="todo">

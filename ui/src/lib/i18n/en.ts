@@ -1697,7 +1697,7 @@ export default {
   "hn.sum.saver": "Token saver on",
   "hn.sum.kind.work": "work",
   "hn.sum.kind.check": "check",
-  "hn.sum.kind.gate": "gate",
+  "hn.sum.kind.gate": "approval",
   "hn.sum.aria": "Recipe stages in short",
   "hn.sumTitle": "Review recipe · {name}",
   "hn.sumSub": "Check the order first. If it fits, save and the recipe is ready to use.",
