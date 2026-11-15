@@ -6,8 +6,10 @@ export type HStep = {
 };
 export type Snap = {
   run: string; recipe: string; name: string; workspace: string; cwd: string; started_at: number; saver: boolean;
-  state: "idle" | "running" | "gate" | "taken_over" | "done" | "halted";
+  state: "idle" | "running" | "gate" | "waiting_reset" | "taken_over" | "done" | "halted";
   gate: number | null; current: number | null; halt: string | null; halt_step: number | null;
+  /// FR-25: while `waiting_reset`, the agent's own reset time (unix seconds) when it named one
+  reset_at?: number | null; reset_known?: boolean;
   round: number; max_rounds: number; steps: HStep[]; trace: { at: number; code: string; step: number | null; agent: string | null }[];
   /// every pane the run opened, fallbacks' replaced ones too (FR-86)
   panes?: number[];

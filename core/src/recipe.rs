@@ -259,7 +259,7 @@ fn build(text: &str, id: &str, installed: Option<&[String]>, cx: &mut Ctx) -> Op
     let after_max = cx.one_of(after, &["stop", "escalate"], "stop", "after_max");
     let on_limit = cx.string(root, "on_limit", "on_limit");
     let on_limit = cx.one_of(on_limit, &["fallback", "wait"], "fallback", "on_limit");
-    // decision 5 Nov 2026: limit detection is off in 3a until its hook patterns are proven on real agents
+    // FR-25: `limit` in `fallback_on` and `on_limit = "wait"` are live (harness `WaitingReset`)
     let fallback_on = match cx.strings(root, "fallback_on", "fallback_on") {
         Some(v) => {
             if let Some(bad) = v.iter().find(|s| !FALLBACK_ON.contains(&s.as_str())) {
@@ -269,9 +269,6 @@ fn build(text: &str, id: &str, installed: Option<&[String]>, cx: &mut Ctx) -> Op
         }
         None => cx.d.fallback_on.clone(),
     };
-    if fallback_on.iter().any(|s| s == "limit") || on_limit == "wait" {
-        cx.warn("limit_inactive", "fallback_on");
-    }
     let token_saver = cx.boolean(root, "token_saver", "token_saver").unwrap_or(cx.d.token_saver);
 
     let rounds = match root.get("max_rounds") {
@@ -1375,10 +1372,15 @@ mod tests {
     }
 
     #[test]
-    fn limit_off_in_3a() {
+    fn limit_trigger_and_wait_are_accepted() {
+        // FR-25: the limit trigger and `on_limit = "wait"` are live; neither is a warning any more
         let p = parse(&format!("fallback_on = [\"exit\", \"limit\"]\n{MIN}"), "t", None);
-        assert!(p.recipe.is_some() && p.warnings.iter().any(|w| w.code == "limit_inactive"));
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(p.recipe.unwrap().fallback_on.contains(&"limit".to_string()));
+        let p = parse(&format!("on_limit = \"wait\"\n{MIN}"), "t", None);
+        assert!(p.recipe.is_some_and(|r| r.on_limit == "wait") && p.warnings.is_empty());
         assert_eq!(ok(MIN).fallback_on, ["exit", "timeout", "unknown"]);
+        assert!(codes(&format!("on_limit = \"sometimes\"\n{MIN}")).iter().any(|c| c.starts_with("one_of@on_limit")));
         assert!(codes(&format!("fallback_on = [\"error\"]\n{MIN}")).iter().any(|c| c.starts_with("one_of@fallback_on")));
     }
 

@@ -115,6 +115,13 @@
       {#if snap.steps[snap.gate ?? 0]?.human}<p class="hint">{t("hn.shipHint")}</p>{:else}<p class="hint">{t("hn.gateNote")}</p>{/if}
     {/if}
 
+    {#if snap.state === "waiting_reset"}
+      <div class="gate" role="status">
+        <span>{snap.reset_known && snap.reset_at != null ? t("hn.waitResetAt", { time: new Date(snap.reset_at * 1000).toLocaleTimeString() }) : t("hn.waitResetUnknown")}</span>
+      </div>
+      <p class="hint">{t("hn.waitResetNote")}</p>
+    {/if}
+
     {#if stuck != null && snap.halt !== "daemon_restart"}
       <div class="stuck" role="status">
         <b>{t("hn.stuckTitle", { name: stepName(stuck) })}</b>

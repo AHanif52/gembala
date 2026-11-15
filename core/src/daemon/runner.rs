@@ -91,6 +91,8 @@ pub struct Live {
     born: Instant,
     seen: Option<Status>,
     outbox: Option<Outbox>,
+    /// FR-25: the current pane's limit signal was already fed to the engine (once per pane / resend)
+    limit_seen: bool,
     /// when the waiting message reached the stage pane (`None` while it is still in `outbox`)
     sent: Option<Instant>,
     /// message id per stage, for the `reply` pass condition
@@ -266,6 +268,7 @@ pub fn trail(recipe: &recipe::Recipe, state: &Hs, trace: &[harness::Entry], agen
         Hs::Idle => "belum mulai".to_string(),
         Hs::Running => "sedang jalan".to_string(),
         Hs::Gate(i) => format!("menunggu gerbang \"{}\"", recipe.steps.get(*i).map_or("", |s| s.name.as_str())),
+        Hs::WaitingReset { until, .. } => format!("nunggu limit reset (sampai {})", stamp(*until)),
         Hs::TakenOver => "diambil alih pengguna".to_string(),
         Hs::Done => "selesai".to_string(),
         Hs::Halted(h) => {
@@ -420,6 +423,7 @@ fn state_code(s: &Hs) -> &'static str {
         Hs::Idle => "idle",
         Hs::Running => "running",
         Hs::Gate(_) => "gate",
+        Hs::WaitingReset { .. } => "waiting_reset",
         Hs::TakenOver => "taken_over",
         Hs::Done => "done",
         Hs::Halted(_) => "halted",
@@ -450,10 +454,16 @@ fn snapshot(st: &State, l: &Live) -> Value {
     let criteria: Vec<Value> = harness::criteria(&request, |n| artifact_text(l, n).is_some(), test_failed).iter()
         .map(|c| json!({"text": c.text, "proof": c.proof, "status": c.status})).collect();
     let trace: Vec<Value> = l.run.trace.iter().map(|e| json!({"at": e.at, "code": e.code, "step": e.step, "agent": e.agent})).collect();
+    // FR-25: "waiting for the limit to reset" shows the agent's own reset time when it named one
+    let (reset_at, reset_known) = match l.run.state {
+        Hs::WaitingReset { until, known, .. } => (Some(l.started_at + until), known),
+        _ => (None, false),
+    };
     json!({
         "run": l.id, "recipe": l.recipe_id, "name": l.run.recipe.name, "workspace": l.workspace, "cwd": l.cwd, "started_at": l.started_at,
         "saver": l.run.recipe.token_saver,
         "state": state_code(&l.run.state), "gate": if let Hs::Gate(i) = l.run.state { Some(i) } else { None }, "current": l.run.current(),
+        "reset_at": reset_at, "reset_known": reset_known,
         "halt": halt, "halt_step": halt_step, "round": l.run.round, "max_rounds": l.run.recipe.max_rounds, "steps": steps, "criteria": criteria, "trace": trace,
         "panes": l.opened,
     })
@@ -564,8 +574,21 @@ fn act(st: &Arc<State>, l: &mut Live, a: Action) -> Option<Event> {
             l.born = Instant::now();
             l.seen = None;
             l.sent = None;
+            l.limit_seen = false;
             st.harness.lock().unwrap().locked.insert(id);
             l.outbox = Some(Outbox { step, body: stage_message(l, step), retry_at: Instant::now(), first: true });
+            None
+        }
+        Action::Resend { step, .. } => {
+            // FR-25: the same pane and agent get the stage message again after the reset; no new pane, no new model flags
+            let Some(id) = l.panes.get(&step).copied().filter(|p| st.panes.lock().unwrap().contains_key(p)) else { return Some(Event::Exit(1)); };
+            l.cur = Some(id);
+            l.seen = None;
+            l.sent = None;
+            l.limit_seen = false;
+            l.born = Instant::now().checked_sub(GRACE).unwrap_or_else(Instant::now);
+            st.harness.lock().unwrap().locked.insert(id);
+            l.outbox = Some(Outbox { step, body: stage_message(l, step), retry_at: Instant::now(), first: false });
             None
         }
         Action::SendFix { step, failed, .. } => {
@@ -687,6 +710,11 @@ fn stage_status(raw: &str, agent: &str, hook_done: Option<Instant>, sent: Option
 
 /// one pass of the runner: deliver the waiting message, then report what changed in the stage's pane or shell
 fn tick(st: &Arc<State>, l: &mut Live) {
+    // FR-25: a stage held for its agent's limit reset only needs the clock; no status, no outbox
+    if matches!(l.run.state, Hs::WaitingReset { .. }) {
+        feed(st, l, Event::Tick);
+        return;
+    }
     if !matches!(l.run.state, Hs::Running) {
         return;
     }
@@ -736,6 +764,17 @@ fn tick(st: &Arc<State>, l: &mut Live) {
         match st.panes.lock().unwrap().get(&id).cloned() {
             None => events.push(Event::Exit(1)),
             Some(p) => {
+                // FR-25: a verified limit signal from the agent's own hook (FR-93); waited on or handed to the chain
+                if !l.limit_seen && limit_active(&p) {
+                    l.limit_seen = true;
+                    // the message may still be sitting in the limited pane's queue: the wait resends it after the reset,
+                    // and a fallback stages it in a new pane, so the old copy must not reach an agent later
+                    if let Some(id) = l.run.current().and_then(|s| l.msgs.get(&s).cloned()) {
+                        let _ = st.engine.lock().unwrap().cancel(&id, None);
+                    }
+                    let wait = p.limit.lock().unwrap().as_ref().and_then(|l| l.reset_at).map(|t| (t - unix_now()).max(0) as u64);
+                    events.push(Event::Limit { wait });
+                }
                 let raw = *p.status.lock().unwrap();
                 if raw.is_empty() {
                     // an agent pane starts "idle" and is only blanked when the agent process leaves (agent_done), so
@@ -794,7 +833,8 @@ fn send(st: &Arc<State>, l: &mut Live, to: u64, pane: &Pane, step: usize, body: 
             l.msgs.insert(step, id);
             Sent::Ok
         }
-        (_, Some("paused" | "rate_limited" | "needs_confirmation")) => Sent::Later,
+        // FR-93: a limited pane holds the message; FR-25 decides between the reset and the next agent
+        (_, Some("paused" | "rate_limited" | "needs_confirmation" | "target_limit")) => Sent::Later,
         _ => Sent::Failed,
     }
 }
@@ -952,6 +992,7 @@ fn start(st: &Arc<State>, p: &Value) -> Res {
         born: Instant::now(),
         seen: None,
         outbox: None,
+        limit_seen: false,
         sent: None,
         msgs: HashMap::new(),
         agents: HashMap::new(),

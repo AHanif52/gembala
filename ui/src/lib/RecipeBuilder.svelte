@@ -569,12 +569,17 @@
               <input type="checkbox" role="switch" checked={rec.token_saver} aria-label={t("rb.saver")} onchange={(e) => rec && (rec.token_saver = e.currentTarget.checked)} /></div>
             <div class="prow col"><span>{t("rb.trigger")}</span>
               <div class="chips">
-                {#each ["exit", "timeout", "unknown"] as k}
+                {#each ["exit", "timeout", "unknown", "limit"] as k}
                   <button class="chip" class:off={!rec.fallback_on.includes(k)} aria-pressed={rec.fallback_on.includes(k)} onclick={() => toggleFallback(k)}>{tOr(`rb.fb.${k}`, k)}</button>
                 {/each}
-                <span class="chip off dead" title={t("rb.limitOff")}>{t("rb.fb.limit")} · {t("rb.limitOff")}</span>
               </div>
               <small>{t("rb.triggerNote")}</small></div>
+            <div class="prow"><span class="grow">{t("rb.onLimit")}</span>
+              <select value={rec.on_limit} aria-label={t("rb.onLimit")} onchange={(e) => rec && (rec.on_limit = e.currentTarget.value)}>
+                <option value="fallback">{t("rb.onLimitFallback")}</option>
+                <option value="wait">{t("rb.onLimitWait")}</option>
+              </select></div>
+            <small>{t("rb.onLimitNote")}</small>
             <div class="hard">{t("rb.hard")}</div>
           </section>
         </div>

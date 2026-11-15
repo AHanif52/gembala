@@ -9,6 +9,8 @@ use crate::recipe::{MAX_AGENTS, MAX_ROUNDS, MAX_TOTAL_SECS, Recipe};
 
 /// BRD 8 rule 2: a pane that stays `unknown` this long triggers the fallback
 pub const UNKNOWN_SECS: u64 = 120;
+/// FR-25 `on_limit = "wait"`: without a reset time from the agent's hook, wait at most this long before the chain
+pub const LIMIT_UNKNOWN_SECS: u64 = 30 * 60;
 /// the "Perbaiki" turn is not a recipe step, so its limit lives here (BRD 8 defaults)
 pub const FIX_TIMEOUT_SECS: u64 = 20 * 60;
 
@@ -37,9 +39,8 @@ pub enum Event {
     Delivered,
     /// timer; the runner sends it about once a second
     Tick,
-    /// a hook reported a usage limit for the stage's agent (fed once the per-agent patterns are proven, TECH 12)
-    #[allow(dead_code)]
-    Limit,
+    /// a verified limit signal for the stage's agent; `wait` = seconds until the reset the signal named, `None` = unknown
+    Limit { wait: Option<u64> },
     /// the agent stopped on its own cost cap (omp `--max-cost`): never moves the cost to another agent
     #[allow(dead_code)]
     CostLimit,
@@ -77,6 +78,9 @@ pub enum State {
     Running,
     /// waiting for the user (a stage with `gate`, or Ship)
     Gate(usize),
+    /// FR-25 `on_limit = "wait"`: the stage is held until the agent's limit resets (`until` = run seconds); `known` =
+    /// the reset time came from the agent's own hook, so it can be shown and waited for
+    WaitingReset { step: usize, until: u64, known: bool },
     TakenOver,
     Done,
     Halted(Halt),
@@ -100,6 +104,8 @@ pub enum Action {
     RunShell { step: usize },
     /// check the stage's pass condition and answer with `Event::Verdict`
     Evaluate { step: usize },
+    /// FR-25: after a reset, send the stage message again to the same agent in its existing pane
+    Resend { step: usize, agent: String },
     /// release every driver lock (FR-17); panes stay open for reading
     Unlock,
     Notify(Notice),
@@ -140,6 +146,8 @@ pub struct Run {
     now: u64,
     /// start of the current active interval; None while blocked, at a gate, or taken over
     since: Option<u64>,
+    /// FR-25: start of the current limit wait; that time counts to the total, not to the stage
+    wait_since: Option<u64>,
     step_spent: u64,
     total_spent: u64,
     unknown_since: Option<u64>,
@@ -173,6 +181,7 @@ impl Run {
             held: None,
             now: 0,
             since: None,
+            wait_since: None,
             step_spent: 0,
             total_spent: 0,
             unknown_since: None,
@@ -186,6 +195,7 @@ impl Run {
     pub fn current(&self) -> Option<usize> {
         match (&self.state, &self.task) {
             (State::Gate(i), _) => Some(*i),
+            (State::WaitingReset { step, .. }, _) => Some(*step),
             (_, Some(Task::Work { step, .. } | Task::Shell { step })) => Some(*step),
             (_, Some(Task::Fix { exec, .. })) => Some(*exec),
             _ => None,
@@ -193,7 +203,7 @@ impl Run {
     }
 
     fn live(&self) -> bool {
-        matches!(self.state, State::Idle | State::Running | State::Gate(_) | State::TakenOver)
+        matches!(self.state, State::Idle | State::Running | State::Gate(_) | State::WaitingReset { .. } | State::TakenOver)
     }
 
     fn log(&mut self, code: &'static str, step: Option<usize>, agent: Option<&str>) {
@@ -248,6 +258,7 @@ impl Run {
                 }
             }
             (State::Running, ev) => self.running(ev),
+            (State::WaitingReset { .. }, ev) => self.waiting(ev),
             _ => Vec::new(),
         }
     }
@@ -259,6 +270,14 @@ impl Run {
             self.step_spent += d;
             self.total_spent += d;
             self.since = Some(self.now);
+        }
+    }
+
+    /// a limit wait adds to the total only; `bank` must not see it as stage time
+    fn wait_bank(&mut self) {
+        if let Some(s) = self.wait_since {
+            self.total_spent += self.now.saturating_sub(s);
+            self.wait_since = Some(self.now);
         }
     }
 
@@ -297,7 +316,7 @@ impl Run {
                 Vec::new()
             }
             Event::Exit(_) => self.trigger("exit"),
-            Event::Limit if self.recipe.fallback_on.iter().any(|t| t == "limit") => self.trigger("limit"),
+            Event::Limit { wait } => self.limit(wait),
             Event::CostLimit => self.halt(Halt::Cost),
             Event::Tick => self.check_clocks(&task),
             _ => Vec::new(),
@@ -377,13 +396,58 @@ impl Run {
         Vec::new()
     }
 
-    /// BRD 8 rule 2: an agent failed. Next agent of the chain, same message, or stop and call the user.
-    fn trigger(&mut self, why: &'static str) -> Vec<Action> {
+    /// FR-25 limit trigger: `fallback` moves the stage to the next agent, `wait` holds it for the agent's own reset.
+    fn limit(&mut self, wait: Option<u64>) -> Vec<Action> {
+        let Some(Task::Work { step, agent }) = self.task.clone() else { return self.trigger("limit") };
+        if self.recipe.on_limit != "wait" {
+            return if self.recipe.fallback_on.iter().any(|t| t == "limit") { self.trigger("limit") } else { Vec::new() };
+        }
+        self.log("limit", Some(step), Some(&agent));
+        let remaining = self.recipe.total_secs.saturating_sub(self.total_spent);
+        let (secs, known) = match wait {
+            // BRD 8: a reset after the time the run has left is not worth waiting for
+            Some(w) if w < remaining => (w, true),
+            Some(_) => return self.fallback_limit(),
+            None => (LIMIT_UNKNOWN_SECS.min(remaining), false),
+        };
+        // waiting counts to the total duration only (SEC-30), never to the stage timeout
+        self.bank();
+        self.since = None;
+        self.wait_since = Some(self.now);
+        self.unknown_since = None;
+        self.state = State::WaitingReset { step, until: self.now + secs, known };
+        Vec::new()
+    }
+
+    /// a held stage: the wait ticks into the total, then the same agent gets the same stage message again
+    fn waiting(&mut self, ev: Event) -> Vec<Action> {
+        let Event::Tick = ev else { return Vec::new() };
+        self.wait_bank();
+        let State::WaitingReset { step, until, known } = self.state.clone() else { return Vec::new() };
+        if self.total_spent >= self.recipe.total_secs {
+            return self.halt(Halt::Total);
+        }
+        if self.now < until {
+            return Vec::new();
+        }
+        // no reset time: after the cap the stage joins the chain instead of waiting blind
+        if !known {
+            return self.fallback_limit();
+        }
+        let Some(Task::Work { agent, .. }) = self.task.clone() else { return Vec::new() };
+        self.state = State::Running;
+        self.wait_since = None;
+        self.since = Some(self.now);
+        self.phase = Phase::Working { seen: false };
+        self.unknown_since = None;
+        self.log("retry", Some(step), Some(&agent));
+        vec![Action::Resend { step, agent }]
+    }
+
+    /// start over with the next agent of the chain
+    fn move_next(&mut self, why: &'static str) -> Vec<Action> {
         match self.task.clone() {
             Some(Task::Work { step, agent }) => {
-                if !self.recipe.fallback_on.iter().any(|t| t == why) {
-                    return self.halt(Halt::Failed { step, why });
-                }
                 self.log(why, Some(step), Some(&agent));
                 self.failed.entry(step).or_default().push(agent);
                 self.start_step(step)
@@ -391,6 +455,27 @@ impl Run {
             Some(Task::Fix { .. }) => self.halt(Halt::FixFailed),
             _ => Vec::new(),
         }
+    }
+
+    /// `on_limit = "wait"` whose wait is not usable: the chain is next even when `limit` is not in `fallback_on`, because
+    /// the recipe asked for the reset instead of a stop
+    fn fallback_limit(&mut self) -> Vec<Action> {
+        if self.recipe.fallback_on.iter().any(|t| t == "limit") {
+            return self.trigger("limit");
+        }
+        self.move_next("limit")
+    }
+
+    /// BRD 8 rule 2: an agent failed. Next agent of the chain, same message, or stop and call the user.
+    fn trigger(&mut self, why: &'static str) -> Vec<Action> {
+        if !self.recipe.fallback_on.iter().any(|t| t == why) {
+            return match self.task.clone() {
+                Some(Task::Work { step, .. }) => self.halt(Halt::Failed { step, why }),
+                Some(Task::Fix { .. }) => self.halt(Halt::FixFailed),
+                _ => Vec::new(),
+            };
+        }
+        self.move_next(why)
     }
 
     fn verdict(&mut self, task: Task, pass: bool) -> Vec<Action> {
@@ -516,6 +601,7 @@ impl Run {
         self.state = State::Halted(h);
         self.task = None;
         self.since = None;
+        self.wait_since = None;
         vec![Action::Unlock, Action::Notify(Notice::Halted)]
     }
 }
@@ -764,10 +850,65 @@ human = true
     fn limit_is_a_trigger_only_when_listed() {
         let mut r = feature("");
         at_execute(&mut r);
-        assert_eq!(r.decide(101, Event::Limit), vec![]);
+        assert_eq!(r.decide(101, Event::Limit { wait: None }), vec![]);
         let mut r = feature("fallback_on = [\"exit\", \"limit\"]");
         at_execute(&mut r);
-        assert_eq!(r.decide(101, Event::Limit), vec![send(1, "codex")]);
+        assert_eq!(r.decide(101, Event::Limit { wait: None }), vec![send(1, "codex")]);
+    }
+
+    /// FR-25 `on_limit = "wait"`: the stage is held for the agent's own reset, then the same pane gets the same message
+    #[test]
+    fn limit_wait_holds_the_stage_then_resends_to_the_same_agent() {
+        let mut r = feature("on_limit = \"wait\"\nfallback_on = [\"exit\", \"limit\"]");
+        at_execute(&mut r); // Execute started at t=100, 60s stage timeout
+        assert_eq!(r.decide(110, Event::Limit { wait: Some(300) }), vec![]);
+        assert_eq!(r.state, State::WaitingReset { step: 1, until: 410, known: true });
+        // the wait is not stage time: the 60s stage timeout would have tripped at 160 without it
+        assert_eq!(r.recipe.steps[1].timeout_secs, 60);
+        assert_eq!(r.decide(409, Event::Tick), vec![]);
+        assert_eq!(r.state, State::WaitingReset { step: 1, until: 410, known: true });
+        assert_eq!(r.decide(410, Event::Tick), vec![Resend { step: 1, agent: "claude".into() }]);
+        assert_eq!(r.state, State::Running);
+        assert!(r.trace.iter().any(|e| e.code == "limit") && r.trace.iter().any(|e| e.code == "retry"));
+        assert_eq!(turn(&mut r, 411), vec![Evaluate { step: 1 }]);
+    }
+
+    /// no reset time from the agent's hook: wait at most 30 minutes, then the chain takes over
+    #[test]
+    fn limit_wait_without_a_reset_time_falls_back_after_thirty_minutes() {
+        let mut r = feature("on_limit = \"wait\"\nfallback_on = [\"exit\", \"limit\"]");
+        at_execute(&mut r);
+        assert_eq!(r.decide(110, Event::Limit { wait: None }), vec![]);
+        assert_eq!(r.state, State::WaitingReset { step: 1, until: 110 + LIMIT_UNKNOWN_SECS, known: false });
+        assert_eq!(r.decide(110 + LIMIT_UNKNOWN_SECS - 1, Event::Tick), vec![]);
+        assert_eq!(r.decide(110 + LIMIT_UNKNOWN_SECS, Event::Tick), vec![send(1, "codex")]);
+    }
+
+    /// a reset that lands after the run's remaining time is not waited for at all
+    #[test]
+    fn limit_reset_after_the_remaining_time_goes_to_the_chain() {
+        let mut r = feature("on_limit = \"wait\"\nfallback_on = [\"exit\", \"limit\"]");
+        at_execute(&mut r);
+        assert_eq!(r.decide(110, Event::Limit { wait: Some(7200) }), vec![send(1, "codex")]);
+    }
+
+    /// the wait counts to the total duration (SEC-30): the 2h cap stops it like any other stage
+    #[test]
+    fn a_limit_wait_that_runs_into_the_total_duration_halts() {
+        let mut r = feature("on_limit = \"wait\"\nfallback_on = [\"exit\", \"limit\"]\ntotal = \"1m\"");
+        at_execute(&mut r);
+        assert_eq!(r.decide(105, Event::Limit { wait: Some(50) }), vec![]);
+        assert_eq!(r.decide(160, Event::Tick), vec![Unlock, Notify(Notice::Halted)]);
+        assert_eq!(r.state, State::Halted(Halt::Total));
+    }
+
+    #[test]
+    fn stop_ends_a_limit_wait_too() {
+        let mut r = feature("on_limit = \"wait\"\nfallback_on = [\"exit\", \"limit\"]");
+        at_execute(&mut r);
+        r.decide(110, Event::Limit { wait: Some(300) });
+        assert_eq!(r.decide(200, Event::Stop), vec![Unlock, Notify(Notice::Halted)]);
+        assert_eq!(r.state, State::Halted(Halt::Stopped));
     }
 
     #[test]
