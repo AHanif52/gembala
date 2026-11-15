@@ -127,9 +127,9 @@
   </header>
   {#if turns.length}
     <div class="turns">
-      <span class="m">{t("chg.turns", { name: pname })}</span>
+      <span class="m">{t(simple ? "chg.turnsS" : "chg.turns", { name: simple ? (tabName || pname) : pname })}</span>
       <button class="trow" class:on={turn == null} onclick={() => onturn(null)}>
-        <i class="tdot"></i><span>{t("chg.sinceCommit")}</span><span class="m"></span>
+        <i class="tdot"></i><span>{t(simple ? "chg.sinceCommitS" : "chg.sinceCommit")}</span><span class="m"></span>
         <span class="m">{tn("chg.files", status?.files ?? 0)} · <span class="add">+{status?.add ?? 0}</span> <span class="del">−{status?.del ?? 0}</span></span>
       </button>
       {#each turns as tr (tr.i)}

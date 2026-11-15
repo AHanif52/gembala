@@ -1783,4 +1783,6 @@ export default {
   "chg.saveAll": "Save version · {n} files",
   "chg.commitAllN": "Commit {n} files",
   "chip.changes": "Changes · {n} files",
+  "chg.turnsS": "What {name} changed, per request · kept outside the project for 7 days",
+  "chg.sinceCommitS": "Everything not saved yet",
 } as const;

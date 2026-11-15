@@ -1766,5 +1766,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "chg.saveAll": "Simpan versi · {n} file",
   "chg.commitAllN": "Commit {n} file",
   "chip.changes": "Perubahan · {n} file",
+  "chg.turnsS": "Yang diubah {name}, tiap permintaan lu · disimpan di luar proyek 7 hari",
+  "chg.sinceCommitS": "Semua yang belum disimpan",
 };
 export default id;
