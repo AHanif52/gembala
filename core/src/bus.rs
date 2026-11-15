@@ -66,6 +66,8 @@ pub struct Engine {
     seq: u64,
     /// messages received so far, for hops and reply owners (capped at the last 1000)
     known: VecDeque<Msg>,
+    /// ids written to the recipient's pane (same cap): only these can be replied to (TECH 18 lead 7)
+    delivered: VecDeque<String>,
     pub replies: HashMap<String, Msg>,
     pub waiting: HashSet<String>,
     pub undelivered_replies: HashMap<String, Msg>,
@@ -106,6 +108,17 @@ impl Engine {
         self.known.iter().rev().find(|m| {
             m.to == to && m.reply_to.is_none() && !self.replies.contains_key(&m.id) && !held(&m.id) && m.at.elapsed().is_ok_and(|a| a < max_age)
         })
+    }
+
+    pub fn mark_delivered(&mut self, id: &str) {
+        self.delivered.push_back(id.to_string());
+        while self.delivered.len() > 1000 {
+            self.delivered.pop_front();
+        }
+    }
+
+    pub fn is_delivered(&self, id: &str) -> bool {
+        self.delivered.iter().any(|d| d == id)
     }
 
     pub fn remember(&mut self, m: &Msg) {
@@ -250,6 +263,15 @@ mod tests {
         assert!(e.waiting_for(2, day).is_none(), "menunggu persetujuan manusia");
         e.remember(&Msg { at: SystemTime::now() - Duration::from_secs(3600), ..msg("lama", 0) });
         assert!(e.waiting_for(2, Duration::from_secs(1800)).is_none(), "terlalu lama");
+    }
+
+    #[test]
+    fn hanya_pesan_terkirim_bisa_dibalas() {
+        let mut e = Engine::default();
+        e.remember(&msg("tertolak", 0));
+        assert!(!e.is_delivered("tertolak"));
+        e.mark_delivered("tertolak");
+        assert!(e.is_delivered("tertolak"));
     }
 
     #[test]

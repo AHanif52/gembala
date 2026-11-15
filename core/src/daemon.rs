@@ -2207,6 +2207,7 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
     let Ok(terminal) = to.terminal() else { record(st, "rejected", m, Some("unsupported_kind")); return false };
     let bytes = if m.is_reply { msg::wrap_reply(&m.from_name, m.reply_to.as_deref().unwrap_or_default(), &m.body) } else { msg::wrap(&m.from_name, &m.id, &m.body) };
     if (&terminal.master).write_all(&bytes).is_ok() {
+        st.engine.lock().unwrap().mark_delivered(&m.id);
         if m.is_reply {
             let mut eng = st.engine.lock().unwrap();
             if let Some(reply_to) = &m.reply_to { eng.replies.remove(reply_to); }
@@ -2482,7 +2483,8 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
         "reply" => {
             // FR-106: only the recipient can reply; an active waiter takes priority over typing into the sender pane.
             let orig = st.engine.lock().unwrap().find(p["msg_id"].as_str().ok_or("bad_params")?).cloned().ok_or("no_such_msg")?;
-            if orig.to != me {
+            // a rejected message or one still on the user's card was never shown to `me`: no reply (TECH 18 lead 7)
+            if orig.to != me || !st.engine.lock().unwrap().is_delivered(&orig.id) {
                 return Err("not_allowed");
             }
             let body = msg::sanitize(p["body"].as_str().ok_or("bad_params")?)?;

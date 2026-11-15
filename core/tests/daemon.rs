@@ -1457,8 +1457,10 @@ fn wait_reply_while_working() {
     };
     let wait = |id: &str| wait_for(id, 300);
     // working: well past the 300 ms limit the wait is still on, and the reply reaches it
-    status(&mut cb, "working");
+    // (the task was delivered while idle: only a delivered message can be answered)
     let id = send(&mut ca);
+    std::thread::sleep(Duration::from_millis(600));
+    status(&mut cb, "working");
     let h = wait(&id);
     std::thread::sleep(Duration::from_millis(1200));
     assert!(!h.is_finished());
@@ -2345,6 +2347,41 @@ fn langganan_status_per_workspace() {
     let mut ui2 = Cli::ui(&d);
     let all = ui2.attach_until(w, &["tidak-ada"]);
     assert!(!all.contains("sana-1"), "workspace lain tidak boleh terlihat: {all}");
+}
+
+/// TECH 18 lead 7: a message still waiting for the user's card was never shown to its recipient, so a guessed id can't be answered.
+#[test]
+fn balasan_ke_pesan_menunggu_kartu_ditolak() {
+    let d = start("balaskartu");
+    let mut ui = Cli::ui(&d);
+    let g = env!("CARGO_BIN_EXE_gembala");
+    let script = |name: &str| format!("stty -echo; '{g}' token > '{}/{}.token'; cat", d.dir.display(), name);
+    let toml = sh_profile("kirim", &script("a")) + &sh_profile("terima", &script("b")) + "policy = \"confirm\"\n";
+    profiles(&d, &mut ui, &toml, "b.token");
+    ui.call("pane.create", json!({"profile":"kirim", "workspace":"w"}));
+    ui.call("pane.create", json!({"profile":"terima", "workspace":"w"}));
+    let client = |name: &str| {
+        let path = d.dir.join(format!("{name}.token"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let token = loop {
+            if let Ok(t) = std::fs::read_to_string(&path) && !t.trim().is_empty() { break t; }
+            assert!(Instant::now() < deadline, "token missing");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let mut c = Cli::connect(&d, "pane.sock");
+        assert_eq!(c.call("hello", json!({"proto":1,"client":"cli","token":token.trim()}))["result"]["proto"], 1);
+        c
+    };
+    let (mut a, mut b) = (client("a"), client("b"));
+    for c in [&mut a, &mut b] {
+        assert!(c.call("hook", json!({"agent":"omp","status":"idle"})).get("result").is_some());
+    }
+    std::thread::sleep(Duration::from_millis(600));
+    let r = a.call("send", json!({"to":"terima-1","body":"task","queue":true}));
+    assert_eq!(r["result"]["reason"], "needs_confirmation", "{r}");
+    let id = r["result"]["id"].as_str().unwrap();
+    let r = b.call("reply", json!({"msg_id":id,"body":"jawaban"}));
+    assert_eq!(r["error"]["code"], "not_allowed", "{r}");
 }
 
 /// SEC-12/17: `wait --pattern` sees the redacted screen like `read`, and a zero timeout still costs about a second.
