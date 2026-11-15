@@ -396,6 +396,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "msg.kind.discarded": "dibuang",
   "msg.reason.maybe_delivered": "mungkin udah sampai, nggak dikirim ulang",
   "msg.reason.sender_gone": "pengirimnya belum balik, buka dulu panenya",
+  "msg.reports": "Draf laporan dari agent",
   "msg.reject": "Tolak",
   "msg.approve": "Setujui",
   "msg.queue": "Antrean",

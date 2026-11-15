@@ -402,6 +402,7 @@ export default {
   "msg.kind.discarded": "discarded",
   "msg.reason.maybe_delivered": "may have arrived, not sent again",
   "msg.reason.sender_gone": "the sender isn't back yet, open its pane first",
+  "msg.reports": "Report drafts from agents",
   "msg.reject": "Reject",
   "msg.approve": "Approve",
   "msg.queue": "Queue",

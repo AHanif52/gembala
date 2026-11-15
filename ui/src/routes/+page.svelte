@@ -3974,7 +3974,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       onsent={() => ((reportDraft = null), d.id && call("report.discard", { id: d.id }).then(refreshMsgs))} />
   {/if}
   {#if drawer}
-    <Messages data={msgData} {rows} models={modelsForOpen} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} who={openWho}
+    <Messages data={msgData} {rows} models={modelsForOpen} efforts={openEfforts} agentOf={agentForOpen} onchange={refreshMsgs} onclose={() => (drawer = false)} onopen={approveOpen} onreport={(r: any) => (reportDraft = { title: r.title, body: r.body, from: r.from, id: r.id })} who={openWho}
       person={whoOf} {simple} width={drawerW} right={changes ? panelW : 0} />
   {/if}
   {#if compose}

@@ -12,6 +12,7 @@
     onchange,
     onclose,
     onopen,
+    onreport,
     who,
     models,
     efforts,
@@ -26,6 +27,7 @@
     onchange: () => void;
     onclose: () => void;
     onopen: (o: any) => void;
+    onreport: (r: any) => void;
     who: (o: any) => string;
     models: (o: any) => { id: string; label: string }[];
     efforts: string[];
@@ -121,6 +123,22 @@
             <span class="acts">
               <button class="mini" onclick={() => act("msg.discard", { id: m.id })}>{t("msg.discard")}</button>
               {#if !m.maybe}<button class="mini pri" onclick={() => act("msg.resend", { id: m.id })}>{t("msg.resend")}</button>{/if}
+            </span>
+          </div>
+        {/each}
+      </section>
+    {/if}
+
+    <!-- FR-100: an agent's report draft is answerable here too, same card as in its pane -->
+    {#if data?.reports?.length}
+      <h4>{t("msg.reports")}</h4>
+      <section>
+        {#each data.reports as r (r.id)}
+          <div class="msg">
+            <span>{t("rep.card", { from: r.from })} <b>{r.title}</b></span>
+            <span class="acts">
+              <button class="mini" onclick={() => act("report.discard", { id: r.id })}>{t("rep.discard")}</button>
+              <button class="mini pri" onclick={() => onreport(r)}>{t("rep.review")}</button>
             </span>
           </div>
         {/each}
