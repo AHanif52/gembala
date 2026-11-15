@@ -1768,5 +1768,9 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "chip.changes": "Perubahan · {n} file",
   "chg.turnsS": "Yang diubah {name}, tiap permintaan lu · disimpan di luar proyek 7 hari",
   "chg.sinceCommitS": "Semua yang belum disimpan",
+  "tile.did": "Yang dikerjain:",
+  "tile.resumeFold": "Perintah buat lanjut manual",
+  "tile.files.one": "{n} file diubah",
+  "tile.files.other": "{n} file diubah",
 };
 export default id;

@@ -10,7 +10,7 @@
   import { Unicode11Addon } from "@xterm/addon-unicode11";
   import "@xterm/xterm/css/xterm.css";
   import { call, b64, unb64 } from "./daemon";
-  import { errText, i18n, t } from "./i18n/state.svelte";
+  import { errText, i18n, t, tn } from "./i18n/state.svelte";
   import { safeResume } from "./resume";
   import { encodeKey, onCsi } from "./kitty";
   import { mod } from "./keys.svelte";
@@ -205,6 +205,7 @@
   // session block heads and "Previous session" lines are drawn in the UI language too
   $effect(() => {
     void i18n.lang;
+    void ui.mode; // the simple mode folds the resume command of a session card
     if (ready) decorateSummary();
   });
   function onMark(data: string) {
@@ -275,12 +276,15 @@
   /// FR-56/62: agent session summary blocks and "Sesi sebelumnya" history are written by the daemon as text (no markers,
   /// also in the attach snapshot): block head = dim line `<folder> (<duration>)`, so its line is attached from the buffer content
   let summary: { dispose(): void }[] = [];
+  /// session cards whose manual-resume command was opened (simple mode folds it); survives the redraw of the blocks
+  const unfolded = new Set<string>();
   function decorateSummary() {
     summary.splice(0).forEach((d) => d.dispose());
     const buf = term.buffer.active;
     if (buf.type === "alternate") return;
     // timeline (mockup-blok-sesi E): "   [icon ]<folder> · <duration>[ · keluar n]"; old format "<folder> (<duration>)" = line only
-    const head = /^ {0,3}(?:([✳π◎◇]) )?(\S.* · \d+ (?:dtk|mnt|jam)(?: \d+ (?:dtk|mnt))?)( · keluar (-?\d+))?$/;
+    // FR-99 P5: ` · N file` after the duration = files changed when the agent ended (blocks from before have none)
+    const head = /^ {0,3}(?:([✳π◎◇]) )?(\S.* · \d+ (?:dtk|mnt|jam)(?: \d+ (?:dtk|mnt))?)(?: · (\d+) file)?( · keluar (-?\d+))?$/;
     const old = /^\S.* \(\d+ (dtk|mnt|jam)[^)]*\)( · keluar (-?\d+))?$/;
     const text = (y: number) => {
       // wrapped lines (long commands) are joined
@@ -288,7 +292,7 @@
       for (let k = y + 1; buf.getLine(k)?.isWrapped; k++) t += buf.getLine(k)!.translateToString(true);
       return t;
     };
-    const heads: { y: number; fail: boolean; tl: boolean; icon?: string; info?: string; code?: string }[] = [];
+    const heads: { y: number; fail: boolean; tl: boolean; icon?: string; info?: string; code?: string; files?: number }[] = [];
     const stops: number[] = []; // "Sesi sebelumnya": the block stops here
     for (let y = 0; y < buf.length; y++) {
       // trimRight only drops empty cells; spaces the log really wrote (a head padded to an old width, 9 Nov) stay and broke `$`
@@ -296,7 +300,7 @@
       if (/^\s*(── )?Sesi sebelumnya/.test(t)) stops.push(y);
       const n = head.exec(t);
       if (n) {
-        heads.push({ y, tl: true, fail: !!n[4] && n[4] !== "0", icon: n[1], info: n[2], code: n[4] });
+        heads.push({ y, tl: true, fail: !!n[5] && n[5] !== "0", icon: n[1], info: n[2], code: n[5], files: n[3] ? Number(n[3]) : undefined });
         continue;
       }
       const m = old.exec(t);
@@ -332,10 +336,19 @@
       let cmd = "";
       let resume = "";
       let ry = -1;
+      // FR-99 P5: the agent's last message, one row (maybe wrapped) after the command, marked with "¶ "
+      let said = "";
+      let sy = -1;
+      let sn = 1;
       for (let y = h.y + 1; y < end; y++) {
         if (buf.getLine(y)?.isWrapped) continue;
         const t = text(y).trim();
         if (!t) continue;
+        if (cmd && sy < 0 && t.startsWith("¶ ")) {
+          (said = t.slice(2)), (sy = y);
+          while (buf.getLine(y + sn)?.isWrapped) sn++;
+          continue;
+        }
         // a long command hard-wrapped (zle, log replay) = the second row is still the command: take the valid continuation row
         if (!cmd) cmd = t;
         else if (!resume && safeResume(t.replace(/^↳ /, ""))) (resume = t.replace(/^↳ /, "")), (ry = y);
@@ -367,7 +380,28 @@
         el.innerHTML = `<i class="tl-dot"></i><div class="tl-hd"><span class="tl-info"></span><b class="tl-x"></b></div><span class="tl-acts"></span>`;
         const dot = el.querySelector(".tl-dot") as HTMLElement;
         if (agent) (dot.textContent = h.icon!), (dot.dataset.a = h.icon!);
-        (el.querySelector(".tl-info") as HTMLElement).textContent = [short(path), ...rest.map(durText)].join(" · ");
+        (el.querySelector(".tl-info") as HTMLElement).textContent = [short(path), ...rest.map(durText), ...(h.files ? [tn("tile.files", h.files)] : [])].join(" · ");
+        // the row of the agent's message is covered by the card's own text (what it did), as the head covers its row
+        if (agent && said && sy >= 0) {
+          const row = document.createElement("div");
+          row.className = "tl-cover tl-said";
+          row.style.setProperty("--y", String(sy - h.y));
+          row.style.setProperty("--n", String(sn));
+          row.append(Object.assign(document.createElement("b"), { textContent: `${t("tile.did")} ` }), document.createTextNode(said));
+          el.append(row);
+        }
+        // simple mode: the command to carry on by hand stays folded until asked for (the Resume button is the way for most)
+        if (agent && resume && ui.mode === "simple" && ry >= 0) {
+          const key = `${h.info}|${resume}`;
+          const fold = document.createElement("button");
+          fold.className = "tl-cover tl-fold";
+          fold.style.setProperty("--y", String(ry - h.y));
+          fold.textContent = `▸ ${t("tile.resumeFold")}`;
+          fold.hidden = unfolded.has(key);
+          fold.addEventListener("mousedown", (e) => e.preventDefault());
+          fold.addEventListener("click", (e) => (e.stopPropagation(), unfolded.add(key), (fold.hidden = true)));
+          el.append(fold);
+        }
         const x = el.querySelector(".tl-x") as HTMLElement;
         x.textContent = h.code && h.code !== "0" ? `· ${t("tile.exit", { code: h.code })}` : agent ? `· ${t("tile.exitOk")}` : "";
         x.classList.toggle("ok", !(h.code && h.code !== "0"));
@@ -928,6 +962,33 @@
   }
   .term :global(.tl-dot[data-a="◇"]) {
     color: var(--tx-blue, #60a5fa);
+  }
+  /* FR-99 P5: rows of the card the UI covers with its own text, same tint as the head */
+  .term :global(.tl-cover) {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(var(--rh, 20px) * var(--y, 1));
+    height: calc(var(--rh, 20px) * var(--n, 1));
+    box-sizing: border-box;
+    background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+    color: var(--muted);
+    font: 12px/var(--rh, 20px) system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+  }
+  .term :global(.tl-said b) {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .term :global(.tl-fold) {
+    padding: 0;
+    border: 0;
+    text-align: left;
+    pointer-events: auto;
+    cursor: pointer;
+  }
+  .term :global(.tl-fold:hover) {
+    color: var(--fg);
   }
   .term :global(.tl-x.ok) {
     color: var(--muted);

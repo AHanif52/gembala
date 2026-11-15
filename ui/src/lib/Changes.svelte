@@ -36,7 +36,7 @@
     /// FR-99 P5: everyday words (Simpan versi, Lihat isi), the diff folded, the technical notes left out
     simple?: boolean;
     tabName?: string;
-    turns?: { i: number; start: number; end: number; title: string; files: number; add: number; del: number; skipped: string[] }[];
+    turns?: { i: number; start: number; end: number; title: string; summary?: string; files: number; add: number; del: number; skipped: string[] }[];
     turn?: number | null;
     ask?: { i: number; files: { kind: string; path: string }[]; others: string[]; head_moved: boolean; skipped: string[] } | null;
     onturn?: (i: number | null) => void;
@@ -50,6 +50,7 @@
     onactcancel?: () => void;
   } = $props();
   const hm = (s: number) => new Date(s * 1000).toLocaleTimeString(loc(), { hour: "2-digit", minute: "2-digit" });
+  const shownTurn = $derived(turn != null ? turns.find((x) => x.i === turn) : undefined);
   const askTurn = $derived(ask ? turns.find((x) => x.i === ask.i) : undefined);
 
   function grip(e: PointerEvent) {
@@ -142,6 +143,9 @@
         <button class="mini ghost" onclick={() => onrestore(turn!)}>{t("chg.restoreBtn")}</button>
       {/if}
     </div>
+  {/if}
+  {#if turn != null && shownTurn?.summary}
+    <p class="said"><b>{t("tile.did")}</b> {shownTurn.summary}</p>
   {/if}
   {#if ask}
     <div class="ask" role="alertdialog" aria-label={t("chg.restoreAria")}>
@@ -378,6 +382,17 @@
     border-color: rgba(217, 119, 6, 0.5);
     background: none;
     color: var(--tx-amber, #fbbf24);
+  }
+  .said {
+    margin: 8px 12px 0;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .said b {
+    color: var(--fg);
   }
   footer {
     display: flex;

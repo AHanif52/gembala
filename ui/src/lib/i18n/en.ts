@@ -1785,4 +1785,8 @@ export default {
   "chip.changes": "Changes · {n} files",
   "chg.turnsS": "What {name} changed, per request · kept outside the project for 7 days",
   "chg.sinceCommitS": "Everything not saved yet",
+  "tile.did": "What it did:",
+  "tile.resumeFold": "Command to carry on by hand",
+  "tile.files.one": "{n} file changed",
+  "tile.files.other": "{n} files changed",
 } as const;
