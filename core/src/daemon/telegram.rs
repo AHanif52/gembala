@@ -1018,6 +1018,10 @@ fn parse(u: &Value, link: Option<&Link>, now: i64) -> In {
     if !text.is_empty() && !text.starts_with('/') {
         return In::Type { to: reply, text: text.to_string(), msg };
     }
+    // `//help` = the agent's own `/help`: a doubled slash gets past the bot's commands (`/help`, `/status`, `/open` are its)
+    if text.starts_with("//") {
+        return In::Type { to: reply, text: text[1..].to_string(), msg };
+    }
     let (cmd, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     let rest = rest.trim();
     match cmd.split('@').next().unwrap_or_default() {
@@ -1171,8 +1175,8 @@ fn t(id: bool, k: &str) -> &'static str {
         "dl_fail" => ("Gagal ngunduh filenya (maks 20 MB).", "Couldn't download the file (20 MB max)."),
         "none" => ("Belum ada pane.", "No panes yet."),
         _ => (
-            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif (caption /ke <pane> buat pane lain).\n/ke <pane> [teks] — ganti pane aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah / yang bukan milik bot (/exit, /compact, /clear, /model) diteruskan ke pane aktif\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode/commandcode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
-            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane (caption /to <pane> for another).\n/to <pane> [text] — switch the active pane (and send the text); /to alone = pick from buttons\nA / command that isn't the bot's (/exit, /compact, /clear, /model) goes to the active pane\n/open <agent> [pane] — start claude/codex/omp/opencode/commandcode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
+            "Ketik biasa = masuk ke pane aktif (yang terakhir dipakai atau terakhir ngabarin).\nBales pesan bot = ke pane pesan itu.\nFoto/file = path-nya diketik ke pane aktif (caption /ke <pane> buat pane lain).\n/ke <pane> [teks] — ganti pane aktif (sekalian kirim teksnya); /ke doang = pilih dari tombol\nPerintah / yang bukan milik bot (/exit, /compact, /clear, /model) diteruskan ke pane aktif; yang namanya sama dgn bot (/help, /status): awali // (//help)\n/buka <agent> [pane] — nyalain claude/codex/omp/opencode/commandcode di shell yang kosong\n/status — semua pane\n/lihat <pane> — layar terbaru",
+            "Plain text = goes to the active pane (last used or last to send a notice).\nReply to a bot message = that message's pane.\nPhoto/file = its path is typed into the active pane (caption /to <pane> for another).\n/to <pane> [text] — switch the active pane (and send the text); /to alone = pick from buttons\nA / command that isn't the bot's (/exit, /compact, /clear, /model) goes to the active pane; one named like the bot's (/help, /status): start with // (//help)\n/open <agent> [pane] — start claude/codex/omp/opencode/commandcode in an idle shell\n/status — every pane\n/look <pane> — latest screen",
         ),
     };
     if id { i } else { e }
@@ -2595,6 +2599,8 @@ mod tests {
         assert_eq!(parse(&msg(42, 7, "/exit", n), Some(&l), n), In::Type { to: None, text: "/exit".into(), msg: 5 });
         assert_eq!(parse(&msg(42, 7, "/model", n), Some(&l), n), In::Type { to: None, text: "/model".into(), msg: 5 });
         assert_eq!(parse(&msg(42, 7, "/compact", n), Some(&l), n), In::Type { to: None, text: "/compact".into(), msg: 5 });
+        assert_eq!(parse(&msg(42, 7, "//help", n), Some(&l), n), In::Type { to: None, text: "/help".into(), msg: 5 });
+        assert_eq!(parse(&msg(42, 7, "//status", n), Some(&l), n), In::Type { to: None, text: "/status".into(), msg: 5 });
         assert_eq!(parse(&msg(42, 7, "/clear", n), Some(&l), n), In::Type { to: None, text: "/clear".into(), msg: 5 });
         // ... and as a reply: the command goes to the pane whose card was answered
         let mut ex = msg(42, 7, "/exit", n);
