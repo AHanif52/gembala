@@ -31,7 +31,7 @@ impl Kind {
 }
 
 /// FR-95 task numbering, FR-89 edit mark; filled by the daemon, never taken from the sender (BRD section 8)
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tag {
     pub kind: Kind,
     /// id of the first request of the task; empty until the daemon sets it
@@ -117,6 +117,8 @@ pub struct Engine {
     pub limbo: Option<Msg>,
     /// FR-89: cancelled ids, for the sender's `wait --reply` (taken by the first waiter)
     pub cancelled: HashSet<String>,
+    /// FR-90: what was waiting when the daemon stopped; shown as cards, sent or dropped by the user, never sent by itself
+    pub held: Vec<crate::outbox::Rec>,
     sent: HashMap<u64, VecDeque<Instant>>,
     pub paused: bool,
     pub muted: HashSet<u64>,
@@ -255,6 +257,30 @@ impl Engine {
     /// who may change it: `by` = the asking pane, `None` = the user through the UI channel (any message)
     fn owner_check(by: Option<u64>, m: &Msg) -> Result<(), &'static str> {
         if by.is_some_and(|p| p != m.from) { Err("not_allowed") } else { Ok(()) }
+    }
+
+    /// FR-90: everything that waits in memory, as records for the outbox file: queued messages, confirm cards, the message the
+    /// delivery loop is typing this instant (marked: it may have arrived), and the cards left from the last run. Once each.
+    pub fn outbox_recs(&self, keys: &HashMap<u64, String>) -> Vec<crate::outbox::Rec> {
+        let mut recs: Vec<crate::outbox::Rec> = Vec::new();
+        let mut add = |r: Option<crate::outbox::Rec>| {
+            if let Some(r) = r.filter(|r| !recs.iter().any(|x| x.id == r.id)) {
+                recs.push(r);
+            }
+        };
+        for q in self.queues.values().flatten() {
+            add(crate::outbox::Rec::from_msg(&q.msg, keys, false, false));
+        }
+        for m in &self.pending {
+            add(crate::outbox::Rec::from_msg(m, keys, true, false));
+        }
+        if let Some(m) = &self.limbo {
+            add(crate::outbox::Rec::from_msg(m, keys, false, true));
+        }
+        for h in &self.held {
+            add(Some(h.clone()));
+        }
+        recs
     }
 
     /// Where is `id` right now? Decided under the caller's engine lock, so a message is never reported as sent while it
@@ -483,6 +509,30 @@ mod tests {
         e.pending.push(msg("kartu", 0));
         assert!(matches!(e.edit("kartu", "ubah".into(), None), Ok(Held::Msg(_))));
         assert!(matches!(e.cancel("kartu", None), Ok(Held::Msg(_))) && e.pending.is_empty());
+    }
+
+    /// FR-90: the snapshot has queue, cards and the message being typed (marked `maybe`), each once, and only what can come back
+    #[test]
+    fn foto_antrean_untuk_disk() {
+        let keys: HashMap<u64, String> = [(1, "aaaaaaaaaaaaaaaa".to_string()), (2, "bbbbbbbbbbbbbbbb".to_string())].into();
+        let mut e = Engine::default();
+        queued(&mut e, "q1");
+        e.pending.push(msg("kartu", 0));
+        // popped by the delivery loop: not in the queue any more, but typed right now
+        e.limbo = Some(msg("diketik", 0));
+        let recs = e.outbox_recs(&keys);
+        let flags: Vec<(&str, bool, bool)> = recs.iter().map(|r| (r.id.as_str(), r.card, r.maybe)).collect();
+        assert_eq!(flags, [("q1", false, false), ("kartu", true, false), ("diketik", false, true)]);
+        // back in the queue while still marked in flight: once, and not "maybe"
+        queued(&mut e, "diketik");
+        let recs = e.outbox_recs(&keys);
+        assert_eq!(recs.iter().filter(|r| r.id == "diketik").map(|r| r.maybe).collect::<Vec<_>>(), [false]);
+        // a message to a pane that is gone, or from the harness, can't be restored and isn't kept
+        e.queues.get_mut(&2).unwrap().push_back(Queued { msg: Msg { to: 9, ..msg("hilang", 0) }, since: Instant::now(), approved: false });
+        assert!(e.outbox_recs(&keys).iter().all(|r| r.id != "hilang"));
+        // last run's cards stay until the user decides
+        e.held.push(recs[0].clone());
+        assert_eq!(e.outbox_recs(&keys).iter().filter(|r| r.id == recs[0].id).count(), 1);
     }
 
     #[test]

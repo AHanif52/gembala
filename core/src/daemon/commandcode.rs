@@ -711,7 +711,7 @@ mod tests {
             agents: Mutex::new(Value::Null), boot:"test-epoch".into(),
             hooks:profile::Hooks { exe:String::new(), dir:PathBuf::new() }, engine:Mutex::default(),
             pane_subs:Mutex::default(), audit:None, harness:Mutex::default(), tg:Mutex::default(),
-            update:Mutex::default(), usage:Mutex::default(), models:Mutex::default(), report_shot:Mutex::default(),
+            update:Mutex::default(), usage:Mutex::default(), models:Mutex::default(), report_shot:Mutex::default(), outbox_last:Mutex::default(),
         })
     }
 

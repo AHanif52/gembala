@@ -51,6 +51,11 @@ fn start_env(tag: &str, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> D
     let dir = std::env::temp_dir().join(format!("gbl-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    spawn_in(dir, idle_secs, extra)
+}
+
+/// a daemon on an existing run folder (a restart keeps `dir`, so config, history, and outbox are the last run's)
+fn spawn_in(dir: PathBuf, idle_secs: u64, extra: &[(&str, &std::path::Path)]) -> Daemon {
     let mut fds = [0; 2];
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
     let (r, w) = (fds[0], fds[1]);
@@ -2906,13 +2911,19 @@ fn fr106_kirim_sekarang_membalas_antre() {
 
 /// Two agent panes (`pa-1`, `pb-1`, both idle) with a pane-channel client each, for message-engine tests.
 fn agent_pair(tag: &str) -> (Daemon, Cli, u64, u64, Cli, Cli) {
+    agent_pair_keys(tag, None)
+}
+
+/// like `agent_pair`, with the history keys of the two panes fixed (FR-62), so a restarted daemon finds them again
+fn agent_pair_keys(tag: &str, keys: Option<[&str; 2]>) -> (Daemon, Cli, u64, u64, Cli, Cli) {
     let d = start(tag);
     let mut ui = Cli::ui(&d);
     let g = env!("CARGO_BIN_EXE_gembala");
     let script = |n: &str| format!("stty -echo; '{g}' token > '{}/{n}.token'; cat", d.dir.display());
     profiles(&d, &mut ui, &(sh_profile("pa", &script("a")) + &sh_profile("pb", &script("b"))), "pb");
-    let a = ui.call("pane.create", json!({"profile": "pa", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
-    let b = ui.call("pane.create", json!({"profile": "pb", "workspace": "w"}))["result"]["pane"].as_u64().unwrap();
+    let key = |i: usize| keys.map_or(Value::Null, |k| json!(k[i]));
+    let a = ui.call("pane.create", json!({"profile": "pa", "workspace": "w", "history": key(0)}))["result"]["pane"].as_u64().unwrap();
+    let b = ui.call("pane.create", json!({"profile": "pb", "workspace": "w", "history": key(1)}))["result"]["pane"].as_u64().unwrap();
     let (mut ca, mut cb) = (pane_client(&d, "a"), pane_client(&d, "b"));
     for c in [&mut ca, &mut cb] {
         assert!(c.call("hook", json!({"agent": "omp", "status": "idle"})).get("result").is_some());
@@ -3056,4 +3067,126 @@ fn fr89_batal_dan_ubah_pesan_antre() {
     assert_eq!(pending[0]["body"], "kartu diubah", "{pending}");
     assert_eq!(ui.call("msg.cancel", json!({"id": id4}))["result"]["result"], "cancelled");
     assert!(ui.call("msg.list", json!({}))["result"]["pending"].as_array().unwrap().is_empty());
+}
+
+const KEY_A: &str = "a1a1a1a1a1a1a1a1";
+const KEY_B: &str = "b2b2b2b2b2b2b2b2";
+const KEY_X: &str = "c3c3c3c3c3c3c3c3";
+
+fn held_ids(ui: &mut Cli) -> Vec<String> {
+    let mut v: Vec<String> = ui.call("msg.list", json!({}))["result"]["held"].as_array().unwrap().iter().map(|h| h["id"].as_str().unwrap().to_string()).collect();
+    v.sort();
+    v
+}
+
+fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ok() {
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// FR-90 + SEC-39: queue and confirm card survive a daemon that dies; they come back as cards, never sent by themselves;
+/// "Kirim" only reaches the same pane (not a new one with the old name); the file is private and gone when nothing waits.
+#[test]
+fn fr90_antrean_tahan_restart() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut d, mut ui, _a, b, mut ca, mut cb) = agent_pair_keys("fr90", Some([KEY_A, KEY_B]));
+    assert!(cb.call("hook", json!({"agent": "omp", "status": "working"})).get("result").is_some());
+    std::thread::sleep(Duration::from_millis(300));
+    let id_of = |r: &Value| r["result"]["id"].as_str().unwrap_or_else(|| panic!("{r}")).to_string();
+    let m1 = id_of(&ca.call("send", json!({"to": "pb-1", "body": "antre satu", "queue": true})));
+    let m2 = id_of(&ca.call("send", json!({"to": "pb-1", "body": "catatan dua", "queue": true, "kind": "note"})));
+    ui.call("pane.policy", json!({"pane": b, "policy": "confirm"}));
+    let r = ca.call("send", json!({"to": "pb-1", "body": "kartu tiga", "queue": true}));
+    assert_eq!(r["result"]["reason"], "needs_confirmation", "{r}");
+    let m3 = id_of(&r);
+    ui.call("pane.policy", json!({"pane": b, "policy": "auto"}));
+    // on disk, private
+    let file = d.dir.join("cfg/outbox/queue.json");
+    wait_until("queue.json", || std::fs::read_to_string(&file).is_ok_and(|t| t.contains("antre satu") && t.contains("catatan dua") && t.contains("kartu tiga")));
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::metadata(file.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    // the daemon dies without a goodbye
+    drop((ui, ca, cb));
+    d.child.kill().unwrap();
+    d.child.wait().unwrap();
+    for t in ["a.token", "b.token"] {
+        let _ = std::fs::remove_file(d.dir.join(t));
+    }
+    let d2 = spawn_in(d.dir.clone(), 3600, &[]);
+    let mut ui = Cli::ui(&d2);
+    wait_until("config", || ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("pb"));
+    let mut want = vec![m1.clone(), m2.clone(), m3.clone()];
+    want.sort();
+    assert_eq!(held_ids(&mut ui), want);
+    let held = ui.call("msg.list", json!({}))["result"]["held"].clone();
+    let row = |id: &str| held.as_array().unwrap().iter().find(|h| h["id"] == id).unwrap().clone();
+    assert_eq!((row(&m1)["body"].as_str(), row(&m1)["kind"].as_str(), row(&m1)["card"].as_bool()), (Some("antre satu"), Some("request"), Some(false)), "{held}");
+    assert_eq!((row(&m2)["kind"].as_str(), row(&m3)["card"].as_bool()), (Some("note"), Some(true)), "{held}");
+    assert!(held.as_array().unwrap().iter().all(|h| h["maybe"] == false), "{held}");
+    // the panes come back: a NEW pane with the old name first (another history key), then the real ones
+    let make = |ui: &mut Cli, profile: &str, key: &str| ui.call("pane.create", json!({"profile": profile, "workspace": "w", "history": key}))["result"]["pane"].as_u64().unwrap();
+    make(&mut ui, "pb", KEY_X);
+    make(&mut ui, "pa", KEY_A);
+    let r = ui.call("msg.resend", json!({"id": m1}));
+    assert_eq!((r["result"]["result"].as_str(), r["result"]["reason"].as_str()), (Some("rejected"), Some("target_gone")), "pane baru bernama sama bukan pane yang sama: {r}");
+    assert_eq!(held_ids(&mut ui).len(), 3, "kartu tetap ada");
+    let b2 = make(&mut ui, "pb", KEY_B);
+    let (mut ca, mut cb) = (pane_client(&d2, "a"), pane_client(&d2, "b"));
+    for c in [&mut ca, &mut cb] {
+        assert!(c.call("hook", json!({"agent": "omp", "status": "idle"})).get("result").is_some());
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    // nothing was typed by itself while the cards waited
+    let out = ui.attach_until(b2, &["tidak-ada"]);
+    assert!(!out.contains("antre satu") && !out.contains("catatan dua") && !out.contains("kartu tiga"), "{out}");
+    // Kirim: the label keeps the original sender and the kind
+    let r = ui.call("msg.resend", json!({"id": m1}));
+    assert_eq!(r["result"]["result"], "accepted", "{r}");
+    let r = ui.call("msg.resend", json!({"id": m2}));
+    assert_eq!(r["result"]["result"], "accepted", "{r}");
+    assert_eq!(ui.call("msg.discard", json!({"id": m3}))["result"]["result"], "discarded");
+    let out = ui.attach_until(b2, &["catatan dua"]);
+    assert!(out.contains(&format!("[Gembala · from pa-1 · {m1}]")) && out.contains("antre satu"), "{out}");
+    assert!(out.contains(&format!("[Gembala · note from pa-1 · {m2}]")) && !out.contains("kartu tiga"), "{out}");
+    assert_eq!(ui.call("msg.resend", json!({"id": m1}))["error"]["code"], "no_such_msg");
+    // SEC-39: nothing waits, so no message text is left on disk
+    assert!(held_ids(&mut ui).is_empty());
+    wait_until("queue.json removed", || !file.exists());
+}
+
+/// FR-90: what the daemon was typing when it died is never offered again; stale queue entries are `expired`; their text leaves the disk.
+#[test]
+fn fr90_mungkin_sampai_dan_kedaluwarsa() {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = std::env::temp_dir().join(format!("gbl-{}-fr90b", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let rec = |id: &str, body: &str, at: u64, maybe: bool| json!({"id": id, "from_key": KEY_A, "from_name": "pa-1", "to_key": KEY_B, "to_name": "pb-1", "body": body,
+        "reply_to": null, "is_reply": false, "hop": 0, "at": at, "kind": "request", "task": id, "parent": null, "edited": false, "card": false, "maybe": maybe});
+    let rows = json!([rec("msg_old1", "SUDAH-LEWAT", now - 3600, false), rec("msg_old2", "SEDANG-DIKETIK", now, true), rec("msg_old3", "MASIH-SEGAR", now, false)]);
+    let file = dir.join("cfg/outbox/queue.json");
+    std::fs::DirBuilder::new().mode(0o700).recursive(true).create(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, rows.to_string()).unwrap();
+    let d = spawn_in(dir, 3600, &[]);
+    let mut ui = Cli::ui(&d);
+    assert_eq!(held_ids(&mut ui), ["msg_old2", "msg_old3"], "yang lewat 10 menit tidak dipulihkan");
+    let list = ui.call("msg.list", json!({}))["result"].clone();
+    assert!(list["history"].to_string().contains("expired"), "{}", list["history"]);
+    let maybe = list["held"].as_array().unwrap().iter().find(|h| h["id"] == "msg_old2").unwrap().clone();
+    assert_eq!(maybe["maybe"], true);
+    // the rewritten file has no trace of the expired text
+    wait_until("rewritten", || std::fs::read_to_string(&file).is_ok_and(|t| !t.contains("SUDAH-LEWAT") && t.contains("MASIH-SEGAR")));
+    // "maybe arrived": no resend, even with both panes present; only discard
+    let r = ui.call("msg.resend", json!({"id": "msg_old2"}));
+    assert_eq!((r["result"]["result"].as_str(), r["result"]["reason"].as_str()), (Some("rejected"), Some("maybe_delivered")), "{r}");
+    assert_eq!(ui.call("msg.discard", json!({"id": "msg_old2"}))["result"]["result"], "discarded");
+    assert_eq!(held_ids(&mut ui), ["msg_old3"]);
+    assert_eq!(ui.call("msg.discard", json!({"id": "msg_old2"}))["error"]["code"], "no_such_msg");
+    wait_until("maybe text gone", || std::fs::read_to_string(&file).is_ok_and(|t| !t.contains("SEDANG-DIKETIK")));
+    assert_eq!(ui.call("msg.discard", json!({"id": "msg_old3"}))["result"]["result"], "discarded");
+    wait_until("file removed", || !file.exists());
 }

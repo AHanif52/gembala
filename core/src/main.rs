@@ -13,6 +13,7 @@ mod ipc;
 mod jail;
 mod msg;
 mod os;
+mod outbox;
 mod profile;
 mod pty;
 mod recipe;

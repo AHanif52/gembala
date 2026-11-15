@@ -6,7 +6,7 @@ import { type NoticeKind, wordKey } from "./notice.ts";
 
 /// one shape per thing that waits; `permission`/`answer`/`password`/`trust` are a blocked pane, `message`/`open` are the
 /// message engine's confirm cards, `gate`/`ship` are a harness run stopped at a step that needs the user.
-export type NeedKind = "permission" | "answer" | "password" | "trust" | "message" | "open" | "reply" | "gate" | "ship";
+export type NeedKind = "permission" | "answer" | "password" | "trust" | "message" | "open" | "reply" | "held" | "gate" | "ship";
 
 /// why the order is what it is: group 1 stops the agent completely, 2 holds the next step, 3 holds a run
 export type NeedGroup = 1 | 2 | 3;
@@ -19,6 +19,7 @@ export const GROUP: Record<NeedKind, NeedGroup> = {
   message: 2,
   open: 2,
   reply: 2,
+  held: 2,
   gate: 3,
   ship: 3,
 };
@@ -33,6 +34,7 @@ const WORD_OF: Record<NeedKind, NoticeKind> = {
   message: "approve",
   open: "approve",
   reply: "approve",
+  held: "approve",
   gate: "approve",
   ship: "approve",
 };
@@ -63,8 +65,10 @@ export type OpenNeed = { id: string; at: number; from: string; to: string; pane:
 /// FR-106: a reply that has not reached its sender for 2 minutes; `from` answered, `to` is the one still waiting. `queued` =
 /// it sits in the engine queue and "send now" can push it; otherwise it is stored for `wait --reply` only.
 export type ReplyNeed = { id: string; at: number; from: string; to: string; pane: number | null; queued: boolean };
+/// FR-90: a message that waited when the daemon restarted; the user sends or discards it in the message drawer
+export type HeldNeed = { id: string; at: number; from: string; to: string };
 export type GateNeed = { run: string; ws: number; at: number; ship: boolean; name: string };
-export type NeedInput = { panes: PaneNeed[]; messages: MsgNeed[]; opens: OpenNeed[]; replies?: ReplyNeed[]; gates: GateNeed[]; simple: boolean };
+export type NeedInput = { panes: PaneNeed[]; messages: MsgNeed[]; opens: OpenNeed[]; replies?: ReplyNeed[]; held?: HeldNeed[]; gates: GateNeed[]; simple: boolean };
 
 const clean = (s: string, n = 90) => {
   const one = s.split("\n").map((x) => x.trim()).filter(Boolean).join(" · ");
@@ -140,6 +144,8 @@ export function needRows(i: NeedInput): NeedRow[] {
       act: r.queued ? "send" : "see",
       msgId: r.id,
     });
+  for (const h of i.held ?? [])
+    rows.push({ key: `held:${h.id}`, kind: "held", group: GROUP.held, at: h.at, pane: null, ws: 0, what: "need.held", params: { from: h.from, to: h.to }, act: "see", msgId: h.id });
   for (const g of i.gates)
     rows.push({
       key: `${g.ship ? "ship" : "gate"}:${g.run}`,

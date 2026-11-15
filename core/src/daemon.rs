@@ -9,6 +9,7 @@ use crate::addon;
 use crate::bus;
 use crate::config;
 use crate::msg;
+use crate::outbox;
 use crate::git;
 use crate::profile;
 use crate::recipe;
@@ -253,6 +254,8 @@ struct State {
     models: Mutex<models::Store>,
     /// FR-100: the last report draft asked for a window screenshot (the user takes it; the agent never sees it)
     report_shot: Mutex<bool>,
+    /// FR-90: the text last written to `outbox/queue.json`, so an unchanged queue costs no write
+    outbox_last: Mutex<String>,
 }
 
 struct UiClient(Arc<State>, u64);
@@ -343,7 +346,9 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         usage: Mutex::default(),
         models: Mutex::default(),
         report_shot: Mutex::default(),
+        outbox_last: Mutex::default(),
     });
+    restore_outbox(&st);
     let st7 = st.clone();
     thread::spawn(move || deliver_loop(st7));
     write_hook_files(&st.hooks);
@@ -907,6 +912,8 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 // FR-86: a close request waits for the user like an open card
                 "closes": closes,
                 "queued": queues,
+                // FR-90: "ketunda karena restart"
+                "held": eng.held.iter().map(outbox::Rec::summary).collect::<Vec<_>>(),
                 "reply_pending": eng.undelivered_replies.values().filter(|m| m.at.elapsed().is_ok_and(|age| age > Duration::from_secs(120))).map(|m| {
                     let mut v = m.summary();
                     v["queued"] = json!(eng.queues.get(&m.to).is_some_and(|q| q.iter().any(|q| q.msg.id == m.id)));
@@ -939,6 +946,9 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         // FR-89: the user takes back or rewrites a queued message, whoever sent it (UI channel only, SEC-20)
         "msg.cancel" => change_queued(st, p["id"].as_str().ok_or("bad_params")?, None, None),
         "msg.edit" => change_queued(st, p["id"].as_str().ok_or("bad_params")?, None, Some(p["body"].as_str().ok_or("bad_params")?)),
+        // FR-90: cards left from before a restart: send by hand, or drop (UI channel only, SEC-20)
+        "msg.resend" => resend_held(st, p["id"].as_str().ok_or("bad_params")?),
+        "msg.discard" => discard_held(st, p["id"].as_str().ok_or("bad_params")?),
         // FR-106: the user pushes one waiting reply now instead of waiting for its sender to go idle (UI channel only, SEC-20)
         "msg.send_now" => {
             let id = p["id"].as_str().ok_or("bad_params")?;
@@ -1854,6 +1864,78 @@ fn bus_event(st: &State, ev: Value) {
     st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
 }
 
+/// FR-90, SEC-39: write what waits in memory (queues, confirm cards, the message being typed right now, cards left from the
+/// last run) to `outbox/queue.json`. Called on every change that matters and by the delivery loop, so a crash loses at most
+/// the last 200 ms; unchanged = no write; nothing waiting = the file is removed.
+fn outbox_save(st: &State) {
+    // the registry is never taken while the engine is held
+    let keys: HashMap<u64, String> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.key.clone())).collect();
+    let recs = st.engine.lock().unwrap().outbox_recs(&keys);
+    let text = outbox::encode(&recs);
+    let mut last = st.outbox_last.lock().unwrap();
+    if *last != text && outbox::write(&outbox::path(), &text).is_ok() {
+        *last = text;
+    }
+}
+
+/// FR-90: at boot, the last run's file becomes `held` cards. A queued message older than 10 minutes is `expired`; the file is
+/// rewritten at once, so the expired ones and the old text are gone from disk.
+fn restore_outbox(st: &State) {
+    let now = history::now();
+    for r in outbox::load(&outbox::path()) {
+        if r.expired(now) {
+            let m = r.to_msg((0, r.from_name.clone()), (0, r.to_name.clone()));
+            reject(st, &m, "expired");
+        } else {
+            st.engine.lock().unwrap().held.push(r);
+        }
+    }
+    outbox_save(st);
+}
+
+/// FR-90: a pane from this run by its history key: its id and current name
+fn pane_by_key(st: &State, key: &str) -> Option<(u64, String)> {
+    if key.is_empty() {
+        return None;
+    }
+    st.panes.lock().unwrap().iter().find(|(_, p)| p.key == key).map(|(id, p)| (*id, p.name.lock().unwrap().clone()))
+}
+
+/// FR-90: the user presses "Kirim" on a card left over from a restart. Nothing goes out unless the same panes are there again
+/// (a new pane with the old name isn't), then the usual decision runs (access, status, hop, rate) with the user's press as the
+/// approval. A refusal leaves the card in place. A message that may already have arrived is never sent again.
+fn resend_held(st: &State, id: &str) -> Res {
+    let rec = st.engine.lock().unwrap().held.iter().find(|h| h.id == id).cloned().ok_or("no_such_msg")?;
+    let refuse = |reason: &str| Ok(json!({"result": "rejected", "reason": reason, "id": id}));
+    if rec.maybe {
+        return refuse("maybe_delivered");
+    }
+    let Some(to) = pane_by_key(st, &rec.to_key) else { return refuse("target_gone") };
+    let from = if rec.from_key.is_empty() { (0, rec.from_name.clone()) } else { match pane_by_key(st, &rec.from_key) { Some(f) => f, None => return refuse("sender_gone") } };
+    {
+        let mut eng = st.engine.lock().unwrap();
+        let i = eng.held.iter().position(|h| h.id == id).ok_or("no_such_msg")?;
+        eng.held.remove(i);
+    }
+    let r = try_send(st, rec.to_msg(from, to), true, true);
+    if r["result"] == "rejected" {
+        st.engine.lock().unwrap().held.push(rec);
+    }
+    outbox_save(st);
+    Ok(r)
+}
+
+fn discard_held(st: &State, id: &str) -> Res {
+    let rec = {
+        let mut eng = st.engine.lock().unwrap();
+        let i = eng.held.iter().position(|h| h.id == id).ok_or("no_such_msg")?;
+        eng.held.remove(i)
+    };
+    record(st, "discarded", &rec.to_msg((0, rec.from_name.clone()), (0, rec.to_name.clone())), None);
+    outbox_save(st);
+    Ok(json!({"result": "discarded", "id": id}))
+}
+
 fn record(st: &State, kind: &str, m: &bus::Msg, reason: Option<&str>) {
     let ev = st.engine.lock().unwrap().log(kind, m, reason);
     if let Some(a) = &st.audit {
@@ -1978,6 +2060,7 @@ fn change_queued(st: &State, id: &str, by: Option<u64>, edit: Option<&str>) -> R
             bus::Held::InFlight => thread::sleep(Duration::from_millis(20)),
             bus::Held::Gone => break,
             bus::Held::Msg(m) => {
+                outbox_save(st); // FR-90: the old text leaves the disk with the change
                 if body.is_some() {
                     record(st, "edited", &m, None);
                     return Ok(json!({"result": "edited", "id": m.id}));
@@ -2225,11 +2308,13 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
             eng.queues.entry(m.to).or_default().push_back(bus::Queued { msg: m.clone(), since: std::time::Instant::now(), approved });
             drop(eng);
             record(st, "queued", &m, None);
+            outbox_save(st);
             json!({"result": "queued", "id": m.id})
         }
         msg::Decision::Confirm => {
             st.engine.lock().unwrap().pending.push(m.clone());
             record(st, "confirm", &m, None);
+            outbox_save(st);
             json!({"result": "queued", "reason": "needs_confirmation", "id": m.id})
         }
     }
@@ -2280,6 +2365,10 @@ fn send_now(st: &State, q: bus::Queued) -> Value {
 /// SEC-7/8: origin label + bracketed paste + one Enter, written to the target PTY.
 fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
     let Ok(terminal) = to.terminal() else { record(st, "rejected", m, Some("unsupported_kind")); return false };
+    // FR-90: a message the delivery loop is typing now is on disk as "maybe arrived" before the first byte goes out
+    if st.engine.lock().unwrap().limbo.is_some() {
+        outbox_save(st);
+    }
     // FR-89: the origin stays the sender, with the mark that the user changed the text while it was queued
     let from = if m.tag.edited { format!("{} · edited by user", m.from_name) } else { m.from_name.clone() };
     let bytes = match m.tag.kind {
@@ -2360,6 +2449,7 @@ fn deliver_loop(st: Arc<State>) {
             }
         }
         st.engine.lock().unwrap().queues.retain(|_, q| !q.is_empty());
+        outbox_save(&st);
         // FR-75: a card nobody answered expires like a queued message
         let stale: Vec<bus::Open> = {
             let mut eng = st.engine.lock().unwrap();
@@ -3075,6 +3165,7 @@ fn watch_config(st: Arc<State>) {
 /// FR-20: no UI and every pane shell idle for two checks in a row = exit.
 /// FR-62: main screen log of each pane with new output; the alternate screen (TUI) doesn't overwrite the last log
 fn save_logs(st: &State, saved: &mut HashMap<u64, std::time::Instant>) {
+    outbox_save(st); // FR-90: every way out of the daemon (SIGTERM, stop, idle) goes through here
     let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(k, v)| (*k, v.clone())).collect();
     saved.retain(|id, _| panes.iter().any(|(k, _)| k == id));
     for (id, pane) in panes {

@@ -108,6 +108,25 @@
       </section>
     {/if}
 
+    <!-- FR-90: what waited when the daemon stopped; nothing goes out by itself, the user sends or drops each one -->
+    {#if data?.held?.length}
+      <h4>{t("msg.held")}</h4>
+      <section>
+        <div class="row"><span class="m">{t("msg.heldNote")}</span></div>
+        {#each data.held as m (m.id)}
+          <div class="msg">
+            <span><b>{m.from}</b> → <b>{m.to}</b>{#if m.kind === "note"}<span class="m"> · {tOr("msg.kind.note", "note")}</span>{/if}</span>
+            <blockquote>{m.body}</blockquote>
+            {#if m.maybe}<span class="m">{t("msg.maybe")}</span>{/if}
+            <span class="acts">
+              <button class="mini" onclick={() => act("msg.discard", { id: m.id })}>{t("msg.discard")}</button>
+              {#if !m.maybe}<button class="mini pri" onclick={() => act("msg.resend", { id: m.id })}>{t("msg.resend")}</button>{/if}
+            </span>
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     <!-- FR-98 bug: the drawer covers the "Buka dan kirim" card of a pane on the right, so the same request is answerable here -->
     {#if data?.opens?.length}
       <h4>{t("msg.opens")}</h4>
@@ -159,7 +178,7 @@
             </div>
           {:else}
             <div class="row">
-              <span class="grow"><b>{m.from}</b> → <b>{m.to}</b>{#if m.edited}<span class="m"> · {t("msg.edited")}</span>{/if}<small>{m.preview}</small></span>
+              <span class="grow"><span><b>{m.from}</b> → <b>{m.to}</b>{#if m.edited}<span class="m"> · {t("msg.edited")}</span>{/if}</span><small>{m.preview}</small></span>
               <button class="mini" onclick={() => ((editId = m.id), (editBody = m.body ?? m.preview))}>{t("msg.edit")}</button>
               <button class="mini" onclick={() => act("msg.cancel", { id: m.id })}>{t("msg.cancel")}</button>
             </div>

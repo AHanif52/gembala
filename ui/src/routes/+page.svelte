@@ -36,7 +36,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
   import { cleanTitle } from "$lib/label";
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
-  import { frontCard, needPanes, needRows, type GateNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed, type ReplyNeed } from "$lib/attention";
+  import { frontCard, needPanes, needRows, type GateNeed, type HeldNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed, type ReplyNeed } from "$lib/attention";
   import type { UsageRow } from "$lib/usage";
   import { cleanGrid, GRID_MAX, type GridLine, gridInsert, gridLines, gridMove, gridRatio, gridRects, helperDots, helpersShown, splitRows, subtabRows, type HelperDot } from "$lib/subtabs";
   import { resolveLang, waitingReasonKey } from "$lib/i18n";
@@ -374,7 +374,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   };
   /// FR-86: an agent asked to close another pane; the card sits in the asking pane too
   const closesFor = (pane: number) => (msgData?.closes ?? []).filter((c: any) => c.from_pane === pane);
-  const whatsNewBlocked = $derived(askMode || !!welcome || Object.values(meta).some((m) => m.status === "blocked") || !!confirm || !!linkAsk || !!quitAsk || !!wsAsk || !!(msgData?.pending?.length || msgData?.opens?.length || msgData?.closes?.length));
+  const whatsNewBlocked = $derived(askMode || !!welcome || Object.values(meta).some((m) => m.status === "blocked") || !!confirm || !!linkAsk || !!quitAsk || !!wsAsk || !!(msgData?.pending?.length || msgData?.opens?.length || msgData?.closes?.length || msgData?.held?.length));
   const openWho = (o: any) => {
     const p = cfg?.values.profiles.find((x) => x.id === o.profile);
     const accs = cfg?.values.accounts ?? [];
@@ -2575,6 +2575,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
       : [];
     const messages: MsgNeed[] = (msgData?.pending ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, from: m.from, to: m.to, pane: byName(m.to) ?? null }));
     const opens: OpenNeed[] = (msgData?.opens ?? []).map((o: any) => ({ id: o.id, at: (o.at ?? 0) * 1000, from: o.from, to: agentName(o.profile), pane: o.from_pane ?? null }));
+    const held: HeldNeed[] = (msgData?.held ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, from: m.from, to: m.to }));
     const replies: ReplyNeed[] = (msgData?.reply_pending ?? []).map((m: any) => ({ id: m.id, at: (m.at ?? 0) * 1000, from: m.from, to: m.to, pane: byName(m.to) ?? null, queued: !!m.queued }));
     const gates: GateNeed[] = Object.entries(runs)
       .filter(([, s]) => s.state === "gate")
@@ -2585,7 +2586,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         ship: !!s.steps[s.gate ?? 0]?.human,
         name: s.name,
       }));
-    return needRows({ panes, messages, opens, replies, gates, simple });
+    return needRows({ panes, messages, opens, replies, held, gates, simple });
   });
   /// the strip's panes in order: ⌘⇧U and the row click use the same list
   const queue = $derived(needPanes(needList).map((p) => ({ p })));
@@ -2612,19 +2613,19 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   /// the icon of a row: the sender's agent for a message row (the receiver's own icon is the pane it lands in)
   function needIcon(r: NeedRow) {
-    if (r.kind === "message" || r.kind === "open" || r.kind === "reply") {
+    if (r.kind === "message" || r.kind === "open" || r.kind === "reply" || r.kind === "held") {
       const p = byName(r.params.from);
       return p == null ? "" : agentOf(p) || meta[p]?.agent || "";
     }
     return needAgent(r);
   }
   /// dot color of a strip row: the same colors as the bell (FR-87), so one kind looks the same everywhere
-  const dotOf = (k: NeedRow["kind"]) => (k === "password" ? "password" : k === "answer" ? "answer" : k === "message" || k === "open" || k === "reply" || k === "gate" || k === "ship" ? "approve" : "permission");
+  const dotOf = (k: NeedRow["kind"]) => (k === "password" ? "password" : k === "answer" ? "answer" : k === "message" || k === "open" || k === "reply" || k === "held" || k === "gate" || k === "ship" ? "approve" : "permission");
   /// the bold first line: `agent · task` in Sederhana (like the tab), `shell-9 · task` in Lengkap; a gate is the run's name
   function needTitle(r: NeedRow) {
-    if (r.kind === "message" || r.kind === "open" || r.kind === "reply") {
+    if (r.kind === "message" || r.kind === "open" || r.kind === "reply" || r.kind === "held") {
       if (simple) return whoOf(r.params.from);
-      return r.kind === "message" ? `${r.params.from} → ${r.params.to}` : r.params.from;
+      return r.kind === "message" || r.kind === "held" ? `${r.params.from} → ${r.params.to}` : r.params.from;
     }
     if (r.pane == null) return simple ? (r.params.name ?? "") : `Harness · ${r.params.name ?? ""}`;
     const m = meta[r.pane];
@@ -2657,6 +2658,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   /// click a strip row: a pane/its card, or the flow view of the run at its gate
   function goNeed(r: NeedRow) {
     if (r.pane != null && meta[r.pane] && !dead[r.pane]) return jumpTo(r.pane);
+    // FR-90: a card held by a restart lives in the message drawer
+    if (r.kind === "held") return void ((drawer = true), (flow = false), refreshMsgs());
     // only a harness row has somewhere else to go; a card whose pane is gone has no jump target
     if (r.kind !== "gate" && r.kind !== "ship") return;
     // the gate row has no pane: open that workspace's flow, where the gate card and its button live

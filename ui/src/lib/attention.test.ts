@@ -129,3 +129,13 @@ test("strip: balasan nyangkut = kelompok 2, tombol Kirim sekarang cuma kalau mas
   assert.deepEqual(rows[1].params, { from: "codex-1", to: "shell-8" });
   assert.deepEqual(needPanes(rows), [8]);
 });
+
+test("strip: pesan ketunda karena restart = kelompok 2, klik membuka laci (tanpa pane)", () => {
+  const rows = needRows({
+    panes: [], messages: [], opens: [], gates: [], simple: false,
+    held: [{ id: "h1", at: at(9), from: "claude-1", to: "omp-1" }],
+  });
+  assert.deepEqual(rows.map((r) => [r.key, r.kind, r.group, r.pane, r.act, r.what]), [["held:h1", "held", 2, null, "see", "need.held"]]);
+  assert.deepEqual(rows[0].params, { from: "claude-1", to: "omp-1" });
+  assert.deepEqual(needPanes(rows), []);
+});
