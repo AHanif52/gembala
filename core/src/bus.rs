@@ -207,7 +207,9 @@ impl Engine {
     }
 
     pub fn log(&mut self, kind: &str, m: &Msg, reason: Option<&str>) -> Value {
+        // replies never enter `known`, which is what evicts these ids: tracking them would only grow the sets
         match kind {
+            _ if m.is_reply => {}
             "sent" => drop(self.delivered.insert(m.id.clone())),
             "rejected" | "cancelled" => drop(self.closed.insert(m.id.clone())),
             _ => {}
@@ -534,6 +536,11 @@ mod tests {
         assert!(!e.is_delivered("tertolak"));
         e.log("sent", &m, None);
         assert!(e.is_delivered("tertolak"));
+        // a reply's own id is never tracked (nothing evicts it)
+        let r = Msg { is_reply: true, ..msg("balasan", 1) };
+        e.log("sent", &r, None);
+        e.log("rejected", &r, Some("io"));
+        assert!(!e.is_delivered("balasan") && e.delivered.len() == 1 && e.closed.is_empty());
     }
 
     #[test]

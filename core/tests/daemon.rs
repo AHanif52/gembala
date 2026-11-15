@@ -813,7 +813,7 @@ fn status_dari_hook() {
     std::fs::write(cfg.join("config.toml"), format!("[[profile]]\nid = \"claude\"\ncommand = {}\n", json!(fake))).unwrap();
     let t0 = Instant::now();
     while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("fake-claude") {
-        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca: {}", ui.call("config.get", json!({}))["result"]["errors"]);
         std::thread::sleep(Duration::from_millis(100));
     }
     let pane = ui.call("pane.create", json!({"profile": "claude"}))["result"]["pane"].as_u64().unwrap();
@@ -854,7 +854,7 @@ fn subagent_dari_hook() {
     std::fs::write(cfg.join("config.toml"), format!("[[profile]]\nid = \"claude\"\ncommand = {}\n", json!(fake))).unwrap();
     let t0 = Instant::now();
     while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("sub-claude") {
-        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca: {}", ui.call("config.get", json!({}))["result"]["errors"]);
         std::thread::sleep(Duration::from_millis(100));
     }
     let pane = ui.call("pane.create", json!({"profile": "claude"}))["result"]["pane"].as_u64().unwrap();
@@ -955,7 +955,7 @@ fn ringkas_output_saat_agent_keluar() {
     let mut ui = Cli::ui(&d);
     let t0 = Instant::now();
     while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("OUTPUT-AGENT") {
-        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca: {}", ui.call("config.get", json!({}))["result"]["errors"]);
         std::thread::sleep(Duration::from_millis(100));
     }
     let pane = ui.call("pane.create", json!({"profile": "palsu"}))["result"]["pane"].as_u64().unwrap();
@@ -1352,7 +1352,7 @@ fn status_dari_pola_layar() {
     let mut ui = Cli::ui(&d);
     let t0 = Instant::now();
     while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains("tanya") {
-        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca: {}", ui.call("config.get", json!({}))["result"]["errors"]);
         std::thread::sleep(Duration::from_millis(100));
     }
     let pane = ui.call("pane.create", json!({"profile": "tanya"}))["result"]["pane"].as_u64().unwrap();
@@ -1373,7 +1373,7 @@ fn profiles(d: &Daemon, ui: &mut Cli, toml: &str, wait_for: &str) {
     std::fs::write(cfg.join("config.toml"), toml).unwrap();
     let t0 = Instant::now();
     while !ui.call("config.get", json!({}))["result"]["values"]["profiles"].to_string().contains(wait_for) {
-        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca");
+        assert!(t0.elapsed() < Duration::from_secs(10), "config tidak terbaca: {}", ui.call("config.get", json!({}))["result"]["errors"]);
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -2397,8 +2397,9 @@ fn wait_pattern_tidak_jadi_oracle() {
     let g = env!("CARGO_BIN_EXE_gembala");
     let key = "sk-ant-api03-PALSU$((1234567000+890))";
     let uji = format!(
-        "sleep 3; '{g}' wait diam-1 --pattern PALSU1234567890 --timeout 1; '{g}' wait diam-1 --pattern 'disamarkan' --timeout 1; \
-         a=$(date +%s); '{g}' wait diam-1 --pattern TIDAK-ADA --timeout 0; echo LAMA=$(($(date +%s)-a)); echo SELESAI-O; sleep 30"
+        // the binary path once, in a variable: a profile arg is capped at 500 characters and a long checkout path overflowed it
+        "g='{g}'; sleep 3; $g wait diam-1 --pattern PALSU1234567890 --timeout 1; $g wait diam-1 --pattern 'disamarkan' --timeout 1; \
+         a=$(date +%s); $g wait diam-1 --pattern TIDAK-ADA --timeout 0; echo LAMA=$(($(date +%s)-a)); echo SELESAI-O; sleep 30"
     );
     let toml = sh_profile("diam", &format!("echo {key}; sleep 60")) + &sh_profile("uji", &uji);
     profiles(&d, &mut ui, &toml, "SELESAI-O");
@@ -3023,6 +3024,7 @@ fn fr89_batal_dan_ubah_pesan_antre() {
 
     // the sender rewrites its own message, then the user rewrites it again: the user's change carries a mark
     let id = queue(&mut ca, "versi satu");
+    assert_eq!(cb.call("reply", json!({"msg_id": id, "body": "x"}))["error"]["code"], "not_allowed", "belum diketik = belum bisa dibalas (TECH 18)");
     assert_eq!(cb.call("edit", json!({"msg_id": id, "body": "x"}))["error"]["code"], "not_allowed", "bukan pengirim");
     assert_eq!(cb.call("cancel", json!({"msg_id": id}))["error"]["code"], "not_allowed");
     assert_eq!(ca.call("edit", json!({"msg_id": id, "body": "versi dua\x1b[201~\r"}))["result"]["result"], "edited");
