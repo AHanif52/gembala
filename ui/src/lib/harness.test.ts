@@ -1,7 +1,7 @@
 // @ts-nocheck -- run by `npm test` (node --test), not part of the app build
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canStart, clock, live, stagePanes, stepView, testCommand } from "./harness.ts";
+import { canStart, clock, findingFile, live, restartDefault, restartStages, stagePanes, stepView, testCommand, stuckStep } from "./harness.ts";
 
 const step = (id, pane = null) => ({ id, name: id, kind: "work", human: false, shell: false, gate: false, agents: [], output: "", pane, pane_name: pane ? `p${pane}` : null, pane_agent: pane ? "claude" : null, message: null });
 const snap = (over) => ({ run: "r", recipe: "t", name: "T", workspace: "w", cwd: "/x", started_at: 0, state: "running", gate: null, current: 0, halt: null, halt_step: null, round: 0, max_rounds: 2, steps: [step("a", 1), step("b"), step("c")], trace: [], ...over });
@@ -35,4 +35,22 @@ test("panes of a run and who may start", () => {
   assert.equal(canStart([{ ok: false, blocking: true }]), false);
   assert.equal(canStart(undefined), false);
   assert.equal(clock(65), "1:05");
+});
+
+test("stopped run: where it is stuck, what to read, where a restart may begin", () => {
+  const steps = [step("plan"), { ...step("execute"), output: "" }, { ...step("test"), kind: "check", shell: true }, { ...step("scan"), kind: "check", output: "scan.md" }, { ...step("ship"), human: true }];
+  const halted = (o) => snap({ state: "halted", steps, ...o });
+  assert.equal(stuckStep(halted({ halt_step: 3 })), 3);
+  // max rounds has no halt_step: the last check that failed
+  const trace = [{ at: 1, code: "fail", step: 3, agent: "omp" }, { at: 2, code: "fix", step: 3, agent: "claude" }, { at: 3, code: "shell_fail", step: 2, agent: null }];
+  assert.equal(stuckStep(halted({ halt: "max_rounds", trace })), 2);
+  assert.equal(stuckStep(halted({ trace: [] })), null);
+  assert.equal(findingFile(halted({ halt_step: 3 })), "scan.md");
+  assert.equal(findingFile(halted({ halt_step: 2 })), "test.log", "a test stage's findings are the log");
+  assert.equal(findingFile(halted({ halt_step: 1 })), null, "a stage with no output file has nothing to read");
+  assert.equal(findingFile(halted({ halt_step: 4 })), null, "Ship");
+  assert.equal(findingFile(halted({ trace: [] })), null);
+  assert.deepEqual(restartStages(halted({})), [0, 1, 2, 3], "Ship is never a place to begin");
+  assert.equal(restartDefault(halted({})), 1, "Execute");
+  assert.equal(restartDefault(halted({ steps: [step("a"), step("b")] })), 0, "no Execute = the first");
 });

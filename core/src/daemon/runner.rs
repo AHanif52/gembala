@@ -993,8 +993,9 @@ const MAX_READ: u64 = 256 << 10;
 fn artifact(st: &Arc<State>, p: &Value) -> Res {
     let name = p["name"].as_str().ok_or("bad_params")?;
     let snap = state(st, &json!({"run": p["run"]}))?;
+    // a test stage's findings are the log the shell wrote (`fix_message` hands the same file to the agent)
     let listed = snap["steps"].as_array().is_some_and(|steps| {
-        steps.iter().any(|s| s["output"] == name || s["inputs"].as_array().is_some_and(|i| i.iter().any(|n| n == name)))
+        steps.iter().any(|s| s["output"] == name || s["inputs"].as_array().is_some_and(|i| i.iter().any(|n| n == name)) || (s["shell"] == true && name == "test.log"))
     });
     let id = p["run"].as_str().filter(|r| valid_run_id(r)).ok_or("bad_params")?;
     if !listed || name.contains('/') || name.starts_with('.') {
