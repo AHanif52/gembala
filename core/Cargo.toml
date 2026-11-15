@@ -2,6 +2,7 @@
 name = "gembala"
 version = "0.1.10"
 description = "Daemon PTY + CLI Gembala (satu binary)"
+license = "MIT"
 edition = "2024"
 
 [dependencies]
