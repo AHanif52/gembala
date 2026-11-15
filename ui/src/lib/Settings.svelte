@@ -37,7 +37,7 @@
     onwhatsnew = () => {},
   }: {
     cfg: Config;
-    workspaces?: { id: string; name: string }[]; // FR-78: MCP and plugins per workspace
+    workspaces?: { id: string; name: string; accounts?: Record<string, string> }[]; // FR-78: MCP and plugins per workspace
     tg?: any; // FR-80: `telegram.status` / `telegram.changed` from the daemon
     upd?: Upd | null; // FR-82: `update.status` / `update.changed`
     drafts?: AiDraft[]; // FR-77 (H5): Atur pakai AI drafts the page started; `ready` = the agent wrote the file
@@ -330,6 +330,9 @@
   let agentPage = $state<"main" | "akun" | "addon">("main");
   // FR-78 (Gembala.pen 32): add-ons per launch; the daemon writes config.toml and the MCP file, the page follows cfg
   const addons = $derived(cfg.values.addons ?? { plugins: [], mcp: [] });
+  /// the workspaces whose default Claude account this is (the main account also covers the ones that never picked)
+  const usedIn = (a: { id: string; main?: boolean }) =>
+    workspaces.filter((w) => (w.accounts?.claude ? w.accounts.claude === a.id : !!a.main)).map((w) => w.name).join(", ");
   const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? id;
   const MCP_TEMPLATE = '{\n  "mcpServers": {\n    "name": { "command": "npx", "args": ["-y", "mcp-package"] }\n  }\n}';
   let addonErr = $state("");
@@ -637,7 +640,13 @@
     <nav>
       <!-- FR-97: Simple mode keeps the machine-room pages out of the menu (still reachable by switching to Full) -->
       {#each SECTIONS.filter((k) => ui.mode !== "simple" || !["proses", "diagnostik"].includes(k)) as k}
-        <button class:on={k === sec} onclick={() => ((sec = k), (agentPage = "main"))}>{t(`set.nav.${k}`)}</button>
+        <button class:on={k === sec && (k !== "agent" || agentPage === "main")} onclick={() => ((sec = k), (agentPage = "main"))}>{t(`set.nav.${k}`)}</button>
+        <!-- FR-99 P4: the account and add-on pages were only a button on the Claude Code row; now also in the menu -->
+        {#if k === "agent"}
+          {#each ["akun", "addon"] as const as pg (pg)}
+            <button class:on={sec === "agent" && agentPage === pg} onclick={() => ((sec = "agent"), (agentPage = pg))}>{t(`set.nav.${pg}`)}</button>
+          {/each}
+        {/if}
       {/each}
     </nav>
     <div class="body">
@@ -840,6 +849,9 @@
           <!-- Gembala.pen 31: the account page opens from the agent row; the Agents nav goes back to the parent page -->
           <button class="back" onclick={() => (agentPage = "main")}>‹ {t("set.nav.agent")}</button>
           <h4>{t("set.acc.title")}<span class="hint">{t("set.acc.hint")}</span>{#if !accOpen}<button class="mini" onclick={() => (accOpen = true)}>{t("set.acc.add")}</button>{/if}</h4>
+          {#if accRows.filter((r) => !r.account.main).length === 0 && !accOpen}
+            <div class="empty"><b>{t("set.acc.emptyT")}</b><span>{t("set.acc.emptyD")}</span></div>
+          {/if}
         <section>
           {#each accRows as r (r.account.id)}
             <div class="row">
@@ -847,7 +859,7 @@
                 ><span class="name">{r.account.main ? t("acc.main") : r.account.name}{#if r.account.main}<span class="badge">{t("set.acc.default")}</span>{/if}</span><small
                   >{r.status.email ?? t("set.acc.noEmail")} · {r.account.dir}{r.account.model || r.account.effort
                     ? ` · ${[r.account.model, r.account.effort].filter(Boolean).join(" · ")}`
-                    : ""}{r.account.main ? ` · ${t("set.acc.cantDelete")}` : ""}</small
+                    : ""}{r.account.main ? ` · ${t("set.acc.cantDelete")}` : ""}{usedIn(r.account) ? ` · ${t("set.acc.usedIn", { names: usedIn(r.account) })}` : ""}</small
                 ></span
               >
               <span class="acts">
@@ -921,7 +933,7 @@
         {:else if agentPage === "addon"}
           <!-- Gembala.pen 32 (FR-78): add-ons per launch; agent config isn't touched (SEC-15) -->
           <button class="back" onclick={() => ((agentPage = "main"), (mcpEdit = null))}>‹ {t("set.nav.agent")}</button>
-          <h4>{t("set.addon.plugins")}<span class="hint">{t("set.addon.pluginsHint")}</span><button class="mini" onclick={addPlugin}>{t("set.addon.addPlugin")}</button></h4>
+          <h4>{ui.mode === "simple" ? t("set.addon.titleS") : t("set.addon.plugins")}<span class="hint">{ui.mode === "simple" ? t("set.addon.pluginsHintS") : t("set.addon.pluginsHint")}</span><button class="mini" onclick={addPlugin}>{t("set.addon.addPlugin")}</button></h4>
           <section>
             {#each addons.plugins as p (p.id)}
               <div class="row">
@@ -953,12 +965,12 @@
             {#each workspaces as w (w.id)}
               {@const m = addons.mcp.find((x) => x.workspace === w.id)}
               <div class="row">
-                <span class="grow">{w.name}<small>{m ? `${m.servers.join(", ") || t("set.addon.noServers")} · ${m.strict ? t("set.addon.strictOn") : t("set.addon.strictOff")}` : t("set.addon.globalOnly")}</small></span>
+                <span class="grow">{w.name}<small>{m ? `${m.servers.join(", ") || t("set.addon.noServers")} · ${m.strict ? t("set.addon.strictOn") : t("set.addon.strictOff")}` : (ui.mode === "simple" ? t("set.addon.globalOnlyS") : t("set.addon.globalOnly"))}</small></span>
                 {#if mcpEdit?.ws !== w.id}<button class="mini" onclick={() => openMcp(w.id)}>{m ? t("common.edit") : t("set.addon.setUp")}</button>{/if}
               </div>
               {#if mcpEdit?.ws === w.id}
                 <div class="row col">
-                  <small>{t("set.addon.mcpFormat", { env: "${ENV_NAME}" })}</small>
+                  <small>{ui.mode === "simple" ? t("set.addon.mcpFormatS", { env: "${ENV_NAME}" }) : t("set.addon.mcpFormat", { env: "${ENV_NAME}" })}</small>
                   <textarea class="tin mono" rows="8" spellcheck="false" aria-label={t("set.addon.mcpAria", { name: w.name })} bind:value={mcpEdit.text}></textarea>
                   <label class="inline"><input type="checkbox" role="switch" bind:checked={mcpEdit.strict} /> {t("set.addon.strict")} <small>{t("set.addon.strictSub")}</small></label>
                   {#if mcpEdit.error}<span class="m err" role="alert">{mcpEdit.error}</span>{/if}
@@ -973,7 +985,7 @@
               <div class="row"><span>{t("set.addon.noWorkspaces")}</span></div>
             {/each}
           </section>
-          <h4>{t("set.addon.tokens")}<span class="hint">{t("set.addon.tokensHint")}</span></h4>
+          <h4>{t("set.addon.tokens")}{#if ui.mode !== "simple"}<span class="hint">{t("set.addon.tokensHint")}</span>{/if}</h4>
           <section>
             <div class="row">
               <span>RTK<small>{rtk === undefined ? t("set.agent.checking") : rtk ? t("set.addon.rtkOn", { v: rtk }) : t("set.addon.rtkOff")}</small></span>
@@ -982,7 +994,7 @@
           </section>
           <h4>{t("set.addon.others")}</h4>
           <section>
-            <div class="row"><span>Codex<small>{t("set.addon.codexSub")}</small></span><span class="state">{t("set.addon.partial")}</span></div>
+            <div class="row"><span>Codex<small>{ui.mode === "simple" ? t("set.addon.codexSubS") : t("set.addon.codexSub")}</small></span><span class="state">{t("set.addon.partial")}</span></div>
             <div class="row"><span>Oh My Pi · OpenCode<small>{t("set.addon.noFlag")}</small></span><span class="state">{t("set.addon.unsupported")}</span></div>
           </section>
           <p class="warnbox">⚠ {t("set.addon.warn")}</p>
@@ -2061,6 +2073,19 @@
     color: var(--blue, #3b82f6);
   }
   /* Gembala.pen 32: trusted-folder note at the end of the add-on page; switch label inside the MCP editor */
+  .empty {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0 0 10px;
+    padding: 10px 12px;
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+    font-size: 12px;
+  }
+  .empty span {
+    color: var(--muted);
+  }
   .warnbox {
     margin: 18px 0 0;
     padding: 10px 12px;

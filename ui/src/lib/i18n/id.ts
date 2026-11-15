@@ -1722,5 +1722,15 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "hn.why.task": "Isi dulu tugasnya.",
   "hn.why.folder": "Pilih folder dulu.",
   "hn.why.agent": "Belum ada agent yang bisa dipakai.",
+  "set.nav.akun": "Akun",
+  "set.nav.addon": "Add-on",
+  "set.acc.emptyT": "Pisahin akun kantor dan pribadi",
+  "set.acc.emptyD": "Contoh: Claude Code pakai langganan kantor buat proyek kantor, dan langganan pribadi buat proyek sendiri. Tiap akun punya login sendiri, nggak saling campur.",
+  "set.acc.usedIn": "Dipakai di workspace: {names}",
+  "set.addon.titleS": "Alat tambahan agent",
+  "set.addon.pluginsHintS": "plugin yang dipasang ke Claude Code tiap kali jalan",
+  "set.addon.codexSubS": "Server MCP per workspace; plugin belum didukung",
+  "set.addon.globalOnlyS": "ikut MCP global agent",
+  "set.addon.mcpFormatS": "Tulis rahasia sebagai {env}, jangan nilai aslinya.",
 };
 export default id;

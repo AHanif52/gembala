@@ -4256,7 +4256,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
 <!-- outside .grid: a fixed .grid is its own stacking layer, so inside it Settings (z-index 10) lost to the sidebar grip (4) and the rail (6) -->
 {#if settingsOpen && cfg}
   <Settings {cfg} {meta} {tg} {upd} {aiOpen} drafts={aiDrafts} onai={startAi} onbuilder={(id: string, tpl = "") => ((settingsOpen = false), openRecipeTab(id, tpl))} ondraft={(d: string) => (aiDrafts = aiDrafts.filter((x) => x.draft !== d))}
-    onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
+    onpane={(p: number) => ((settingsOpen = false), meta[p] && !dead[p] && jumpTo(p))} start={settingsSec} workspaces={wss.map((w) => ({ id: w.id, name: w.name, accounts: w.accounts }))} onclose={() => ((settingsOpen = false), (settingsSec = "umum"), (aiOpen = null))} onquitall={askQuitAll} onlogin={loginAccount} onreport={() => ((settingsOpen = false), (reportDraft = { title: "", body: "" }))}
     oninstall={(a: Pick<Agent, "name" | "install">) => ((settingsOpen = false), installInTerminal(a))} onguide={(agent: string) => (GUIDE[agent] ? () => (linkAsk = GUIDE[agent]) : undefined)}
     onresetHints={() => { helperTip = true; hintReset += 1; try { localStorage.removeItem(TIP_KEY); } catch {} }} onwhatsnew={() => (settingsOpen = false, openWhatsNew())} />
 {/if}
