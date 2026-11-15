@@ -1711,5 +1711,16 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "hn.rerunWarn": "Hasil kerja agent di folder ini bisa tertimpa. Hasil tahap sebelumnya ikut dipakai.",
   "hn.rerunGo": "Jalanin ulang",
   "hn.ev.restart": "jalan ulang dari sini",
+  "hn.testOpt": "boleh kosong",
+  "hn.ask": "Tanya agent",
+  "hn.askTip": "Agent bawaan dikasih satu pertanyaan di pane baru; jawabannya lu ketik sendiri di sini",
+  "hn.testAsk": "Perintah test repo ini apa? Jawab satu baris saja dan jangan ubah file apa pun.",
+  "hn.testHelp": "Nggak tau perintahnya? Kosongin aja, tahap Test dilewati. Atau tulis Test: … di brief workspace.",
+  "hn.testHelpS": "Kosongin aja kalau nggak tau, tahap tes dilewati. Mau tau perintahnya? Tanya agent.",
+  "hn.testSkipped": "Tahap tes dilewati: perintah tes repo ini belum ketahuan.",
+  "hn.testFill": "Isi perintah tes",
+  "hn.why.task": "Isi dulu tugasnya.",
+  "hn.why.folder": "Pilih folder dulu.",
+  "hn.why.agent": "Belum ada agent yang bisa dipakai.",
 };
 export default id;

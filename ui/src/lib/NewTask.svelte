@@ -68,6 +68,12 @@
 
   const row = $derived(rows.find((r) => r.id === recipeId));
   const needsTest = $derived(!!row?.recipe?.steps.some((s) => s.shell));
+  // FR-99 P3: an empty command is allowed: the test stage is dropped for this run (`skip_shell`), and the chain shows it so
+  const skipTest = $derived(needsTest && !test.trim());
+  let testOpen = $state(false);
+  /// the simple mode keeps the field folded while the command is unknown (L5b); the full mode always shows it
+  const testShown = $derived(needsTest && (!simple || testOpen || !!test.trim()));
+  const pfParams = () => ({ recipe: recipeId, cwd: folder, workspace: ws.id, test: needsTest ? test.trim() : "", skip_shell: skipTest });
   const ready = $derived(task.trim().length > 0 && folder.startsWith("/") && (mode === "manual" ? !!agent : canStart(items)));
 
   $effect(() => {
@@ -84,7 +90,7 @@
 
   // preflight follows what the user types, a beat after the last key
   $effect(() => {
-    const params = { recipe: recipeId, cwd: folder, workspace: ws.id, test: needsTest ? test : "" };
+    const params = pfParams();
     if (mode !== "harness" || !recipeId || !folder.startsWith("/")) {
       items = undefined;
       return;
@@ -106,7 +112,7 @@
     if (r.error) error = errText(r.error, r.args);
     else review = null;
     await load();
-    const p = await call("harness.preflight", { recipe: recipeId, cwd: folder, workspace: ws.id, test: needsTest ? test : "" });
+    const p = await call("harness.preflight", pfParams());
     items = p.items;
   }
   async function pickFolder() {
@@ -119,7 +125,7 @@
     if (mode === "manual") return onmanual({ agent, task: task.trim(), cwd: folder });
     busy = true;
     try {
-      const r = await call("harness.start", { recipe: recipeId, request: task, cwd: folder, workspace: ws.id, test: needsTest ? test : "" });
+      const r = await call("harness.start", { ...pfParams(), request: task });
       if (r.error) error = r.error === "preflight" ? tOr(`hn.check.${r.args?.check}`, r.args?.check) : errText(r.error, r.args);
       else onstarted(r);
     } catch (e) {
@@ -128,7 +134,17 @@
       busy = false;
     }
   }
-  const chain = (r?: Row) => r?.recipe?.steps.map((s) => s.name).join(" → ") ?? "";
+  const chain = (r?: Row) => r?.recipe?.steps.filter((s) => !(skipTest && s.shell)).map((s) => s.name).join(" → ") ?? "";
+  /// "Tanya agent": the default agent gets one question in a pane of its own; the answer is typed here by the user, never read back
+  const askAgent = () => onmanual({ agent, task: t("hn.testAsk"), cwd: folder });
+  /// the reason the start button is off, next to it (audit #23)
+  const why = $derived.by(() => {
+    if (!task.trim()) return t("hn.why.task");
+    if (!folder.startsWith("/")) return t("hn.why.folder");
+    if (mode === "manual") return agent ? "" : t("hn.why.agent");
+    const bad = items?.find((i) => !i.ok && i.blocking);
+    return bad ? tOr(`hn.check.${bad.check}`, bad.check) : items ? "" : "…";
+  });
   const diag = (d: any) => errText(d.code, d.args);
   function key(e: KeyboardEvent) {
     if (e.key === "Escape") {
@@ -189,11 +205,15 @@
         <div class="line"><span class="m grow">{tOr(`hn.status.${row.status}Sub`, row.status)}</span><button class="mini" onclick={() => open(row.id)}>{t("hn.review")}</button></div>
       {/if}
     {/if}
-    {#if needsTest}
-      <label class="line">
-        <span class="lab">{t("hn.test")}</span>
-        <input class="grow mono" bind:value={test} placeholder={t("hn.testPlaceholder")} spellcheck="false" />
-      </label>
+    {#if testShown}
+      <div class="line">
+        <label class="lab wide" for="nt-test">{t("hn.test")} <span class="m">{t("hn.testOpt")}</span></label>
+        <input id="nt-test" class="grow mono" bind:value={test} placeholder={t("hn.testPlaceholder")} spellcheck="false" />
+        <button type="button" class="mini" title={t("hn.askTip")} onclick={askAgent} disabled={!agent}>{t("hn.ask")}</button>
+      </div>
+      <p class="hint">{simple ? t("hn.testHelpS") : t("hn.testHelp")}</p>
+    {:else if needsTest}
+      <div class="line note"><span class="grow">ℹ {t("hn.testSkipped")}</span><button type="button" class="mini" onclick={() => (testOpen = true)}>{t("hn.testFill")}</button></div>
     {/if}
     {#if items}
       <ul class="pre" aria-label={t("hn.preflight")}>
@@ -211,6 +231,7 @@
   {#if error}<div class="bad" role="alert">{error}</div>{/if}
   {#if ontemplate}<button class="link" onclick={ontemplate}>{simple ? t("hn.teamS") : t("hn.team")}</button>{/if}
   <div class="acts">
+    {#if why && !busy}<span class="m why grow" role="status">{why}</span>{/if}
     <button class="mini" onclick={onclose}>{t("hn.cancel")} <span class="k">Esc</span></button>
     <button class="mini go" disabled={!ready || busy} onclick={go}>{t("hn.start")} <span class="k">{keyText("Cmd+Enter")}</span></button>
   </div>
@@ -296,6 +317,20 @@
     display: flex;
     gap: 8px;
     align-items: center;
+  }
+  .lab.wide {
+    width: auto;
+    min-width: 64px;
+  }
+  .note {
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .why {
+    align-self: center;
   }
   .lab {
     width: 64px;
