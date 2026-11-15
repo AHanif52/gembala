@@ -63,6 +63,8 @@ const HELPER_GRACE: Duration = Duration::from_secs(4);
 const LIMIT_MAX: Duration = Duration::from_secs(5 * 3600);
 /// TECH 43: a hooked agent's prompt hook should answer a typed message within this; else the Enter is sent once more
 const SUBMIT_WAIT: Duration = Duration::from_millis(1500);
+/// gap between a pasted message and its Enter (see `deliver`)
+const PASTE_SETTLE: Duration = Duration::from_millis(150);
 const HELPER_QUIET: Duration = Duration::from_secs(1);
 const HELPER_MAX: Duration = Duration::from_secs(15);
 /// FR-86: close request cards waiting per asking agent (a pane the user didn't answer yet)
@@ -2716,8 +2718,16 @@ fn deliver(st: &State, m: &bus::Msg, to: &Pane) -> bool {
     };
     // TECH 43: a hooked agent that was idle goes `working` through its prompt hook once it takes the message; no change = the Enter was lost
     let seq = to.status_seq.load(Ordering::Relaxed);
-    let idle = matches!(*to.status.lock().unwrap(), "idle" | "done");
-    if (&terminal.master).write_all(&bytes).is_ok() {
+    // a fresh helper has no status yet; anything but `working` can be checked the same way
+    let idle = *to.status.lock().unwrap() != "working";
+    // the Enter goes after the paste, not in the same write: a TUI reading both in one chunk (Command Code, Ink) can
+    // take the CR as part of the paste and leave the text sitting in its prompt
+    let (paste, enter) = match bytes.strip_suffix(b"\r") { Some(p) => (p, true), None => (&bytes[..], false) };
+    let wrote = (&terminal.master).write_all(paste).is_ok() && (!enter || {
+        thread::sleep(PASTE_SETTLE);
+        (&terminal.master).write_all(b"\r").is_ok()
+    });
+    if wrote {
         if idle && to.hooked.load(Ordering::Relaxed) {
             *to.sent_check.lock().unwrap() = Some(SentCheck { at: std::time::Instant::now(), seq, msg: m.clone(), retried: false });
         }
