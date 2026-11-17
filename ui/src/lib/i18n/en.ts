@@ -199,6 +199,7 @@ export default {
   "helper.rest": "+{idle} idle · {done} done",
   "helper.restIdle": "+{n} idle",
   "helper.restDone": "{n} done",
+  "helper.restHide": "Hide idle",
   "helper.countSimple": "{n} helpers · {m} need you",
   "grid.owner": "owner",
   "grid.ownerSimple": "main",

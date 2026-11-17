@@ -196,6 +196,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "helper.rest": "+{idle} idle · {done} selesai",
   "helper.restIdle": "+{n} idle",
   "helper.restDone": "{n} selesai",
+  "helper.restHide": "Sembunyikan idle",
   "helper.countSimple": "{n} pembantu · {m} nunggu lu",
   "grid.owner": "pemilik",
   "grid.ownerSimple": "utama",

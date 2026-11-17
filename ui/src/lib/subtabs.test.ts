@@ -29,6 +29,19 @@ test("opens on its own for blocked, unseen done or the selected helper; quiet on
   assert.deepEqual(sel.at(-1).rest.map((t) => t.id), ["q1"]);
 });
 
+test("restOpen: clicking the rest row gives quiet helpers their rows, rest row stays to fold them back", () => {
+  const tabs = [{ id: "owner", restOpen: true }, { id: "wait", parent: "owner" }, { id: "q1", parent: "owner" }, { id: "q2", parent: "owner" }];
+  const rows = subtabRows(tabs, (t) => t.id.startsWith("q"), (t) => t.id === "wait");
+  assert.deepEqual(kinds(rows), ["tab:owner", "summary:owner", "tab:wait", "tab:q1", "tab:q2", "rest:owner"]);
+  assert.equal(rows.at(-1).open, true);
+});
+
+test("restOpen: the fold-back row stays when the only quiet helper is the selected one", () => {
+  const tabs = [{ id: "owner", restOpen: true }, { id: "wait", parent: "owner" }, { id: "q1", parent: "owner" }];
+  const rows = subtabRows(tabs, (t) => t.id === "q1", (t) => t.id === "wait", "q1");
+  assert.deepEqual(kinds(rows), ["tab:owner", "summary:owner", "tab:wait", "tab:q1", "rest:owner"]);
+});
+
 test("manual open/close beats automatic", () => {
   const mk = (helpersOpen) => [{ id: "owner", helpersOpen }, { id: "w", parent: "owner" }, { id: "x", parent: "owner" }];
   assert.deepEqual(kinds(subtabRows(mk(false), none, (t) => t.id === "w")), ["tab:owner", "summary:owner"]);

@@ -45,7 +45,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   import { errText, i18n, loc, t as tt, tn as ttn, tOr } from "$lib/i18n/state.svelte";
   import type { Key } from "$lib/i18n";
 
-  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string; parent?: string; helpersOpen?: boolean; shellsOpen?: boolean; grid?: string[]; gridRows?: boolean; gridRatio?: { x: number; y: number } };
+  type Tab = { id: string; title: string; tree: Node; focus: number; color?: string; parent?: string; helpersOpen?: boolean; restOpen?: boolean; shellsOpen?: boolean; grid?: string[]; gridRows?: boolean; gridRatio?: { x: number; y: number } };
   type Ws = { id: string; name: string; root: string; tabs: Tab[]; collapsed?: boolean; accounts?: Record<string, string>; color?: string | null; brief?: string }; // FR-61: default account per agent; FR-44: block color; FR-13: brief
   /// Per-pane data to restore (FR-45): profile and folder, no screen content (SEC-13).
   type Meta = {
@@ -3338,7 +3338,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           {@const rest = row.rest ?? []}
           {@const nDone = rest.filter((x) => meta[x.focus]?.status === "done").length}
           {@const nIdle = rest.length - nDone}
-          <span class="helper-rest" title={rest.map((x) => meta[x.focus]?.name || title(x)).join(", ")}>{nIdle && nDone ? tt("helper.rest", { idle: nIdle, done: nDone }) : nDone ? tt("helper.restDone", { n: nDone }) : tt("helper.restIdle", { n: nIdle })}</span>
+          <button class="helper-rest" aria-expanded={!!row.open} title={rest.map((x) => meta[x.focus]?.name || title(x)).join(", ")} onclick={() => (t.restOpen = !row.open)}>{row.open ? tt("helper.restHide") : nIdle && nDone ? tt("helper.rest", { idle: nIdle, done: nDone }) : nDone ? tt("helper.restDone", { n: nDone }) : tt("helper.restIdle", { n: nIdle })}</button>
         {:else}
         {@const n = order.findIndex((o) => o.t === t)}
         {@const agents = panes(t.tree).map((p) => meta[p]?.busy).filter(Boolean)}
@@ -5069,6 +5069,14 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     font-size: 11px;
   }
   .tab.helper .tt {
+    background: none;
+    border: 0;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .helper-rest:hover {
+    color: var(--fg);
     display: flex;
     align-items: center;
     white-space: nowrap;

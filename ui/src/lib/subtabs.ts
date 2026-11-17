@@ -1,5 +1,5 @@
-export type NestedTab = { id: string; parent?: string; helpersOpen?: boolean; grid?: string[]; gridRows?: boolean; gridRatio?: { x: number; y: number } };
-export type SidebarRow<T> = { kind: "tab" | "summary" | "rest"; tab: T; count?: number; child?: boolean; rest?: T[] };
+export type NestedTab = { id: string; parent?: string; helpersOpen?: boolean; restOpen?: boolean; grid?: string[]; gridRows?: boolean; gridRatio?: { x: number; y: number } };
+export type SidebarRow<T> = { kind: "tab" | "summary" | "rest"; tab: T; count?: number; child?: boolean; rest?: T[]; open?: boolean };
 export type HelperDot = "blocked" | "working" | "done" | "idle";
 
 // FR-101 varian B (TECH 37): roots keep their tab order; a helper always sits below its owner. One helper = a thin row;
@@ -18,10 +18,11 @@ export function subtabRows<T extends NestedTab>(tabs: T[], quiet: (tab: T) => bo
     rows.push({ kind: "summary", tab, count: children.length });
     const auto = children.some((t) => blocked(t) || unseen(t) || t.id === selected);
     if (!(tab.helpersOpen ?? auto)) continue;
-    const show = (t: T) => !quiet(t) || t.id === selected;
+    const folded = (t: T) => quiet(t) && t.id !== selected;
+    const show = (t: T) => !folded(t) || !!tab.restOpen; // `restOpen`: the user clicked the rest row, quiet helpers get their rows too
     rows.push(...children.filter(show).map((t) => ({ kind: "tab" as const, tab: t, child: true })));
-    const rest = children.filter((t) => !show(t));
-    if (rest.length) rows.push({ kind: "rest", tab, count: rest.length, rest });
+    const rest = children.filter(tab.restOpen ? quiet : folded); // open: the fold-back button stays even when only the selected one is quiet
+    if (rest.length) rows.push({ kind: "rest", tab, count: rest.length, rest, open: !!tab.restOpen });
   }
   return rows;
 }
