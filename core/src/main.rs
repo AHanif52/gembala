@@ -15,6 +15,7 @@ mod jail;
 mod mark;
 mod msg;
 mod os;
+mod omp_rpc;
 mod outbox;
 mod profile;
 mod pty;

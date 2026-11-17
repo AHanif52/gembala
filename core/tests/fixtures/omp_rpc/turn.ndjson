@@ -1,0 +1,37 @@
+{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864,"supportsBashExcludeFromContext":true}
+{"type":"extension_ui_request","id":"ui-1","method":"setWidget","widgetKey":"autoresearch"}
+{"type":"available_commands_update","commands":[{"name":"security","description":"fixture"}]}
+{"id":"state-1","type":"response","command":"get_state","success":true,"data":{"sessionId":"fixture-session","sessionFile":"/fixture/project/sessions/fixture-session.jsonl","thinkingLevel":"low","messageCount":0,"isSettled":true,"isStreaming":false,"tokensPerSecond":null,"contextUsage":{"tokens":1000,"contextWindow":200000,"percent":0.5},"model":{"id":"model-a","name":"Model A","provider":"fixture","contextWindow":200000}}}
+{"id":"p1","type":"response","command":"prompt","success":true}
+{"type":"thinking_level_changed","thinkingLevel":"low","configured":"auto","resolved":"low"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Tulis halo ke berkas fixture"}],"attribution":"user","timestamp":1794906011183},"messageId":"msg-1"}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Tulis halo ke berkas fixture"}],"attribution":"user","timestamp":1794906011183},"messageId":"msg-1"}
+{"type":"message_start","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Menulis berkas"}],"provider":"fixture","model":"model-a","usage":{"input":29356,"output":3,"cacheRead":4096,"cacheWrite":0,"totalTokens":33455,"cost":{"total":0}},"stopReason":"toolUse","timestamp":1794906013495},"messageId":"msg-2"}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Menulis ","partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"berkas","partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"Menulis berkas","partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":1,"partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":1,"delta":"{\"path\": \"halo.txt\"}","partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":1,"toolCall":{"type":"toolCall","id":"call-1","name":"write","arguments":{"path":"halo.txt","content":"halo\n"},"streamIndex":1},"partial":{"role":"assistant","content":[]}}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Menulis berkas"},{"type":"toolCall","id":"call-1","name":"write","arguments":{"path":"halo.txt","content":"halo\n"},"streamIndex":1}],"provider":"fixture","model":"model-a","usage":{"input":60,"output":74,"cacheRead":33408,"cacheWrite":0,"totalTokens":33542,"cost":{"total":0}},"stopReason":"toolUse","timestamp":1794906013495},"messageId":"msg-2"}
+{"type":"tool_execution_start","toolCallId":"call-1","toolName":"write","args":{"path":"halo.txt","content":"halo\n"},"intent":"Writing halo.txt"}
+{"type":"extension_ui_request","id":"ui-2","method":"select","title":"Allow tool: write\nPath: halo.txt","options":["Approve","Approve write for this session","Deny"]}
+{"type":"tool_execution_end","toolCallId":"call-1","toolName":"write","result":{"content":[{"type":"text","text":"Successfully wrote 5 bytes to halo.txt"}],"details":{"resolvedPath":"/fixture/project/halo.txt"}},"isError":false}
+{"type":"message_start","message":{"role":"toolResult","toolCallId":"call-1","toolName":"write","content":[{"type":"text","text":"Successfully wrote 5 bytes to halo.txt"}],"details":{"resolvedPath":"/fixture/project/halo.txt"},"isError":false,"timestamp":1794906015297},"messageId":"msg-3"}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"call-1","toolName":"write","content":[{"type":"text","text":"Successfully wrote 5 bytes to halo.txt"}],"details":{"resolvedPath":"/fixture/project/halo.txt"},"isError":false,"timestamp":1794906015297},"messageId":"msg-3"}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"write","arguments":{"path":"halo.txt","content":"halo\n"},"streamIndex":1}],"provider":"fixture","model":"model-a","usage":{"input":60,"output":74,"cacheRead":33408,"cacheWrite":0,"totalTokens":33542,"cost":{"total":0}},"stopReason":"toolUse","timestamp":1794906013495},"toolResults":[]}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[{"type":"text","text":"Selesai 🌱"}],"provider":"fixture","model":"model-a","usage":{"input":167,"output":28,"cacheRead":33408,"cacheWrite":0,"totalTokens":33603,"cost":{"total":0}},"stopReason":"stop","timestamp":1794906019300},"messageId":"msg-4"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Selesai ","partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"🌱","partial":{"role":"assistant","content":[]}}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Selesai 🌱","partial":{"role":"assistant","content":[]}}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Selesai 🌱"}],"provider":"fixture","model":"model-a","usage":{"input":167,"output":28,"cacheRead":33408,"cacheWrite":0,"totalTokens":33603,"cost":{"total":0}},"stopReason":"stop","timestamp":1794906019300,"completedAt":1794906019460},"messageId":"msg-4"}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"Selesai 🌱"}],"provider":"fixture","model":"model-a","usage":{"input":167,"output":28,"cacheRead":33408,"cacheWrite":0,"totalTokens":33603,"cost":{"total":0}},"stopReason":"stop","timestamp":1794906019300},"toolResults":[]}
+{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"Tulis halo ke berkas fixture"}]},{"role":"assistant","content":[{"type":"text","text":"Selesai 🌱"}]}],"isTerminal":true}
+{"type":"prompt_result","id":"p1","agentInvoked":true,"status":"completed","sessionSettled":true}
+{"type":"session_settled"}
+{"type":"extension_ui_request","id":"ui-3","method":"setWidget","widgetKey":"autoresearch"}
