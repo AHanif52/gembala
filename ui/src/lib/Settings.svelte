@@ -859,6 +859,10 @@
             <span>{t("set.look.agyStructured")}<small>{t("set.look.agyStructuredSub")}</small></span>
             <input type="checkbox" role="switch" aria-label={t("set.look.agyStructured")} checked={ui.agy_structured} onchange={(e) => set("agy_structured", e.currentTarget.checked)} />
           </div>
+          <div class="row">
+            <span>{t("set.look.ompStructured")}<small>{t("set.look.ompStructuredSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.look.ompStructured")} checked={ui.omp_structured} onchange={(e) => set("omp_structured", e.currentTarget.checked)} />
+          </div>
         </section>
         {/if}
       {:else if sec === "agent"}

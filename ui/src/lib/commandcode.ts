@@ -3,7 +3,7 @@
 /// as "not supported yet" and never change access or success.
 import { apply, emptyView, type Action, type Block, type ToolStatus, type Usage, type View } from "./agent-view.ts";
 
-export type CcEvent = { pane: number; epoch: string; runId: string; seq: number; kind: "agent" | "result" | "state"; payload: any };
+export type CcEvent = { pane: number; epoch: string; runId: string; seq: number; kind: "agent" | "result" | "state" | "permission" | "permission_done"; payload: any };
 
 const MAX = 64 * 1024;
 const clip = (s: string) => (s.length > MAX ? `${s.slice(0, MAX)}…` : s);
@@ -79,8 +79,10 @@ export function agentActions(e: any): Action[] {
       return tool(e, "running", e.description ? { note: clip(str(e.description)) } : {});
     case "tool_update":
       return tool(e, undefined, { partial: text(e.partial) });
-    case "tool_completed":
-      return tool(e, "done", { output: text(e.result) });
+    case "tool_completed": {
+      const output = text(e.result);
+      return tool(e, "done", { output, ...(output.includes("truncated to 768 bytes") ? { note: "omp.truncated" } : {}) });
+    }
     case "tool_errored":
       return tool(e, "error", { output: text(e.error) });
     case "tool_denied":
@@ -131,7 +133,9 @@ export function actions(ev: CcEvent): Action[] {
   if (ev.kind === "agent") return agentActions(p);
   if (ev.kind === "result") return [{ t: "result", usage: usage(p.usage), durationMs: count(p.durationMs), error: p.error ? text(p.error) : null, finalText: typeof p.finalText === "string" ? p.finalText : null, replaceUsage: p.usageCumulative === true }];
   // only an explicit "yolo" from the daemon widens the view; anything else reads as restricted
-  const access: Action[] = "access" in p ? [{ t: "access", mode: p.access === "yolo" ? "yolo" : p.access === "plan" ? "plan" : "restricted" }] : [];
+  const access: Action[] = "access" in p ? [{ t: "access", mode: p.access === "yolo" ? "yolo" : p.access === "write" ? "write" : p.access === "always-ask" ? "always-ask" : p.access === "plan" ? "plan" : "restricted" }] : [];
+  if (ev.kind === "permission") return [{ t: "permission", id: str(p.id), title: typeof p.title === "string" ? p.title : null, options: Array.isArray(p.options) ? p.options.filter((x: unknown) => typeof x === "string") : [] }];
+  if (ev.kind === "permission_done") return [{ t: "permission_done", id: str(p.id) }];
   if (typeof p.sessionId === "string") access.push({ t: "session", id: p.sessionId });
   if (p.state === "working") return [...access, { t: "run", runId: ev.runId, at: Date.now() }];
   // only the run's own end carries `exitCode`; a state without it is a policy or session change between runs (grant,
@@ -158,8 +162,12 @@ export function fromSnapshot(s: any, epoch: string, through: number): View {
   v.seq = through;
   v.sessionId = typeof s?.sessionId === "string" ? s.sessionId : null;
   v.model = typeof s?.model === "string" ? s.model : null;
+  v.effort = typeof s?.effort === "string" ? s.effort : null;
+  v.context = typeof s?.context === "number" ? s.context : null;
+  if (s?.usage && typeof s.usage === "object") v.usage = usage(s.usage);
   v.truncated = s?.truncated === true;
-  v.access = s?.access === "yolo" ? "yolo" : s?.access === "plan" ? "plan" : "restricted";
+  v.access = s?.access === "yolo" ? "yolo" : s?.access === "write" ? "write" : s?.access === "always-ask" ? "always-ask" : s?.access === "plan" ? "plan" : "restricted";
+  v.permissions = Array.isArray(s?.permissions) ? s.permissions.filter((p: any) => typeof p?.id === "string" && Array.isArray(p.options)).map((p: any) => ({ id:p.id, title:typeof p.title === "string" ? p.title : null, options:p.options.filter((x: unknown) => typeof x === "string") })) : [];
   const running = s?.state === "working";
   v.runId = typeof s?.runId === "string" ? s.runId : null;
   for (const [id, t] of Object.entries<any>(s?.tools ?? {})) {
@@ -228,13 +236,16 @@ export function proposal(name: string, input: any): { path: string; before: stri
   if (!input || typeof input !== "object") return null;
   const path = str(input.file_path) || str(input.path);
   if (name === "edit_file" && typeof input.old_string === "string" && typeof input.new_string === "string") return { path, before: input.old_string, after: input.new_string };
+  if (name === "edit" && typeof input.old_string === "string" && typeof input.new_string === "string") return { path, before: input.old_string, after: input.new_string };
   if (name === "write_file" && typeof input.content === "string") return { path, before: "", after: input.content };
+  if (name === "write" && typeof input.content === "string") return { path, before: "", after: input.content };
   return null;
 }
 
 /// FR-107: a bare Command Code command (no arguments) typed in the input editor opens the structured pane instead
 export const ccTrigger = (text: string) => /^\s*(cmd|commandcode|cmdc)\s*$/.test(text);
 export const agyTrigger = (text: string) => /^\s*agy\s*$/.test(text);
+export const ompTrigger = (text: string) => /^\s*omp\s*$/.test(text);
 
 // Slash input in the CC pane is never sent to the model: it maps to a UI control or a note.
 export const CC_SLASH = ["model", "effort", "resume", "history", "permissions", "access", "help"];

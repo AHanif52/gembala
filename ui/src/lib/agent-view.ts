@@ -18,12 +18,14 @@ export type View = {
   runId: string | null;
   sessionId: string | null;
   model: string | null;
+  effort: string | null;
   context: number | null; // size of the last request (prompt + output), not a session sum
   usage: Usage | null; // sum of each run's final `result` usage
+  permissions: { id: string; title: string | null; options: string[] }[];
   turns: Turn[];
   tools: Record<string, Tool>;
   truncated: boolean;
-  access: "restricted" | "yolo" | "plan"; // the daemon's effective policy, never decided here
+  access: "restricted" | "always-ask" | "write" | "yolo" | "plan"; // the daemon's effective policy, never decided here
 };
 export type Action =
   | { t: "user"; text: string; at: number }
@@ -39,12 +41,14 @@ export type Action =
   | ({ t: "notice" } & Omit<Notice, "kind">)
   | { t: "result"; usage: Usage; durationMs: number | null; error: string | null; finalText: string | null; replaceUsage?: boolean }
   | { t: "end"; state: string; exitCode: number | null }
-  | { t: "access"; mode: "restricted" | "yolo" | "plan" };
+  | { t: "access"; mode: "restricted" | "always-ask" | "write" | "yolo" | "plan" }
+  | { t: "permission"; id: string; title: string | null; options: string[] }
+  | { t: "permission_done"; id: string };
 
 export const BUSY = ["starting", "thinking", "writing", "tool"];
 const ACTIVE: ToolStatus[] = ["queued", "running"];
 
-export const emptyView = (): View => ({ epoch: null, seq: 0, status: "idle", runId: null, sessionId: null, model: null, context: null, usage: null, turns: [], tools: {}, truncated: false, access: "restricted" });
+export const emptyView = (): View => ({ epoch: null, seq: 0, status: "idle", runId: null, sessionId: null, model: null, effort: null, context: null, usage: null, permissions: [], turns: [], tools: {}, truncated: false, access: "restricted" });
 
 /// the turn of the current run; events of a run the view never saw start (attached mid-run) get a turn of their own
 function agentTurn(v: View): Extract<Turn, { role: "agent" }> {
@@ -68,6 +72,17 @@ export function apply(v: View, a: Action): void {
   }
   if (a.t === "session") return void (v.sessionId = a.id);
   if (a.t === "access") return void (v.access = a.mode);
+  if (a.t === "permission") {
+    const i = v.permissions.findIndex((p) => p.id === a.id);
+    const request = { id: a.id, title: a.title, options: a.options };
+    if (i < 0) v.permissions.push(request);
+    else v.permissions[i] = request;
+    return;
+  }
+  if (a.t === "permission_done") {
+    v.permissions = v.permissions.filter((p) => p.id !== a.id);
+    return;
+  }
   if (a.t === "request") {
     if (a.model) v.model = a.model;
     if (a.context !== undefined && a.context !== null) v.context = a.context;

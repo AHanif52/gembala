@@ -15,6 +15,7 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI32, AtomicBool};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
 
 const RING_MAX: usize = 8 << 20;
@@ -88,10 +89,33 @@ pub(super) struct Pane {
     effort: String,
     closed: AtomicBool,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
+    omp: Mutex<Option<SyncSender<OmpCommand>>>,
     data: Mutex<Data>,
     /// Wide access is per pane, RAM only, and only after an explicit UI gate: it dies with the daemon.
     access: Mutex<Access>,
 }
+
+enum OmpCommand {
+    Run {
+        run_id: String,
+        prompt: String,
+    },
+    Abort,
+    Answer {
+        id: String,
+        value: String,
+    },
+    Switch {
+        session: String,
+        path: PathBuf,
+        reply: SyncSender<Result<Value, &'static str>>,
+    },
+    History(SyncSender<Result<Value, &'static str>>),
+    Stop,
+}
+
+type OmpReply = SyncSender<Result<Value, &'static str>>;
+type OmpPending = HashMap<String, (String, Option<OmpReply>)>;
 
 enum StreamReader {
     CommandCode(Reader),
@@ -138,13 +162,17 @@ struct Data {
 }
 
 fn snapshot() -> Value {
-    json!({"state":"idle", "access":"restricted", "messages":[], "runs":[], "dropped":0, "text":"", "thinking":"", "tools":{}, "truncated":false})
+    json!({"state":"idle", "access":"restricted", "messages":[], "runs":[], "dropped":0, "text":"", "thinking":"", "tools":{}, "permissions":[], "truncated":false})
 }
 
 fn clip(text: &str, cap: usize) -> String {
     let mut end = text.len().min(cap);
     while !text.is_char_boundary(end) { end -= 1; }
     text[..end].to_string()
+}
+
+fn omp_truncated(text: &str) -> bool {
+    text.contains("[Some lines truncated to ")
 }
 
 /// Bound every string before it becomes display state, including nested tool output.
@@ -270,10 +298,10 @@ pub(super) fn create(st: &Arc<State>, p: &Value) -> Res {
     if st.panes.lock().unwrap().len() >= max { return Err("max_panes"); }
     let profile_id = p["profile"].as_str().ok_or("bad_params")?;
     let profile = st.profiles.lock().unwrap().iter().find(|x| x.id == profile_id).cloned().ok_or("no_such_profile")?;
-    if !matches!(profile.agent.as_str(), "commandcode" | "agy") { return Err("wrong_kind"); }
+    if !matches!(profile.agent.as_str(), "commandcode" | "agy" | "omp") { return Err("wrong_kind"); }
     if p["agent"].as_str().is_some_and(|agent| agent != profile.agent) { return Err("wrong_kind"); }
     // Free-form profile flags/mods could undo restricted access. No shell or secret interpolation.
-    if !profile.args.is_empty() || !profile.secret_env.is_empty() || profile.permission != "default" {
+    if !profile.args.is_empty() || !profile.secret_env.is_empty() || profile.permission != "default" && !(profile.agent == "omp" && profile.permission == "auto") {
         return Err("unsupported_profile");
     }
     let cwd = p["cwd"].as_str().ok_or("bad_params")?;
@@ -281,24 +309,29 @@ pub(super) fn create(st: &Arc<State>, p: &Value) -> Res {
     if !cwd.is_dir() { return Err("bad_dir"); }
     let workspace = p["workspace"].as_str().ok_or("bad_params")?;
     if workspace.len() > 64 { return Err("bad_params"); }
-    let (model, effort) = model_effort(p)?;
+    let (model, effort) = if profile.agent == "omp" { ("", "") } else { model_effort(p)? };
     validate_model_effort(model, effort)?;
     let backend = Pane {
         agent: profile.agent.clone(),
         pid: AtomicI32::new(0), cwd: cwd.clone(), command: profile.command, env: profile.env,
         model: model.into(), effort: effort.into(), closed: AtomicBool::new(false),
         worker: Mutex::new(None),
+        omp: Mutex::new(None),
         data: Mutex::new(Data { seq:0, run_id:String::new(), session:String::new(), active:false, cancel:None,
             requests:VecDeque::new(), ring:VecDeque::new(), bytes:0, snapshot:snapshot(), subscribers:Vec::new(), seen:None }),
         access: Mutex::new(Access { mode:"restricted", revision:0, cwd:cwd.clone(), session:String::new() }),
     };
+    if profile.agent == "omp" {
+        backend.access.lock().unwrap().mode = "always-ask";
+        backend.data.lock().unwrap().snapshot["access"] = json!("always-ask");
+    }
     let key = new_secret().map_err(|_| "io")?[..16].to_string();
     let agent = backend.agent.clone();
     let pane = Arc::new(make_pane(st, p, PaneKind::Structured(Box::new(backend)), agent.clone(), key));
     let id = st.next.fetch_add(1, Ordering::Relaxed);
     let name = pane.name.lock().unwrap().clone();
     st.panes.lock().unwrap().insert(id, pane);
-    Ok(json!({"pane":id, "name":name, "kind":if agent == "commandcode" { "commandcode" } else { "structured" }, "agent":agent, "access":"restricted"}))
+    Ok(json!({"pane":id, "name":name, "kind":if agent == "commandcode" { "commandcode" } else { "structured" }, "agent":agent, "access":if agent == "omp" { "always-ask" } else { "restricted" }}))
 }
 
 pub(super) fn backend(pane: &super::Pane) -> Result<&Pane, &'static str> {
@@ -352,6 +385,7 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     if p.as_object().is_none_or(|o| o.keys().any(|k| !["pane", "requestId", "prompt", "model", "effort"].contains(&k.as_str()))) {
         return Err("bad_params");
     }
+    if cc.agent == "omp" { return run_omp(st, id, &pane, request, prompt); }
     let (model, effort) = model_effort(p)?;
     validate_model_effort(model, effort)?;
     // A daemon started by launchd has no Homebrew PATH; `cmd` is `#!/usr/bin/env node`. Taken before any lock (first call runs a shell).
@@ -433,6 +467,542 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     Ok(json!({"runId":run_id}))
 }
 
+fn omp_args(cwd: &Path, mode: &str, session: &str) -> Vec<String> {
+    let mut args = vec![
+        "--mode".into(),
+        "rpc".into(),
+        "--cwd".into(),
+        cwd.to_string_lossy().into_owned(),
+        "--approval-mode".into(),
+        match mode {
+            "yolo" => "yolo",
+            "write" => "write",
+            _ => "always-ask",
+        }
+        .into(),
+    ];
+    if !session.is_empty() {
+        args.extend(["--resume".into(), session.into()]);
+    }
+    args
+}
+
+fn omp_write(child: &mut Child, line: &str) -> io::Result<()> {
+    let input = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| io::Error::other("omp stdin closed"))?;
+    input.write_all(line.as_bytes())?;
+    input.write_all(b"\n")?;
+    input.flush()
+}
+
+fn omp_command(
+    child: &mut Child,
+    line_id: &mut u64,
+    pending: &mut OmpPending,
+    name: &str,
+    wire: String,
+    reply: Option<SyncSender<Result<Value, &'static str>>>,
+) -> io::Result<()> {
+    *line_id += 1;
+    let key = format!("g{line_id}");
+    pending.insert(key, (name.into(), reply));
+    omp_write(child, &wire)
+}
+
+fn run_omp(st: &Arc<State>, id: u64, pane: &Arc<super::Pane>, request: &str, prompt: &str) -> Res {
+    let cc = backend(pane)?;
+    let mut worker = cc.worker.lock().unwrap();
+    let mut d = cc.data.lock().unwrap();
+    if cc.closed.load(Ordering::Acquire) {
+        return Err("no_such_pane");
+    }
+    if let Some((_, run)) = d.requests.iter().find(|(r, _)| r == request) {
+        return Ok(json!({"runId":run}));
+    }
+    if d.active {
+        return Err("busy");
+    }
+    d.make_room();
+    let run_id = new_secret().map_err(|_| "io")?;
+    let mode = cc.access.lock().unwrap().mode;
+    if cc.omp.lock().unwrap().is_none() {
+        if let Some(old) = worker.take() {
+            let _ = old.join();
+        }
+        let path = [profile::user_path(), std::env::var("PATH").ok()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(":");
+        let mut cmd = Command::new(&st.hooks.exe);
+        cmd.args(["jail", "--", &cc.command])
+            .args(omp_args(&cc.cwd, mode, &d.session));
+        pty::scrub_env(&mut cmd);
+        cmd.env("PATH", path)
+            .envs(cc.env.iter().cloned())
+            .current_dir(&cc.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let panes = st.panes.lock().unwrap();
+        let mut child = cmd.spawn().map_err(|_| "spawn_failed")?;
+        let pid = child.id() as i32;
+        if nonblocking(&child).is_err() {
+            unsafe {
+                libc::killpg(pid, libc::SIGKILL);
+            }
+            let _ = child.wait();
+            return Err("io");
+        }
+        cc.pid.store(pid, Ordering::Release);
+        drop(panes);
+        let (tx, rx) = sync_channel(64);
+        *cc.omp.lock().unwrap() = Some(tx);
+        let state = st.clone();
+        let running = pane.clone();
+        *worker = Some(thread::spawn(move || {
+            omp_pump(state, id, running, child, rx)
+        }));
+    }
+    let tx = cc.omp.lock().unwrap().clone().ok_or("spawn_failed")?;
+    d.active = true;
+    d.cancel = None;
+    d.run_id = run_id.clone();
+    d.note_prompt(prompt);
+    d.snapshot["text"] = json!("");
+    d.snapshot["thinking"] = json!("");
+    d.snapshot["result"] = Value::Null;
+    d.snapshot["state"] = json!("working");
+    d.snapshot["runId"] = json!(run_id);
+    d.snapshot["access"] = json!(mode);
+    d.requests.push_back((request.into(), run_id.clone()));
+    d.emit(
+        &st.boot,
+        id,
+        "state",
+        json!({"state":"working", "access":mode}),
+    );
+    drop(d);
+    *pane.status.lock().unwrap() = "working";
+    tx.send(OmpCommand::Run {
+        run_id: run_id.clone(),
+        prompt: prompt.into(),
+    })
+    .map_err(|_| "spawn_failed")?;
+    Ok(json!({"runId":run_id}))
+}
+
+fn omp_pump(
+    st: Arc<State>,
+    id: u64,
+    pane: Arc<super::Pane>,
+    mut child: Child,
+    rx: Receiver<OmpCommand>,
+) {
+    use crate::omp_rpc::{Delta, Frame, Reader as OmpReader};
+    let Ok(cc) = backend(&pane) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    };
+    let mut reader = OmpReader::default();
+    let mut pending = OmpPending::new();
+    let mut line_id = 0u64;
+    let mut buf = [0u8; 16 * 1024];
+    let mut ready = false;
+    let mut pending_prompt: Option<String> = None;
+    let mut pending_history: Vec<OmpReply> = Vec::new();
+    let mut pending_switch: Vec<(String, PathBuf, OmpReply)> = Vec::new();
+    let mut error = None;
+    let mut stderr = Vec::new();
+    let mut out_eof = false;
+    let mut err_eof = false;
+    let mut usage = json!({});
+    loop {
+        match rx.try_recv() {
+            Ok(OmpCommand::Stop) => {
+                let _ = child.kill();
+                break;
+            }
+            Ok(OmpCommand::Run { run_id: r, prompt }) => {
+                let _ = r;
+                if ready {
+                    let key = format!("g{}", line_id + 1);
+                    if let Err(e) = omp_command(
+                        &mut child,
+                        &mut line_id,
+                        &mut pending,
+                        "prompt",
+                        crate::omp_rpc::prompt(&key, &prompt),
+                        None,
+                    ) {
+                        error = Some(e.to_string());
+                    }
+                } else {
+                    pending_prompt = Some(prompt);
+                }
+            }
+            Ok(OmpCommand::Abort) => {
+                let key = format!("g{}", line_id + 1);
+                if let Err(e) = omp_command(
+                    &mut child,
+                    &mut line_id,
+                    &mut pending,
+                    "abort",
+                    crate::omp_rpc::abort(&key),
+                    None,
+                ) {
+                    error = Some(e.to_string());
+                }
+            }
+            Ok(OmpCommand::Answer {
+                id: request_id,
+                value,
+            }) => {
+                let _ = omp_write(
+                    &mut child,
+                    &crate::omp_rpc::ui_response(&request_id, &value),
+                );
+                let mut d = cc.data.lock().unwrap();
+                d.snapshot["permissions"] = Value::Array(
+                    d.snapshot["permissions"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|v| v["id"] != request_id)
+                        .cloned()
+                        .collect(),
+                );
+                d.emit(&st.boot, id, "permission_done", json!({"id":request_id}));
+            }
+            Ok(OmpCommand::History(reply)) => {
+                if ready {
+                    let key = format!("g{}", line_id + 1);
+                    let _ = omp_command(
+                        &mut child,
+                        &mut line_id,
+                        &mut pending,
+                        "get_messages",
+                        crate::omp_rpc::get_messages(&key),
+                        Some(reply),
+                    );
+                } else {
+                    pending_history.push(reply);
+                }
+            }
+            Ok(OmpCommand::Switch {
+                session,
+                path,
+                reply,
+            }) => {
+                if ready {
+                    let key = format!("g{}", line_id + 1);
+                    let _ = omp_command(
+                        &mut child,
+                        &mut line_id,
+                        &mut pending,
+                        "switch_session",
+                        crate::omp_rpc::switch_session(&key, &path.to_string_lossy()),
+                        Some(reply),
+                    );
+                } else {
+                    pending_switch.push((session, path, reply));
+                }
+            }
+            Err(TryRecvError::Disconnected) => {
+                let _ = child.kill();
+                break;
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+        if !out_eof {
+            match child.stdout.as_mut().map(|o| o.read(&mut buf)) {
+                Some(Ok(n)) if n > 0 => match reader.feed(&buf[..n]) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            match frame {
+                                Frame::Ready(r) => {
+                                    if r.protocol != crate::omp_rpc::PROTOCOL {
+                                        error = Some("unsupported omp RPC protocol".into());
+                                    } else {
+                                        ready = true;
+                                        let key = format!("g{}", line_id + 1);
+                                        let _ = omp_command(
+                                            &mut child,
+                                            &mut line_id,
+                                            &mut pending,
+                                            "get_state",
+                                            crate::omp_rpc::get_state(&key),
+                                            None,
+                                        );
+                                    }
+                                }
+                                Frame::Response {
+                                    id: response_id,
+                                    command,
+                                    ok,
+                                    data,
+                                    error: message,
+                                } => {
+                                    if let Some((expected, reply)) = pending.remove(&response_id) {
+                                        let result = if !ok || expected != command {
+                                            Err("omp_rpc_error")
+                                        } else {
+                                            Ok(data.clone())
+                                        };
+                                        if let Some(reply) = reply {
+                                            let _ = reply.send(result);
+                                        }
+                                        if command == "get_state"
+                                            && ok
+                                            && let Ok(state) = crate::omp_rpc::state(&data)
+                                        {
+                                            let mut d = cc.data.lock().unwrap();
+                                            d.bind_session(Some(&state.session_id));
+                                            d.snapshot["model"] = json!(
+                                                state.model.clone().unwrap_or_else(|| "—".into())
+                                            );
+                                            d.snapshot["effort"] =
+                                                json!(state.thinking.unwrap_or_else(|| "—".into()));
+                                            d.snapshot["context"] =
+                                                json!(state.context.map(|c| c.tokens));
+                                            d.snapshot["sessionId"] = json!(state.session_id);
+                                            if let Some(name) = data["sessionName"]
+                                                .as_str()
+                                                .filter(|n| !n.is_empty())
+                                            {
+                                                st.omp_titles.lock().unwrap().insert(
+                                                    (cc.cwd.clone(), state.session_id.clone()),
+                                                    name.chars().take(200).collect(),
+                                                );
+                                            }
+                                            d.emit(&st.boot, id, "agent", json!({"type":"run_start", "sessionId":state.session_id, "model":state.model}));
+                                        }
+                                        if command == "get_state"
+                                            && let Some(prompt) = pending_prompt.take()
+                                        {
+                                            let key = format!("g{}", line_id + 1);
+                                            if let Err(e) = omp_command(
+                                                &mut child,
+                                                &mut line_id,
+                                                &mut pending,
+                                                "prompt",
+                                                crate::omp_rpc::prompt(&key, &prompt),
+                                                None,
+                                            ) {
+                                                error = Some(e.to_string());
+                                            }
+                                        }
+                                        if command == "get_state" {
+                                            for (session, path, reply) in pending_switch.drain(..) {
+                                                let key = format!("g{}", line_id + 1);
+                                                let _ = session;
+                                                let _ = omp_command(
+                                                    &mut child,
+                                                    &mut line_id,
+                                                    &mut pending,
+                                                    "switch_session",
+                                                    crate::omp_rpc::switch_session(
+                                                        &key,
+                                                        &path.to_string_lossy(),
+                                                    ),
+                                                    Some(reply),
+                                                );
+                                            }
+                                            for reply in pending_history.drain(..) {
+                                                let key = format!("g{}", line_id + 1);
+                                                let _ = omp_command(
+                                                    &mut child,
+                                                    &mut line_id,
+                                                    &mut pending,
+                                                    "get_messages",
+                                                    crate::omp_rpc::get_messages(&key),
+                                                    Some(reply),
+                                                );
+                                            }
+                                        }
+                                        if !ok {
+                                            error =
+                                                Some(message.unwrap_or_else(|| {
+                                                    "omp command failed".into()
+                                                }));
+                                        }
+                                    }
+                                }
+                                Frame::UiRequest {
+                                    id: request_id,
+                                    method,
+                                    title,
+                                    options,
+                                } => {
+                                    if method == "select" {
+                                        let mut d = cc.data.lock().unwrap();
+                                        let p = json!({"id":request_id, "title":title, "options":options});
+                                        if let Some(a) = d.snapshot["permissions"].as_array_mut() {
+                                            a.push(p);
+                                        }
+                                        d.emit(&st.boot, id, "permission", json!({"id":request_id, "title":title, "options":options}));
+                                    }
+                                }
+                                Frame::Delta(Delta::Text(delta)) => {
+                                    cc.data.lock().unwrap().emit(
+                                        &st.boot,
+                                        id,
+                                        "agent",
+                                        json!({"type":"text_delta", "delta":delta}),
+                                    );
+                                }
+                                Frame::Delta(Delta::Thinking(delta)) => {
+                                    cc.data.lock().unwrap().emit(
+                                        &st.boot,
+                                        id,
+                                        "agent",
+                                        json!({"type":"thinking_delta", "delta":delta}),
+                                    );
+                                }
+                                Frame::Delta(Delta::ToolCallStart) => {}
+                                Frame::Delta(Delta::ToolCallEnd {
+                                    id: tool,
+                                    name,
+                                    args,
+                                }) => {
+                                    cc.data.lock().unwrap().emit(&st.boot, id, "agent", json!({"type":"tool_queued", "toolCallId":tool, "toolName":name, "input":args}));
+                                }
+                                Frame::ToolStart {
+                                    id: tool,
+                                    name,
+                                    args,
+                                } => {
+                                    cc.data.lock().unwrap().emit(&st.boot, id, "agent", json!({"type":"tool_running", "toolCallId":tool, "toolName":name, "input":args}));
+                                }
+                                Frame::ToolEnd {
+                                    id: tool,
+                                    name,
+                                    is_error,
+                                    text,
+                                    details,
+                                } => {
+                                    let mut event = json!({"type":if is_error {"tool_errored"} else {"tool_completed"}, "toolCallId":tool, "toolName":name, "error":text, "result":text});
+                                    if omp_truncated(&text) { event["note"] = json!("omp.truncated"); }
+                                    if name == "edit" && details["op"] == "update" {
+                                        event["input"] = json!({"path":details["path"], "old_string":details["oldText"], "new_string":details["newText"]});
+                                    }
+                                    cc.data.lock().unwrap().emit(&st.boot, id, "agent", event);
+                                }
+                                Frame::MessageEnd(message) if message.role == "assistant" => {
+                                    if let Some(u) = message.usage {
+                                        usage = json!({"inputTokens":u.input, "outputTokens":u.output, "cacheReadTokens":u.cache_read, "cacheWriteTokens":u.cache_write});
+                                        cc.data.lock().unwrap().snapshot["usage"] = usage.clone();
+                                    }
+                                }
+                                Frame::PromptResult { status, .. } => {
+                                    let state = if status == "completed" {
+                                        "done"
+                                    } else if status == "aborted" {
+                                        "interrupted"
+                                    } else {
+                                        "error"
+                                    };
+                                    let mut d = cc.data.lock().unwrap();
+                                    d.snapshot["state"] = json!(state);
+                                    d.snapshot["exitCode"] =
+                                        json!(if state == "done" { 0 } else { 130 });
+                                    d.snapshot["result"] = json!({"subtype":state, "usage":usage});
+                                    d.active = false;
+                                    d.cancel = None;
+                                    d.emit(&st.boot, id, "result", json!({"usage":{"inputTokens":usage["inputTokens"], "outputTokens":usage["outputTokens"], "cacheReadTokens":usage["cacheReadTokens"], "cacheWriteTokens":usage["cacheWriteTokens"]}, "durationMs":null, "usageCumulative":true}));
+                                    let exit_code = d.snapshot["exitCode"].clone();
+                                    d.emit(
+                                        &st.boot,
+                                        id,
+                                        "state",
+                                        json!({"state":state, "exitCode":exit_code}),
+                                    );
+                                    *pane.status.lock().unwrap() =
+                                        if state == "done" { "done" } else { "idle" };
+                                    let key = format!("g{}", line_id + 1);
+                                    let _ = omp_command(
+                                        &mut child,
+                                        &mut line_id,
+                                        &mut pending,
+                                        "get_state",
+                                        crate::omp_rpc::get_state(&key),
+                                        None,
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(e) => error = Some(e),
+                },
+                Some(Err(ref e))
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::Interrupted => {}
+                Some(Ok(0)) | None => out_eof = true,
+                Some(Ok(_)) => {}
+                Some(Err(_)) => out_eof = true,
+            }
+        }
+        if !err_eof {
+            match child.stderr.as_mut().map(|e| e.read(&mut buf)) {
+                Some(Ok(0)) | None => err_eof = true,
+                Some(Ok(n)) => {
+                    let left = BLOCK_MAX.saturating_sub(stderr.len());
+                    stderr.extend_from_slice(&buf[..n.min(left)]);
+                }
+                Some(Err(ref e))
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::Interrupted => {}
+                Some(Err(_)) => err_eof = true,
+            }
+        }
+        if error.is_some() {
+            let _ = child.kill();
+        }
+        if out_eof && err_eof {
+            break;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    let _ = child.wait();
+    cc.pid.store(0, Ordering::Release);
+    *cc.omp.lock().unwrap() = None;
+    let mut d = cc.data.lock().unwrap();
+    if d.active {
+        let state = if d.cancel.is_some() {
+            "interrupted"
+        } else {
+            "error"
+        };
+        d.snapshot["state"] = json!(state);
+        d.snapshot["diagnostic"] = json!(error.or_else(|| Some("omp RPC process exited".into())));
+        d.snapshot["stderr"] = json!(clip(
+            &telegram::mask_secrets(&String::from_utf8_lossy(&stderr)),
+            BLOCK_MAX
+        ));
+        d.active = false;
+        d.emit(
+            &st.boot,
+            id,
+            "state",
+            json!({"state":state,"exitCode":null}),
+        );
+        *pane.status.lock().unwrap() = "idle";
+    }
+}
+
 fn access_flags(agent: &str, yolo: bool, plan: bool) -> Vec<&'static str> {
     match agent {
         "agy" if yolo => vec!["--mode", "accept-edits"],
@@ -462,7 +1032,23 @@ pub(super) fn cancel(st: &State, p: &Value) -> Res {
     let cc = backend(&pane)?;
     let mut d = cc.data.lock().unwrap();
     if p["runId"].as_str().is_none_or(|id| id != d.run_id) || d.run_id.is_empty() { return Err("stale_run"); }
-    if d.active && d.cancel.is_none() { d.cancel = Some(Instant::now()); }
+    if d.active && d.cancel.is_none() {
+        d.cancel = Some(Instant::now());
+        if cc.agent == "omp" && let Some(tx) = cc.omp.lock().unwrap().as_ref() { let _ = tx.send(OmpCommand::Abort); }
+    }
+    Ok(json!({"accepted":true}))
+}
+
+pub(super) fn answer(st: &State, p: &Value) -> Res {
+    let pane = st.pane(p)?;
+    let cc = backend(&pane)?;
+    if cc.agent != "omp" || p.as_object().is_none_or(|o| o.keys().any(|k| !["pane", "id", "value"].contains(&k.as_str()))) { return Err("bad_params"); }
+    let id = p["id"].as_str().filter(|s| !s.is_empty() && s.len() <= 128).ok_or("bad_params")?;
+    let value = p["value"].as_str().filter(|s| matches!(*s, "Approve" | "Approve write for this session" | "Deny")).ok_or("bad_params")?;
+    let d = cc.data.lock().unwrap();
+    if !d.snapshot["permissions"].as_array().is_some_and(|a| a.iter().any(|r| r["id"] == id && r["options"].as_array().is_some_and(|opts| opts.iter().any(|x| x == value)))) { return Err("stale_request"); }
+    drop(d);
+    cc.omp.lock().unwrap().as_ref().ok_or("not_running")?.send(OmpCommand::Answer { id:id.into(), value:value.into() }).map_err(|_| "not_running")?;
     Ok(json!({"accepted":true}))
 }
 
@@ -475,8 +1061,8 @@ pub(super) fn access(st: &State, p: &Value) -> Res {
     if p.as_object().is_none_or(|o| o.keys().any(|k| !["pane", "mode", "gateId", "revision"].contains(&k.as_str()))) {
         return Err("bad_params");
     }
-    let mode = p["mode"].as_str().filter(|m| matches!(*m, "restricted" | "yolo" | "plan")).ok_or("bad_params")?;
-    if mode == "plan" && cc.agent != "agy" { return Err("bad_params"); }
+    let mode = p["mode"].as_str().filter(|m| matches!(*m, "restricted" | "always-ask" | "write" | "yolo" | "plan")).ok_or("bad_params")?;
+    if mode == "plan" && cc.agent != "agy" || matches!(mode, "always-ask" | "write") && cc.agent != "omp" { return Err("bad_params"); }
     let revision = p["revision"].as_u64().ok_or("bad_params")?;
     let mut d = cc.data.lock().unwrap();
     let mut access = cc.access.lock().unwrap();
@@ -490,7 +1076,7 @@ pub(super) fn access(st: &State, p: &Value) -> Res {
     } else {
         // Revoking applies to the running request too, not just the next one.
         if d.active && d.cancel.is_none() { d.cancel = Some(Instant::now()); }
-        access.mode = if mode == "plan" { "plan" } else { "restricted" };
+        access.mode = match mode { "always-ask" => "always-ask", "write" => "write", "plan" => "plan", _ => "restricted" };
         access.session.clear();
     }
     access.revision += 1;
@@ -499,6 +1085,11 @@ pub(super) fn access(st: &State, p: &Value) -> Res {
     d.snapshot["access"] = json!(access.mode);
     drop(access);
     d.emit(&st.boot, id, "state", json!({"access":out["mode"], "revision":out["revision"]}));
+    drop(d);
+    if cc.agent == "omp" {
+        if let Some(tx) = cc.omp.lock().unwrap().take() { let _ = tx.send(OmpCommand::Stop); }
+        if let Some(worker) = cc.worker.lock().unwrap().take() { let _ = worker.join(); }
+    }
     Ok(out)
 }
 
@@ -512,6 +1103,150 @@ struct SessionFile {
     updated: u64,
     title: Option<String>,
     unsupported: bool,
+}
+
+fn omp_sessions(st: &State, cwd: &Path) -> Vec<Value> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let slug = |p: &Path| p.to_string_lossy().trim_matches('/').replace('/', "-");
+    let dir = match cwd.strip_prefix(&home) {
+        Ok(r) if r.as_os_str().is_empty() => "----".into(),
+        Ok(r) => format!("-{}", slug(r)),
+        Err(_) => format!("--{}--", slug(cwd)),
+    };
+    let Ok(entries) = std::fs::read_dir(home.join(".omp/agent/sessions").join(dir)) else {
+        return Vec::new();
+    };
+    let mut rows = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let stem = name.strip_suffix(".jsonl")?;
+            let (_, id) = stem.split_once('_')?;
+            if !valid_session_id(id) {
+                return None;
+            }
+            let updated = entry
+                .metadata()
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            Some((updated, id.to_string()))
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
+    rows.dedup_by(|a, b| a.1 == b.1);
+    rows.into_iter()
+        .take(SESSIONS_PAGE)
+        .map(|(updated, id)| {
+            let title = st
+                .omp_titles
+                .lock()
+                .unwrap()
+                .get(&(cwd.to_path_buf(), id.clone()))
+                .cloned();
+            let mut row = json!({"id":id, "updatedAt":updated});
+            if let Some(title) = title {
+                row["title"] = json!(title);
+            }
+            row
+        })
+        .collect()
+}
+
+fn omp_session_path(cwd: &Path, wanted: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let slug = |p: &Path| p.to_string_lossy().trim_matches('/').replace('/', "-");
+    let dir = match cwd.strip_prefix(&home) {
+        Ok(r) if r.as_os_str().is_empty() => "----".into(),
+        Ok(r) => format!("-{}", slug(r)),
+        Err(_) => format!("--{}--", slug(cwd)),
+    };
+    std::fs::read_dir(home.join(".omp/agent/sessions").join(dir))
+        .ok()?
+        .flatten()
+        .find_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let stem = name.strip_suffix(".jsonl")?;
+            (stem.split_once('_')?.1 == wanted).then(|| e.path())
+        })
+}
+
+fn start_omp_for_resume(
+    st: &Arc<State>,
+    id: u64,
+    pane: &Arc<super::Pane>,
+    session: &str,
+) -> Result<SyncSender<OmpCommand>, &'static str> {
+    let cc = backend(pane)?;
+    let mut worker = cc.worker.lock().unwrap();
+    if let Some(tx) = cc.omp.lock().unwrap().as_ref() {
+        return Ok(tx.clone());
+    }
+    let mode = cc.access.lock().unwrap().mode;
+    let path = [profile::user_path(), std::env::var("PATH").ok()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(":");
+    let mut cmd = Command::new(&st.hooks.exe);
+    cmd.args(["jail", "--", &cc.command])
+        .args(omp_args(&cc.cwd, mode, session));
+    pty::scrub_env(&mut cmd);
+    cmd.env("PATH", path)
+        .envs(cc.env.iter().cloned())
+        .current_dir(&cc.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let panes = st.panes.lock().unwrap();
+    let mut child = cmd.spawn().map_err(|_| "spawn_failed")?;
+    let pid = child.id() as i32;
+    if nonblocking(&child).is_err() {
+        unsafe {
+            libc::killpg(pid, libc::SIGKILL);
+        }
+        let _ = child.wait();
+        return Err("io");
+    }
+    cc.pid.store(pid, Ordering::Release);
+    drop(panes);
+    let (tx, rx) = sync_channel(64);
+    *cc.omp.lock().unwrap() = Some(tx.clone());
+    let state = st.clone();
+    let running = pane.clone();
+    *worker = Some(thread::spawn(move || {
+        omp_pump(state, id, running, child, rx)
+    }));
+    Ok(tx)
+}
+
+fn omp_history(data: &Value) -> Vec<Value> {
+    let rows = data["messages"]
+        .as_array()
+        .or_else(|| data.as_array())
+        .cloned()
+        .unwrap_or_default();
+    rows.into_iter().filter_map(|m| {
+        let role = m["role"].as_str()?.to_string();
+        let raw = m.get("content").or_else(|| m.get("message")).cloned().unwrap_or(Value::Null);
+        let content = if raw.is_string() { vec![json!({"type":"text", "text":raw})] }
+            else { raw.as_array().cloned().unwrap_or_default() };
+        Some(json!({"role":role,"content":content,"timestamp":m.get("timestamp").cloned().unwrap_or(Value::Null)}))
+    }).collect()
 }
 
 fn projects_root() -> Option<PathBuf> {
@@ -570,6 +1305,7 @@ pub(super) fn sessions(st: &State, p: &Value) -> Res {
     };
     // The catalog contains only IDs reported by an AGY process launched from Gembala; private AGY files are never read.
     if cc.agent == "agy" { return Ok(json!({"sessions": st.agy_sessions.lock().unwrap().sessions(&cc.cwd)})); }
+    if cc.agent == "omp" { return Ok(json!({"sessions": omp_sessions(st, &cc.cwd)})); }
     let all = scan_sessions(&cc.cwd);
     let page: Vec<Value> = all.iter().skip(offset).take(SESSIONS_PAGE).map(|s| {
         let mut v = json!({"id": s.id, "path": s.path.to_string_lossy(), "updatedAt": s.updated});
@@ -612,7 +1348,7 @@ fn block_value(block: &Block) -> Value {
 
 /// `cc.resume`: bind the pane to a committed transcript and show its active branch. No spawn: the next `cc.run`
 /// resumes it. A session has one writer, so a second pane cannot bind the same id.
-pub(super) fn resume(st: &State, p: &Value) -> Res {
+pub(super) fn resume(st: &Arc<State>, p: &Value) -> Res {
     let id = p["pane"].as_u64().ok_or("bad_params")?;
     let pane = st.pane(p)?;
     let cc = backend(&pane)?;
@@ -640,6 +1376,29 @@ pub(super) fn resume(st: &State, p: &Value) -> Res {
         let state = d.snapshot["state"].clone();
         d.emit(&st.boot, id, "state", json!({"state":state, "sessionId":wanted, "access":"restricted", "revision":revision}));
         return Ok(json!({"sessionId":wanted, "history":{"messages":[], "partial":null}}));
+    }
+    if cc.agent == "omp" {
+        omp_sessions(st, &cc.cwd).into_iter().find(|s| s["id"] == wanted).ok_or("no_such_session")?;
+        let path = omp_session_path(&cc.cwd, wanted).ok_or("no_such_session")?;
+        let tx = if let Some(tx) = cc.omp.lock().unwrap().as_ref() {
+            let (reply, answer) = sync_channel(1);
+            tx.send(OmpCommand::Switch { session:wanted.into(), path, reply }).map_err(|_| "not_running")?;
+            answer.recv_timeout(Duration::from_secs(15)).map_err(|_| "timeout")?.map_err(|_| "resume_failed")?;
+            tx.clone()
+        } else { start_omp_for_resume(st, id, &pane, wanted)? };
+        let (reply, answer) = sync_channel(1);
+        tx.send(OmpCommand::History(reply)).map_err(|_| "not_running")?;
+        let messages = omp_history(&answer.recv_timeout(Duration::from_secs(15)).map_err(|_| "timeout")?.map_err(|_| "resume_failed")?);
+        let mut d = cc.data.lock().unwrap();
+        d.bind_session(Some(wanted));
+        let mut access = cc.access.lock().unwrap();
+        access.mode = "always-ask";
+        access.session.clear();
+        access.revision += 1;
+        d.snapshot["access"] = json!("always-ask");
+        let state = d.snapshot["state"].clone();
+        d.emit(&st.boot, id, "state", json!({"state":state, "sessionId":wanted, "access":"always-ask"}));
+        return Ok(json!({"sessionId":wanted, "history":{"messages":messages}}));
     }
     let found = scan_sessions(&cc.cwd).into_iter().find(|s| s.id == wanted).ok_or("no_such_session")?;
     if found.unsupported { return Err("unsupported_format"); }
@@ -674,6 +1433,7 @@ pub(super) fn close(st: &State, id: u64, pane: &super::Pane) {
     let Ok(cc) = backend(pane) else { return };
     let mut worker = cc.worker.lock().unwrap();
     cc.closed.store(true, Ordering::Release);
+    if let Some(tx) = cc.omp.lock().unwrap().take() { let _ = tx.send(OmpCommand::Stop); }
     { let mut d = cc.data.lock().unwrap(); if d.active && d.cancel.is_none() { d.cancel = Some(Instant::now()); } }
     if let Some(worker) = worker.take() { let _ = worker.join(); }
     st.panes.lock().unwrap().remove(&id);
@@ -846,6 +1606,7 @@ mod tests {
             profiles: Mutex::new(profile::builtin()), accounts: Mutex::default(), addons: Mutex::default(),
             agents: Mutex::new(Value::Null), boot:"test-epoch".into(),
             agy_sessions:Mutex::new(SessionCatalog::default()),
+            omp_titles:Mutex::default(),
             hooks:profile::Hooks { exe:String::new(), dir:PathBuf::new() }, engine:Mutex::default(),
             pane_subs:Mutex::default(), audit:None, harness:Mutex::default(), tg:Mutex::default(),
             update:Mutex::default(), usage:Mutex::default(), models:Mutex::default(), report_shot:Mutex::default(), outbox_last:Mutex::default(),
@@ -875,6 +1636,21 @@ mod tests {
         assert!(!wide.iter().any(|flag| matches!(*flag, "--yolo" | "--dangerously-skip-permissions")));
         assert_eq!(access_state(false, true), "plan");
         assert_eq!(access_flags("commandcode", true, false), ["--yolo"]);
+    }
+
+    #[test]
+    fn omp_structured_defaults_to_approval_and_ignores_model_options() {
+        let st = state();
+        let created = create(&st, &json!({"workspace":"test", "cwd":std::env::temp_dir(), "profile":"omp", "agent":"omp", "model":"invalid", "effort":"invalid"})).unwrap();
+        assert_eq!(created["access"], "always-ask");
+        let pane = st.pane(&json!({"pane":created["pane"]})).unwrap();
+        assert_eq!(info(&pane).unwrap()["access"], "always-ask");
+        assert_eq!(access(&st, &json!({"pane":created["pane"], "mode":"write", "revision":0})).unwrap()["mode"], "write");
+        assert_eq!(access(&st, &json!({"pane":created["pane"], "mode":"yolo", "revision":1, "gateId":"confirmed"})).unwrap()["mode"], "yolo");
+        assert_eq!(access(&st, &json!({"pane":created["pane"], "mode":"always-ask", "revision":2})).unwrap()["mode"], "always-ask");
+        assert_eq!(omp_args(Path::new("/tmp/project"), "always-ask", "session-1"), ["--mode", "rpc", "--cwd", "/tmp/project", "--approval-mode", "always-ask", "--resume", "session-1"]);
+        assert_eq!(omp_args(Path::new("/tmp/project"), "write", ""), ["--mode", "rpc", "--cwd", "/tmp/project", "--approval-mode", "write"]);
+        assert!(!omp_args(Path::new("/tmp/project"), "yolo", "").iter().any(|a| a == "--no-session"));
     }
 
     #[test]
@@ -916,6 +1692,12 @@ mod tests {
         let large = bounded(&json!({"text":"x".repeat(BLOCK_MAX + 1)}));
         assert!(large.to_string().len() <= BLOCK_MAX);
         assert!(large["truncated"] == true || large["text"]["truncated"] == true);
+    }
+
+    #[test]
+    fn omp_truncation_marker_stays_visible_and_gets_a_label() {
+        assert!(omp_truncated("...\n[Some lines truncated to 768 bytes]"));
+        assert!(!omp_truncated("ordinary tool output"));
     }
 
     #[test]

@@ -31,7 +31,7 @@
     onresumed = () => {},
   }: {
     pane: number;
-    agent?: "commandcode" | "agy";
+    agent?: "commandcode" | "agy" | "omp";
     cwd?: string;
     focused?: boolean;
     efforts?: string[];
@@ -117,7 +117,7 @@
     void attach().then(() => {
       if (resume && !v.turns.length) void openSession(resume, true).then(onresumed);
     });
-    call("models.list", { agent })
+    if (agent !== "omp") call("models.list", { agent })
       .then((r) => (models = Array.isArray(r?.models) ? r.models : []))
       .catch(() => {});
     return () => {
@@ -181,11 +181,23 @@
   async function revoke() {
     try {
       const i = await call("pane.info", { pane });
-      await call("cc.access", { pane, mode: "restricted", revision: i.access_revision });
-      apply(v, { t: "access", mode: "restricted" });
+      const mode = agent === "omp" ? "always-ask" : "restricted";
+      await call("cc.access", { pane, mode, revision: i.access_revision });
+      apply(v, { t: "access", mode });
     } catch (e) {
       note = errText(e);
     }
+  }
+  async function setOmpMode(mode: "always-ask" | "write") {
+    try {
+      const i = await call("pane.info", { pane });
+      const r = await call("cc.access", { pane, mode, revision: i.access_revision });
+      apply(v, { t: "access", mode: r?.mode === "write" ? "write" : "always-ask" });
+    } catch (e) { note = errText(e); }
+  }
+  async function answer(id: string, value: string) {
+    try { await call("cc.answer", { pane, id, value }); }
+    catch (e) { note = errText(e); }
   }
   async function setAgyMode(mode: "restricted" | "plan") {
     try {
@@ -235,7 +247,7 @@
     const turn = { role: "user" as const, text, at: Date.now() };
     apply(v, { t: "user", ...turn });
     try {
-      await call("cc.run", { pane, requestId: crypto.randomUUID(), prompt: text, ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+      await call("cc.run", { pane, requestId: crypto.randomUUID(), prompt: text, ...(agent === "omp" ? {} : { ...(model ? { model } : {}), ...(effort ? { effort } : {}) }) });
     } catch (e) {
       note = errText(e);
       prompt = text;
@@ -275,7 +287,7 @@
       <b>{tool.name || "tool"}</b>{#if inputPath(tool.input)}<code>{inputPath(tool.input)}</code>{/if}
       <span class="st {tool.status}">{tOr(`cc.t.${tool.status}`, tool.status)}</span>
     </summary>
-    {#if tool.note}<small class="tnote">{tool.note}</small>{/if}
+    {#if tool.note}<small class="tnote">{tool.note === "omp.truncated" ? t("omp.truncated") : tool.note}</small>{/if}
     {#if p}
       <div class="diff">
         <div class="dh"><code>{p.path}</code><small>{tool.status === "done" ? t("cc.proposalDone") : t("cc.proposal")}</small></div>
@@ -304,8 +316,8 @@
   {/if}
 {/snippet}
 
-<div class="cc" role="region" aria-label={agent === "agy" ? t("agy.badge") : t("cc.badge")}>
-  <div class="title"><span aria-hidden="true">{agent === "agy" ? "▲" : "⌘"}</span><b>{agent === "agy" ? t("agy.badge") : t("cc.badge")}</b></div>
+<div class="cc" role="region" aria-label={agent === "agy" ? t("agy.badge") : agent === "omp" ? t("omp.badge") : t("cc.badge")}>
+  <div class="title"><span aria-hidden="true">{agent === "agy" ? "▲" : agent === "omp" ? "◉" : "⌘"}</span><b>{agent === "agy" ? t("agy.badge") : agent === "omp" ? t("omp.badge") : t("cc.badge")}</b></div>
   <div class="access" class:wide={v.access === "yolo"}>
     {#if agent === "agy"}
       <label>{t("agy.mode")}
@@ -316,13 +328,22 @@
         </select>
       </label>
     {/if}
+    {#if agent === "omp"}
+      <label>{t("omp.access")}
+        <select value={v.access} disabled={busy} onchange={(e) => e.currentTarget.value === "yolo" ? openGate() : setOmpMode(e.currentTarget.value as "always-ask" | "write")}>
+          <option value="always-ask">{t("omp.access")}</option>
+          <option value="write">{t("omp.write")}</option>
+          <option value="yolo">{t("omp.yolo")}</option>
+        </select>
+      </label>
+    {/if}
     {#if v.access === "yolo"}
-      <p><b>{agent === "agy" ? t("agy.wide") : t("cc.wide")}</b> · {agent === "agy" ? t("agy.wideNote") : t("cc.wideNote")}</p>
+      <p><b>{agent === "agy" ? t("agy.wide") : agent === "omp" ? t("omp.yolo") : t("cc.wide")}</b> · {agent === "agy" ? t("agy.wideNote") : agent === "omp" ? t("omp.yoloNote") : t("cc.wideNote")}</p>
       {#if busy}<button class="btn" onclick={stop}>{t("cc.stop")}</button>{/if}
       <button class="btn" onclick={revoke}>{t("cc.revoke")}</button>
     {:else}
-      <p><b>{agent === "agy" ? (v.access === "plan" ? t("agy.plan") : t("agy.access")) : t("cc.access")}</b> · {agent === "agy" ? (v.access === "plan" ? t("agy.planNote") : t("agy.accessNote")) : t("cc.accessNote")}</p>
-      {#if agent !== "agy"}<button class="btn" onclick={openGate} disabled={busy || locked}>{t("cc.changeAccess")}</button>{/if}
+      <p><b>{agent === "agy" ? (v.access === "plan" ? t("agy.plan") : t("agy.access")) : agent === "omp" ? (v.access === "write" ? t("omp.write") : t("omp.access")) : t("cc.access")}</b> · {agent === "agy" ? (v.access === "plan" ? t("agy.planNote") : t("agy.accessNote")) : agent === "omp" ? (v.access === "write" ? t("omp.writeNote") : t("omp.accessNote")) : t("cc.accessNote")}</p>
+      {#if agent === "commandcode"}<button class="btn" onclick={openGate} disabled={busy || locked}>{t("cc.changeAccess")}</button>{/if}
     {/if}
     <button class="btn" onclick={pick} disabled={busy} aria-expanded={!!picking}>{t("cc.history")}</button>
     <button class="btn" onclick={() => onterminal(v.sessionId ?? undefined)}>{t("cc.openTerminal")}</button>
@@ -332,14 +353,23 @@
       {#each picking as s (s.id)}
         <li>
           <button class="btn row" disabled={s.unsupported} title={s.unsupported ? t("cc.historyUnsupported") : s.path} onclick={() => openSession(s.id)}>
-            <span>{s.title || s.id}</span><small>{s.unsupported ? t("cc.historyUnsupported") : s.updatedAt ? new Date(s.updatedAt * 1000).toLocaleString(loc()) : ""}</small>
+            <span>{s.title || (agent === "omp" ? s.id.slice(0, 8) : s.id)}</span><small>{s.unsupported ? t("cc.historyUnsupported") : s.updatedAt ? new Date(s.updatedAt * 1000).toLocaleString(loc()) : ""}</small>
           </button>
         </li>
       {:else}
-        <li class="meta">{agent === "agy" ? t("agy.historyEmpty") : t("cc.historyEmpty")}</li>
+        <li class="meta">{agent === "agy" ? t("agy.historyEmpty") : agent === "omp" ? t("omp.historyEmpty") : t("cc.historyEmpty")}</li>
       {/each}
     </ul>
   {/if}
+  {#each v.permissions as permission (permission.id)}
+    <section class="permission" aria-label={t("omp.permission")}>
+      <b>{permission.title || t("omp.permission")}</b>
+      <span class="grow"></span>
+      {#each permission.options as option (option)}
+        <button class="btn" onclick={() => answer(permission.id, option)}>{option === "Approve" ? t("omp.optionApprove") : option === "Approve write for this session" ? t("omp.optionApproveWrite") : option === "Deny" ? t("omp.optionDeny") : option}</button>
+      {/each}
+    </section>
+  {/each}
   {#if banner}
     <div class="resume" class:bad={!banner.ok} role="status">
       <p>
@@ -370,7 +400,7 @@
         <article class="user"><div class="who"><b>{t("cc.you")}</b>{#if turn.at}<time>{time(turn.at)}</time>{/if}</div><p class="pre">{turn.text}</p></article>
       {:else}
         <article class="agent">
-          <div class="who"><b>{agent === "agy" ? t("agy.badge") : t("cc.badge")}</b>{#if turn.at}<time>{time(turn.at)}</time>{/if}</div>
+          <div class="who"><b>{agent === "agy" ? t("agy.badge") : agent === "omp" ? t("omp.badge") : t("cc.badge")}</b>{#if turn.at}<time>{time(turn.at)}</time>{/if}</div>
           {#each shown(turn) as b, j (j)}{@render block(b)}{/each}
           {#if BUSY.includes(turn.state) && turn.state === v.status && !shown(turn).length}<p class="meta"><span class="pulse" aria-hidden="true"></span>{t("cc.s.starting")}</p>{/if}
           {#if !FINAL_OK.includes(turn.state)}
@@ -390,7 +420,7 @@
   </div>
   <form class="composer" onsubmit={(e) => (e.preventDefault(), send())}>
     <div class="frame">
-      <label class="sr" for="cc-input-{pane}">{agent === "agy" ? t("agy.inputLabel") : t("cc.inputLabel")}</label>
+      <label class="sr" for="cc-input-{pane}">{agent === "agy" ? t("agy.inputLabel") : agent === "omp" ? t("omp.inputLabel") : t("cc.inputLabel")}</label>
       <textarea id="cc-input-{pane}" rows="2" placeholder={t("cc.placeholder")} disabled={locked} bind:value={prompt} bind:this={input} onkeydown={onkey}></textarea>
       <div class="acts">
         <small>{locked ? t("cc.hintLocked") : busy ? t("cc.hintBusy") : t("cc.hint")}</small>
@@ -401,6 +431,10 @@
     </div>
     {#if note}<p class="meta" role="status">{note}</p>{/if}
     <div class="status">
+      {#if agent === "omp"}
+      <span class="grp">{t("cc.model")} <b>{v.model ?? "—"}</b></span>
+      <span class="grp">{t("cc.effort")} <b>{v.effort ?? "—"}</b></span>
+      {:else}
       <label>{t("cc.model")}
         <select bind:value={model} bind:this={modelEl}>
           <option value="">{t("cc.default")}</option>
@@ -408,6 +442,7 @@
           {#each models as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
         </select>
       </label>
+      {/if}
       <label>{t("cc.effort")}
         <select bind:value={effort} bind:this={effortEl}>
           <option value="">{t("cc.default")}</option>
@@ -423,17 +458,17 @@
     </div>
   </form>
   <dialog bind:this={dialog} class="gate" aria-labelledby="cc-gate-{pane}" onclose={() => (gate = null)}>
-    <h2 id="cc-gate-{pane}">{agent === "agy" ? t("agy.gateTitle") : t("cc.gateTitle")}</h2>
+    <h2 id="cc-gate-{pane}">{agent === "agy" ? t("agy.gateTitle") : agent === "omp" ? t("omp.gateTitle") : t("cc.gateTitle")}</h2>
     {#if gate}
       <p>{t("cc.gateProject")}: <code>{gate.cwd}</code><br />{t("cc.session")}: <code>{gate.session ?? t("cc.gateNew")}</code></p>
     {/if}
-    <p>{agent === "agy" ? t("agy.gateBody") : t("cc.gateBody")}</p>
+    <p>{agent === "agy" ? t("agy.gateBody") : agent === "omp" ? t("omp.gateBody") : t("cc.gateBody")}</p>
     <p class="meta">{t("cc.gateNote")}</p>
-    <label class="check"><input type="checkbox" bind:checked={trust} disabled={!gate} /> <span>{agent === "agy" ? t("agy.gateCheck") : t("cc.gateCheck")}</span></label>
+    <label class="check"><input type="checkbox" bind:checked={trust} disabled={!gate} /> <span>{agent === "agy" ? t("agy.gateCheck") : agent === "omp" ? t("omp.gateCheck") : t("cc.gateCheck")}</span></label>
     {#if gateErr}<p class="err" role="alert">{gateErr}</p>{/if}
     <div class="dacts">
       <button class="btn" onclick={() => dialog?.close()}>{t("cc.gateKeep")}</button>
-      <button class="btn pri" disabled={!gate || !trust} onclick={grant}>{agent === "agy" ? t("agy.gateGrant") : t("cc.gateGrant")}</button>
+      <button class="btn pri" disabled={!gate || !trust} onclick={grant}>{agent === "agy" ? t("agy.gateGrant") : agent === "omp" ? t("omp.gateGrant") : t("cc.gateGrant")}</button>
     </div>
   </dialog>
   {#if v.sessionId}
@@ -566,6 +601,16 @@
     flex: none;
     background: transparent;
     color: inherit;
+  }
+  .permission {
+    margin: 8px 14px 0;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--tx-amber, #fcd34d);
+    border-radius: 6px;
+    background: rgba(252, 211, 77, 0.06);
   }
   .picker {
     list-style: none;

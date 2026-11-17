@@ -17,7 +17,7 @@ const ALLOWED: &[&str] =
       "harness.preflight", "harness.start", "harness.restart", "harness.artifact", "harness.state", "harness.runs", "harness.stop", "harness.gate", "harness.takeover", "harness.release", "harness.close_panes",
       "telegram.status", "telegram.pair", "telegram.unpair", "usage.list", "pane.limit_retry", "pane.limit_move", "msg.enter_now", "pane.limit_at_reset", "models.list", "pane.dialogs", "pane.answer",
       // PLAN-CC-PANE: structured Command Code pane (UI channel only; the daemon guards kind and access itself)
-      "cc.create", "cc.run", "cc.attach", "cc.detach", "cc.cancel", "cc.sessions", "cc.resume", "cc.access", "cc.stale"];
+      "cc.create", "cc.run", "cc.attach", "cc.detach", "cc.cancel", "cc.answer", "cc.sessions", "cc.resume", "cc.access", "cc.stale"];
 
 /// Pane shortcuts (FR-37, 38, 39, 50), Warp-style defaults. Id = action the webview runs; labels in i18n.rs.
 const PANE_KEYS: &[(&str, &str)] = &[

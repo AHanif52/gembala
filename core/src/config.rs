@@ -52,6 +52,7 @@ const UI: &[(&str, Kind)] = &[
     // place; off = it runs in the shell like any command
     ("cc_structured", Bool(true)),
     ("agy_structured", Bool(true)),
+    ("omp_structured", Bool(true)),
     // FR-20: Cmd+Q = app closes, agents keep running (keep) or every pane is stopped (stop)
     ("on_quit", Enum(&["keep", "stop"], "keep")),
     // FR-86: minutes a helper pane (FR-75) may sit quiet after its first reply before it's closed; 0 = never

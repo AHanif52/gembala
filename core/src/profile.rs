@@ -789,6 +789,7 @@ fn session_flags(agent: &str, s: &Session) -> Vec<String> {
         // FR-88: `--resume` takes `latest` or a list index, never an id; the card shows `gemini --resume latest`
         ("gemini", true, _) => vec!["--resume".into(), "latest".into()],
         ("agy", true, Some(id)) => vec!["--conversation".into(), id.into()],
+        ("omp", true, Some(id)) => vec!["--resume".into(), id.into()],
         ("agy", true, None) => vec!["--continue".into()],
         ("claude", true, None) | ("opencode" | "omp", true, _) => vec!["--continue".into()],
         ("codex", true, _) => vec!["resume".into(), "--last".into()],
@@ -1370,6 +1371,7 @@ mod tests {
         let id = "12345678-1234-5678-1234-567812345678";
         assert_eq!(session_flags("agy", &Session { id: Some(id.into()), resume: true }), ["--conversation", id]);
         assert_eq!(session_flags("agy", &Session { id: None, resume: true }), ["--continue"]);
+        assert_eq!(session_flags("omp", &Session { id: Some("omp-session-1".into()), resume: true }), ["--resume", "omp-session-1"]);
         assert!(picker_flags("agy").is_empty());
         assert!(valid_session("agy", id) && !valid_session("agy", "--yolo"));
         assert!(hook_files(&hooks).iter().any(|(name, body)| *name == "agy/AGENTS.md" && body.contains("gembala send")));

@@ -281,6 +281,8 @@ struct State {
     boot: String,
     /// AGY conversation ids recorded by structured panes, grouped by canonical working folder (SEC-15).
     agy_sessions: Mutex<structured::SessionCatalog>,
+    /// Titles learned only from OMP sessions observed in a Gembala pane.
+    omp_titles: Mutex<HashMap<(PathBuf, String), String>>,
     hooks: profile::Hooks,
     engine: Mutex<bus::Engine>,
     /// FR-8: status event subscriptions from the pane channel (subscriber, its queue), filtered by SEC-21 on send
@@ -377,6 +379,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         agents: Mutex::new(Value::Null),
         boot: new_secret()?[..16].to_string(),
         agy_sessions: Mutex::new(structured::SessionCatalog::load(config::path().with_file_name("agy-sessions.json"))),
+        omp_titles: Mutex::default(),
         hooks: profile::Hooks {
             exe: std::env::current_exe()?.to_string_lossy().into_owned(),
             dir: config::path().with_file_name("hooks"),
@@ -849,6 +852,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         "cc.create" => structured::create(st, p),
         "cc.run" => structured::run(st, p),
         "cc.cancel" => structured::cancel(st, p),
+        "cc.answer" => structured::answer(st, p),
         "cc.access" => structured::access(st, p),
         "cc.sessions" => structured::sessions(st, p),
         "cc.resume" => structured::resume(st, p),

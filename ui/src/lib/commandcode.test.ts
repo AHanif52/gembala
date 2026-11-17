@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, agyTrigger, ccTrigger, ccSlash, CC_SLASH } from "./commandcode.ts";
+import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, agyTrigger, ccTrigger, ompTrigger, ccSlash, CC_SLASH } from "./commandcode.ts";
 import { emptyView } from "./agent-view.ts";
 
 test("Command Code mod reports ordered status and never answers permission prompts", async () => {
@@ -147,6 +147,15 @@ test("access comes only from the daemon: yolo on grant, restricted on revoke or 
   assert.equal(fromSnapshot({ state: "idle", access: "YOLO" }, "e1", 0).access, "restricted");
 });
 
+test("OMP approval events preserve request id/options, always-ask snapshot, and truncation marker", () => {
+  const view = fromSnapshot({ access: "always-ask", permissions: [{ id: "ui-1", title: "Allow tool:", options: ["Approve", "Approve write for this session", "Deny"] }] }, "e", 0);
+  assert.equal(view.access, "always-ask");
+  assert.deepEqual(view.permissions[0], { id: "ui-1", title: "Allow tool:", options: ["Approve", "Approve write for this session", "Deny"] });
+  assert.deepEqual(agentActions({ type: "tool_completed", toolCallId: "t1", toolName: "bash", result: "output … [Some lines truncated to 768 bytes]" }), [
+    { t: "tool", id: "t1", name: "bash", status: "done", output: "output … [Some lines truncated to 768 bytes]", note: "omp.truncated" },
+  ]);
+});
+
 test("ccSlash maps slash input to a UI control, leaves everything else for the model", () => {
   for (const c of CC_SLASH) assert.deepEqual(ccSlash(`/${c}`), { cmd: c, arg: "", known: true }, c);
   assert.deepEqual(ccSlash("/MODEL"), { cmd: "model", arg: "", known: true });
@@ -166,4 +175,6 @@ test("FR-107: only a bare Command Code command opens the structured pane", () =>
   for (const t of ["cmd --resume abc", "cmd -p hi", "cmd2", "/cmd", "@cmd hi", "echo cmd", "cmd\nls", ""]) assert.equal(ccTrigger(t), false, t);
   assert.equal(agyTrigger(" agy "), true);
   for (const t of ["agy --mode plan", "agy2", "/agy", "@agy hi", "agy\nls"]) assert.equal(agyTrigger(t), false, t);
+  assert.equal(ompTrigger(" omp "), true);
+  for (const t of ["omp --resume abc", "omp2", "/omp", "@omp hi", "omp\nls"]) assert.equal(ompTrigger(t), false, t);
 });

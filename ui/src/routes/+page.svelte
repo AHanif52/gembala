@@ -3,7 +3,7 @@
   import { onMount, tick, untrack } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import StructuredPane, { forget as forgetCc } from "$lib/StructuredPane.svelte";
-  import { agyTrigger, ccTrigger } from "$lib/commandcode";
+  import { agyTrigger, ccTrigger, ompTrigger } from "$lib/commandcode";
   import Settings from "$lib/Settings.svelte";
 import changelog from "../../../CHANGELOG.md?raw";
 import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew";
@@ -516,10 +516,10 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (history.length > 200) history.shift();
     hi = -1;
     // FR-107: bare `cmd` opens the structured pane here; the first plain profile, since cc.create refuses args/secrets
-    const structuredAgent = ccTrigger(text) ? "commandcode" : agyTrigger(text) ? "agy" : "";
-    const structuredOn = structuredAgent === "agy" ? cfg?.values.ui.agy_structured !== false : cfg?.values.ui.cc_structured !== false;
+    const structuredAgent = ccTrigger(text) ? "commandcode" : agyTrigger(text) ? "agy" : ompTrigger(text) ? "omp" : "";
+    const structuredOn = structuredAgent === "agy" ? cfg?.values.ui.agy_structured !== false : structuredAgent === "omp" ? cfg?.values.ui.omp_structured !== false : cfg?.values.ui.cc_structured !== false;
     const structured = structuredAgent && structuredOn
-      ? cfg?.values.profiles.find((p) => p.agent === structuredAgent && !p.args?.length && !p.secret_env?.length && (p.permission ?? "default") === "default")
+      ? cfg?.values.profiles.find((p) => p.agent === structuredAgent && !p.args?.length && !p.secret_env?.length && ((p.permission ?? "default") === "default" || (structuredAgent === "omp" && p.permission === "auto")))
       : undefined;
     if (structured) {
       draft[pane] = "";
@@ -1798,7 +1798,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         go: () => newTab(p.id === "shell" ? undefined : p.id),
       })),
       // PLAN-CC-PANE: the same Command Code profile as a structured pane
-      ...(cfg?.values.profiles ?? []).filter((p) => ["commandcode", "agy"].includes(p.agent)).map((p) => ({
+      ...(cfg?.values.profiles ?? []).filter((p) => ["commandcode", "agy", "omp"].includes(p.agent)).map((p) => ({
         label: tt("cc.newStructured", { name: p.name }),
         hint: tt("cc.badge"),
         kind: "profile" as const,
@@ -1938,7 +1938,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
     popup(e, [
       ...(cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? ` (${tt("main.notInstalled")})` : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem),
-      ...(cfg?.values.profiles ?? []).filter((p) => ["commandcode", "agy"].includes(p.agent) && !missing.has(p.agent)).map((p) => [tt("cc.newStructured", { name: p.name }), () => newTab(p.id, wi, undefined, { kind: "commandcode" })] as MItem),
+      ...(cfg?.values.profiles ?? []).filter((p) => ["commandcode", "agy", "omp"].includes(p.agent) && !missing.has(p.agent)).map((p) => [tt("cc.newStructured", { name: p.name }), () => newTab(p.id, wi, undefined, { kind: "commandcode" })] as MItem),
       "-",
       [tt("act.worktree"), () => openWorktree(wi)],
       [tt("act.template"), () => openTemplate(wi)],
@@ -3655,11 +3655,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               {/if}
               <div class="tslot" class:withpbar={barShown(pane)}>
               {#if active && meta[pane]?.kind === "commandcode"}
-              <StructuredPane {pane} agent={meta[pane].agent === "agy" ? "agy" : "commandcode"} cwd={meta[pane].cwd ?? ""} efforts={openEfforts}
+              <StructuredPane {pane} agent={meta[pane].agent === "agy" ? "agy" : meta[pane].agent === "omp" ? "omp" : "commandcode"} cwd={meta[pane].cwd ?? ""} efforts={openEfforts}
                 focused={at.ws === wi && at.tab === ti && pane === t.focus && lempar?.pane !== pane && rich?.pane !== pane}
                 bind:model={() => meta[pane]?.ccModel ?? "", (x) => meta[pane] && (meta[pane].ccModel = x)}
                 bind:effort={() => meta[pane]?.ccEffort ?? "", (x) => meta[pane] && (meta[pane].ccEffort = x)}
-                onterminal={(session) => newTab(meta[pane]?.profile, wi, undefined, { cwd: meta[pane]?.cwd ?? undefined, session })}
+                onterminal={(session) => newTab(meta[pane]?.profile, wi, undefined, { cwd: meta[pane]?.cwd ?? undefined, session, resume: !!session })}
                 onshell={async () => {
                   if (meta[pane]?.under === undefined) return void swapToProfile(pane, "shell");
                   await call("pane.close", { pane }).catch(() => {});
