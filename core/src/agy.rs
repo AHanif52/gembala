@@ -11,6 +11,7 @@ pub struct Reader {
     result_seen: bool,
     closed: bool,
     failure: Option<String>,
+    stream_error: Option<Value>,
 }
 
 impl Reader {
@@ -85,12 +86,15 @@ impl Reader {
                     usage: Usage { input_tokens:number("input_tokens"), output_tokens:number("output_tokens"), cache_read_tokens:number("cache_read_tokens"), cache_write_tokens:None },
                     duration_ms,
                     final_text: result["response"].as_str().map(str::to_string),
-                    error: result.get("error").cloned(),
+                    error: result.get("error").cloned().or_else(|| self.stream_error.take()),
                 };
                 self.result_seen = true;
                 Ok(Some(Envelope::Result(run)))
             }
-            "error" => Ok(Some(Envelope::Event(json!({"type":"run_error", "error":line.get("error").or_else(|| line.get("message")).cloned().unwrap_or(Value::Null)})))),
+            "error" => {
+                self.stream_error = line.get("error").or_else(|| line.get("message")).cloned();
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }
@@ -147,5 +151,12 @@ mod tests {
         let mut incomplete = Reader::default();
         incomplete.feed(br#"{"event":"init"}"#).unwrap();
         assert_eq!(incomplete.finish().unwrap_err(), "EOF without result");
+    }
+
+    #[test]
+    fn resume_error_event_is_attached_to_the_visible_result() {
+        let mut reader = Reader::default();
+        let events = reader.feed(b"{\"event\":\"error\",\"error\":\"conversation unavailable\"}\n{\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}\n").unwrap();
+        assert!(matches!(events.as_slice(), [Envelope::Result(r)] if r.subtype == "error" && r.error == Some(json!("conversation unavailable"))));
     }
 }

@@ -26,6 +26,57 @@ const SESSIONS_PAGE: usize = 50;
 const HEADER_MAX: u64 = 64 << 10;
 const TRANSCRIPT_MAX: u64 = 32 << 20;
 const HISTORY_MESSAGES_MAX: usize = 200;
+const AGY_FOLDERS_MAX: usize = 200;
+
+#[derive(Clone)]
+struct AgySession { id: String, updated_at: u64 }
+
+#[derive(Default)]
+pub(super) struct SessionCatalog { path: Option<PathBuf>, folders: HashMap<PathBuf, Vec<AgySession>> }
+
+impl SessionCatalog {
+    pub(super) fn load(path: PathBuf) -> Self {
+        let folders: Vec<Value> = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let folders = folders.into_iter().filter_map(|folder| {
+            let cwd = PathBuf::from(folder["cwd"].as_str()?);
+            let sessions: Vec<_> = folder["sessions"].as_array()?.iter().filter_map(|s| {
+                let id = s["id"].as_str().filter(|id| valid_session_id(id))?;
+                Some(AgySession { id:id.into(), updated_at:s["updatedAt"].as_u64().unwrap_or(0) })
+            }).take(SESSIONS_PAGE).collect();
+            (!sessions.is_empty()).then_some((cwd, sessions))
+        }).take(AGY_FOLDERS_MAX).collect();
+        Self { path: Some(path), folders }
+    }
+
+    fn remember(&mut self, cwd: &Path, id: &str) {
+        if !valid_session_id(id) { return; }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let sessions = self.folders.entry(cwd.to_path_buf()).or_default();
+        if let Some(session) = sessions.iter_mut().find(|s| s.id == id) { session.updated_at = now; }
+        else { sessions.push(AgySession { id:id.into(), updated_at:now }); }
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+        sessions.truncate(SESSIONS_PAGE);
+        while self.folders.len() > AGY_FOLDERS_MAX {
+            let oldest = self.folders.iter().min_by_key(|(_, sessions)| sessions.first().map_or(0, |s| s.updated_at)).map(|(cwd, _)| cwd.clone());
+            if let Some(oldest) = oldest { self.folders.remove(&oldest); } else { break; }
+        }
+        if let Some(path) = &self.path {
+            let saved: Vec<_> = self.folders.iter().map(|(cwd, sessions)| json!({"cwd":cwd, "sessions":sessions.iter().map(|s| json!({"id":s.id, "updatedAt":s.updated_at})).collect::<Vec<_>>()})).collect();
+            if let Ok(bytes) = serde_json::to_vec(&saved)
+                && let Err(error) = crate::config::write_atomic(path, &bytes) {
+                    eprintln!("AGY session catalog save failed: {}", error.kind());
+            }
+        }
+    }
+
+    fn sessions(&self, cwd: &Path) -> Vec<Value> {
+        self.folders.get(cwd).into_iter().flatten().map(|s| json!({"id":s.id, "updatedAt":s.updated_at})).collect()
+    }
+
+    fn contains(&self, cwd: &Path, id: &str) -> bool {
+        self.folders.get(cwd).is_some_and(|sessions| sessions.iter().any(|s| s.id == id))
+    }
+}
 
 pub(super) struct Pane {
     pub(super) agent: String,
@@ -506,8 +557,8 @@ pub(super) fn sessions(st: &State, p: &Value) -> Res {
         Some(Value::String(s)) => s.parse::<usize>().map_err(|_| "bad_params")?,
         Some(_) => return Err("bad_params"),
     };
-    // `agy` exposes resume by conversation id but has no CLI session-list/history command. Do not inspect its private files.
-    if cc.agent == "agy" { return Ok(json!({"sessions":[]})); }
+    // The catalog contains only IDs reported by an AGY process launched from Gembala; private AGY files are never read.
+    if cc.agent == "agy" { return Ok(json!({"sessions": st.agy_sessions.lock().unwrap().sessions(&cc.cwd)})); }
     let all = scan_sessions(&cc.cwd);
     let page: Vec<Value> = all.iter().skip(offset).take(SESSIONS_PAGE).map(|s| {
         let mut v = json!({"id": s.id, "path": s.path.to_string_lossy(), "updatedAt": s.updated});
@@ -565,6 +616,7 @@ pub(super) fn resume(st: &State, p: &Value) -> Res {
             && backend.data.lock().unwrap().session == wanted { return Err("session_in_use"); }
     }
     if cc.agent == "agy" {
+        if !st.agy_sessions.lock().unwrap().contains(&cc.cwd, wanted) { return Err("no_such_session"); }
         let mut d = cc.data.lock().unwrap();
         d.bind_session(Some(wanted));
         let mut access = cc.access.lock().unwrap();
@@ -646,6 +698,16 @@ fn bind_grant(cc: &Pane, d: &Data) {
 }
 
 fn envelopes(st: &State, id: u64, cc: &Pane, values: Vec<Envelope>, result: &mut Option<RunResult>) {
+    if cc.agent == "agy" {
+        let mut catalog = st.agy_sessions.lock().unwrap();
+        for value in &values {
+            let session = match value {
+                Envelope::Event(event) => event["sessionId"].as_str(),
+                Envelope::Result(result) => result.session_id.as_deref(),
+            };
+            if let Some(session) = session { catalog.remember(&cc.cwd, session); }
+        }
+    }
     let mut d = cc.data.lock().unwrap();
     for value in values {
         match value {
@@ -772,6 +834,7 @@ mod tests {
             ui_next: AtomicU64::new(1), config: Mutex::new(Value::Null),
             profiles: Mutex::new(profile::builtin()), accounts: Mutex::default(), addons: Mutex::default(),
             agents: Mutex::new(Value::Null), boot:"test-epoch".into(),
+            agy_sessions:Mutex::new(SessionCatalog::default()),
             hooks:profile::Hooks { exe:String::new(), dir:PathBuf::new() }, engine:Mutex::default(),
             pane_subs:Mutex::default(), audit:None, harness:Mutex::default(), tg:Mutex::default(),
             update:Mutex::default(), usage:Mutex::default(), models:Mutex::default(), report_shot:Mutex::default(), outbox_last:Mutex::default(),
@@ -796,6 +859,26 @@ mod tests {
         let pane = st.pane(&json!({"pane":id})).unwrap();
         assert!(matches!(&pane.kind, PaneKind::Structured(_)));
         assert_eq!(info(&pane).unwrap()["agent"], "agy");
+    }
+
+    #[test]
+    fn agy_history_uses_only_gembala_ids_scoped_by_folder_and_persists_them() {
+        let path = std::env::temp_dir().join(format!("gbl-agy-sessions-{}", new_secret().unwrap()));
+        let cwd = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let mut catalog = SessionCatalog::load(path.clone());
+        catalog.remember(&cwd, "agy-session-1");
+        let catalog = SessionCatalog::load(path.clone());
+        assert!(catalog.contains(&cwd, "agy-session-1"));
+        assert!(!catalog.contains(Path::new("/elsewhere"), "agy-session-1"));
+        std::fs::remove_file(path).unwrap();
+
+        let st = state();
+        *st.agy_sessions.lock().unwrap() = catalog;
+        let created = create(&st, &json!({"workspace":"test", "cwd":cwd, "profile":"agy", "agent":"agy"})).unwrap();
+        let pane = created["pane"].as_u64().unwrap();
+        assert_eq!(sessions(&st, &json!({"pane":pane})).unwrap()["sessions"][0]["id"], "agy-session-1");
+        assert_eq!(resume(&st, &json!({"pane":pane, "sessionId":"agy-session-1"})).unwrap()["sessionId"], "agy-session-1");
+        assert_eq!(resume(&st, &json!({"pane":pane, "sessionId":"outside-session"})).unwrap_err(), "no_such_session");
     }
 
     #[test]

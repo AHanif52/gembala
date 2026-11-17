@@ -54,7 +54,7 @@
   let input = $state<HTMLTextAreaElement>();
   const busy = $derived(BUSY.includes(v.status));
   // phase 4: a reopened session shows its committed transcript; input waits for "Continue session" after a restart
-  let banner = $state<{ ok: boolean; n?: number; cut?: boolean; partial?: boolean; error?: string } | null>(null);
+  let banner = $state<{ ok: boolean; n?: number; cut?: boolean; partial?: boolean; error?: string; agySelected?: boolean } | null>(null);
   let locked = $state(false);
   let picking = $state<any[] | null>(null);
   // phase 5 gate: folder, session and policy revision come from the daemon (pane.info) and go back unchanged; a stale
@@ -149,7 +149,7 @@
       loadHistory(v, r.sessionId ?? id, messages);
       outside = false;
       restored = false;
-      banner = { ok: true, n: messages.length, cut, partial: !!r?.history?.partial };
+      banner = { ok: true, n: messages.length, cut, partial: !!r?.history?.partial, agySelected: agent === "agy" };
       locked = cut;
     } catch (e) {
       banner = { ok: false, error: errText(e) };
@@ -324,7 +324,7 @@
       <p><b>{agent === "agy" ? (v.access === "plan" ? t("agy.plan") : t("agy.access")) : t("cc.access")}</b> · {agent === "agy" ? (v.access === "plan" ? t("agy.planNote") : t("agy.accessNote")) : t("cc.accessNote")}</p>
       {#if agent !== "agy"}<button class="btn" onclick={openGate} disabled={busy || locked}>{t("cc.changeAccess")}</button>{/if}
     {/if}
-    {#if agent !== "agy"}<button class="btn" onclick={pick} disabled={busy} aria-expanded={!!picking}>{t("cc.history")}</button>{/if}
+    <button class="btn" onclick={pick} disabled={busy} aria-expanded={!!picking}>{t("cc.history")}</button>
     <button class="btn" onclick={() => onterminal(v.sessionId ?? undefined)}>{t("cc.openTerminal")}</button>
   </div>
   {#if picking}
@@ -336,14 +336,14 @@
           </button>
         </li>
       {:else}
-        <li class="meta">{t("cc.historyEmpty")}</li>
+        <li class="meta">{agent === "agy" ? t("agy.historyEmpty") : t("cc.historyEmpty")}</li>
       {/each}
     </ul>
   {/if}
   {#if banner}
     <div class="resume" class:bad={!banner.ok} role="status">
       <p>
-        {#if banner.ok}{t("cc.saved", { n: banner.n ?? 0 })}{#if banner.cut}<br /><small>{t("cc.cut")}</small>{/if}{#if banner.partial}<br /><small>{t("cc.partialHistory")}</small>{/if}
+        {#if banner.ok}{#if banner.agySelected}{t("agy.selected")}{:else}{t("cc.saved", { n: banner.n ?? 0 })}{#if banner.cut}<br /><small>{t("cc.cut")}</small>{/if}{#if banner.partial}<br /><small>{t("cc.partialHistory")}</small>{/if}{/if}
         {:else}{t("cc.broken", { error: banner.error ?? "" })}{/if}
       </p>
       {#if locked}<button class="btn pri" onclick={() => ((locked = false), input?.focus())}>{t("cc.continue")}</button>{/if}
@@ -370,7 +370,7 @@
         <article class="user"><div class="who"><b>{t("cc.you")}</b>{#if turn.at}<time>{time(turn.at)}</time>{/if}</div><p class="pre">{turn.text}</p></article>
       {:else}
         <article class="agent">
-          <div class="who"><b>Command Code</b>{#if turn.at}<time>{time(turn.at)}</time>{/if}</div>
+          <div class="who"><b>{agent === "agy" ? t("agy.badge") : t("cc.badge")}</b>{#if turn.at}<time>{time(turn.at)}</time>{/if}</div>
           {#each shown(turn) as b, j (j)}{@render block(b)}{/each}
           {#if BUSY.includes(turn.state) && turn.state === v.status && !shown(turn).length}<p class="meta"><span class="pulse" aria-hidden="true"></span>{t("cc.s.starting")}</p>{/if}
           {#if !FINAL_OK.includes(turn.state)}

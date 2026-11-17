@@ -279,6 +279,8 @@ struct State {
     agents: Mutex<Value>,
     /// Random id per daemon run: a pane id from another run must not be taken for the same pane (FR-45).
     boot: String,
+    /// AGY conversation ids recorded by structured panes, grouped by canonical working folder (SEC-15).
+    agy_sessions: Mutex<structured::SessionCatalog>,
     hooks: profile::Hooks,
     engine: Mutex<bus::Engine>,
     /// FR-8: status event subscriptions from the pane channel (subscriber, its queue), filtered by SEC-21 on send
@@ -374,6 +376,7 @@ pub fn run(dir: &Path, secret: Option<String>, on_ready: impl FnOnce()) -> io::R
         addons: Mutex::default(),
         agents: Mutex::new(Value::Null),
         boot: new_secret()?[..16].to_string(),
+        agy_sessions: Mutex::new(structured::SessionCatalog::load(config::path().with_file_name("agy-sessions.json"))),
         hooks: profile::Hooks {
             exe: std::env::current_exe()?.to_string_lossy().into_owned(),
             dir: config::path().with_file_name("hooks"),
