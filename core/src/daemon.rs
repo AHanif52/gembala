@@ -608,7 +608,12 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                             };
                             // A short manually launched turn can stop before the process watcher finds its account.
                             if p["agent"].as_str() == Some("claude") {
-                                *pane.account.lock().unwrap() = acct_of_dir(&st, p["dir"].as_str().map(String::from));
+                                let acct = acct_of_dir(&st, p["dir"].as_str().map(String::from));
+                                // TECH 26.1: the turn used allowance; that account's numbers are read again shortly
+                                if status == "done" {
+                                    usage::claude_after_stop(&st, &acct);
+                                }
+                                *pane.account.lock().unwrap() = acct;
                             }
                             // FR-68: session id from the agent hook (Codex thread-id, OpenCode sessionID, Claude session_id)
                             if let (Some(agent), Some(id)) = (p["agent"].as_str(), p["session"].as_str())
@@ -1564,7 +1569,10 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         }
         "telegram.status" => Ok(telegram::status(st)),
         // FR-102: allowance left per agent login; new numbers arrive as `usage.changed`
-        "usage.list" => Ok(usage::status(st)),
+        "usage.list" => {
+            usage::claude_refresh(st);
+            Ok(usage::status(st))
+        }
         "models.list" => models::list(st, p),
         // FR-82: version check; "check" answers at once, the result comes as `update.changed`
         "update.status" => Ok(update::status(st)),

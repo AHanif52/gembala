@@ -2,7 +2,7 @@
 //! Launch commands are built here as shell text with every user-supplied part quoted.
 
 use serde_json::{Value, json};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -1018,8 +1018,17 @@ fn version_of(raw: &str) -> Option<String> {
         .map(|t| t.trim_matches('.').to_string())
 }
 
-pub fn run_with_timeout(mut c: Command, limit: Duration) -> Option<String> {
+pub fn run_with_timeout(c: Command, limit: Duration) -> Option<String> {
+    run_with_input(c, None, limit)
+}
+
+/// `run_with_timeout` with `input` written to stdin (piped by the caller), then closed. Input stays far below the pipe
+/// buffer, so writing it before stdout is read never blocks.
+pub fn run_with_input(mut c: Command, input: Option<&[u8]>, limit: Duration) -> Option<String> {
     let mut child = c.spawn().ok()?;
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        let _ = stdin.write_all(bytes);
+    }
     // stdout is read while waiting: output above the pipe buffer (~64 KB, e.g. a big git diff) makes the process
     // wait to be read, so reading after it finishes always hangs until the time limit
     let mut stdout = child.stdout.take()?;
