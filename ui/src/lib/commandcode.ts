@@ -247,6 +247,18 @@ export const ccTrigger = (text: string) => /^\s*(cmd|commandcode|cmdc)\s*$/.test
 export const agyTrigger = (text: string) => /^\s*agy\s*$/.test(text);
 export const ompTrigger = (text: string) => /^\s*omp\s*$/.test(text);
 
+/// A bare agent command, or the resume form its card types (`omp --resume <id>`, `agy --conversation <id>`, `… --continue`):
+/// opened in a pane of its own over the shell instead of running inside the shell log.
+export function agentOpen(text: string): { agent: "commandcode" | "agy" | "omp"; session?: string; resume?: boolean } | null {
+  const m = /^\s*(?:(cmd|commandcode|cmdc)|(agy)|(omp))(?:\s+(--continue)|\s+(--resume|--conversation)\s+([A-Za-z0-9_-]{1,80}))?\s*$/.exec(text);
+  if (!m) return null;
+  const agent = m[1] ? "commandcode" : m[2] ? "agy" : "omp";
+  if (m[4]) return { agent, resume: true };
+  if (!m[5]) return { agent };
+  if (m[5] !== (agent === "agy" ? "--conversation" : "--resume")) return null;
+  return { agent, session: m[6], resume: true };
+}
+
 // Slash input in the CC pane is never sent to the model: it maps to a UI control or a note.
 export const CC_SLASH = ["model", "effort", "resume", "history", "permissions", "access", "help"];
 export function ccSlash(text: string): { cmd: string; arg: string; known: boolean } | null {

@@ -3,7 +3,7 @@
   import { onMount, tick, untrack } from "svelte";
   import Tile from "$lib/Tile.svelte";
   import StructuredPane, { forget as forgetCc } from "$lib/StructuredPane.svelte";
-  import { agyTrigger, ccTrigger, ompTrigger } from "$lib/commandcode";
+  import { agentOpen } from "$lib/commandcode";
   import Settings from "$lib/Settings.svelte";
 import changelog from "../../../CHANGELOG.md?raw";
 import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew";
@@ -515,15 +515,17 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (text.trim() && history.at(-1) !== text) history.push(text);
     if (history.length > 200) history.shift();
     hi = -1;
-    // FR-107: bare `cmd` / `agy` / `omp` leaves the shell log: the first plain profile (cc.create refuses args/secrets) opens
-    // as a structured pane over this one when its switch is on, else as a new terminal tab; the shell and its log stay
-    const structuredAgent = ccTrigger(text) ? "commandcode" : agyTrigger(text) ? "agy" : ompTrigger(text) ? "omp" : "";
-    const structured = structuredAgent
-      ? cfg?.values.profiles.find((p) => p.agent === structuredAgent && !p.args?.length && !p.secret_env?.length && ((p.permission ?? "default") === "default" || (structuredAgent === "omp" && p.permission === "auto")))
+    // FR-107: bare `cmd` / `agy` / `omp` (or the resume form of a card) leaves the shell log: the first plain profile
+    // (cc.create refuses args/secrets) opens in a pane over this one, structured when its switch is on, else a terminal;
+    // the shell and its log wait behind it and come back when the agent exits
+    const open = agentOpen(text);
+    const profile = open
+      ? cfg?.values.profiles.find((p) => p.agent === open.agent && !p.args?.length && !p.secret_env?.length && ((p.permission ?? "default") === "default" || (open.agent === "omp" && p.permission === "auto")))
       : undefined;
-    if (structured) {
+    if (open && profile) {
       draft[pane] = "";
-      const opened = structuredOn(structuredAgent) ? swapToProfile(pane, structured.id, undefined, false, { kind: "commandcode" }) : newTab(structured.id);
+      const structured = structuredOn(open.agent) && !open.resume;
+      const opened = swapToProfile(pane, profile.id, undefined, false, structured ? { kind: "commandcode" } : { under: true, session: open.session, resume: open.resume });
       if (await opened.then(() => true, () => false)) return;
       draft[pane] = text; // create failed: run the original command in the shell
     }
@@ -651,10 +653,11 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     // FR-99 P4: the task goes to the first role through the message engine (not typed into the pane), once the agents have had time to start
     if (task.trim()) setTimeout(() => sendMsg(ids[0], task.trim(), false).then((e) => e && say(e)), 5000);
   }
-  /// the shell pane is replaced by a profile pane in the same spot (agent runs with official hooks, FR-4)
-  /// structured panes are opt-in (Settings); off = `cmd` / `agy` / `omp` get a clean terminal pane
+  /// structured panes are opt-in (Settings)
   const structuredOn = (agent: string) => (agent === "agy" ? cfg?.values.ui.agy_structured : agent === "omp" ? cfg?.values.ui.omp_structured : cfg?.values.ui.cc_structured) === true;
-  async function swapToProfile(old: number, profile: string, account?: string, pick = false, extra: Record<string, unknown> = {}): Promise<number | undefined> {
+  /// the shell pane is replaced by a profile pane in the same spot (agent runs with official hooks, FR-4);
+  /// `under` keeps the shell hidden behind the new pane instead (it comes back when the agent exits)
+  async function swapToProfile(old: number, profile: string, account?: string, pick = false, { under = false, ...extra }: Record<string, unknown> = {}): Promise<number | undefined> {
     const m = meta[old];
     if (!m) return;
     const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account, pick, ...extra });
@@ -666,7 +669,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
           if (t.focus === old) t.focus = id;
         }
     // FR-107: the structured pane sits on top; the shell keeps its PTY and scrollback behind it
-    if (extra.kind === "commandcode") {
+    if (under || extra.kind === "commandcode") {
       meta[id].under = old;
       return id;
     }
@@ -3129,6 +3132,16 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         // signal (Ctrl+C, closing it): not news
         const code = payload.params.code;
         if (typeof code === "number" && code >= 1 && code <= 125) notice(payload.params.pane, "failed");
+        // an agent opened over a shell is done: the shell comes back with its log, and the finished session card moves to it
+        const over = payload.params.pane as number;
+        const under = meta[over]?.under;
+        if (under !== undefined && meta[under] && !dead[under] && !meta[over].kind) {
+          const resume = payload.params.resume ?? null;
+          call("pane.close", { pane: over }).catch(() => {}).then(() => {
+            onexit(over);
+            if (meta[under]) meta[under].ended = { resume };
+          });
+        }
       }
       if (payload.event === "daemon.lost") onLost();
       if (payload.event === "msg.event") (onMsgEvent(payload.params), refreshMsgs().then(sweep));

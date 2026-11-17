@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, agyTrigger, ccTrigger, ompTrigger, ccSlash, CC_SLASH } from "./commandcode.ts";
+import { onEvent, fromSnapshot, agentActions, proposal, requestSize, loadHistory, agyTrigger, ccTrigger, ompTrigger, agentOpen, ccSlash, CC_SLASH } from "./commandcode.ts";
 import { emptyView } from "./agent-view.ts";
 
 test("Command Code mod reports ordered status and never answers permission prompts", async () => {
@@ -154,6 +154,15 @@ test("OMP approval events preserve request id/options, always-ask snapshot, and 
   assert.deepEqual(agentActions({ type: "tool_completed", toolCallId: "t1", toolName: "bash", result: "output … [Some lines truncated to 768 bytes]" }), [
     { t: "tool", id: "t1", name: "bash", status: "done", output: "output … [Some lines truncated to 768 bytes]", note: "omp.truncated" },
   ]);
+});
+
+test("agentOpen takes a bare agent command or the resume form its card types, nothing else", () => {
+  assert.deepEqual(agentOpen(" cmd "), { agent: "commandcode" });
+  assert.deepEqual(agentOpen("agy"), { agent: "agy" });
+  assert.deepEqual(agentOpen("omp --continue"), { agent: "omp", resume: true });
+  assert.deepEqual(agentOpen("commandcode --resume abc-123"), { agent: "commandcode", session: "abc-123", resume: true });
+  assert.deepEqual(agentOpen("agy --conversation 35dca435-228f-44db-ac71-9b16c6ef1eeb"), { agent: "agy", session: "35dca435-228f-44db-ac71-9b16c6ef1eeb", resume: true });
+  for (const t of ["agy --resume x", "omp --conversation x", "omp --resume x;id", "omp --yolo", "cmd -p hi", "omp\nls", "@omp hi", "echo omp", ""]) assert.equal(agentOpen(t), null, t);
 });
 
 test("ccSlash maps slash input to a UI control, leaves everything else for the model", () => {
