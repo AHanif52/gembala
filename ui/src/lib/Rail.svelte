@@ -65,7 +65,9 @@
   const icon = (agent: string) => ({ claude: "✳", codex: "◎", omp: "π", opencode: "◇", gemini: "✦", commandcode: "⌘", agy: "▲" })[agent as UsageRow["agent"]] ?? "•";
   const name = (agent: string) => ({ claude: "Claude Code", codex: "Codex", omp: "Oh My Pi", opencode: "OpenCode", gemini: "Gemini CLI", commandcode: "Command Code", agy: "Antigravity CLI" })[agent as UsageRow["agent"]] ?? agent;
   const windowName = (kind: UsageWindow["kind"]) => kind === "5h" ? t("usage.fiveHours") : kind === "week" ? t("usage.week") : kind === "month" ? t("usage.month") : t("usage.day");
-  const sourceName = (source: UsageRow["source"]) => source === "claude_statusline" ? t(simple ? "usage.sourceClaudeSimple" : "usage.sourceClaude") : source === "agy_statusline" ? t("usage.sourceAgy") : source === "codex_footer" ? t("usage.sourceCodex") : source === "codex_app_server" ? t(simple ? "usage.sourceCodex" : "usage.sourceCodexServer") : source === "omp_cli" ? t("usage.sourceOmp") : t("usage.sourceGemini");
+  const windowLabel = (w: UsageWindow) => !w.model ? windowName(w.kind) : w.kind === "week" ? t("usage.modelWeek", { model: w.model }) : `${w.model} · ${windowName(w.kind)}`;
+  const staleNote = (row: UsageRow) => row.stale === "throttled" ? ` · ${t("usage.throttled")}` : row.stale === "last_run" ? ` · ${t("usage.lastRun")}` : "";
+  const sourceName = (source: UsageRow["source"]) => source === "claude_oauth" ? t("usage.sourceClaudeOauth") : source === "claude_statusline" ? t(simple ? "usage.sourceClaudeSimple" : "usage.sourceClaude") : source === "agy_statusline" ? t("usage.sourceAgy") : source === "codex_footer" ? t("usage.sourceCodex") : source === "codex_app_server" ? t(simple ? "usage.sourceCodex" : "usage.sourceCodexServer") : source === "omp_cli" ? t("usage.sourceOmp") : t("usage.sourceGemini");
   const clock = (at: number) => new Date(at * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
   const resetAt = (at: number | null) => {
     if (!at) return t("usage.resetUnknown");
@@ -167,12 +169,13 @@
     {#if selectedRing.stale}<p class="quiet">{t(simple ? "usage.staleBodySimple" : "usage.staleBody", { name: name(selectedRing.agent) })}</p>
     {:else if !selectedRing.window}<p class="quiet">{fallback(selectedRing.agent)}</p>
     {:else}
-      {#each validWindows(selectedRing.row!, now) as w (w.kind)}
+      {#each validWindows(selectedRing.row!, now) as w (`${w.kind}:${w.model ?? ""}`)}
         {@const left = remaining(w)}
-        <div class="window-row"><span><b>{windowName(w.kind)}</b><strong>{t("usage.left", { n: Math.round(left) })}</strong></span><div class="bar"><i style:width={`${left}%`} style:background={shade(toneOf(left, false))}></i></div><small>{w.resets_at ? t(simple ? "usage.fullAgain" : "usage.resets", { time: resetAt(w.resets_at) }) : t("usage.resetUnknown")}</small></div>
+        <div class="window-row"><span><b>{windowLabel(w)}</b><strong>{t("usage.left", { n: Math.round(left) })}</strong></span><div class="bar"><i style:width={`${left}%`} style:background={shade(toneOf(left, false))}></i></div><small>{w.resets_at ? t(simple ? "usage.fullAgain" : "usage.resets", { time: resetAt(w.resets_at) }) : t("usage.resetUnknown")}</small></div>
       {/each}
     {/if}
-    <div class="source">{selectedRing.row ? `${simple ? t("usage.readFrom") : t("usage.source")}: ${sourceName(selectedRing.row.source)} · ${readAgo(selectedRing.row.read_at)}` : t("usage.sourceUnknown")}</div>
+    {#if selectedRing.row?.plan}<div class="source plan">{t("usage.plan", { plan: selectedRing.row.plan })}</div>{/if}
+    <div class="source">{selectedRing.row ? `${simple ? t("usage.readFrom") : t("usage.source")}: ${sourceName(selectedRing.row.source)} · ${readAgo(selectedRing.row.read_at)}${staleNote(selectedRing.row)}` : t("usage.sourceUnknown")}</div>
   </div>
 {:else if selected === "more"}
   <div class="usage-card" bind:this={cardEl} style:top={`${cardY}px`} onpointerenter={() => clearTimeout(leaveTimer)} onpointerleave={leave} role="dialog" tabindex="-1" aria-label={t("usage.moreTitle")}>
@@ -420,6 +423,11 @@
     border-top: 1px solid var(--line);
     color: var(--muted);
     font-size: 10px;
+  }
+  .plan + .source {
+    margin-top: 0;
+    padding-top: 2px;
+    border-top: 0;
   }
   .quiet {
     color: var(--muted);

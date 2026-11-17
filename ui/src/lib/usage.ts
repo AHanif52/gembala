@@ -6,9 +6,12 @@ export type UsageRow = {
   login: string;
   login_name: string;
   windows: UsageWindow[];
-  source: "codex_footer" | "codex_app_server" | "omp_cli" | "gemini_footer" | "claude_statusline" | "agy_statusline";
+  source: "codex_footer" | "codex_app_server" | "omp_cli" | "gemini_footer" | "claude_statusline" | "claude_oauth" | "agy_statusline";
   read_at: number;
   limited: boolean;
+  // TECH 26.1: Claude plan name ("Max (20x)") and why the numbers may be old; an older daemon sends neither
+  plan?: string | null;
+  stale?: "throttled" | "last_run" | null;
 };
 export type UsageRing = { key: string; agent: UsageRow["agent"]; login: string; loginName: string; row?: UsageRow; window?: UsageWindow; left: number | null; tone: "red" | "yellow" | "green" | "unknown"; stale: boolean };
 type Account = { id: string; agent: string; name: string };
