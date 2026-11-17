@@ -817,7 +817,9 @@ pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
         ("commandcode", "auto") => &["--permission-mode", "accept-edits"],
         // FR-88: edits auto-approved, shell and the rest still ask (`yolo` would skip every prompt)
         ("gemini", "auto") => &["--approval-mode", "auto_edit"],
-        ("agy", "auto") => &["--mode", "accept-edits"],
+        // 17 Nov 2026, user decision: agy Auto = no prompts at all (shell and network included); the structured pane's wide
+        // grant stays `--mode accept-edits` (structured.rs `access_flags`)
+        ("agy", "auto") => &["--dangerously-skip-permissions"],
         _ => &[],
     };
     f.iter().map(|s| s.to_string()).collect()
@@ -1367,7 +1369,7 @@ mod tests {
         assert!(structured.windows(2).any(|w| w == ["--add-dir", "/cfg/hooks/agy"]), "{structured:?}");
         assert!(!structured.iter().any(|arg| arg == "--dangerously-skip-permissions"), "{structured:?}");
         p.permission = "auto".into();
-        assert!(launch(&p, Some(&hooks), None, false).unwrap().contains("'--mode' 'accept-edits'"));
+        assert!(launch(&p, Some(&hooks), None, false).unwrap().contains("'--dangerously-skip-permissions'"));
         let id = "12345678-1234-5678-1234-567812345678";
         assert_eq!(session_flags("agy", &Session { id: Some(id.into()), resume: true }), ["--conversation", id]);
         assert_eq!(session_flags("agy", &Session { id: None, resume: true }), ["--continue"]);
