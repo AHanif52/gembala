@@ -3950,7 +3950,8 @@ fn on_marker(v: &mut View, pane: &Pane, id: u64, mark: &str) {
     }
     // SEC-40: the exit code is digits only (the launch command prints `%d`)
     let Some(code) = mark.strip_prefix("agent-exit;").filter(|c| (1..=3).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_digit())) else { return };
-    let name = pane.name.lock().unwrap().clone();
+    // an agent opened over a shell lands in that shell's log: titled by the command, like one typed there, not by its pane name
+    let name = if pane.under.is_some() { pane.agent.clone() } else { pane.name.lock().unwrap().clone() };
     agent_done(v, pane, id, &pane.agent, &name, None, code, &[]);
 }
 
@@ -4097,13 +4098,13 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     replace_event(v, id, resume.as_deref(), code.parse::<i32>().ok());
     // opened over a shell: the card goes to that shell too (own log file, own screen); it replaces the prompt line it sits on.
     // No code: the failure notice belongs to the agent's pane
-    if let Some((uid, under)) = &pane.under {
-        if let Ok(t) = under.terminal() {
-            history::append(&under.hist, &blk);
-            let mut uv = t.view.lock().unwrap();
-            uv.0.feed(&[b"\x1b[2K\r", text.as_bytes()].concat());
-            replace_event(&mut uv, *uid, resume.as_deref(), None);
-        }
+    if let Some((uid, under)) = &pane.under
+        && let Ok(t) = under.terminal()
+    {
+        history::append(&under.hist, &blk);
+        let mut uv = t.view.lock().unwrap();
+        uv.0.feed(&[b"\x1b[2K\r", text.as_bytes()].concat());
+        replace_event(&mut uv, *uid, resume.as_deref(), None);
     }
 }
 
