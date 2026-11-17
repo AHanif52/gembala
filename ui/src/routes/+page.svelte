@@ -515,16 +515,16 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (text.trim() && history.at(-1) !== text) history.push(text);
     if (history.length > 200) history.shift();
     hi = -1;
-    // FR-107: bare `cmd` opens the structured pane here; the first plain profile, since cc.create refuses args/secrets
+    // FR-107: bare `cmd` / `agy` / `omp` leaves the shell log: the first plain profile (cc.create refuses args/secrets) takes
+    // the pane over, as a structured pane when its switch is on, else as a clean terminal pane of its own
     const structuredAgent = ccTrigger(text) ? "commandcode" : agyTrigger(text) ? "agy" : ompTrigger(text) ? "omp" : "";
-    const structuredOn = structuredAgent === "agy" ? cfg?.values.ui.agy_structured !== false : structuredAgent === "omp" ? cfg?.values.ui.omp_structured !== false : cfg?.values.ui.cc_structured !== false;
-    const structured = structuredAgent && structuredOn
+    const structured = structuredAgent
       ? cfg?.values.profiles.find((p) => p.agent === structuredAgent && !p.args?.length && !p.secret_env?.length && ((p.permission ?? "default") === "default" || (structuredAgent === "omp" && p.permission === "auto")))
       : undefined;
     if (structured) {
       draft[pane] = "";
-      if (await swapToProfile(pane, structured.id, undefined, false, { kind: "commandcode" }).then(() => true, () => false)) return;
-      draft[pane] = text; // structured create failed: run the original command in the shell
+      if (await swapToProfile(pane, structured.id, undefined, false, structuredOn(structuredAgent) ? { kind: "commandcode" } : {}).then(() => true, () => false)) return;
+      draft[pane] = text; // create failed: run the original command in the shell
     }
     draft[pane] = "";
     atPrompt[pane] = false; // shows again at the next prompt
@@ -651,6 +651,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (task.trim()) setTimeout(() => sendMsg(ids[0], task.trim(), false).then((e) => e && say(e)), 5000);
   }
   /// the shell pane is replaced by a profile pane in the same spot (agent runs with official hooks, FR-4)
+  /// structured panes are opt-in (Settings); off = `cmd` / `agy` / `omp` get a clean terminal pane
+  const structuredOn = (agent: string) => (agent === "agy" ? cfg?.values.ui.agy_structured : agent === "omp" ? cfg?.values.ui.omp_structured : cfg?.values.ui.cc_structured) === true;
   async function swapToProfile(old: number, profile: string, account?: string, pick = false, extra: Record<string, unknown> = {}): Promise<number | undefined> {
     const m = meta[old];
     if (!m) return;
@@ -1798,7 +1800,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         go: () => newTab(p.id === "shell" ? undefined : p.id),
       })),
       // PLAN-CC-PANE: the same Command Code profile as a structured pane
-      ...(cfg?.values.profiles ?? []).filter((p) => ["commandcode", "agy", "omp"].includes(p.agent)).map((p) => ({
+      ...(cfg?.values.profiles ?? []).filter((p) => ["commandcode", "agy", "omp"].includes(p.agent) && structuredOn(p.agent)).map((p) => ({
         label: tt("cc.newStructured", { name: p.name }),
         hint: tt("cc.badge"),
         kind: "profile" as const,
@@ -1938,7 +1940,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     const missing = new Set(agents.filter((a) => !a.installed).map((a) => a.agent));
     popup(e, [
       ...(cfg?.values.profiles ?? []).map((p) => [`${p.name}${missing.has(p.agent) ? ` (${tt("main.notInstalled")})` : ""}`, () => newTab(p.id === "shell" ? undefined : p.id, wi)] as MItem),
-      ...(cfg?.values.profiles ?? []).filter((p) => ["commandcode", "agy", "omp"].includes(p.agent) && !missing.has(p.agent)).map((p) => [tt("cc.newStructured", { name: p.name }), () => newTab(p.id, wi, undefined, { kind: "commandcode" })] as MItem),
+      ...(cfg?.values.profiles ?? []).filter((p) => ["commandcode", "agy", "omp"].includes(p.agent) && structuredOn(p.agent) && !missing.has(p.agent)).map((p) => [tt("cc.newStructured", { name: p.name }), () => newTab(p.id, wi, undefined, { kind: "commandcode" })] as MItem),
       "-",
       [tt("act.worktree"), () => openWorktree(wi)],
       [tt("act.template"), () => openTemplate(wi)],

@@ -421,7 +421,6 @@
           if (roomy) acts.classList.add("row"), acts.style.setProperty("--k", String(by - h.y));
           else acts.classList.add("side"), acts.style.setProperty("--n", String(Math.max(1, Math.min(by, end) - h.y)));
           btn(t("tile.resume"), "pri", () => onblock("run", resume));
-          btn(roomy ? t("tile.fullOutput") : t("tile.output"), "", () => onblock("output", ""));
           btn(roomy ? t("tile.copyCmd") : t("tile.copy"), "", () => onblock("copy", resume));
         } else if (h.fail && cmd) {
           btn(t("tile.copy"), "ghost", () => onblock("copy", cmd));

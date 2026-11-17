@@ -1293,6 +1293,12 @@ fn scan_sessions(cwd: &Path) -> Vec<SessionFile> {
     found
 }
 
+/// FR-56 exit block of a typed `cmd`: the session this run wrote in `cwd` (newest first), none when no prompt was sent.
+pub(super) fn session_since(cwd: &Path, since: std::time::SystemTime) -> Option<String> {
+    let since = since.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    scan_sessions(&std::fs::canonicalize(cwd).ok()?).into_iter().find(|s| s.updated >= since).map(|s| s.id)
+}
+
 /// `cc.sessions`: a paged list of this pane's folder, newest first. Not a browser for the whole home folder.
 pub(super) fn sessions(st: &State, p: &Value) -> Res {
     let pane = st.pane(p)?;

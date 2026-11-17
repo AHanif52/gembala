@@ -102,9 +102,9 @@ export const UI_DEFAULT: Ui = {
   input_editor: true,
   command_timeline: true,
   codex_status: true,
-  cc_structured: true,
-  agy_structured: true,
-  omp_structured: true,
+  cc_structured: false,
+  agy_structured: false,
+  omp_structured: false,
   on_quit: "keep",
   helper_idle_close: 15,
 };

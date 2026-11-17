@@ -4054,8 +4054,12 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
         }
         "codex" => Some(printed_resume(&log).or_else(|| pane.session.lock().unwrap().clone()).map_or("codex resume --last".into(), |s| format!("codex resume {s}"))),
         "opencode" => Some(pane.session.lock().unwrap().clone().map_or("opencode --continue".into(), |s| format!("opencode --session {s}"))),
-        // no prompt sent = no session id: `--continue` would reopen another conversation of the folder, so no resume line
-        "commandcode" => pane.session.lock().unwrap().clone().map(|s| format!("commandcode --resume {s}")),
+        // Command Code reports no id of its own: the session it wrote in the folder since the run began; none (no prompt
+        // sent) = `--continue`, like omp
+        "commandcode" => {
+            let id = pane.session.lock().unwrap().clone().or_else(|| agent_dir.or(dir).and_then(|d| structured::session_since(&d, since)));
+            Some(id.map_or("commandcode --continue".into(), |s| format!("commandcode --resume {s}")))
+        }
         // FR-88: `--resume` has no id form, only `latest` or an index
         "gemini" => Some("gemini --resume latest".into()),
         // the conversation id from the status line (profile) or the line agy prints on exit; none = no prompt sent, and
