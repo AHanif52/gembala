@@ -4,3 +4,7 @@ Run this command?
 2. Yes, and always allow in this conversation for commands that start with 'touch'
 3. Yes, and always allow for commands that start with 'touch' (Persist to settings.json)
 4. No, cancel
+5. No, and always deny for commands that start with 'touch' in this conversation
+6. No, and always deny for commands that start with 'touch' (Persist to settings.json)
+↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
+esc to cancel
