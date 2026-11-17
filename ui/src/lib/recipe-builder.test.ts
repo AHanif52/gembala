@@ -8,7 +8,7 @@ const st = (id, o = {}) => ({ id, kind: "work", name: id, need: "", instruction:
 const ship = st("ship", { human: true, agents: [], gate: true, timeout_secs: 0 });
 const flow = () => [st("plan"), st("execute"), st("test", { shell: true, agents: [] }), st("audit", { kind: "check" }), ship, st("report")];
 const ids = (a) => a.map((s) => s.id).join(",");
-const LIB = ["claude", "codex", "omp", "opencode", "gemini", "commandcode"].map((agent) => ({ agent, installed: agent !== "omp", flags: {} }));
+const LIB = ["claude", "codex", "omp", "opencode", "gemini", "commandcode", "agy"].map((agent) => ({ agent, installed: agent !== "omp", flags: {} }));
 
 test("Ship never moves, and only a report-like step may follow it", () => {
   const f = flow();

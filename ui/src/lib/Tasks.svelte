@@ -38,7 +38,7 @@
     onflow: () => void;
   } = $props();
 
-  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦", commandcode: "⌘" };
+  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦", commandcode: "⌘", agy: "▲" };
   const groups = $derived(split(tasks));
   let foldOpen = $state(false);
   let menu = $state("");
@@ -430,6 +430,7 @@
   .aico.opencode { color: var(--tx-blue, #3b82f6); }
   .aico.gemini { color: var(--tx-gemini, #4285f4); }
   .aico.commandcode { color: var(--tx-commandcode, #ca8a04); }
+.aico.agy { color: #a78bfa; }
   .pill {
     padding: 1px 8px;
     border: 1px solid var(--line);

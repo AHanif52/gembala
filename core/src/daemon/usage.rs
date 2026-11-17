@@ -21,7 +21,7 @@ const PROBE: Duration = Duration::from_secs(6);
 const OMP: Duration = Duration::from_secs(15);
 
 /// Order the rows are listed in, also what the UI shows first.
-pub const AGENTS: &[&str] = &["claude", "codex", "omp", "opencode", "gemini", "commandcode"];
+pub const AGENTS: &[&str] = &["claude", "codex", "omp", "opencode", "gemini", "commandcode", "agy"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Window {
@@ -135,6 +135,13 @@ fn put(st: &State, mut row: Row) {
                 // A footer has no reset time: keep the one the app-server reading gave for the same window while it's ahead.
                 if row.source == "codex_footer" {
                     for w in row.windows.iter_mut().filter(|w| w.resets_at.is_none()) {
+                        if let Some(t) = cur.windows.iter().find(|o| o.kind == w.kind && o.model == w.model).and_then(|o| o.resets_at).filter(|t| *t > now()) {
+                            w.resets_at = Some(t);
+                        }
+                    }
+                }
+                if row.source == "agy_statusline" {
+                    for w in row.windows.iter_mut().filter(|w| w.resets_at.is_some()) {
                         if let Some(t) = cur.windows.iter().find(|o| o.kind == w.kind && o.model == w.model).and_then(|o| o.resets_at).filter(|t| *t > now()) {
                             w.resets_at = Some(t);
                         }
@@ -440,6 +447,31 @@ pub fn from_claude(st: &State, p: &Value) -> Res {
     Ok(json!({}))
 }
 
+pub fn from_agy(st: &State, p: &Value) -> Res {
+    let windows = parse_agy_quota(&p["quota"]);
+    if windows.is_empty() { return Ok(json!({})); }
+    let limited = windows.iter().any(|w| w.used_pct >= 100.0);
+    put(st, Row { agent: "agy", login: "utama".into(), login_name: "Utama".into(), windows, source: "agy_statusline", read_at: now(), limited });
+    Ok(json!({}))
+}
+
+fn parse_agy_quota(quota: &Value) -> Vec<Window> {
+    let mut windows = Vec::new();
+    for (bucket, value) in quota.as_object().into_iter().flatten() {
+        if value["disabled"] == true { continue; }
+        let lower = bucket.to_ascii_lowercase();
+        let kind = if lower.ends_with("-5h") { "5h" } else if lower.ends_with("-weekly") { "week" } else { continue };
+        let Some(remaining) = value["remaining_fraction"].as_f64().filter(|n| (0.0..=1.0).contains(n)) else { continue };
+        let reset_at = value["reset_in_seconds"].as_i64().filter(|n| *n >= 0).map(|n| now() + n);
+        let plain_bucket = if kind == "5h" { "gemini-5h" } else { "gemini-weekly" };
+        let model = if lower.starts_with("gemini-") && lower != plain_bucket {
+            Some(bucket.strip_prefix("gemini-").unwrap_or(bucket).trim_end_matches(if kind == "5h" { "-5h" } else { "-weekly" }).to_string())
+        } else { None };
+        merge_into(&mut windows, window(kind, (1.0 - remaining) * 100.0, reset_at, model));
+    }
+    windows
+}
+
 /// FR-102 `/status` block: numbers and reset times per login, nothing from the work (SEC-33/36). Windows whose reset
 /// already passed are left out.
 pub fn telegram_lines(st: &State, id_l: bool) -> Vec<(String, String, Vec<String>)> {
@@ -478,6 +510,24 @@ pub fn telegram_lines(st: &State, id_l: bool) -> Vec<(String, String, Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agy_statusline_quota_only_keeps_public_numbers() {
+        let quota = json!({
+            "gemini-5h": {"remaining_fraction": 0.6, "reset_in_seconds": 3600},
+            "gemini-weekly": {"remaining_fraction": 0.8},
+            "gemini-argon-wtu-weekly": {"remaining_fraction": 0.5},
+            "3p-5h": {"remaining_fraction": 0.9},
+            "3p-weekly": {"remaining_fraction": 0.7},
+            "disabled-weekly": {"remaining_fraction": 0.1, "disabled": true},
+            "unknown": {"remaining_fraction": 0.1}
+        });
+        let rows = parse_agy_quota(&quota);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.iter().find(|w| w.model.is_none() && w.kind == "5h").unwrap().used_pct, 40.0);
+        assert!(rows.iter().any(|w| w.model.as_deref() == Some("argon-wtu") && w.kind == "week" && w.used_pct == 50.0));
+        assert!(rows.iter().find(|w| w.model.is_none() && w.kind == "5h").unwrap().resets_at.unwrap() > now());
+    }
 
     #[test]
     fn footer_codex_dari_teks_asli() {

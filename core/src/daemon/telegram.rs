@@ -419,7 +419,7 @@ fn keys(agent: &str) -> &'static [&'static str] {
     // FR-99 P2: an agent whose dialog was never recorded gets no button (Gemini, a new version): the prompt is answered on
     // the Mac. Sending Esc there could cancel something the user wanted, so the bar and the bot show no buttons at all.
     // Command Code: numbered permission prompt (12 Nov 2026), read again when pressed like Claude's.
-    if agent == "claude" || agent == "codex" || agent == "commandcode" { &["1", "2", "3", "esc"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &[] }
+    if agent == "claude" || agent == "codex" || agent == "commandcode" { &["1", "2", "3", "esc"] } else if agent == "agy" { &["1", "2", "4"] } else if agent == "opencode" { &["once", "always", "esc"] } else if agent == "omp" { &["once", "esc"] } else { &[] }
 }
 
 /// `❯ 2. No` / `  3. No, and tell Claude…` / Codex `› 1. Yes` -> the option number of a numbered dialog row
@@ -452,6 +452,10 @@ fn known_dialog(agent: &str, screen: &str) -> bool {
         "omp" => rows.iter().any(|r| r.contains("Allow tool:"))
             && rows.iter().any(|r| r.trim_start_matches(['❯', '›']).trim() == "Approve")
             && rows.iter().any(|r| r.trim_start_matches(['❯', '›']).trim() == "Deny"),
+        "agy" => rows.iter().any(|r| r.contains("Run this command?"))
+            && rows.iter().any(|r| r.contains("Yes, run command"))
+            && rows.iter().any(|r| r.contains("Persist to settings.json"))
+            && rows.iter().any(|r| r.contains("No, cancel")),
         "opencode" => rows.contains(&"△ Permission required")
             && rows.iter().any(|r| r.contains("Allow once") && r.contains("Allow always") && r.contains("Reject")),
         _ => false,
@@ -463,6 +467,9 @@ fn known_dialog(agent: &str, screen: &str) -> bool {
 /// (the mockup's bar and the bot show the same three buttons), and "don't ask again" reads "Izinkan terus".
 fn button_label(agent: &str, key: &str, id_l: bool) -> String {
     let word = match (agent, key) {
+        ("agy", "1") => if id_l { "1. Izinkan" } else { "1. Allow" },
+        ("agy", "2") => if id_l { "2. Izinkan di percakapan ini" } else { "2. Allow in this conversation" },
+        ("agy", "4") => if id_l { "4. Tolak" } else { "4. Deny" },
         ("omp", "once") => if id_l { "Izinkan" } else { "Allow" },
         ("omp", "esc") => if id_l { "Tolak" } else { "Deny" },
         ("opencode", "once") => if id_l { "Izinkan sekali" } else { "Allow once" },
@@ -1950,7 +1957,7 @@ fn target(st: &State, b: &Bot, to: Option<To>) -> Result<(u64, Arc<Pane>), &'sta
 /// What `/buka` may type: the built-in agents plus the Claude account commands Gembala writes to accounts.zsh (FR-61,
 /// `claude-utama` + `claude-<id>`). The command is typed as is, never text from the phone (SEC-36).
 fn openable(claude_accounts: &[String]) -> Vec<String> {
-    let mut v: Vec<String> = ["claude", "codex", "omp", "opencode", "commandcode", "gemini"].map(String::from).to_vec();
+    let mut v: Vec<String> = ["claude", "codex", "omp", "opencode", "commandcode", "gemini", "agy"].map(String::from).to_vec();
     if !claude_accounts.is_empty() {
         v.push("claude-utama".into());
     }
@@ -2970,8 +2977,8 @@ mod tests {
         assert_eq!(parse(&q, Some(&l), 0), In::OpenPick { pane: 11, agent: "claude-kantor".into(), cb: "c1".into(), msg: 9 });
         let q = json!({"callback_query": {"id": "c1", "from": {"id": 7}, "data": "w|ap2mf4uo|claude", "message": {"message_id": 9, "chat": {"id": 42}}}});
         assert_eq!(parse(&q, Some(&l), 0), In::OpenWs { ws: "ap2mf4uo".into(), agent: "claude".into(), cb: "c1".into(), msg: 9 });
-        assert_eq!(openable(&[]), ["claude", "codex", "omp", "opencode", "commandcode", "gemini"]);
-        assert_eq!(openable(&["kantor".into()]), ["claude", "codex", "omp", "opencode", "commandcode", "gemini", "claude-utama", "claude-kantor"]);
+        assert_eq!(openable(&[]), ["claude", "codex", "omp", "opencode", "commandcode", "gemini", "agy"]);
+        assert_eq!(openable(&["kantor".into()]), ["claude", "codex", "omp", "opencode", "commandcode", "gemini", "agy", "claude-utama", "claude-kantor"]);
         // free text is never an agent: "rm -rf ~" isn't in the list, so nothing is typed
         assert!(!openable(&[]).contains(&"rm".to_string()));
     }
@@ -3022,6 +3029,10 @@ mod tests {
         assert_eq!(a["question"], "Which database should store login sessions?");
         // the options are answers, not permission grants: their own words stay (only the spacing is cleaned up)
         assert_eq!(a["options"][1]["label"], "2. SQLite simpler for local");
+        let agy = dlg("agy-shell.dialog");
+        let options = dialog_view("agy", &agy, "", false)["options"].as_array().unwrap().clone();
+        assert_eq!(options.iter().map(|o| o["key"].as_str().unwrap()).collect::<Vec<_>>(), ["1", "2", "4"]);
+        assert!(!options.iter().any(|o| o["label"].as_str().unwrap().contains("Persist")));
     }
 
     /// Command Code 2.1.311 (recorded 12 Nov 2026): the same numbered-dialog treatment as Claude. "No, tell Command Code

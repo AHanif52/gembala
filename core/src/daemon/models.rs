@@ -85,6 +85,12 @@ fn parse(agent: &str, text: &str) -> Option<Vec<Value>> {
                 add(id, id);
             }
         }
+    } else if agent == "agy" {
+        for row in text.lines() {
+            if let Some((id, label)) = row.trim().split_once('\t') {
+                add(id, label);
+            }
+        }
     } else if agent == "opencode" {
         for id in text.lines().map(str::trim).filter(|s| s.contains('/')) {
             add(id, id);
@@ -120,6 +126,7 @@ fn probe(path: &str, agent: &str, home: Option<&std::path::Path>, limit: Duratio
         "opencode" => { c.arg("models"); }
         "gemini" => { c.args(["models", "-o", "json"]); }
         "commandcode" => { c.arg("--list-models"); }
+        "agy" => { c.arg("models"); }
         _ => return None,
     }
     pty::scrub_env(&mut c);
@@ -188,6 +195,7 @@ mod tests {
     const OMP: &str = include_str!("../../tests/fixtures/models/omp.json");
     const OPENCODE: &str = include_str!("../../tests/fixtures/models/opencode.txt");
     const COMMANDCODE: &str = include_str!("../../tests/fixtures/models/commandcode.txt");
+    const AGY: &str = include_str!("../../tests/fixtures/models/agy.txt");
 
     #[test]
     fn commandcode_models_ignore_headings_and_examples() {
@@ -205,6 +213,9 @@ mod tests {
         assert_eq!(parse("omp", OMP).unwrap()[0], json!({"id":"apple/on-device", "label":"Apple AFM 3 Core Advanced"}));
         assert_eq!(parse("opencode", OPENCODE).unwrap().len(), 5);
         assert_eq!(parse("gemini", GEMINI).unwrap()[0], json!({"id":"auto", "label":"Auto"}));
+        let models = parse("agy", AGY).unwrap();
+        assert_eq!(models.len(), 11);
+        assert_eq!(models[0], json!({"id":"gemini-4-argon-medium", "label":"Gemini 4 Argon (Medium)"}));
     }
 
     #[test]

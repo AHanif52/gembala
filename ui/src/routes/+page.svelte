@@ -89,7 +89,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     ccEffort?: string;
     ccResume?: string; // PLAN-CC-PANE phase 4: session to reopen once the new structured pane mounts
   };
-  const AGENTS = ["claude", "codex", "opencode", "omp", "commandcode", "gemini"];
+  const AGENTS = ["claude", "codex", "opencode", "omp", "commandcode", "gemini", "agy"];
   // FR-4/52: status dot + text label, not color alone (BRD section 11)
   const stText = (s?: string) => (s === "approve" ? tt(wordKey("approve")) : s === "blocked" || s === "done" || s === "working" ? tt(`status.${s}`) : "");
   // FR-52: tab color picked by the user (thin line on the left)
@@ -101,7 +101,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     return COLORS.reduce<string>((best, c) => (used(c) < used(best) ? c : best), FIRST);
   };
   // FR-52: mark per agent (not a brand logo), color close to the agent's signature color
-  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦", commandcode: "⌘" };
+  const GLYPH: Record<string, string> = { claude: "✳", omp: "π", codex: "◎", opencode: "◇", gemini: "✦", commandcode: "⌘", agy: "▲" };
   /// agent running in the pane (from a profile or typed by hand); "" = none
   const agentOf = (p: number) => (AGENTS.includes(meta[p]?.busy ?? "") ? meta[p].busy! : "");
   /// the agent running in a pane by its profile name, also one typed in a shell pane ("shell-2 · Claude Code", not
@@ -821,6 +821,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     opencode: "https://opencode.ai/docs",
     commandcode: "https://commandcode.ai/docs",
     gemini: "https://github.com/google-gemini/gemini-cli",
+    agy: "https://antigravity.google/docs/cli/reference",
   };
   let installing = $state(false);
   async function redetect() {
@@ -1540,7 +1541,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     else if (shell && m && !AGENTS.includes(m.agent) && m.busy && m.session) {
       // same as the daemon (FR-61): session owned by another account = `claude-<owner>`, otherwise the process account; plain `claude` = shell account
       const who = m.owner?.id ?? m.accountId;
-      const cmd = { claude: `${who ? `claude-${who}` : "claude"} --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}`, commandcode: `commandcode --resume ${m.session}`, gemini: "gemini --resume latest" }[m.busy];
+      const cmd = { claude: `${who ? `claude-${who}` : "claude"} --resume ${m.session}`, codex: `codex resume ${m.session}`, opencode: `opencode --session ${m.session}`, omp: `omp --resume ${m.session}`, commandcode: `commandcode --resume ${m.session}`, gemini: "gemini --resume latest", agy: `agy --conversation ${m.session}` }[m.busy];
       if (safeResume(cmd)) meta[id].ended = { resume: cmd ?? null };
     }
     for (const w of wss)
@@ -3984,7 +3985,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <div class="card" role="alertdialog" aria-label={tt("open.title", { who: openWho(o) })}>
                 <span>{simple ? tt("open.askSimple", { from: whoOf(o.from), who: openWho(o) }) : tt("open.ask", { from: o.from, who: openWho(o) })}</span>
                 <blockquote>{o.body}</blockquote>
-                {#if ["claude", "codex", "omp", "opencode", "gemini", "commandcode"].includes(openAgent ?? "")}
+                {#if ["claude", "codex", "omp", "opencode", "gemini", "commandcode", "agy"].includes(openAgent ?? "")}
                   <div class="sub"><span>{tt("open.modelEffort")}</span>
                     {#if modelsForOpen(o).length}
                       <select aria-label={tt("open.modelEffort")} value={modelsForOpen(o).some((m) => m.id === o.model) ? o.model : ""} onchange={(e) => (o.model = e.currentTarget.value)}>
@@ -3992,7 +3993,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                       </select>
                     {/if}
                     <input aria-label={tt("set.acc.modelAria", { name: openWho(o) })} value={o.model} placeholder={tt("open.customModel")} oninput={(e) => (o.model = e.currentTarget.value)} />
-                    {#if ["claude", "codex", "omp", "commandcode"].includes(openAgent ?? "")}
+                    {#if ["claude", "codex", "omp", "commandcode", "agy"].includes(openAgent ?? "")}
                       <select aria-label={tt("open.effort")} bind:value={o.effort}>
                         <option value="">{tt("set.acc.default.opt")}</option>{#each openEfforts as effort (effort)}<option value={effort}>{effort}</option>{/each}
                       </select>
@@ -4217,7 +4218,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {/if}
       {:else}
         <span class="wm">{tt("wel.noneSub")}</span>
-        {#each welcome ?? [] as a, i (a.agent)}
+        {#each [...(welcome ?? [])].sort((a, b) => Number(b.agent === "agy") - Number(a.agent === "agy")) as a, i (a.agent)}
           {@render installRow(a, i === 0)}
         {/each}
         <span class="acts"><button class="mini" onclick={redetect}>{installing ? tt("wel.checking") : tt("wel.recheck")}</button></span>
@@ -4227,7 +4228,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   <!-- FR-99 P1: one agent that isn't installed: type its install command into a new terminal tab (the user presses Enter), copy it, or read the official guide -->
   {#snippet installRow(a: Agent, first: boolean)}
     <span class="wrow inst">
-      <span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span><span class="grow">{a.name}{#if !simple}<code class="wcmd">{a.install}</code>{/if}</span>
+      <span class="aico {a.agent}">{GLYPH[a.agent] ?? "›"}</span><span class="grow">{a.name}{#if a.agent === "gemini"}<small>{tt("wel.geminiLoginHint")}</small>{/if}{#if !simple}<code class="wcmd">{a.install}</code>{/if}</span>
       <button class="mini" class:pri={first} disabled={!a.install} onclick={() => installInTerminal(a)}>{tt("wel.install")}</button>
       <button class="mini" disabled={!a.install} onclick={() => navigator.clipboard?.writeText(a.install).catch(() => {})}>{tt("wel.copy")}</button>
       {#if GUIDE[a.agent]}<button class="mini" onclick={() => (linkAsk = GUIDE[a.agent])}>{tt("wel.guide")} ↗</button>{/if}
@@ -5452,6 +5453,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   .aico.gemini {
     color: var(--tx-gemini, #4285f4);
   }
+.aico.agy { color: #a78bfa; }
   .st.blocked {
     color: var(--tx-amber, #d97706);
     font-weight: 600;

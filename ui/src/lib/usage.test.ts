@@ -15,6 +15,13 @@ test("Command Code without allowance data shows an unknown ring", () => {
   assert.equal(rings[0].left, null);
 });
 
+test("Antigravity without status line data shows an unknown ring", () => {
+  const ring = buildRings(["agy"], [], [], [], now)[0];
+  assert.equal(ring.key, "agy:utama");
+  assert.equal(ring.tone, "unknown");
+  assert.equal(ring.left, null);
+});
+
 test("tightest live window sets ring color; expired data stays gray", () => {
   const codex = row("codex", "utama", [window("5h", 34), window("week", 96)]);
   assert.equal(tightest(codex, now).kind, "week");

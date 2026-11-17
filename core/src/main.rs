@@ -50,7 +50,7 @@ fn main() -> ExitCode {
         // FR-98, SEC-20: runs an agent inside a Landlock domain (internal, not in USAGE; a wrapper prefix)
         "jail" => jail::main(&args[1..]),
         // FR-102: Claude Code status line wrapper, installed per launch through `--settings` (internal, not in USAGE)
-        "statusline" => statusline(),
+        "statusline" => statusline(&args[1..]),
         // FR-61: called by the zsh `claude` function before Claude for another account runs (not in USAGE: internal)
         "trust-sync" => {
             // only accounts in config with trust on (FR-61 (8): "Trusted folders" can be Own)
@@ -167,11 +167,15 @@ fn hook(args: &[String]) -> ExitCode {
 /// JSON on stdin: the `rate_limits` numbers go to the daemon, then the user's own `statusLine.command` — that field only,
 /// from that account's settings.json (SEC-15 exception 3) — gets the same stdin and its stdout is printed as is. Any
 /// problem prints nothing: a failing wrapper must not break Claude's status line.
-fn statusline() -> ExitCode {
+fn statusline(args: &[String]) -> ExitCode {
     use std::io::Read;
     let mut input = String::new();
     let _ = std::io::stdin().take(64 * 1024).read_to_string(&mut input);
     let payload: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    if args.first().map(String::as_str) == Some("agy") {
+        statusline_agy(&payload);
+        return ExitCode::SUCCESS;
+    }
     send_usage(&payload);
     if let Some(cmd) = user_statusline()
         && let Some(out) = run_statusline(&cmd, &input)
@@ -180,6 +184,47 @@ fn statusline() -> ExitCode {
         let _ = std::io::stdout().flush();
     }
     ExitCode::SUCCESS
+}
+
+/// Antigravity status line: report numbers/state to Gembala and print nothing so its default line stays visible.
+fn statusline_agy(payload: &serde_json::Value) {
+    let state = payload["agent_state"].as_str().unwrap_or_default();
+    let status = match state {
+        "authenticating" => Some("authenticating"),
+        "initializing" => Some("initializing"),
+        _ => agy_status(state, payload["tool_confirmation_pending"] == true),
+    };
+    let Some(sock) = std::env::var_os("GEMBALA_SOCKET") else { return };
+    let session = payload["conversation_id"].as_str().filter(|s| !s.is_empty());
+    let mut s = match std::os::unix::net::UnixStream::connect(sock) { Ok(s) => s, Err(_) => return };
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+    let Ok(mut r) = s.try_clone().map(std::io::BufReader::new) else { return };
+    let mut line = String::new();
+    if writeln!(s, "{}", serde_json::json!({"id":1,"method":"hello","params":{"proto":daemon::PROTO}})).is_err()
+        || std::io::BufRead::read_line(&mut r, &mut line).is_err()
+    { return; }
+    if let Some(status) = status {
+        let req = serde_json::json!({"id":2,"method":"hook","params":{"status":status,"agent":"agy","session":session,"login":state == "authenticating"}});
+        if writeln!(s, "{req}").is_err() { return; }
+        line.clear();
+        if std::io::BufRead::read_line(&mut r, &mut line).is_err() { return; }
+    }
+    if payload["quota"].is_object() {
+        let req = serde_json::json!({"id":3,"method":"usage","params":{"agent":"agy","quota":payload["quota"]}});
+        let _ = writeln!(s, "{req}");
+        line.clear();
+        let _ = std::io::BufRead::read_line(&mut r, &mut line);
+    }
+}
+
+fn agy_status(state: &str, confirmation: bool) -> Option<&'static str> {
+    if confirmation { return Some("blocked"); }
+    match state {
+        "working" | "tool_use" | "reviewing" => Some("working"),
+        "idle" => Some("idle"),
+        "error" => Some("done"),
+        _ => None,
+    }
 }
 
 /// The rate limits reach the daemon as numbers through the pane channel; the rest of the status line JSON stays here.
@@ -436,5 +481,17 @@ mod tests {
         assert!(start.elapsed() < std::time::Duration::from_secs(4), "batas waktu tidak jalan");
         // a command that prints nothing is not an error
         assert_eq!(run_statusline("/bin/cat >/dev/null", "x"), Some(String::new()));
+    }
+
+    #[test]
+    fn statusline_agy_maps_only_documented_states() {
+        assert_eq!(agy_status("working", false), Some("working"));
+        assert_eq!(agy_status("tool_use", false), Some("working"));
+        assert_eq!(agy_status("reviewing", false), Some("working"));
+        assert_eq!(agy_status("idle", false), Some("idle"));
+        assert_eq!(agy_status("authenticating", false), None);
+        assert_eq!(agy_status("error", false), Some("done"));
+        assert_eq!(agy_status("initializing", false), None);
+        assert_eq!(agy_status("idle", true), Some("blocked"));
     }
 }

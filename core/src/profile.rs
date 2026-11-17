@@ -55,6 +55,7 @@ const AGENTS: &[(&str, &str, &str, &str, &str)] = &[
     ("omp", "Oh My Pi", "omp", "brew install can1357/tap/omp", "18.18"),
     ("commandcode", "Command Code", "commandcode", "npm i -g command-code", "1.88"),
     ("gemini", "Gemini CLI", "gemini", "brew install gemini-cli", "0.67"),
+    ("agy", "Antigravity CLI", "agy", "brew install --cask antigravity-cli", "1.5"),
 ];
 
 /// agent kinds Gembala knows (recipes name agents by these)
@@ -289,6 +290,7 @@ const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you wan
     // dialog. Without them the prompt read as working, then done, so no permission card ever came. Not the "Command Code
     // needs to …" line: an answer quoting it would read as a prompt.
     "tell command code what to do differently", "run cmd --yolo to bypass",
+    "run this command?",
     // OpenCode's "△ Always allow" confirmation stage (Right+Enter on Allow always): the agent still waits for Enter
     "△ always allow"];
 
@@ -299,7 +301,8 @@ const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you wan
 pub fn trust_prompt(screen: &str) -> bool {
     let t = screen.to_lowercase();
     let last = t.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
-    t.contains("trust this folder") && (last.contains("enter to confirm") || last.contains("enter continue"))
+    (t.contains("trust this folder") || t.contains("do you trust the contents of this project"))
+        && (last.contains("enter to confirm") || last.contains("enter continue") || last.contains("navigate") && last.contains("enter confirm"))
 }
 
 /// FR-4 fallback: status from the screen for agents without hooks. `tail` = the bottom few screen rows,
@@ -432,6 +435,11 @@ fn hook_flags(p: &Profile, h: &Hooks, saver: bool) -> (Vec<String>, Vec<(String,
         "opencode" => (vec![], vec![("OPENCODE_CONFIG".into(), file("opencode.json"))]),
         "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={petunjuk} {OMP_TOOLS}")], vec![]),
         "commandcode" => (vec!["--mod".into(), file("commandcode-gembala.mjs")], vec![("GEMBALA_COMMANDCODE_HINT".into(), petunjuk.into())]),
+        "agy" => {
+            let dir = h.dir.join("agy");
+            let settings = json!({"statusLine": {"type": "command", "command": format!("{} statusline agy", q(&h.exe)), "stack_with_default": true}});
+            (vec!["--settings".into(), settings.to_string(), "--add-dir".into(), dir.to_string_lossy().into_owned()], vec![])
+        }
         _ => (vec![], vec![]),
     }
 }
@@ -536,6 +544,7 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
     let start_rtk = q(&claude_hooks(exe, true).to_string());
     let jail = if cfg!(target_os = "linux") { "gembala jail -- " } else { "" };
     let gemini = if cfg!(target_os = "linux") { "function gemini { command gembala jail -- gemini \"$@\" }\n" } else { "" };
+    let agy = if cfg!(target_os = "linux") { "function agy { command gembala jail -- agy \"$@\" }\n" } else { "" };
     format!(
         "function claude {{ [[ -n $CLAUDE_CONFIG_DIR ]] && command gembala trust-sync \"$CLAUDE_CONFIG_DIR\" 2>/dev/null; if (( ! $# )) || [[ $1 == -* ]]; then local s=() cfg={start}; [[ $GEMBALA_SAVER == 1 ]] && (( $+commands[rtk] )) && cfg={start_rtk}; [[ \" $* \" == *\" -\"[rc]\" \"* || \" $* \" == *\" --\"(resume|continue|session-id|fork-session)* ]] || s=(--session-id \"$(uuidgen | tr A-Z a-z)\"); command {jail}claude --append-system-prompt \"$(<{f})\" --settings \"$cfg\" ${{(f)\"$(command gembala addons claude 2>/dev/null)\"}} \"${{s[@]}}\" \"$@\"; else command claude \"$@\"; fi }}\n\
          function omp {{ if (( ! $# )) || [[ $1 == -* ]]; then command {jail}omp --approval-mode=yolo {hook} \"--append-system-prompt=$(<{fo})\" \"$@\"; else command omp \"$@\"; fi }}\n\
@@ -544,7 +553,7 @@ fn zsh_agents(dir: &std::path::Path, exe: &str) -> String {
          function commandcode {{ command {jail}commandcode --mod {cc} \"$@\" }}\n\
          function cmd {{ commandcode \"$@\" }}\n\
          function cmdc {{ commandcode \"$@\" }}\n\
-         {gemini}\
+         {gemini}{agy}\
          zmodload -F zsh/stat b:zstat\n\
          __gembala_accounts() {{\n\
            local -A info\n\
@@ -596,6 +605,7 @@ fn bash_agents(dir: &std::path::Path, exe: &str) -> String {
          function cmd {{ commandcode \"$@\"; }}\n\
          function cmdc {{ commandcode \"$@\"; }}\n\
          function gemini {{ command gembala jail -- gemini \"$@\"; }}\n\
+         function agy {{ command gembala jail -- agy \"$@\"; }}\n\
          [ -f {acc} ] && . {acc}\n",
         acc = q(&dir.join("accounts.bash").to_string_lossy())
     )
@@ -659,6 +669,7 @@ pub fn hook_files(h: &Hooks) -> Vec<(&'static str, String)> {
         ),
         ("omp-gembala.ts", OMP_HOOK.replace("__EXE__", &exe.to_string())),
         ("commandcode-gembala.mjs", include_str!("commandcode.mjs").replace("__EXE__", &exe.to_string()).replace("__HINT__", &json!(PETUNJUK).to_string())),
+        ("agy/AGENTS.md", format!("{PETUNJUK}\n")),
     ]
 }
 
@@ -752,7 +763,7 @@ pub fn valid_session(agent: &str, s: &str) -> bool {
         return false;
     }
     match agent {
-        "claude" | "codex" => valid_uuid(s),
+        "claude" | "codex" | "agy" => valid_uuid(s),
         _ => (1..=80).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'),
     }
 }
@@ -774,6 +785,8 @@ fn session_flags(agent: &str, s: &Session) -> Vec<String> {
         ("commandcode", true, None) => vec!["--continue".into()],
         // FR-88: `--resume` takes `latest` or a list index, never an id; the card shows `gemini --resume latest`
         ("gemini", true, _) => vec!["--resume".into(), "latest".into()],
+        ("agy", true, Some(id)) => vec!["--conversation".into(), id.into()],
+        ("agy", true, None) => vec!["--continue".into()],
         ("claude", true, None) | ("opencode" | "omp", true, _) => vec!["--continue".into()],
         ("codex", true, _) => vec!["resume".into(), "--last".into()],
         _ => vec![],
@@ -800,6 +813,7 @@ pub fn permission_flags(agent: &str, permission: &str) -> Vec<String> {
         ("commandcode", "auto") => &["--permission-mode", "accept-edits"],
         // FR-88: edits auto-approved, shell and the rest still ask (`yolo` would skip every prompt)
         ("gemini", "auto") => &["--approval-mode", "auto_edit"],
+        ("agy", "auto") => &["--mode", "accept-edits"],
         _ => &[],
     };
     f.iter().map(|s| s.to_string()).collect()
@@ -1242,9 +1256,10 @@ mod tests {
         }
         assert_eq!(rc.contains("gembala jail --"), cfg!(target_os = "linux"));
         assert_eq!(rc.contains("function gemini"), cfg!(target_os = "linux"));
+        assert_eq!(rc.contains("function agy"), cfg!(target_os = "linux"));
         let bashrc = &files.iter().find(|f| f.0 == ".bashrc").unwrap().1;
         assert!(bashrc.contains("function claude") && bashrc.contains("command gembala jail -- claude"), "{bashrc}");
-        assert!(bashrc.contains("command gembala jail -- codex") && bashrc.contains("command gembala jail -- gemini"), "{bashrc}");
+        assert!(bashrc.contains("command gembala jail -- codex") && bashrc.contains("command gembala jail -- gemini") && bashrc.contains("command gembala jail -- agy"), "{bashrc}");
         // the bash wrappers must be valid bash
         let tmp = std::env::temp_dir().join(format!("gembala-bashrc-{}", std::process::id()));
         std::fs::write(&tmp, bashrc).unwrap();
@@ -1320,6 +1335,25 @@ mod tests {
         assert!(session_flags("gemini", &Session { id: None, resume: false }).is_empty());
         assert!(picker_flags("gemini").is_empty());
         assert_eq!(hook_status("gemini", "start", "{}"), None);
+    }
+
+    #[test]
+    fn agy_launch_resume_and_permission() {
+        let mut p = builtin().into_iter().find(|p| p.id == "agy").unwrap();
+        let hooks = Hooks { exe: "/x/gembala".into(), dir: "/cfg/hooks".into() };
+        let launch_cmd = launch(&p, Some(&hooks), None, false).unwrap();
+        assert!(launch_cmd.contains("--settings") && launch_cmd.contains("statusline agy") && launch_cmd.contains("stack_with_default\":true"), "{launch_cmd}");
+        assert!(launch_cmd.contains("--add-dir") && launch_cmd.contains("/cfg/hooks/agy"));
+        assert!(!launch_cmd.contains("~/.gemini") && !launch_cmd.contains("--dangerously-skip-permissions") && !launch_cmd.contains("--mode' 'auto"));
+        assert!(!launch_cmd.contains("agentMode") && !launch_cmd.contains("--mode"), "{launch_cmd}");
+        p.permission = "auto".into();
+        assert!(launch(&p, Some(&hooks), None, false).unwrap().contains("'--mode' 'accept-edits'"));
+        let id = "12345678-1234-5678-1234-567812345678";
+        assert_eq!(session_flags("agy", &Session { id: Some(id.into()), resume: true }), ["--conversation", id]);
+        assert_eq!(session_flags("agy", &Session { id: None, resume: true }), ["--continue"]);
+        assert!(picker_flags("agy").is_empty());
+        assert!(valid_session("agy", id) && !valid_session("agy", "--yolo"));
+        assert!(hook_files(&hooks).iter().any(|(name, body)| *name == "agy/AGENTS.md" && body.contains("gembala send")));
     }
 
     #[test]
@@ -1433,6 +1467,7 @@ mod tests {
         // screens as Claude Code 2.1.311 and Codex 0.167 draw them (10 Nov 2026)
         assert!(trust_prompt(" Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel"));
         assert!(trust_prompt("  Folder access\n  Trust this folder? Codex can read, edit, and run files here\n› 1. Trust and continue\n  2. Back to Agent Command Center\n  enter continue · esc back\n"));
+        assert!(trust_prompt("Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n↑/↓ Navigate · enter Confirm"));
         assert!(!trust_prompt("❯ Try \"fix lint errors\"\n  ⏵⏵ auto mode on (shift+tab to cycle)"));
         // an agent quoting the dialog in its answer, with its own prompt and status line below
         assert!(!trust_prompt("⏺ Claude shows:\n   Yes, I trust this folder\n   Enter to confirm · Esc to cancel\n❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)"));

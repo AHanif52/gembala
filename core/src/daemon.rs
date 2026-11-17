@@ -163,6 +163,7 @@ struct Pane {
     limit: Mutex<Option<Limit>>,
     /// FR-32: Claude's own hook said the login failed (`authentication_failed`); the next step as text, cleared when it works again
     login: Mutex<Option<String>>,
+    auth_started: Mutex<Option<std::time::Instant>>,
     /// The agent in front has exited (`agent_done`): until one runs again (`agent-start`, a hook, one typed by
     /// hand), the pane is a plain shell for `agent_name` — send/read/wait reject like a shell pane (11 Nov 2026)
     exited: std::sync::atomic::AtomicBool,
@@ -555,7 +556,10 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                 }
                 ("send" | "reply" | "wait" | "read" | "status" | "token" | "addons" | "close" | "report" | "usage" | "cancel" | "edit" | "handoff", Some(me)) => pane_method_connected(&st, me, method, p, Some(r.get_ref())),
                 // "start" = Claude SessionStart: session id, its owner, and idle status (except a compact mid-turn)
-                ("hook", Some(me)) => match p["status"].as_str().and_then(|x| ["idle", "working", "blocked", "done", "start", "substart", "substop"].into_iter().find(|s| *s == x)) {
+                ("hook", Some(me)) => match p["status"].as_str().and_then(|x| {
+                    ["idle", "working", "blocked", "done", "start", "substart", "substop"].into_iter().find(|s| *s == x)
+                        .or_else(|| if p["agent"].as_str() == Some("agy") { match x { "authenticating" => Some("authenticating"), "initializing" => Some("initializing"), _ => None } } else { None })
+                }) {
                     // FR-101 item 1: a subagent started or ended; only the count changes, not the pane status
                     Some(status @ ("substart" | "substop")) => {
                         if let Some(pane) = st.panes.lock().unwrap().get(&me) {
@@ -571,6 +575,37 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                     Some(status) => {
                         let pane = st.panes.lock().unwrap().get(&me).cloned();
                         if let Some(pane) = pane {
+                            if p["agent"].as_str() == Some("agy") && status == "initializing" {
+                                *pane.auth_started.lock().unwrap() = None;
+                                let login_cleared = pane.login.lock().unwrap().take().is_some();
+                                if login_cleared {
+                                    ui_pane_event(&st, "pane.login", json!({"pane": me, "login": null}));
+                                    set_status(&st, me, &pane, "idle", None);
+                                }
+                                reply(&tx, id, Ok(json!({})));
+                                continue;
+                            }
+                            let status = if p["agent"].as_str() == Some("agy") && status == "authenticating" {
+                                let mut started = pane.auth_started.lock().unwrap();
+                                let at = started.get_or_insert_with(std::time::Instant::now);
+                                if !agy_login_expired(at.elapsed()) {
+                                    reply(&tx, id, Ok(json!({})));
+                                    continue;
+                                }
+                                "blocked"
+                            } else {
+                                *pane.auth_started.lock().unwrap() = None;
+                                let login_cleared = p["agent"].as_str() == Some("agy") && pane.login.lock().unwrap().take().is_some();
+                                if login_cleared {
+                                    ui_pane_event(&st, "pane.login", json!({"pane": me, "login": null}));
+                                }
+                                if p["agent"].as_str() == Some("agy") && status == "idle" {
+                                    if let Some(next) = agy_idle_status(*pane.status.lock().unwrap(), login_cleared) { next } else {
+                                    reply(&tx, id, Ok(json!({})));
+                                    continue;
+                                    }
+                                } else { status }
+                            };
                             // A short manually launched turn can stop before the process watcher finds its account.
                             if p["agent"].as_str() == Some("claude") {
                                 *pane.account.lock().unwrap() = acct_of_dir(&st, p["dir"].as_str().map(String::from));
@@ -613,11 +648,22 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
                                     ui_pane_event(&st, "pane.login", json!({"pane": me, "login": null}));
                                 }
                             }
+                            if p["agent"].as_str() == Some("agy") && status == "blocked" && p["login"] == true {
+                                let step = "Antigravity CLI isn't logged in. Next step: run `agy` in this pane and pick Sign in with Google.".to_string();
+                                let mut login = pane.login.lock().unwrap();
+                                if login.as_deref() != Some(&step) {
+                                    *login = Some(step.clone());
+                                    ui_pane_event(&st, "pane.login", json!({"pane": me, "login": {"step": step}}));
+                                }
+                            }
                             // FR-32: the same hook, error `authentication_failed`: Claude says its login is no longer good
                             if p["agent"].as_str() == Some("claude") && p["limit"].as_str() == Some("authentication_failed") {
                                 let step = "Claude Code isn't logged in (or the login expired). Type /login in this pane, or run `claude auth login`.".to_string();
-                                *pane.login.lock().unwrap() = Some(step.clone());
-                                ui_pane_event(&st, "pane.login", json!({"pane": me, "login": {"step": step}}));
+                                let mut login = pane.login.lock().unwrap();
+                                if login.as_deref() != Some(&step) {
+                                    *login = Some(step.clone());
+                                    ui_pane_event(&st, "pane.login", json!({"pane": me, "login": {"step": step}}));
+                                }
                             }
                             // FR-93: only a limit error the agent's own hook names (Claude `StopFailure`), never screen text
                             if p["agent"].as_str() == Some("claude") && matches!(p["limit"].as_str(), Some("rate_limit" | "billing_error")) {
@@ -684,6 +730,14 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
         }
         reply(&tx, id, ui_method(&st, peer, method, p));
     }
+}
+
+fn agy_login_expired(elapsed: Duration) -> bool {
+    elapsed >= Duration::from_secs(10)
+}
+
+fn agy_idle_status(current: &str, login_cleared: bool) -> Option<&'static str> {
+    if login_cleared { Some("idle") } else { matches!(current, "working" | "blocked").then_some("done") }
 }
 
 fn hello(st: &State, chan: Chan, peer: i32, signed: bool, tainted: bool, p: &Value) -> Res {
@@ -1728,6 +1782,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
                 let _ = std::fs::remove_file(f);
             }
             let hooks = st.hooks.dir.clone();
+            let _ = std::fs::remove_dir_all(hooks.join("agy"));
             for name in profile::hook_files(&st.hooks).into_iter().map(|f| f.0).chain(["accounts.zsh", "accounts.bash"]) {
                 let _ = std::fs::remove_file(hooks.join(name));
             }
@@ -1978,6 +2033,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
         stuck: Mutex::new(None),
         limit: Mutex::new(None),
         login: Mutex::new(None),
+        auth_started: Mutex::new(None),
         exited: std::sync::atomic::AtomicBool::new(false),
         closing: std::sync::atomic::AtomicBool::new(false),
         trust: std::sync::atomic::AtomicBool::new(false),
@@ -3034,6 +3090,7 @@ fn pane_method_connected(st: &Arc<State>, me: u64, method: &str, p: &Value, conn
         // FR-78: typed `claude`/`codex` (zsh function) gets the add-ons of this pane's workspace now
         "addons" => Ok(json!({"args": addon::args(&st.addons.lock().unwrap(), p["agent"].as_str().unwrap_or_default(), &my_ws)})),
         // FR-102: `gembala statusline` passes Claude's `rate_limits`; numbers only, nothing free-form
+        "usage" if p["agent"].as_str() == Some("agy") => usage::from_agy(st, p),
         "usage" => usage::from_claude(st, p),
         "token" => {
             // FR-66: pane token for sandboxed processes (spool path); created once, revoked when the pane closes
@@ -4184,6 +4241,16 @@ pub fn rundir_override() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agy_statusline_lifecycle() {
+        assert_eq!(agy_idle_status("working", false), Some("done"));
+        assert_eq!(agy_idle_status("blocked", false), Some("done"));
+        assert_eq!(agy_idle_status("blocked", true), Some("idle"));
+        assert_eq!(agy_idle_status("idle", false), None);
+        assert!(!agy_login_expired(Duration::from_secs(9)));
+        assert!(agy_login_expired(Duration::from_secs(10)));
+    }
 
     /// A release build must not honour the variable; the debug build (tests, demo daemons) does.
     #[test]
