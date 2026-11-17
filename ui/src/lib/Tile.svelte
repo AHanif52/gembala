@@ -287,7 +287,7 @@
     if (buf.type === "alternate") return;
     // timeline (mockup-blok-sesi E): "   [icon ]<folder> · <duration>[ · keluar n]"; old format "<folder> (<duration>)" = line only
     // FR-99 P5: ` · N file` after the duration = files changed when the agent ended (blocks from before have none)
-    const head = /^ {0,3}(?:([✳π◎◇]) )?(\S.* · \d+ (?:dtk|mnt|jam)(?: \d+ (?:dtk|mnt))?)(?: · (\d+) file)?( · keluar (-?\d+))?$/;
+    const head = /^ {0,3}(?:([✳π◎◇⌘✦▲]) )?(\S.* · \d+ (?:dtk|mnt|jam)(?: \d+ (?:dtk|mnt))?)(?: · (\d+) file)?( · keluar (-?\d+))?$/;
     const old = /^\S.* \(\d+ (dtk|mnt|jam)[^)]*\)( · keluar (-?\d+))?$/;
     const text = (y: number) => {
       // wrapped lines (long commands) are joined
@@ -981,6 +981,15 @@
   }
   .term :global(.tl-dot[data-a="◇"]) {
     color: var(--tx-blue, #60a5fa);
+  }
+  .term :global(.tl-dot[data-a="⌘"]) {
+    color: #eab308;
+  }
+  .term :global(.tl-dot[data-a="✦"]) {
+    color: #4285f4;
+  }
+  .term :global(.tl-dot[data-a="▲"]) {
+    color: #a78bfa;
   }
   /* FR-99 P5: rows of the card the UI covers with its own text, same tint as the head */
   .term :global(.tl-cover) {

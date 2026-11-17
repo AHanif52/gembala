@@ -147,7 +147,7 @@ pub fn rewrite(file: &Path, blocks: &[Block]) {
 fn safe_resume(r: &str) -> bool {
     const UUID: &str = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
     regex_lite::Regex::new(&format!(
-        "^(claude(-[a-z0-9-]{{1,32}})? --resume {UUID}|codex resume ({UUID}|--last)|opencode --continue|opencode --session [A-Za-z0-9_-]{{1,80}}|omp --continue|omp --resume [A-Za-z0-9-]{{1,80}}|gemini --resume latest|commandcode --continue|commandcode --resume [A-Za-z0-9_][A-Za-z0-9_-]{{0,79}})$"
+        "^(claude(-[a-z0-9-]{{1,32}})? --resume {UUID}|codex resume ({UUID}|--last)|opencode --continue|opencode --session [A-Za-z0-9_-]{{1,80}}|omp --continue|omp --resume [A-Za-z0-9-]{{1,80}}|gemini --resume latest|agy (--continue|--conversation {UUID})|commandcode --continue|commandcode --resume [A-Za-z0-9_][A-Za-z0-9_-]{{0,79}})$"
     ))
     .is_ok_and(|re| re.is_match(r))
 }
@@ -214,7 +214,7 @@ pub fn block_text_with(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Opti
     let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
     // agent icon colored like in the sidebar (FR-52); other commands have no icon
     let first = cmd.split_whitespace().next().unwrap_or_default();
-    let icon = [("claude", "\x1b[38;2;217;119;87m✳"), ("omp", "\x1b[38;2;168;85;247mπ"), ("codex", "\x1b[38;2;16;163;127m◎"), ("opencode", "\x1b[38;2;96;165;250m◇"), ("commandcode", "\x1b[38;2;234;179;8m⌘"), ("gemini", "\x1b[38;2;66;133;244m✦"), ("cmd", "\x1b[38;2;234;179;8m⌘"), ("cmdc", "\x1b[38;2;234;179;8m⌘")]
+    let icon = [("claude", "\x1b[38;2;217;119;87m✳"), ("omp", "\x1b[38;2;168;85;247mπ"), ("codex", "\x1b[38;2;16;163;127m◎"), ("opencode", "\x1b[38;2;96;165;250m◇"), ("commandcode", "\x1b[38;2;234;179;8m⌘"), ("gemini", "\x1b[38;2;66;133;244m✦"), ("agy", "\x1b[38;2;167;139;250m▲"), ("cmd", "\x1b[38;2;234;179;8m⌘"), ("cmdc", "\x1b[38;2;234;179;8m⌘")]
         .iter()
         .find(|(a, _)| first == *a || first.starts_with(&format!("{a}-")))
         .map_or(String::new(), |(_, g)| format!("{g}\x1b[0m\x1b[2m "));
@@ -337,6 +337,9 @@ mod tests {
         assert!(safe_resume("claude --resume 35dca435-228f-44db-ac71-9b16c6ef1eeb"));
         assert!(safe_resume("omp --continue"));
         assert!(safe_resume("gemini --resume latest"));
+        assert!(safe_resume("agy --conversation 35dca435-228f-44db-ac71-9b16c6ef1eeb") && safe_resume("agy --continue"));
+        assert!(!safe_resume("agy --conversation x;id") && !safe_resume("agy --conversation --yolo"));
+        assert!(block_text("~", 1, "0", "agy", Some("agy --continue")).contains("▲"));
         assert!(!safe_resume("gemini --resume --yolo"));
         assert!(safe_resume("commandcode --continue"));
         assert!(safe_resume("commandcode --resume 12345678-abcd"));

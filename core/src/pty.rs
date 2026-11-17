@@ -191,7 +191,11 @@ fn interpreted_agent(name: &str, args: &[String]) -> String {
 /// OpenCode from npm (`opencode-ai`) runs as `opencode.exe` on macOS too (9 Nov, another user's Mac: the pane wasn't an
 /// agent, `@@` found nobody); the name without `.exe` is what agent detection and the tab title compare
 fn bare(name: &str) -> String {
-    name.strip_suffix(".exe").unwrap_or(name).to_string()
+    // Antigravity's brew cask `exec`s the Go binary `antigravity`; the profile and command are `agy`
+    match name.strip_suffix(".exe").unwrap_or(name) {
+        "antigravity" => "agy".into(),
+        n => n.to_string(),
+    }
 }
 
 /// Binary path of a process (secret handover: the other side must be the right Gembala binary).
@@ -420,6 +424,7 @@ mod tests {
         assert_eq!(bare("opencode.exe"), "opencode");
         assert_eq!(bare("opencode"), "opencode");
         assert_eq!(bare("omp"), "omp");
+        assert_eq!(bare("antigravity"), "agy");
     }
 
     fn run(mut p: Pty) -> String {

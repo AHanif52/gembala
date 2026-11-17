@@ -3454,7 +3454,7 @@ fn ours(name: &str, args: &[String], opencode_cfg: Option<&str>) -> bool {
 
 /// FR-4 fallback every 1 second: `custom` profiles, and agents typed by hand in a shell pane (no hooks).
 fn screen_watch(st: Arc<State>) {
-    const AGENTS: &[&str] = &["claude", "codex", "opencode", "omp", "commandcode", "gemini"];
+    const AGENTS: &[&str] = &["claude", "codex", "opencode", "omp", "commandcode", "gemini", "agy"];
     loop {
         thread::sleep(Duration::from_secs(1));
         let panes: Vec<(u64, Arc<Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, p.clone())).collect();
@@ -4041,6 +4041,9 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
         "commandcode" => pane.session.lock().unwrap().clone().map(|s| format!("commandcode --resume {s}")),
         // FR-88: `--resume` has no id form, only `latest` or an index
         "gemini" => Some("gemini --resume latest".into()),
+        // the conversation id from the status line (profile) or the line agy prints on exit; none = no prompt sent, and
+        // `--continue` would reopen another conversation of the folder
+        "agy" => pane.session.lock().unwrap().clone().or_else(|| printed_resume(&log)).map(|s| format!("agy --conversation {s}")),
         "omp" => Some(agent_dir.or(dir).and_then(omp).map_or("omp --continue".into(), |s| format!("omp --resume {s}"))),
         _ => None,
     };
@@ -4074,9 +4077,9 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
 }
 
 /// FR-56: session id from the line the agent prints itself on exit: `claude --resume <uuid>` (Claude Code)
-/// or `codex resume <uuid>` (Codex).
+/// `codex resume <uuid>` (Codex) or `agy --conversation=<uuid>` (Antigravity CLI).
 fn printed_resume(log: &[u8]) -> Option<String> {
-    let re = regex_lite::Regex::new(r"(?:--resume|codex resume) ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})").unwrap();
+    let re = regex_lite::Regex::new(r"(?:--resume |codex resume |--conversation=)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})").unwrap();
     re.captures_iter(&String::from_utf8_lossy(log)).last().map(|c| c[1].to_string())
 }
 
@@ -4376,6 +4379,9 @@ mod tests {
         let log = b"\x1b[2mResume this session with:\x1b[0m\r\nclaude --resume 87cc338d-d5dc-45c7-8adc-99937a7d18a5\r\n";
         assert_eq!(printed_resume(log).as_deref(), Some("87cc338d-d5dc-45c7-8adc-99937a7d18a5"));
         assert_eq!(printed_resume(b"claude --resume x; rm -rf /"), None);
+        let agy = b"Resume with -c (or command below): agy --conversation=0199a213-81c0-7800-8aa1-bbab2a035a53\r\n> exit\r\nResume with -c (or command below): agy --conversation=1199a213-81c0-7800-8aa1-bbab2a035a53\r\n";
+        assert_eq!(printed_resume(agy).as_deref(), Some("1199a213-81c0-7800-8aa1-bbab2a035a53"));
+        assert_eq!(printed_resume(b"agy --conversation=x;id"), None);
         let codex = b"To continue this session, run:\r\n\x1b[1mcodex resume 0199a213-81c0-7800-8aa1-bbab2a035a53\x1b[0m";
         assert_eq!(printed_resume(codex).as_deref(), Some("0199a213-81c0-7800-8aa1-bbab2a035a53"));
     }
