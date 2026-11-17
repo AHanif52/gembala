@@ -515,15 +515,16 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     if (text.trim() && history.at(-1) !== text) history.push(text);
     if (history.length > 200) history.shift();
     hi = -1;
-    // FR-107: bare `cmd` / `agy` / `omp` leaves the shell log: the first plain profile (cc.create refuses args/secrets) takes
-    // the pane over, as a structured pane when its switch is on, else as a clean terminal pane of its own
+    // FR-107: bare `cmd` / `agy` / `omp` leaves the shell log: the first plain profile (cc.create refuses args/secrets) opens
+    // as a structured pane over this one when its switch is on, else as a new terminal tab; the shell and its log stay
     const structuredAgent = ccTrigger(text) ? "commandcode" : agyTrigger(text) ? "agy" : ompTrigger(text) ? "omp" : "";
     const structured = structuredAgent
       ? cfg?.values.profiles.find((p) => p.agent === structuredAgent && !p.args?.length && !p.secret_env?.length && ((p.permission ?? "default") === "default" || (structuredAgent === "omp" && p.permission === "auto")))
       : undefined;
     if (structured) {
       draft[pane] = "";
-      if (await swapToProfile(pane, structured.id, undefined, false, structuredOn(structuredAgent) ? { kind: "commandcode" } : {}).then(() => true, () => false)) return;
+      const opened = structuredOn(structuredAgent) ? swapToProfile(pane, structured.id, undefined, false, { kind: "commandcode" }) : newTab(structured.id);
+      if (await opened.then(() => true, () => false)) return;
       draft[pane] = text; // create failed: run the original command in the shell
     }
     draft[pane] = "";
