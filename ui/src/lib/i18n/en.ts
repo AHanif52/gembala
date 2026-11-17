@@ -1600,7 +1600,7 @@ export default {
   "cc.n.unknown": "Activity not supported yet: {type}",
   "cc.truncated": "Older output was trimmed to fit the memory limit.",
   "cc.restored": "Restored from the daemon; earlier prompts aren't shown.",
-  "cc.backToShell": "Command Code session {session} · type cmd → History to continue",
+  "cc.backToShell": "{name} session {session} · type {cmd} → History to continue",
   "cc.session": "Session",
   "cc.sessionNote": "The transcript belongs to the CLI. Reopening doesn't restart a process.",
   "cc.stderr": "CLI error output",

@@ -135,6 +135,9 @@ struct Pane {
     /// FR-62: this pane's block history file; the running block (since OSC 133 C) and the manual agent block that
     /// has finished but is waiting for its resume command from `agent_done`.
     hist: std::path::PathBuf,
+    /// An agent opened over a shell (the shell stays hidden behind it): that shell's id; the UI closes this pane when
+    /// the agent exits, so the summary block goes to the shell's log and screen instead.
+    under: Option<(u64, Arc<Pane>)>,
     /// FR-69: last terminal title (OSC 0/2) set by a program in the pane; RAM only (SEC-13)
     title: Mutex<String>,
     /// FR-70: potretan per giliran agent (antrean `snap::queue`)
@@ -2033,6 +2036,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
         pre_cmd: Mutex::new(None),
         pre_agent: Mutex::new(None),
         hist: history::path(&key),
+        under: p["under"].as_u64().and_then(|u| Some((u, st.panes.lock().unwrap().get(&u)?.clone()))),
         key: key.clone(),
         title: Mutex::new(String::new()),
         turns: Arc::default(),
@@ -4089,11 +4093,26 @@ fn agent_done(v: &mut View, pane: &Pane, id: u64, agent: &str, cmd: &str, agent_
     let mark = pane.pre_agent.lock().unwrap().take();
     v.0.rewind(mark);
     v.0.feed(&[text.as_bytes(), prompt].concat());
+    // FR-87: the agent's own exit code (the pane process is the shell after it, so pane.exit never carries it)
+    replace_event(v, id, resume.as_deref(), code.parse::<i32>().ok());
+    // opened over a shell: the card goes to that shell too (own log file, own screen); it replaces the prompt line it sits on.
+    // No code: the failure notice belongs to the agent's pane
+    if let Some((uid, under)) = &pane.under {
+        if let Ok(t) = under.terminal() {
+            history::append(&under.hist, &blk);
+            let mut uv = t.view.lock().unwrap();
+            uv.0.feed(&[b"\x1b[2K\r", text.as_bytes()].concat());
+            replace_event(&mut uv, *uid, resume.as_deref(), None);
+        }
+    }
+}
+
+/// `pane.replace` for what `v` shows now: the UI redraws the pane from it like an attach.
+fn replace_event(v: &mut View, id: u64, resume: Option<&str>, code: Option<i32>) {
     let (rows, cols) = v.0.size();
     let (segs, tail) = v.0.replay();
     let segs: Vec<_> = segs.iter().map(|s| json!({"rows": s.rows, "cols": s.cols, "data": B64.encode(&s.data)})).collect();
-    // FR-87: the agent's own exit code (the pane process is the shell after it, so pane.exit never carries it)
-    let ev = json!({"event": "pane.replace", "params": {"pane": id, "segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "resume": resume, "code": code.parse::<i32>().ok()}});
+    let ev = json!({"event": "pane.replace", "params": {"pane": id, "segments": segs, "snapshot": B64.encode(tail), "rows": rows, "cols": cols, "resume": resume, "code": code}});
     send_all(&mut v.1, id, line(ev));
 }
 

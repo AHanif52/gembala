@@ -1583,7 +1583,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "cc.n.unknown": "Aktivitas belum didukung: {type}",
   "cc.truncated": "Output lama dipotong biar muat di batas memori.",
   "cc.restored": "Dipulihkan dari daemon; kiriman lu sebelumnya gak ditampilin.",
-  "cc.backToShell": "Sesi Command Code {session} · ketik cmd → History buat lanjut",
+  "cc.backToShell": "Sesi {name} {session} · ketik {cmd} → History buat lanjut",
   "cc.session": "Sesi",
   "cc.sessionNote": "Transcript milik CLI. Buka ulang gak jalanin proses lagi.",
   "cc.stderr": "Output error CLI",

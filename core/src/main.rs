@@ -176,6 +176,13 @@ fn statusline(args: &[String]) -> ExitCode {
     let payload: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
     if args.first().map(String::as_str) == Some("agy") {
         statusline_agy(&payload);
+        // the session's `--settings` replaces the user's `statusLine`, so their command is run here (stacked under agy's own line)
+        if let Some(cmd) = user_statusline_agy()
+            && let Some(out) = run_statusline(&cmd, &input)
+        {
+            print!("{out}");
+            let _ = std::io::stdout().flush();
+        }
         return ExitCode::SUCCESS;
     }
     send_usage(&payload);
@@ -266,6 +273,20 @@ fn user_statusline() -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     let cmd = v["statusLine"]["command"].as_str()?.trim();
     (!cmd.is_empty()).then(|| cmd.to_string())
+}
+
+/// SEC-15 exception 3, same limits as `user_statusline`: only `statusLine.command` of Antigravity's settings is read.
+/// A command that is Gembala's own wrapper would loop, so it is skipped.
+fn user_statusline_agy() -> Option<String> {
+    let path = std::path::Path::new(&std::env::var_os("HOME")?).join(".gemini/antigravity-cli/settings.json");
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > 1024 * 1024 {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let s = &v["statusLine"];
+    let cmd = s["command"].as_str()?.trim();
+    (s["enabled"] != false && !cmd.is_empty() && !cmd.contains("statusline agy")).then(|| cmd.to_string())
 }
 
 /// Runs the user's command with the same stdin; 2 second limit, failure or timeout = nothing.

@@ -660,7 +660,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   async function swapToProfile(old: number, profile: string, account?: string, pick = false, { under = false, ...extra }: Record<string, unknown> = {}): Promise<number | undefined> {
     const m = meta[old];
     if (!m) return;
-    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account, pick, ...extra });
+    const id = await createPane({ profile, cwd: m.cwd ?? undefined, workspace: wsIdOf(old), account, pick, ...(under ? { under: old } : {}), ...extra });
     rememberAgent(wsIdOf(old), profile);
     for (const w of wss)
       for (const t of w.tabs)
@@ -1475,13 +1475,14 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             t.tree = replace(t.tree, pane, under);
             if (t.focus === pane) t.focus = under;
           }
-      const session = meta[pane].session;
+      // only a structured pane: an agent opened over the shell leaves its session card in the shell's log instead
+      const { session, kind, profile, agent } = meta[pane];
       withdrawTitles(settle(nst, pane));
       forgetCc(pane);
       delete meta[pane];
       delete dead[pane];
       zoomed = false;
-      if (session) tick().then(() => tiles[under]?.note(tt("cc.backToShell", { session: `${session.slice(0, 8)}…` })));
+      if (session && kind) tick().then(() => tiles[under]?.note(tt("cc.backToShell", { name: agentName(profile), cmd: agent === "commandcode" ? "cmd" : agent, session: `${session.slice(0, 8)}…` })));
       return;
     }
     withdrawTitles(settle(nst, pane));
