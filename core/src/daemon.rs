@@ -3653,7 +3653,11 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
             let Some(root) = snap::root_of(&cwd) else { return };
             if let Some((before, _)) = snap::take(&root) {
                 let head = snap::head(&root);
-                turns.lock().unwrap().open = Some(snap::Open { start: history::now(), root, before, head });
+                snap::pin(&root, &before);
+                let old = turns.lock().unwrap().open.replace(snap::Open { start: history::now(), root, before, head });
+                if let Some(o) = old {
+                    snap::unpin(&o.root, &o.before);
+                }
             }
         });
     } else if busy(prev) && matches!(status, "idle" | "done") {
@@ -3663,10 +3667,15 @@ fn turn_edge(pane: &Pane, prev: &str, status: &str) {
         snap::queue(move || {
             let Some(open) = turns.lock().unwrap().open.take() else { return };
             if let Some(t) = snap::finish(open, history::now(), title, summary) {
-                let mut cur = turns.lock().unwrap();
-                cur.done.push(t);
-                if cur.done.len() > snap::MAX_TURNS {
-                    cur.done.remove(0);
+                let root = t.root.clone();
+                let dropped = {
+                    let mut cur = turns.lock().unwrap();
+                    cur.done.push(t);
+                    (cur.done.len() > snap::MAX_TURNS).then(|| cur.done.remove(0))
+                };
+                if let Some(old) = dropped {
+                    snap::unpin_turn(&old);
+                    snap::compact(&root, &turns);
                 }
             }
         });
@@ -3811,6 +3820,7 @@ fn save_logs_loop(st: Arc<State>) {
             history::sweep(); // at start, then daily (5760 x 15 s)
             history::sweep_in(&handoff_dir());
             snap::sweep();
+            snap::startup();
         }
         thread::sleep(Duration::from_secs(15));
         save_logs(&st, &mut saved);

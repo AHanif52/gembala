@@ -9,7 +9,9 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
-const BIG: u64 = 100 << 20;
+const BIG: u64 = 25 << 20;
+/// A repo over this after prune loses its oldest turns, then itself (restore points only, never user data)
+const CAP: u64 = 512 << 20;
 const KEEP_DAYS: u64 = 7;
 const MAX_DIFF: usize = 200 * 1024;
 pub const MAX_TURNS: usize = 50;
@@ -45,6 +47,17 @@ pub struct Turns {
 }
 
 static LOCK: Mutex<()> = Mutex::new(());
+/// Trees held by a live turn: (folder, tree) = how many turns use it. The first holder writes `refs/turns/<tree>`, the last
+/// one deletes it; prune only keeps what a ref (or the index) reaches. Two turns can share a tree (before of N+1 = after of N).
+static PINS: Mutex<Vec<((String, String), usize)>> = Mutex::new(Vec::new());
+
+impl Drop for Turns {
+    fn drop(&mut self) {
+        // the pane is gone: its turns no longer hold anything
+        self.open.take().into_iter().for_each(|o| unpin(&o.root, &o.before));
+        self.done.drain(..).for_each(|t| unpin_turn(&t));
+    }
+}
 
 fn dir() -> PathBuf {
     crate::config::path().with_file_name("snap")
@@ -67,6 +80,97 @@ fn sgit(root: &str, args: &[&str], limit: Duration) -> Option<String> {
     c.current_dir(root).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     crate::pty::scrub_env(&mut c);
     crate::profile::run_with_timeout(c, limit)
+}
+
+/// git in the snapshot repo itself (no work tree): refs, prune, repack
+fn gd_git(gd: &Path, args: &[&str], limit: Duration) -> Option<String> {
+    let mut c = Command::new("git");
+    c.args(["-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0"]).arg(format!("--git-dir={}", gd.display())).args(args);
+    c.current_dir(gd).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    crate::pty::scrub_env(&mut c);
+    crate::profile::run_with_timeout(c, limit)
+}
+
+/// A live turn holds this tree: it survives prune until the last holder lets go
+pub fn pin(root: &str, tree: &str) {
+    let mut p = PINS.lock().unwrap();
+    let key = (root.to_string(), tree.to_string());
+    match p.iter_mut().find(|(k, _)| *k == key) {
+        Some((_, n)) => *n += 1,
+        None => {
+            p.push((key, 1));
+            gd_git(&gitdir(root), &["update-ref", &format!("refs/turns/{tree}"), tree], Duration::from_secs(10));
+        }
+    }
+}
+
+pub fn unpin(root: &str, tree: &str) {
+    let mut p = PINS.lock().unwrap();
+    let key = (root.to_string(), tree.to_string());
+    let Some(i) = p.iter().position(|(k, _)| *k == key) else { return };
+    p[i].1 -= 1;
+    if p[i].1 == 0 {
+        p.swap_remove(i);
+        gd_git(&gitdir(root), &["update-ref", "-d", &format!("refs/turns/{tree}")], Duration::from_secs(10));
+    }
+}
+
+pub fn unpin_turn(t: &Turn) {
+    unpin(&t.root, &t.before);
+    unpin(&t.root, &t.after);
+}
+
+fn dir_size(p: &Path) -> u64 {
+    std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.metadata().map_or(0, |m| if m.is_dir() { dir_size(&e.path()) } else { m.len() })).sum()
+}
+
+/// Drop what no ref reaches and pack the rest into one pack. `prune` only touches loose objects; `repack -a -d` is what drops
+/// unreachable objects from earlier packs (stored data is reused, not recompressed).
+fn prune(gd: &Path) {
+    gd_git(gd, &["prune", "--expire=now"], Duration::from_secs(300));
+    gd_git(gd, &["-c", "pack.threads=1", "repack", "-a", "-d", "-q"], Duration::from_secs(600));
+}
+
+/// After a turn is dropped: prune, then keep the repo under `cap`. Oldest turns of this pane go first; a repo still over the cap
+/// with nothing left to drop is deleted and starts over (turns of other panes in that folder then fail with `io`, like a missing repo).
+fn compact_with(root: &str, turns: &Mutex<Turns>, cap: u64) {
+    let _g = LOCK.lock().unwrap();
+    let gd = gitdir(root);
+    prune(&gd);
+    while dir_size(&gd) > cap {
+        let Some(t) = ({
+            let mut cur = turns.lock().unwrap();
+            (!cur.done.is_empty()).then(|| cur.done.remove(0))
+        }) else {
+            PINS.lock().unwrap().retain(|((r, _), _)| r != root);
+            let _ = std::fs::remove_dir_all(&gd);
+            return;
+        };
+        unpin_turn(&t);
+        prune(&gd);
+    }
+}
+
+pub fn compact(root: &str, turns: &Mutex<Turns>) {
+    compact_with(root, turns, CAP);
+}
+
+/// Once per daemon run: no turn survives a restart, so every ref is stale. Prune what they held; a repo over the cap is deleted.
+pub fn startup() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        queue(|| {
+            let _g = LOCK.lock().unwrap();
+            let Ok(entries) = std::fs::read_dir(dir()) else { return };
+            for gd in entries.flatten().map(|e| e.path()).filter(|p| p.join("HEAD").exists()) {
+                let _ = std::fs::remove_dir_all(gd.join("refs/turns"));
+                prune(&gd);
+                if dir_size(&gd) > CAP {
+                    let _ = std::fs::remove_dir_all(&gd);
+                }
+            }
+        })
+    });
 }
 
 fn init(root: &str) -> Option<()> {
@@ -155,7 +259,11 @@ pub fn diff(t: &Turn) -> Value {
 /// Files that change when the working folder goes back to `before`: (`ubah` | `hapus`, path)
 pub fn preview(root: &str, before: &str) -> Option<Vec<(&'static str, String)>> {
     let (now, _) = take(root)?;
-    let out = sgit(root, &["diff", "--name-status", "--no-renames", "-z", before, &now], Duration::from_secs(10))?;
+    // the fresh tree has no ref: a prune from the queue must not take it before the diff
+    pin(root, &now);
+    let out = sgit(root, &["diff", "--name-status", "--no-renames", "-z", before, &now], Duration::from_secs(10));
+    unpin(root, &now);
+    let out = out?;
     let mut it = out.split('\0').filter(|s| !s.is_empty());
     let mut files = Vec::new();
     while let (Some(st), Some(p)) = (it.next(), it.next()) {
@@ -184,7 +292,11 @@ pub fn restore(root: &str, before: &str, files: &[(&str, String)]) -> Option<usi
 
 /// Turn done = snapshot after
 pub fn finish(o: Open, end: u64, title: String, summary: String) -> Option<Turn> {
-    let (after, skipped) = take(&o.root)?;
+    let Some((after, skipped)) = take(&o.root) else {
+        unpin(&o.root, &o.before);
+        return None;
+    };
+    pin(&o.root, &after);
     Some(Turn { start: o.start, end, root: o.root, before: o.before, after, head: o.head, title, summary, skipped })
 }
 
@@ -274,5 +386,102 @@ mod tests {
         let st = Command::new("git").arg("-C").arg(&repo).args(["status", "--porcelain"]).output().unwrap().stdout;
         assert!(String::from_utf8_lossy(&st).trim().is_empty(), "{}", String::from_utf8_lossy(&st));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// git repo with one committed file in a temp folder, snapshot config pointed at a temp folder (same value in every test)
+    fn temp_repo(tag: &str) -> (PathBuf, String) {
+        let base = std::env::temp_dir().join(format!("gembala-snap-{tag}-{}", std::process::id()));
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        // SAFETY: other tests using GEMBALA_CONFIG write the same value (test folder per process)
+        unsafe { std::env::set_var("GEMBALA_CONFIG", std::env::temp_dir().join(format!("gembala-uji-{}/config.toml", std::process::id()))) };
+        assert!(Command::new("git").arg("-C").arg(&repo).args(["init", "-q"]).output().unwrap().status.success());
+        let root = root_of(&repo).unwrap();
+        (repo, root)
+    }
+
+    /// snapshot of a folder where `a.bin` holds `bytes` pseudo-random (incompressible) bytes, as a pinned finished turn
+    fn turn_of(repo: &Path, root: &str, bytes: usize, seed: u8) -> Turn {
+        let mut x = 0x9e3779b97f4a7c15u64 ^ u64::from(seed);
+        let data: Vec<u8> = (0..bytes)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect();
+        std::fs::write(repo.join("a.bin"), data).unwrap();
+        let (tree, _) = take(root).unwrap();
+        pin(root, &tree); // before and after, as `Open` and `finish` do
+        pin(root, &tree);
+        Turn { start: 1, end: 2, root: root.into(), before: tree.clone(), after: tree, head: String::new(), title: String::new(), summary: String::new(), skipped: vec![] }
+    }
+
+    fn loose_and_packed(root: &str) -> u64 {
+        dir_size(&gitdir(root).join("objects"))
+    }
+
+    #[test]
+    fn dropped_turn_is_pruned_and_a_kept_one_survives() {
+        let (repo, root) = temp_repo("prune");
+        let old = turn_of(&repo, &root, 300_000, 1);
+        let keep = turn_of(&repo, &root, 300_000, 2);
+        let with_both = loose_and_packed(&root);
+        let turns = Mutex::new(Turns::default());
+        turns.lock().unwrap().done = vec![keep.clone()];
+        unpin_turn(&old);
+        compact_with(&root, &turns, u64::MAX);
+        assert!(loose_and_packed(&root) < with_both - 200_000, "old blob still there");
+        // the kept turn still diffs against itself and restores
+        let kind = |t: &str| sgit(&root, &["cat-file", "-t", t], Duration::from_secs(10)).unwrap_or_default().trim().to_string();
+        assert_eq!(kind(&keep.after), "tree");
+        assert_eq!(kind(&old.after), "", "dropped tree still there");
+        drop(turns); // Drop unpins the kept turn: its ref goes
+        assert!(PINS.lock().unwrap().iter().all(|((r, _), _)| *r != root));
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn a_shared_tree_stays_pinned_until_the_last_turn_lets_go() {
+        let (repo, root) = temp_repo("shared");
+        let a = turn_of(&repo, &root, 1000, 3);
+        let refs = || gd_git(&gitdir(&root), &["for-each-ref", "refs/turns"], Duration::from_secs(10)).unwrap_or_default();
+        pin(&root, &a.after);
+        unpin(&root, &a.after);
+        assert!(refs().contains(&a.after), "still held by the turn");
+        unpin_turn(&a); // before and after are the same tree here
+        assert!(refs().trim().is_empty(), "{}", refs());
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn files_of_25_mb_or_more_are_skipped() {
+        let (repo, root) = temp_repo("big");
+        std::fs::write(repo.join("small.bin"), vec![1u8; 24 << 20]).unwrap();
+        let f = std::fs::File::create(repo.join("big.bin")).unwrap();
+        f.set_len(25 << 20).unwrap(); // sparse: no disk used
+        let (_, skipped) = take(&root).unwrap();
+        assert_eq!(skipped, ["big.bin"]);
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn a_repo_over_the_cap_loses_oldest_turns_then_itself() {
+        let (repo, root) = temp_repo("cap");
+        let t1 = turn_of(&repo, &root, 300_000, 4);
+        let t2 = turn_of(&repo, &root, 300_000, 5);
+        let t3 = turn_of(&repo, &root, 300_000, 6);
+        let turns = Mutex::new(Turns::default());
+        turns.lock().unwrap().done = vec![t1, t2, t3];
+        // room for about two blobs: the oldest goes, the newer two stay
+        compact_with(&root, &turns, 700_000);
+        assert_eq!(turns.lock().unwrap().done.len(), 2, "oldest dropped, then it fits");
+        // the cap lowered below one blob: the pane's turns are all dropped, the repo goes and a later snapshot starts over
+        compact_with(&root, &turns, 100_000);
+        assert!(turns.lock().unwrap().done.is_empty());
+        assert!(!gitdir(&root).exists());
+        assert!(take(&root).is_some() && gitdir(&root).exists());
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
     }
 }
