@@ -386,8 +386,6 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     if cc.agent == "agy" {
         cmd.args(["-p=", "--input-format", "stream-json", "--output-format", "stream-json"])
             .args(profile::agy_structured_flags(&st.hooks));
-        if yolo { cmd.args(["--mode", "accept-edits"]); }
-        else if plan { cmd.args(["--mode", "plan"]); }
         if !model.is_empty() || !cc.model.is_empty() { cmd.args(["--model", if model.is_empty() { &cc.model } else { model }]); }
         if !effort.is_empty() || !cc.effort.is_empty() { cmd.args(["--effort", if effort.is_empty() { &cc.effort } else { effort }]); }
     } else {
@@ -398,8 +396,7 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     if let Some(session) = &resume {
         cmd.arg(if cc.agent == "agy" { "--conversation" } else { "--resume" }).arg(session);
     }
-    // Only the default access path is restricted; a grant recorded by the UI gate unlocks this one flag.
-    if yolo { cmd.arg("--yolo"); }
+    cmd.args(access_flags(&cc.agent, yolo, plan));
     pty::scrub_env(&mut cmd);
     cmd.env("PATH", path).envs(cc.env.iter().cloned()).current_dir(&cc.cwd)
         .stdin(if cc.agent == "agy" { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -425,15 +422,29 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     d.snapshot["content"] = Value::Null; d.snapshot["result"] = Value::Null;
     d.snapshot["diagnostic"] = Value::Null; d.snapshot["stderr"] = json!("");
     d.snapshot["state"] = json!("working"); d.snapshot["runId"] = json!(run_id);
-    d.snapshot["access"] = json!(if yolo { "yolo" } else { "restricted" });
+    d.snapshot["access"] = json!(access_state(yolo, plan));
     d.snapshot["exitCode"] = Value::Null;
     d.requests.push_back((request.into(), run_id.clone()));
-    d.emit(&st.boot, id, "state", json!({"state":"working", "access": if yolo { "yolo" } else { "restricted" }}));
+    d.emit(&st.boot, id, "state", json!({"state":"working", "access": access_state(yolo, plan)}));
     drop(d);
     *pane.status.lock().unwrap() = "working";
     let state = st.clone(); let running = pane.clone();
     *worker = Some(thread::spawn(move || pump(&state, id, &running, child)));
     Ok(json!({"runId":run_id}))
+}
+
+fn access_flags(agent: &str, yolo: bool, plan: bool) -> Vec<&'static str> {
+    match agent {
+        "agy" if yolo => vec!["--mode", "accept-edits"],
+        "agy" if plan => vec!["--mode", "plan"],
+        "agy" => vec![],
+        _ if yolo => vec!["--yolo"],
+        _ => vec![],
+    }
+}
+
+fn access_state(yolo: bool, plan: bool) -> &'static str {
+    if yolo { "yolo" } else if plan { "plan" } else { "restricted" }
 }
 
 fn nonblocking(child: &Child) -> io::Result<()> {
@@ -859,6 +870,11 @@ mod tests {
         let pane = st.pane(&json!({"pane":id})).unwrap();
         assert!(matches!(&pane.kind, PaneKind::Structured(_)));
         assert_eq!(info(&pane).unwrap()["agent"], "agy");
+        let wide = access_flags("agy", true, false);
+        assert_eq!(wide, ["--mode", "accept-edits"]);
+        assert!(!wide.iter().any(|flag| matches!(*flag, "--yolo" | "--dangerously-skip-permissions")));
+        assert_eq!(access_state(false, true), "plan");
+        assert_eq!(access_flags("commandcode", true, false), ["--yolo"]);
     }
 
     #[test]

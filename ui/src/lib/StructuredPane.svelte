@@ -423,17 +423,17 @@
     </div>
   </form>
   <dialog bind:this={dialog} class="gate" aria-labelledby="cc-gate-{pane}" onclose={() => (gate = null)}>
-    <h2 id="cc-gate-{pane}">{t("cc.gateTitle")}</h2>
+    <h2 id="cc-gate-{pane}">{agent === "agy" ? t("agy.gateTitle") : t("cc.gateTitle")}</h2>
     {#if gate}
       <p>{t("cc.gateProject")}: <code>{gate.cwd}</code><br />{t("cc.session")}: <code>{gate.session ?? t("cc.gateNew")}</code></p>
     {/if}
     <p>{agent === "agy" ? t("agy.gateBody") : t("cc.gateBody")}</p>
     <p class="meta">{t("cc.gateNote")}</p>
-    <label class="check"><input type="checkbox" bind:checked={trust} disabled={!gate} /> <span>{t("cc.gateCheck")}</span></label>
+    <label class="check"><input type="checkbox" bind:checked={trust} disabled={!gate} /> <span>{agent === "agy" ? t("agy.gateCheck") : t("cc.gateCheck")}</span></label>
     {#if gateErr}<p class="err" role="alert">{gateErr}</p>{/if}
     <div class="dacts">
       <button class="btn" onclick={() => dialog?.close()}>{t("cc.gateKeep")}</button>
-      <button class="btn pri" disabled={!gate || !trust} onclick={grant}>{t("cc.gateGrant")}</button>
+      <button class="btn pri" disabled={!gate || !trust} onclick={grant}>{agent === "agy" ? t("agy.gateGrant") : t("cc.gateGrant")}</button>
     </div>
   </dialog>
   {#if v.sessionId}
