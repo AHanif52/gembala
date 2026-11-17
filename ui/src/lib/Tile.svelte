@@ -450,7 +450,9 @@
   // FR-58: block action buttons on hover, and a sticky block head when its command scrolls off screen
   let hover = $state<{ top: number; b: Block } | null>(null);
   let sticky = $state<Block | null>(null);
-  const rowHeight = () => (el.querySelector(".xterm-rows")?.getBoundingClientRect().height ?? 0) / term.rows;
+  // .xterm-rows height kept by the ResizeObserver in onMount: measuring it here ran on every render (anchor) and forced a full-page layout
+  let rowsPx = 0;
+  const rowHeight = () => rowsPx / term.rows;
   const blockOn = (y: number) => blocks.findLast((b) => b.cmd && b.a.line <= y && (!b.d || y < Math.max(b.d.line, b.a.line + 1)));
   function onHover(e: MouseEvent) {
     const rows = el.querySelector(".xterm-rows")?.getBoundingClientRect();
@@ -754,8 +756,13 @@
     term.onBinary((d) => call("pane.write", { pane, data: btoa(d) }));
     // the new daemon grid follows the pane size after the snapshot is written (see attach): before that vt100 cuts rows
     term.onResize(({ rows, cols }) => sized && !disposed && call("pane.resize", { pane, rows, cols }));
-    const ro = new ResizeObserver(() => sized && el.offsetParent && fit.fit());
+    const rowsEl = el.querySelector(".xterm-rows")!;
+    const ro = new ResizeObserver((es) => {
+      for (const e of es) if (e.target === rowsEl) (rowsPx = e.contentRect.height), anchor();
+      if (es.some((e) => e.target === el) && sized && el.offsetParent) fit.fit();
+    });
     ro.observe(el);
+    ro.observe(rowsEl);
     if (focused) term.focus();
 
     return () => {
@@ -839,6 +846,8 @@
     inset: 10px 8px 6px 22px; /* left 22px = timeline column (pen screen 02) */
     /* z-index of xterm decorations (6-7) stays inside the pane: doesn't cut through the palette, Messages panel, or dividers */
     isolation: isolate;
+    /* size comes from the insets, never the content: each xterm render relayouts this pane only, not the whole page (no paint: the timeline sits outside) */
+    contain: size layout style;
     /* blank rows shifted down (--lift) don't cover the input editor; the left timeline column stays visible */
     clip-path: inset(0 0 0 -22px);
   }
