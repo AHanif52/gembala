@@ -3479,7 +3479,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {:else}<button class="gx" aria-label={tt("grid.remove", { name: meta[t.focus]?.name || title(t) })} title={tt("grid.remove", { name: meta[t.focus]?.name || title(t) })} onclick={(e) => (e.stopPropagation(), leaveGrid(go, t.id))}>×</button>{/if}
       </div>
     {/each}
-    <button class="mini" onclick={openJejerin}>{tt("grid.addHelper")}</button>
+    <button class="gadd" onclick={openJejerin}>{tt("grid.addHelper")}</button>
     <span class="grow"></span>
     {#if simple}<span class="gcount">{tt("grid.count", { n: gridTabs.length })} ·</span>{/if}
     {#if gridTabs.length < GRID_MAX}
@@ -4881,24 +4881,45 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   .gstrip {
     gap: 6px;
   }
-  .gchip {
+  /* Warp-style tabs: no outline, the active chip is a soft fill (the focused tile already has the blue ring) */
+  .gchip,
+  .gadd {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    max-width: 180px;
-    padding: 2px 8px;
-    border: 1px solid var(--line);
-    border-radius: 12px;
+    gap: 6px;
+    height: 22px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
     cursor: pointer;
     white-space: nowrap;
   }
+  .gchip {
+    max-width: 180px;
+  }
+  .gchip:hover,
+  .gadd:hover {
+    background: color-mix(in srgb, var(--fg) 6%, transparent);
+    color: var(--fg);
+  }
   .gchip.on {
-    border-color: #3b82f6;
-    box-shadow: inset 0 -2px 0 #3b82f6;
+    background: color-mix(in srgb, var(--fg) 11%, transparent);
+    color: var(--fg);
   }
   .gchip.blocked {
-    border-color: var(--tx-amber, #d97706);
     color: var(--tx-amber, #d97706);
+  }
+  /* × only where it can be meant: the hovered or open chip */
+  .gchip .gx {
+    visibility: hidden;
+  }
+  .gchip:hover .gx,
+  .gchip.on .gx,
+  .gchip:focus-visible .gx {
+    visibility: visible;
   }
   .gchip {
     position: relative;
@@ -4925,8 +4946,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     text-overflow: ellipsis;
   }
   .gtag {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--muted);
+    opacity: 0.7;
   }
   .gwaitl {
     font-size: 11px;
