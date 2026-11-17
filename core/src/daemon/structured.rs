@@ -11,6 +11,7 @@
 use super::*;
 use crate::commandcode::{Block, Envelope, Reader, RunResult};
 use std::collections::VecDeque;
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI32, AtomicBool};
@@ -27,6 +28,7 @@ const TRANSCRIPT_MAX: u64 = 32 << 20;
 const HISTORY_MESSAGES_MAX: usize = 200;
 
 pub(super) struct Pane {
+    pub(super) agent: String,
     pub(super) pid: AtomicI32,
     pub(super) cwd: PathBuf,
     command: String,
@@ -40,6 +42,25 @@ pub(super) struct Pane {
     access: Mutex<Access>,
 }
 
+enum StreamReader {
+    CommandCode(Reader),
+    Antigravity(crate::agy::Reader),
+}
+
+impl StreamReader {
+    fn new(agent: &str) -> Self {
+        if agent == "agy" { Self::Antigravity(crate::agy::Reader::default()) } else { Self::CommandCode(Reader::default()) }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Envelope>, String> {
+        match self { Self::CommandCode(r) => r.feed(bytes), Self::Antigravity(r) => r.feed(bytes) }
+    }
+
+    fn finish(&mut self) -> Result<Vec<Envelope>, String> {
+        match self { Self::CommandCode(r) => r.finish(), Self::Antigravity(r) => r.finish() }
+    }
+}
+
 struct Access {
     mode: &'static str,
     revision: u64,
@@ -51,7 +72,7 @@ struct Access {
 struct Data {
     seq: u64,
     run_id: String,
-    /// Command Code session bound to this pane: the next run resumes it explicitly, never `--continue`.
+    /// Session bound to this pane: the next run resumes it explicitly, never the CLI's implicit latest session.
     session: String,
     active: bool,
     cancel: Option<Instant>,
@@ -141,6 +162,7 @@ impl Data {
         match event["type"].as_str().unwrap_or_default() {
             "run_start" => {
                 self.snapshot["sessionId"] = event["sessionId"].clone();
+                if !event["model"].is_null() { self.snapshot["model"] = event["model"].clone(); }
                 self.bind_session(event["sessionId"].as_str());
             }
             "message_start" => { self.snapshot["text"] = json!(""); self.snapshot["thinking"] = json!(""); },
@@ -197,7 +219,8 @@ pub(super) fn create(st: &Arc<State>, p: &Value) -> Res {
     if st.panes.lock().unwrap().len() >= max { return Err("max_panes"); }
     let profile_id = p["profile"].as_str().ok_or("bad_params")?;
     let profile = st.profiles.lock().unwrap().iter().find(|x| x.id == profile_id).cloned().ok_or("no_such_profile")?;
-    if profile.agent != "commandcode" { return Err("wrong_kind"); }
+    if !matches!(profile.agent.as_str(), "commandcode" | "agy") { return Err("wrong_kind"); }
+    if p["agent"].as_str().is_some_and(|agent| agent != profile.agent) { return Err("wrong_kind"); }
     // Free-form profile flags/mods could undo restricted access. No shell or secret interpolation.
     if !profile.args.is_empty() || !profile.secret_env.is_empty() || profile.permission != "default" {
         return Err("unsupported_profile");
@@ -210,6 +233,7 @@ pub(super) fn create(st: &Arc<State>, p: &Value) -> Res {
     let (model, effort) = model_effort(p)?;
     validate_model_effort(model, effort)?;
     let backend = Pane {
+        agent: profile.agent.clone(),
         pid: AtomicI32::new(0), cwd: cwd.clone(), command: profile.command, env: profile.env,
         model: model.into(), effort: effort.into(), closed: AtomicBool::new(false),
         worker: Mutex::new(None),
@@ -218,22 +242,23 @@ pub(super) fn create(st: &Arc<State>, p: &Value) -> Res {
         access: Mutex::new(Access { mode:"restricted", revision:0, cwd:cwd.clone(), session:String::new() }),
     };
     let key = new_secret().map_err(|_| "io")?[..16].to_string();
-    let pane = Arc::new(make_pane(st, p, PaneKind::CommandCode(Box::new(backend)), "commandcode".into(), key));
+    let agent = backend.agent.clone();
+    let pane = Arc::new(make_pane(st, p, PaneKind::Structured(Box::new(backend)), agent.clone(), key));
     let id = st.next.fetch_add(1, Ordering::Relaxed);
     let name = pane.name.lock().unwrap().clone();
     st.panes.lock().unwrap().insert(id, pane);
-    Ok(json!({"pane":id, "name":name, "kind":"commandcode", "agent":"commandcode", "access":"restricted"}))
+    Ok(json!({"pane":id, "name":name, "kind":if agent == "commandcode" { "commandcode" } else { "structured" }, "agent":agent, "access":"restricted"}))
 }
 
 pub(super) fn backend(pane: &super::Pane) -> Result<&Pane, &'static str> {
-    match &pane.kind { PaneKind::CommandCode(cc) => Ok(cc), _ => Err("wrong_kind") }
+    match &pane.kind { PaneKind::Structured(cc) => Ok(cc), _ => Err("wrong_kind") }
 }
 
 pub(super) fn info(pane: &super::Pane) -> Res {
     let cc = backend(pane)?;
     let d = cc.data.lock().unwrap();
     let access = cc.access.lock().unwrap();
-    Ok(json!({"kind":"commandcode", "agent":"commandcode", "access":access.mode, "access_revision":access.revision,
+    Ok(json!({"kind":if cc.agent == "commandcode" { "commandcode" } else { "structured" }, "agent":cc.agent, "access":access.mode, "access_revision":access.revision,
         "pane_name":*pane.name.lock().unwrap(), "status":*pane.status.lock().unwrap(),
         "busy":d.active, "cwd":cc.cwd, "pid":cc.pid.load(Ordering::Acquire),
         "session": if d.session.is_empty() { Value::Null } else { json!(d.session) },
@@ -290,7 +315,7 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     // A pane keeps one conversation: the next run resumes the bound session explicitly.
     let resume = (!d.session.is_empty()).then(|| d.session.clone());
     // Wide access only while a UI grant still covers this folder and the bound session.
-    let yolo = {
+    let (yolo, plan) = {
         let mut access = cc.access.lock().unwrap();
         let valid = access.mode == "yolo" && access.cwd == cc.cwd
             && (access.session.is_empty() || access.session == d.session);
@@ -298,7 +323,7 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
             // The folder or session moved under the grant: it no longer applies, and the UI must ask again.
             access.mode = "restricted"; access.session.clear(); access.revision += 1;
         }
-        valid
+        (valid, access.mode == "plan")
     };
     // Never join while holding data: the worker completes its final state under that lock.
     drop(d);
@@ -306,18 +331,35 @@ pub(super) fn run(st: &Arc<State>, p: &Value) -> Res {
     let mut d = cc.data.lock().unwrap();
     let run_id = new_secret().map_err(|_| "io")?;
     let mut cmd = Command::new(&st.hooks.exe);
-    cmd.args(["jail", "--", &cc.command]).arg(format!("--print={prompt}")).args(["--output-format", "json"]);
-    cmd.args(runner::flags("commandcode", if model.is_empty() { &cc.model } else { model }, if effort.is_empty() { &cc.effort } else { effort }, None));
+    cmd.args(["jail", "--", &cc.command]);
+    if cc.agent == "agy" {
+        cmd.args(["-p=", "--input-format", "stream-json", "--output-format", "stream-json"])
+            .args(profile::agy_structured_flags(&st.hooks));
+        if yolo { cmd.args(["--mode", "accept-edits"]); }
+        else if plan { cmd.args(["--mode", "plan"]); }
+        if !model.is_empty() || !cc.model.is_empty() { cmd.args(["--model", if model.is_empty() { &cc.model } else { model }]); }
+        if !effort.is_empty() || !cc.effort.is_empty() { cmd.args(["--effort", if effort.is_empty() { &cc.effort } else { effort }]); }
+    } else {
+        cmd.arg(format!("--print={prompt}")).args(["--output-format", "json"]);
+        cmd.args(runner::flags("commandcode", if model.is_empty() { &cc.model } else { model }, if effort.is_empty() { &cc.effort } else { effort }, None));
+    }
     // `--resume <id>`, never `--continue`: the id is the pane's own conversation, not "the latest in this cwd".
-    if let Some(session) = &resume { cmd.args(["--resume", session]); }
+    if let Some(session) = &resume {
+        cmd.arg(if cc.agent == "agy" { "--conversation" } else { "--resume" }).arg(session);
+    }
     // Only the default access path is restricted; a grant recorded by the UI gate unlocks this one flag.
     if yolo { cmd.arg("--yolo"); }
     pty::scrub_env(&mut cmd);
-    cmd.env("PATH", path).envs(cc.env.iter().cloned()).current_dir(&cc.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.env("PATH", path).envs(cc.env.iter().cloned()).current_dir(&cc.cwd)
+        .stdin(if cc.agent == "agy" { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { cmd.pre_exec(|| { if libc::setsid() == -1 { Err(io::Error::last_os_error()) } else { Ok(()) } }); }
     // hello/pane_of_pid holds the same registry lock. Publish SID before the child can authenticate.
     let panes = st.panes.lock().unwrap();
     let mut child = cmd.spawn().map_err(|_| "spawn_failed")?;
+    if cc.agent == "agy" {
+        let input = json!({"event":"user", "message":{"content":prompt}}).to_string() + "\n";
+        child.stdin.take().ok_or("spawn_failed")?.write_all(input.as_bytes()).map_err(|_| "spawn_failed")?;
+    }
     let pid = child.id() as i32;
     if nonblocking(&child).is_err() {
         unsafe { libc::killpg(pid, libc::SIGKILL); }
@@ -371,7 +413,8 @@ pub(super) fn access(st: &State, p: &Value) -> Res {
     if p.as_object().is_none_or(|o| o.keys().any(|k| !["pane", "mode", "gateId", "revision"].contains(&k.as_str()))) {
         return Err("bad_params");
     }
-    let mode = p["mode"].as_str().filter(|m| *m == "restricted" || *m == "yolo").ok_or("bad_params")?;
+    let mode = p["mode"].as_str().filter(|m| matches!(*m, "restricted" | "yolo" | "plan")).ok_or("bad_params")?;
+    if mode == "plan" && cc.agent != "agy" { return Err("bad_params"); }
     let revision = p["revision"].as_u64().ok_or("bad_params")?;
     let mut d = cc.data.lock().unwrap();
     let mut access = cc.access.lock().unwrap();
@@ -385,7 +428,7 @@ pub(super) fn access(st: &State, p: &Value) -> Res {
     } else {
         // Revoking applies to the running request too, not just the next one.
         if d.active && d.cancel.is_none() { d.cancel = Some(Instant::now()); }
-        access.mode = "restricted";
+        access.mode = if mode == "plan" { "plan" } else { "restricted" };
         access.session.clear();
     }
     access.revision += 1;
@@ -463,6 +506,8 @@ pub(super) fn sessions(st: &State, p: &Value) -> Res {
         Some(Value::String(s)) => s.parse::<usize>().map_err(|_| "bad_params")?,
         Some(_) => return Err("bad_params"),
     };
+    // `agy` exposes resume by conversation id but has no CLI session-list/history command. Do not inspect its private files.
+    if cc.agent == "agy" { return Ok(json!({"sessions":[]})); }
     let all = scan_sessions(&cc.cwd);
     let page: Vec<Value> = all.iter().skip(offset).take(SESSIONS_PAGE).map(|s| {
         let mut v = json!({"id": s.id, "path": s.path.to_string_lossy(), "updatedAt": s.updated});
@@ -519,6 +564,20 @@ pub(super) fn resume(st: &State, p: &Value) -> Res {
         if let Ok(backend) = backend(pane)
             && backend.data.lock().unwrap().session == wanted { return Err("session_in_use"); }
     }
+    if cc.agent == "agy" {
+        let mut d = cc.data.lock().unwrap();
+        d.bind_session(Some(wanted));
+        let mut access = cc.access.lock().unwrap();
+        access.mode = "restricted";
+        access.session.clear();
+        access.revision += 1;
+        let revision = access.revision;
+        drop(access);
+        d.snapshot["access"] = json!("restricted");
+        let state = d.snapshot["state"].clone();
+        d.emit(&st.boot, id, "state", json!({"state":state, "sessionId":wanted, "access":"restricted", "revision":revision}));
+        return Ok(json!({"sessionId":wanted, "history":{"messages":[], "partial":null}}));
+    }
     let found = scan_sessions(&cc.cwd).into_iter().find(|s| s.id == wanted).ok_or("no_such_session")?;
     if found.unsupported { return Err("unsupported_format"); }
     let meta = std::fs::metadata(&found.path).map_err(|_| "io")?;
@@ -567,7 +626,7 @@ pub(super) fn close(st: &State, id: u64, pane: &super::Pane) {
 /// escalation (SIGINT, SIGTERM at 500 ms, SIGKILL at 2 s, drain cap 1 s).
 pub(super) fn shutdown(st: &State) {
     let panes: Vec<(u64, Arc<super::Pane>)> = st.panes.lock().unwrap().iter().map(|(id, p)| (*id, Arc::clone(p))).collect();
-    for (id, pane) in panes.iter().filter(|(_, p)| matches!(p.kind, PaneKind::CommandCode(_))) {
+    for (id, pane) in panes.iter().filter(|(_, p)| matches!(p.kind, PaneKind::Structured(_))) {
         close(st, *id, pane);
     }
 }
@@ -605,7 +664,7 @@ fn exit_kind(code: Option<i32>) -> &'static str {
 
 fn pump(st: &State, id: u64, pane: &super::Pane, mut child: Child) {
     let Ok(cc) = backend(pane) else { let _ = child.kill(); let _ = child.wait(); return };
-    let mut reader = Reader::default();
+    let mut reader = StreamReader::new(&cc.agent);
     let mut result = None;
     let mut failure = None;
     let mut stderr = Vec::new();
@@ -672,17 +731,21 @@ fn pump(st: &State, id: u64, pane: &super::Pane, mut child: Child) {
     let cancelled = d.cancel.is_some() && (failure.is_none() || eof);
     let mismatch = result.as_ref().is_some_and(|r| match r.subtype.as_str() {
         "success" => code != Some(0),
+        "interrupted" => false,
         "max_turns" => code != Some(8),
-        _ => code == Some(0) || code == Some(8),
+        _ => cc.agent != "agy" && (code == Some(0) || code == Some(8)),
     });
     let state = if failure.is_some() && !eof { "protocol_error" }
         else if cancelled || (eof && code == Some(0)) { "interrupted" }
         else if eof { exit_kind(code) }
+        else if result.as_ref().is_some_and(|r| r.subtype == "interrupted") { "interrupted" }
+        else if cc.agent == "agy" && result.as_ref().is_some_and(|r| r.subtype == "error") { "error" }
         else if mismatch { failure = Some("result/exit mismatch".into()); "protocol_error" }
         else { exit_kind(code) };
     if let Some(r) = result && state != "protocol_error" && !cancelled {
         if r.final_text.as_ref().is_some_and(|s| s.len() > BLOCK_MAX) { d.snapshot["truncated"] = json!(true); }
-        let value = result_value(&r);
+        let mut value = result_value(&r);
+        if cc.agent == "agy" { value["usageCumulative"] = json!(true); }
         d.bind_session(r.session_id.as_deref());
         bind_grant(cc, &d);
         d.snapshot["result"] = value.clone();
@@ -719,6 +782,20 @@ mod tests {
         let r = create(st, &json!({"workspace":"test", "cwd":std::env::temp_dir(), "profile":"commandcode"})).unwrap();
         let id = r["pane"].as_u64().unwrap();
         (id, st.pane(&json!({"pane":id})).unwrap())
+    }
+
+    #[test]
+    fn agy_uses_the_shared_structured_pane_and_session_modes() {
+        let st = state();
+        let created = create(&st, &json!({"workspace":"test", "cwd":std::env::temp_dir(), "profile":"agy", "agent":"agy"})).unwrap();
+        assert_eq!(created["kind"], "structured");
+        assert_eq!(created["agent"], "agy");
+        let id = created["pane"].as_u64().unwrap();
+        let plan = access(&st, &json!({"pane":id, "mode":"plan", "revision":0})).unwrap();
+        assert_eq!(plan["mode"], "plan");
+        let pane = st.pane(&json!({"pane":id})).unwrap();
+        assert!(matches!(&pane.kind, PaneKind::Structured(_)));
+        assert_eq!(info(&pane).unwrap()["agent"], "agy");
     }
 
     #[test]

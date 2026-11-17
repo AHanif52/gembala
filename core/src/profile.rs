@@ -435,13 +435,16 @@ fn hook_flags(p: &Profile, h: &Hooks, saver: bool) -> (Vec<String>, Vec<(String,
         "opencode" => (vec![], vec![("OPENCODE_CONFIG".into(), file("opencode.json"))]),
         "omp" => (vec![format!("--hook={}", file("omp-gembala.ts")), format!("--append-system-prompt={petunjuk} {OMP_TOOLS}")], vec![]),
         "commandcode" => (vec!["--mod".into(), file("commandcode-gembala.mjs")], vec![("GEMBALA_COMMANDCODE_HINT".into(), petunjuk.into())]),
-        "agy" => {
-            let dir = h.dir.join("agy");
-            let settings = json!({"statusLine": {"type": "command", "command": format!("{} statusline agy", q(&h.exe)), "stack_with_default": true}});
-            (vec!["--settings".into(), settings.to_string(), "--add-dir".into(), dir.to_string_lossy().into_owned()], vec![])
-        }
+        "agy" => (agy_structured_flags(h), vec![]),
         _ => (vec![], vec![]),
     }
+}
+
+/// AGY's structured driver keeps only Gembala's session status line and generated instructions.
+pub fn agy_structured_flags(h: &Hooks) -> Vec<String> {
+    let dir = h.dir.join("agy");
+    let settings = json!({"statusLine": {"type":"command", "command":format!("{} statusline agy", q(&h.exe)), "stack_with_default":true}});
+    vec!["--settings".into(), settings.to_string(), "--add-dir".into(), dir.to_string_lossy().into_owned()]
 }
 
 /// FR-58: the hook folder serves as `ZDOTDIR` for zsh panes. Each file sources the user's same file as is
@@ -1355,6 +1358,13 @@ mod tests {
         assert!(launch_cmd.contains("--add-dir") && launch_cmd.contains("/cfg/hooks/agy"));
         assert!(!launch_cmd.contains("~/.gemini") && !launch_cmd.contains("--dangerously-skip-permissions") && !launch_cmd.contains("--mode' 'auto"));
         assert!(!launch_cmd.contains("agentMode") && !launch_cmd.contains("--mode"), "{launch_cmd}");
+        let structured = agy_structured_flags(&hooks);
+        let settings_at = structured.iter().position(|arg| arg == "--settings").unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&structured[settings_at + 1]).unwrap();
+        assert!(settings["statusLine"]["command"].as_str().unwrap().contains("statusline agy"));
+        assert!(settings["statusLine"]["stack_with_default"].as_bool().unwrap());
+        assert!(structured.windows(2).any(|w| w == ["--add-dir", "/cfg/hooks/agy"]), "{structured:?}");
+        assert!(!structured.iter().any(|arg| arg == "--dangerously-skip-permissions"), "{structured:?}");
         p.permission = "auto".into();
         assert!(launch(&p, Some(&hooks), None, false).unwrap().contains("'--mode' 'accept-edits'"));
         let id = "12345678-1234-5678-1234-567812345678";

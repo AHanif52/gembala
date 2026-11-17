@@ -49,7 +49,10 @@ const tool = (e: any, status?: ToolStatus, extra: Record<string, unknown> = {}):
 export function agentActions(e: any): Action[] {
   switch (e?.type) {
     case "run_start":
-      return typeof e.sessionId === "string" ? [{ t: "session", id: e.sessionId }] : [];
+      return [
+        ...(typeof e.sessionId === "string" ? [{ t: "session", id: e.sessionId } as Action] : []),
+        ...(typeof e.model === "string" ? [{ t: "request", model: e.model } as Action] : []),
+      ];
     case "message_start":
     case "stream_restart":
       return [{ t: "restart" }];
@@ -126,9 +129,9 @@ export function agentActions(e: any): Action[] {
 export function actions(ev: CcEvent): Action[] {
   const p = ev.payload ?? {};
   if (ev.kind === "agent") return agentActions(p);
-  if (ev.kind === "result") return [{ t: "result", usage: usage(p.usage), durationMs: count(p.durationMs), error: p.error ? text(p.error) : null, finalText: typeof p.finalText === "string" ? p.finalText : null }];
+  if (ev.kind === "result") return [{ t: "result", usage: usage(p.usage), durationMs: count(p.durationMs), error: p.error ? text(p.error) : null, finalText: typeof p.finalText === "string" ? p.finalText : null, replaceUsage: p.usageCumulative === true }];
   // only an explicit "yolo" from the daemon widens the view; anything else reads as restricted
-  const access: Action[] = "access" in p ? [{ t: "access", mode: p.access === "yolo" ? "yolo" : "restricted" }] : [];
+  const access: Action[] = "access" in p ? [{ t: "access", mode: p.access === "yolo" ? "yolo" : p.access === "plan" ? "plan" : "restricted" }] : [];
   if (typeof p.sessionId === "string") access.push({ t: "session", id: p.sessionId });
   if (p.state === "working") return [...access, { t: "run", runId: ev.runId, at: Date.now() }];
   // only the run's own end carries `exitCode`; a state without it is a policy or session change between runs (grant,
@@ -154,8 +157,9 @@ export function fromSnapshot(s: any, epoch: string, through: number): View {
   v.epoch = epoch;
   v.seq = through;
   v.sessionId = typeof s?.sessionId === "string" ? s.sessionId : null;
+  v.model = typeof s?.model === "string" ? s.model : null;
   v.truncated = s?.truncated === true;
-  v.access = s?.access === "yolo" ? "yolo" : "restricted";
+  v.access = s?.access === "yolo" ? "yolo" : s?.access === "plan" ? "plan" : "restricted";
   const running = s?.state === "working";
   v.runId = typeof s?.runId === "string" ? s.runId : null;
   for (const [id, t] of Object.entries<any>(s?.tools ?? {})) {
@@ -189,7 +193,7 @@ export function fromSnapshot(s: any, epoch: string, through: number): View {
   }
   // tools no message referenced yet still get their card
   for (const id of Object.keys(v.tools)) apply(v, { t: "tool", id });
-  if (s?.result) apply(v, { t: "result", usage: usage(s.result.usage), durationMs: count(s.result.durationMs), error: s.result.error ? text(s.result.error) : null, finalText: str(s.result.finalText) || null });
+  if (s?.result) apply(v, { t: "result", usage: usage(s.result.usage), durationMs: count(s.result.durationMs), error: s.result.error ? text(s.result.error) : null, finalText: str(s.result.finalText) || null, replaceUsage: s.result.usageCumulative === true });
   if (!running && typeof s?.state === "string" && s.state !== "idle") apply(v, { t: "end", state: s.state, exitCode: count(s.exitCode) });
   return v;
 }
@@ -230,6 +234,7 @@ export function proposal(name: string, input: any): { path: string; before: stri
 
 /// FR-107: a bare Command Code command (no arguments) typed in the input editor opens the structured pane instead
 export const ccTrigger = (text: string) => /^\s*(cmd|commandcode|cmdc)\s*$/.test(text);
+export const agyTrigger = (text: string) => /^\s*agy\s*$/.test(text);
 
 // Slash input in the CC pane is never sent to the model: it maps to a UI control or a note.
 export const CC_SLASH = ["model", "effort", "resume", "history", "permissions", "access", "help"];

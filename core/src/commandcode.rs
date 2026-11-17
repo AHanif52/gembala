@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 pub const LINE_MAX: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Usage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,

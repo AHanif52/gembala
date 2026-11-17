@@ -22,6 +22,15 @@ test("delta + snapshot + end don't duplicate the message", () => {
   assert.equal(v.status, "done");
 });
 
+test("cumulative Antigravity usage replaces its prior session total", () => {
+  const v = emptyView();
+  run(v);
+  const result = { t: "result", usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: null }, durationMs: 1, error: null, finalText: null, replaceUsage: true } as const;
+  apply(v, result);
+  apply(v, { ...result, usage: { input: 13, output: 3, cacheRead: 4, cacheWrite: null } });
+  assert.deepEqual(v.usage, { input: 13, output: 3, cacheRead: 4, cacheWrite: null });
+});
+
 test("parallel tools are told apart by id and a queued tool after tool_use is one card", () => {
   const v = emptyView();
   run(v);

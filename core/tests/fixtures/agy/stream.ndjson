@@ -1,0 +1,8 @@
+{"event":"init","conversation_id":"agy-fixture-session","init":{"permission_mode":"request-review"}}
+{"event":"step_update","step_update":{"conversation_id":"agy-fixture-session","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"agy-fixture-session","step_index":1,"state":"DONE","step_type":"agent_response","duration_seconds":9.550637,"usage":{"input_tokens":9605,"output_tokens":167,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":9772}}}
+{"event":"step_update","step_update":{"conversation_id":"agy-fixture-session","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"write_file","tool_info":{"name":"write_file","parameters":{"Path":"/fixture/plan.md"}}}}
+{"event":"step_update","step_update":{"conversation_id":"agy-fixture-session","step_index":2,"state":"DONE","step_type":"tool","tool_name":"write_file","duration_seconds":1.995041,"tool_info":{"name":"write_file","parameters":{"Path":"/fixture/plan.md"}}}}
+{"event":"step_update","step_update":{"conversation_id":"agy-fixture-session","step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"cedar"}}
+{"event":"step_update","step_update":{"conversation_id":"agy-fixture-session","step_index":3,"state":"DONE","step_type":"agent_response","text_delta":"\n","duration_seconds":8.270765,"usage":{"input_tokens":2301,"output_tokens":6,"thinking_tokens":0,"cache_read_tokens":7551,"total_tokens":2307}}}
+{"event":"result","result":{"conversation_id":"agy-fixture-session","status":"SUCCESS","response":"cedar\n","duration_seconds":19.465546,"num_turns":1,"usage":{"input_tokens":11906,"output_tokens":173,"thinking_tokens":0,"cache_read_tokens":7551,"total_tokens":12079}}}

@@ -78,7 +78,7 @@ enum Chan {
 
 enum PaneKind {
     Terminal(Box<Terminal>),
-    CommandCode(Box<commandcode::Pane>),
+    Structured(Box<structured::Pane>),
 }
 
 struct Terminal {
@@ -217,13 +217,13 @@ impl Pane {
                 let pid = pty::busy(&t.master, t.sid).map_or(t.sid, |(pid, _)| pid);
                 pty::cwd_of(pid).or_else(|| pty::cwd_of(t.sid))
             }
-            PaneKind::CommandCode(cc) => Some(cc.cwd.clone()),
+            PaneKind::Structured(cc) => Some(cc.cwd.clone()),
         }
     }
     fn terminal(&self) -> Result<&Terminal, &'static str> {
         match &self.kind {
             PaneKind::Terminal(t) => Ok(t),
-            PaneKind::CommandCode(_) => Err("wrong_kind"),
+            PaneKind::Structured(_) => Err("wrong_kind"),
         }
     }
 
@@ -314,7 +314,7 @@ mod claude;
 mod update;
 mod usage;
 mod models;
-mod commandcode;
+mod structured;
 
 type Res = Result<Value, &'static str>;
 /// FR-62: (running block + its start time, manual agent block waiting for its resume command)
@@ -456,7 +456,7 @@ struct CloseAfterFlush(SyncSender<String>, UnixStream);
 struct CcSubscriptions(Arc<State>, u64);
 
 impl Drop for CcSubscriptions {
-    fn drop(&mut self) { commandcode::unsubscribe(&self.0, self.1); }
+    fn drop(&mut self) { structured::unsubscribe(&self.0, self.1); }
 }
 
 impl Drop for CloseAfterFlush {
@@ -726,11 +726,11 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             continue;
         }
         if method == "cc.attach" {
-            reply(&tx, id, commandcode::attach(&st, p, conn, &tx, &lagging));
+            reply(&tx, id, structured::attach(&st, p, conn, &tx, &lagging));
             continue;
         }
         if method == "cc.detach" {
-            reply(&tx, id, commandcode::detach(&st, p, conn));
+            reply(&tx, id, structured::detach(&st, p, conn));
             continue;
         }
         reply(&tx, id, ui_method(&st, peer, method, p));
@@ -843,13 +843,13 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
         return Err("not_authorized");
     }
     match m {
-        "cc.create" => commandcode::create(st, p),
-        "cc.run" => commandcode::run(st, p),
-        "cc.cancel" => commandcode::cancel(st, p),
-        "cc.access" => commandcode::access(st, p),
-        "cc.sessions" => commandcode::sessions(st, p),
-        "cc.resume" => commandcode::resume(st, p),
-        "cc.stale" => commandcode::stale(st, p),
+        "cc.create" => structured::create(st, p),
+        "cc.run" => structured::run(st, p),
+        "cc.cancel" => structured::cancel(st, p),
+        "cc.access" => structured::access(st, p),
+        "cc.sessions" => structured::sessions(st, p),
+        "cc.resume" => structured::resume(st, p),
+        "cc.stale" => structured::stale(st, p),
         "pane.list" => {
             let panes = st.panes.lock().unwrap();
             let mut ids: Vec<_> = panes.keys().copied().collect();
@@ -942,7 +942,7 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                         let pid = pty::busy(&t.master, t.sid).map_or(t.sid, |(pid, _)| pid);
                         [pty::cwd_of(pid), pty::cwd_of(t.sid)].into_iter().flatten().any(|c| c.canonicalize().is_ok_and(|c| c.starts_with(&me)))
                     }
-                    PaneKind::CommandCode(cc) => cc.cwd.starts_with(&me),
+                    PaneKind::Structured(cc) => cc.cwd.starts_with(&me),
                 }
             });
             if used {
@@ -1739,7 +1739,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
         }
         "pane.info" => {
             let pane = st.pane(p)?;
-            if pane.terminal().is_err() { return commandcode::info(&pane); }
+            if pane.terminal().is_err() { return structured::info(&pane); }
             let busy = pty::busy(&pane.terminal()?.master, pane.terminal()?.sid);
             let (waiting_shell, reason) = { let c = pane.claude.lock().unwrap(); (c.shell, c.reason.clone()) };
             Ok(json!({
@@ -1800,7 +1800,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             let st = Arc::clone(st);
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(200));
-                commandcode::shutdown(&st);
+                structured::shutdown(&st);
                 std::process::exit(0);
             });
             Ok(json!({}))
@@ -1813,7 +1813,7 @@ The user reviews the change in Gembala's changes panel. When done, summarize the
             let st = Arc::clone(st);
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(200));
-                commandcode::shutdown(&st);
+                structured::shutdown(&st);
                 std::process::exit(0);
             });
             Ok(json!({}))
@@ -3011,7 +3011,7 @@ fn deliver_loop(st: Arc<State>) {
 /// pump then sends `pane.exit` and the UI drops it from its tab
 fn close_pane(st: &State, id: u64, pane: &Pane) {
     pane.closing.store(true, Ordering::Relaxed);
-    let Ok(terminal) = pane.terminal() else { return commandcode::close(st, id, pane) };
+    let Ok(terminal) = pane.terminal() else { return structured::close(st, id, pane) };
     unsafe {
         let fg = libc::tcgetpgrp(terminal.master.as_raw_fd());
         if fg > 0 {
@@ -3834,7 +3834,7 @@ fn on_sigterm(st: Arc<State>, set: libc::sigset_t) {
     if unsafe { libc::sigwait(&set, &mut sig) } == 0 {
         eprintln!("daemon exit: SIGTERM");
         save_logs(&st, &mut HashMap::new());
-        commandcode::shutdown(&st);
+        structured::shutdown(&st);
         std::process::exit(0);
     }
 }
@@ -3844,7 +3844,7 @@ fn idle_exit(st: Arc<State>) {
     let mut strikes = 0;
     loop {
         thread::sleep(Duration::from_secs(every));
-        let busy = st.panes.lock().unwrap().values().any(|p| match &p.kind { PaneKind::Terminal(t) => pty::busy(&t.master, t.sid).is_some(), PaneKind::CommandCode(cc) => cc.pid.load(Ordering::Acquire) > 0 }) || !st.harness.lock().unwrap().is_empty();
+        let busy = st.panes.lock().unwrap().values().any(|p| match &p.kind { PaneKind::Terminal(t) => pty::busy(&t.master, t.sid).is_some(), PaneKind::Structured(cc) => cc.pid.load(Ordering::Acquire) > 0 }) || !st.harness.lock().unwrap().is_empty();
         strikes = if st.ui_clients.load(Ordering::Relaxed) == 0 && !busy { strikes + 1 } else { 0 };
         if strikes >= 2 {
             eprintln!("daemon exit: no UI and every pane idle");
@@ -4229,7 +4229,7 @@ impl State {
                 return None;
             }
             let sid = unsafe { libc::getsid(pid) };
-            if let Some((id, _)) = panes.iter().find(|(_, p)| sid > 0 && match &p.kind { PaneKind::Terminal(t) => t.sid == sid, PaneKind::CommandCode(cc) => cc.pid.load(Ordering::Acquire) == sid }) {
+            if let Some((id, _)) = panes.iter().find(|(_, p)| sid > 0 && match &p.kind { PaneKind::Terminal(t) => t.sid == sid, PaneKind::Structured(cc) => cc.pid.load(Ordering::Acquire) == sid }) {
                 return Some(*id);
             }
             pid = pty::ppid(pid)?;

@@ -19,23 +19,25 @@
 
   let {
     pane,
+    agent = "commandcode",
     cwd = "",
     focused = false,
     efforts = [],
     model = $bindable(""),
     effort = $bindable(""),
-    onterminal = () => {},
+    onterminal = (_session?: string) => {},
     onshell = async () => {},
     resume = "",
     onresumed = () => {},
   }: {
     pane: number;
+    agent?: "commandcode" | "agy";
     cwd?: string;
     focused?: boolean;
     efforts?: string[];
     model?: string;
     effort?: string;
-    onterminal?: () => void;
+    onterminal?: (session?: string) => void;
     onshell?: () => Promise<unknown>; // `exit`, `/exit`, `/quit`: back to the shell in this pane (reverse of FR-107); closing cancels a run
     resume?: string; // session of this pane before the daemon restarted (phase 4): reopened read-first
     onresumed?: () => void;
@@ -115,7 +117,7 @@
     void attach().then(() => {
       if (resume && !v.turns.length) void openSession(resume, true).then(onresumed);
     });
-    call("models.list", { agent: "commandcode" })
+    call("models.list", { agent })
       .then((r) => (models = Array.isArray(r?.models) ? r.models : []))
       .catch(() => {});
     return () => {
@@ -181,6 +183,15 @@
       const i = await call("pane.info", { pane });
       await call("cc.access", { pane, mode: "restricted", revision: i.access_revision });
       apply(v, { t: "access", mode: "restricted" });
+    } catch (e) {
+      note = errText(e);
+    }
+  }
+  async function setAgyMode(mode: "restricted" | "plan") {
+    try {
+      const i = await call("pane.info", { pane });
+      const r = await call("cc.access", { pane, mode, revision: i.access_revision });
+      apply(v, { t: "access", mode: r?.mode === "plan" ? "plan" : "restricted" });
     } catch (e) {
       note = errText(e);
     }
@@ -293,18 +304,28 @@
   {/if}
 {/snippet}
 
-<div class="cc" role="region" aria-label={t("cc.badge")}>
+<div class="cc" role="region" aria-label={agent === "agy" ? t("agy.badge") : t("cc.badge")}>
+  <div class="title"><span aria-hidden="true">{agent === "agy" ? "▲" : "⌘"}</span><b>{agent === "agy" ? t("agy.badge") : t("cc.badge")}</b></div>
   <div class="access" class:wide={v.access === "yolo"}>
+    {#if agent === "agy"}
+      <label>{t("agy.mode")}
+        <select value={v.access} disabled={busy} onchange={(e) => e.currentTarget.value === "yolo" ? openGate() : setAgyMode(e.currentTarget.value as "restricted" | "plan")}>
+          <option value="restricted">{t("agy.access")}</option>
+          <option value="plan">{t("agy.plan")}</option>
+          <option value="yolo">{t("agy.wide")}</option>
+        </select>
+      </label>
+    {/if}
     {#if v.access === "yolo"}
-      <p><b>{t("cc.wide")}</b> · {t("cc.wideNote")}</p>
+      <p><b>{agent === "agy" ? t("agy.wide") : t("cc.wide")}</b> · {agent === "agy" ? t("agy.wideNote") : t("cc.wideNote")}</p>
       {#if busy}<button class="btn" onclick={stop}>{t("cc.stop")}</button>{/if}
       <button class="btn" onclick={revoke}>{t("cc.revoke")}</button>
     {:else}
-      <p><b>{t("cc.access")}</b> · {t("cc.accessNote")}</p>
-      <button class="btn" onclick={openGate} disabled={busy || locked}>{t("cc.changeAccess")}</button>
+      <p><b>{agent === "agy" ? (v.access === "plan" ? t("agy.plan") : t("agy.access")) : t("cc.access")}</b> · {agent === "agy" ? (v.access === "plan" ? t("agy.planNote") : t("agy.accessNote")) : t("cc.accessNote")}</p>
+      {#if agent !== "agy"}<button class="btn" onclick={openGate} disabled={busy || locked}>{t("cc.changeAccess")}</button>{/if}
     {/if}
-    <button class="btn" onclick={pick} disabled={busy} aria-expanded={!!picking}>{t("cc.history")}</button>
-    <button class="btn" onclick={onterminal}>{t("cc.openTerminal")}</button>
+    {#if agent !== "agy"}<button class="btn" onclick={pick} disabled={busy} aria-expanded={!!picking}>{t("cc.history")}</button>{/if}
+    <button class="btn" onclick={() => onterminal(v.sessionId ?? undefined)}>{t("cc.openTerminal")}</button>
   </div>
   {#if picking}
     <ul class="picker" aria-label={t("cc.history")}>
@@ -369,7 +390,7 @@
   </div>
   <form class="composer" onsubmit={(e) => (e.preventDefault(), send())}>
     <div class="frame">
-      <label class="sr" for="cc-input-{pane}">{t("cc.inputLabel")}</label>
+      <label class="sr" for="cc-input-{pane}">{agent === "agy" ? t("agy.inputLabel") : t("cc.inputLabel")}</label>
       <textarea id="cc-input-{pane}" rows="2" placeholder={t("cc.placeholder")} disabled={locked} bind:value={prompt} bind:this={input} onkeydown={onkey}></textarea>
       <div class="acts">
         <small>{locked ? t("cc.hintLocked") : busy ? t("cc.hintBusy") : t("cc.hint")}</small>
@@ -406,7 +427,7 @@
     {#if gate}
       <p>{t("cc.gateProject")}: <code>{gate.cwd}</code><br />{t("cc.session")}: <code>{gate.session ?? t("cc.gateNew")}</code></p>
     {/if}
-    <p>{t("cc.gateBody")}</p>
+    <p>{agent === "agy" ? t("agy.gateBody") : t("cc.gateBody")}</p>
     <p class="meta">{t("cc.gateNote")}</p>
     <label class="check"><input type="checkbox" bind:checked={trust} disabled={!gate} /> <span>{t("cc.gateCheck")}</span></label>
     {#if gateErr}<p class="err" role="alert">{gateErr}</p>{/if}
@@ -433,6 +454,13 @@
     background: var(--bg);
     color: var(--fg);
     font: 13px/1.5 system-ui, -apple-system, sans-serif;
+  }
+  .title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 14px 0;
+    font-weight: 600;
   }
   code,
   pre,

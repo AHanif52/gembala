@@ -855,6 +855,10 @@
             <span>{t("set.look.ccStructured")}<small>{t("set.look.ccStructuredSub")}</small></span>
             <input type="checkbox" role="switch" aria-label={t("set.look.ccStructured")} checked={ui.cc_structured} onchange={(e) => set("cc_structured", e.currentTarget.checked)} />
           </div>
+          <div class="row">
+            <span>{t("set.look.agyStructured")}<small>{t("set.look.agyStructuredSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.look.agyStructured")} checked={ui.agy_structured} onchange={(e) => set("agy_structured", e.currentTarget.checked)} />
+          </div>
         </section>
         {/if}
       {:else if sec === "agent"}

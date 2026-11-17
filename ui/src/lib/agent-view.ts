@@ -23,7 +23,7 @@ export type View = {
   turns: Turn[];
   tools: Record<string, Tool>;
   truncated: boolean;
-  access: "restricted" | "yolo"; // the daemon's effective policy, never decided here
+  access: "restricted" | "yolo" | "plan"; // the daemon's effective policy, never decided here
 };
 export type Action =
   | { t: "user"; text: string; at: number }
@@ -37,9 +37,9 @@ export type Action =
   | { t: "request"; model?: string | null; context?: number | null }
   | { t: "session"; id: string }
   | ({ t: "notice" } & Omit<Notice, "kind">)
-  | { t: "result"; usage: Usage; durationMs: number | null; error: string | null; finalText: string | null }
+  | { t: "result"; usage: Usage; durationMs: number | null; error: string | null; finalText: string | null; replaceUsage?: boolean }
   | { t: "end"; state: string; exitCode: number | null }
-  | { t: "access"; mode: "restricted" | "yolo" };
+  | { t: "access"; mode: "restricted" | "yolo" | "plan" };
 
 export const BUSY = ["starting", "thinking", "writing", "tool"];
 const ACTIVE: ToolStatus[] = ["queued", "running"];
@@ -117,7 +117,7 @@ export function apply(v: View, a: Action): void {
     case "result": {
       turn.result = { usage: a.usage, durationMs: a.durationMs, error: a.error };
       const u = v.usage;
-      v.usage = u
+      v.usage = a.replaceUsage ? { ...a.usage } : u
         ? { input: sum(u.input, a.usage.input), output: sum(u.output, a.usage.output), cacheRead: sum(u.cacheRead, a.usage.cacheRead), cacheWrite: sum(u.cacheWrite, a.usage.cacheWrite) }
         : { ...a.usage };
       // finalText only when no assistant text was shown at all (no duplicate of the last message)

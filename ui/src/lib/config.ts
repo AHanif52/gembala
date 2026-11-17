@@ -16,6 +16,7 @@ export type Ui = {
   command_timeline: boolean; // FR-58: command block timeline in shell panes
   codex_status: boolean; // Codex footer drawn like Claude's status; off = the user's own Codex footer
   cc_structured: boolean; // FR-107: a bare `cmd` from the input editor opens a structured Command Code pane
+  agy_structured: boolean;
   on_quit: "keep" | "stop";
   helper_idle_close: number; // FR-86: minutes a replied helper may sit quiet before it's closed; 0 = never
 };
@@ -101,6 +102,7 @@ export const UI_DEFAULT: Ui = {
   command_timeline: true,
   codex_status: true,
   cc_structured: true,
+  agy_structured: true,
   on_quit: "keep",
   helper_idle_close: 15,
 };

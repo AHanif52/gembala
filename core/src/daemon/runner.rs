@@ -158,8 +158,8 @@ fn step_flags(s: &recipe::Step, agent: &str) -> Vec<String> {
 /// B1 `recipe.library`: which card fields mean something for an agent (`flags` below sets nothing for the others)
 pub fn supports(agent: &str) -> Value {
     json!({
-        "model": matches!(agent, "claude" | "codex" | "omp" | "opencode" | "gemini" | "commandcode"),
-        "effort": matches!(agent, "claude" | "codex" | "omp" | "commandcode"),
+        "model": matches!(agent, "claude" | "codex" | "omp" | "opencode" | "gemini" | "commandcode" | "agy"),
+        "effort": matches!(agent, "claude" | "codex" | "omp" | "commandcode" | "agy"),
         "cost": agent == "omp"
     })
 }
@@ -168,7 +168,7 @@ pub fn flags(agent: &str, model: &str, effort: &str, cost: Option<f64>) -> Vec<S
     let mut v = Vec::new();
     let mut add = |a: String| v.push(a);
     match agent {
-        "claude" | "commandcode" => {
+        "claude" | "commandcode" | "agy" => {
             if !model.is_empty() {
                 add("--model".into());
                 add(model.into());
