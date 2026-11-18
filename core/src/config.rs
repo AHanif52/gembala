@@ -41,6 +41,8 @@ const UI: &[(&str, Kind)] = &[
     // ≈ +125 MB over 1,000. 2,000 keeps a long agent answer on screen; older output is in the daemon log (FR-62)
     ("scrollback_lines", Int(0, 100_000, 2_000)),
     ("screen_reader", Bool(false)),
+    // last answer of the agent shown under its tab in the sidebar; off = status line only
+    ("sidebar_preview", Bool(true)),
     // FR-59: editor input at the zsh prompt; the shell prompt is hidden (applies to new panes)
     ("input_editor", Bool(true)),
     // FR-58: command block timeline in shell panes (line, dot, block head, Rerun/Edit/Copy buttons);

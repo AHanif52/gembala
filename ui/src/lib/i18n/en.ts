@@ -572,6 +572,8 @@ export default {
   "set.look.cursor.block": "Block",
   "set.look.cursor.underline": "Underline",
   "set.look.blink": "Blinking cursor",
+  "set.look.preview": "Last answer in the sidebar",
+  "set.look.previewSub": "Shows the start of the agent's last answer under its tab",
   "set.look.meta": "Option as Meta",
   "set.look.metaSub": "The one that isn't Meta types symbols (e.g. Option+Shift+2 = €)",
   "set.look.meta.left": "Left only",

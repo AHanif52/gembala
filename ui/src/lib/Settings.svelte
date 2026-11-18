@@ -812,6 +812,10 @@
             <span>{t("set.look.blink")}</span>
             <input type="checkbox" role="switch" aria-label={t("set.look.blink")} checked={ui.cursor_blink} onchange={(e) => set("cursor_blink", e.currentTarget.checked)} />
           </div>
+          <div class="row">
+            <span>{t("set.look.preview")}<small>{t("set.look.previewSub")}</small></span>
+            <input type="checkbox" role="switch" aria-label={t("set.look.preview")} checked={ui.sidebar_preview} onchange={(e) => set("sidebar_preview", e.currentTarget.checked)} />
+          </div>
           {#if ui.mode !== "simple"}
           <div class="row">
             <span>{t("set.look.meta")}<small>{t("set.look.metaSub")}</small></span>

@@ -242,13 +242,15 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   const gridBox = $derived(gridRects(gridTabs.length, gridOwner?.gridRows, gridOwner?.gridRatio));
   const gridDivs = $derived(gridLines(gridTabs.length, gridOwner?.gridRows, gridOwner?.gridRatio));
   /// popover "Jejerin": `ids` = helpers ticked so far; the owner is always in
-  let jejerin = $state<{ owner: string; ids: string[] } | null>(null);
+  let jejerin = $state<{ owner: string; ids: string[]; pos?: { left: number; top: number } } | null>(null);
   const setGrid = (o: Tab, ids: string[] | undefined) => { o.grid = ids; if (!ids) { o.gridRows = undefined; o.gridRatio = undefined; } };
   const helpersOf = (o: Tab) => ws?.tabs.filter((t) => t.parent === o.id) ?? [];
-  const openJejerin = () => {
+  const openJejerin = (e?: MouseEvent) => {
     const o = owner ?? tab;
     if (!o || o.parent || !helpersOf(o).length) return;
-    jejerin = { owner: o.id, ids: (o.grid ?? []).filter((id) => id !== o.id) };
+    const r = (e?.currentTarget as HTMLElement | undefined)?.getBoundingClientRect();
+    const pos = r && { left: Math.max(8, Math.min(r.left + r.width / 2 - 140, innerWidth - 288)), top: r.bottom + 6 };
+    jejerin = { owner: o.id, ids: (o.grid ?? []).filter((id) => id !== o.id), pos };
   };
   const toggleJejerin = () => (jejerin ? (jejerin = null) : openJejerin());
   const applyJejerin = () => {
@@ -3388,7 +3390,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
             {#if !sp && !row.child && (ag || stText(st) || rest)}
               <span class="sub" title={home(meta[t.focus]?.cwd)}>{#if panes(t.tree).length > 1}<!-- satu titik per pane: pane selesai tidak menutupi pane lain yang masih bekerja -->{#each panes(t.tree) as p (p)}<span class="dot pdot {stat(p) || 'idle'}" title="{meta[p]?.name} {helperStatus(p)}"></span>{/each}{/if}{#if row.child || ag || stText(st)}<span class="st {st}">{helperStatus(t.focus)}</span>{/if}{st === "blocked" || st === "approve" ? ` · ${tt("helper.open")}` : ""}{#if rest}{row.child || ag || stText(st) || panes(t.tree).length > 1 ? " · " : ""}{rest}{/if}</span>
             {/if}
-            {#if !sp && !row.child && previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
+            {#if ui.sidebar_preview && !sp && !row.child && previews[t.focus] && st !== "blocked"}<span class="sub">{previews[t.focus]}</span>{/if}
           {/if}
         </button>
         {#if sp}
@@ -3399,7 +3401,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
               <span class="tt"><span class="dot {ps || 'idle'}" aria-hidden="true"></span>{#if pa}<span class="aico {pa}" title={pa}>{GLYPH[pa]}</span>{/if}{meta[p]?.name}{pa ? ` · ${agentLabel(p)}` : meta[p]?.busy ? ` · ${meta[p].busy}` : ""}</span>
               <span class="sub"><span class="st {ps}">{!pa && meta[p]?.busy && ps !== "blocked" ? tt("helper.workingFor", { time: ago(now - (meta[p].since ?? now)) }) : helperStatus(p)}</span>{ps === "blocked" || ps === "approve" ? ` · ${tt("helper.open")}` : ""}{acctOf(p) ? ` · ${acctOf(p)}` : ""}</span>
               {#if meta[p]?.subagents}<span class="sub">└ {ttn("split.subagents", meta[p].subagents ?? 0)}</span>{/if}
-              {#if previews[p] && ps !== "blocked"}<span class="sub">{previews[p]}</span>{/if}
+              {#if ui.sidebar_preview && previews[p] && ps !== "blocked"}<span class="sub">{previews[p]}</span>{/if}
             </button>
           {/each}
           {#if sp.folded.length}<button class="helper-fold" aria-expanded={!!t.shellsOpen} onclick={() => (t.shellsOpen = !t.shellsOpen)}>{t.shellsOpen ? "▾" : "▸"} {tt("split.shells", { n: sp.folded.length })}</button>{/if}
@@ -3519,7 +3521,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     {@const kids = helpersOf(jo)}
     {@const n = jejerin.ids.length + 1}
     <div class="jback" onpointerdown={() => (jejerin = null)} role="presentation"></div>
-    <div class="jejerin" style:left={sidebar ? `${sideW + 56}px` : "56px"} style:top={sidebar ? "36px" : "64px"} role="dialog" aria-label={tt("helper.jejerin")}>
+    <div class="jejerin" style:left={jejerin.pos ? `${jejerin.pos.left}px` : sidebar ? `${sideW + 56}px` : "56px"} style:top={jejerin.pos ? `${jejerin.pos.top}px` : sidebar ? "36px" : "64px"} role="dialog" aria-label={tt("helper.jejerin")}>
       <b>{tt("helper.jejerinTitle")}</b>
       {#each kids as k (k.id)}
         {@const on = jejerin.ids.includes(k.id)}
@@ -6085,6 +6087,23 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   }
   @container (max-width: 620px) {
     .bar .chip.box.c-branch {
+      display: none;
+    }
+  }
+  /* the labelled doors (FR-99 P4) need ~710px with every label: shed the longest label first, then the next */
+  @container (max-width: 780px) {
+    .bar .chip.box.c-send .cl {
+      display: none;
+    }
+  }
+  @container (max-width: 700px) {
+    .bar .chip.box.c-msg .cl,
+    .bar .chip.acc.c-acc {
+      display: none;
+    }
+  }
+  @container (max-width: 620px) {
+    .bar .chip.box.c-task .cl {
       display: none;
     }
   }

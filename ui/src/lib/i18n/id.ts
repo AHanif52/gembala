@@ -563,6 +563,8 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "set.look.cursor.block": "Blok",
   "set.look.cursor.underline": "Garis bawah",
   "set.look.blink": "Kursor berkedip",
+  "set.look.preview": "Jawaban terakhir di sidebar",
+  "set.look.previewSub": "Tampilkan awal jawaban terakhir agent di bawah tab-nya",
   "set.look.meta": "Option sebagai Meta",
   "set.look.metaSub": "Yang bukan Meta mengetik simbol (mis. Option+Shift+2 = €)",
   "set.look.meta.left": "Kiri saja",

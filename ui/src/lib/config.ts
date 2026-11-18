@@ -12,6 +12,7 @@ export type Ui = {
   option_as_meta: "none" | "left" | "right" | "both";
   scrollback_lines: number;
   screen_reader: boolean;
+  sidebar_preview: boolean; // last agent answer under the tab in the sidebar
   input_editor: boolean;
   command_timeline: boolean; // FR-58: command block timeline in shell panes
   codex_status: boolean; // Codex footer drawn like Claude's status; off = the user's own Codex footer
@@ -99,6 +100,7 @@ export const UI_DEFAULT: Ui = {
   option_as_meta: "left",
   scrollback_lines: 2000,
   screen_reader: false,
+  sidebar_preview: true,
   input_editor: true,
   command_timeline: true,
   codex_status: true,
