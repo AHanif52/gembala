@@ -5023,6 +5023,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
     z-index: 30;
     display: grid;
     gap: 6px;
+    /* openJejerin keeps it 288px from the right edge: 280 wide in all, padding and border included */
+    box-sizing: border-box;
     width: 280px;
     padding: 12px;
     border: 1px solid var(--line);
