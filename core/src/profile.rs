@@ -291,6 +291,8 @@ const PROMPTS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "do you wan
     // needs to …" line: an answer quoting it would read as a prompt.
     "tell command code what to do differently", "run cmd --yolo to bypass",
     "run this command?",
+    // agy's file card (18 Nov 2026): reading a file outside the working folder
+    "allow access to this file?",
     // OpenCode's "△ Always allow" confirmation stage (Right+Enter on Allow always): the agent still waits for Enter
     "△ always allow"];
 

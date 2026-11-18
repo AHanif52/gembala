@@ -438,11 +438,20 @@ fn blocked_keys(agent: &str, screen: &str, reason: &str, id_l: bool) -> Vec<(&'s
         commandcode_keys(screen, id_l)
     } else if agent == "claude" || agent == "codex" {
         claude_keys(agent, screen, id_l)
+    } else if agent == "agy" && agy_file_dialog(screen) {
+        // same digits as the command dialog but "2" denies here, so the keys come from the dialog on screen
+        vec![("1", button_label("agy", "1", id_l)), ("2", (if id_l { "2. Tolak" } else { "2. Deny" }).to_string())]
     } else if known_dialog(agent, screen) {
         keys(agent).iter().map(|k| (*k, button_label(agent, k, id_l))).collect()
     } else {
         Vec::new()
     }
+}
+
+/// agy "File access" card (18 Nov 2026): reading a file outside the working folder
+fn agy_file_dialog(screen: &str) -> bool {
+    let rows: Vec<&str> = screen.lines().map(unbox).collect();
+    ["File access", "Allow access to this file?", "1. Yes, allow access", "2. No, deny access"].iter().all(|w| rows.iter().any(|r| r.trim_start_matches(['>', ' ']).starts_with(w)))
 }
 
 /// static-key agents still need the recorded prompt on screen; an unrelated blocked screen gets no guessed buttons.
@@ -452,10 +461,11 @@ fn known_dialog(agent: &str, screen: &str) -> bool {
         "omp" => rows.iter().any(|r| r.contains("Allow tool:"))
             && rows.iter().any(|r| r.trim_start_matches(['❯', '›']).trim() == "Approve")
             && rows.iter().any(|r| r.trim_start_matches(['❯', '›']).trim() == "Deny"),
-        "agy" => rows.iter().any(|r| r.contains("Run this command?"))
-            && rows.iter().any(|r| r.contains("Yes, run command"))
-            && rows.iter().any(|r| r.contains("Persist to settings.json"))
-            && rows.iter().any(|r| r.contains("No, cancel")),
+        "agy" => agy_file_dialog(screen)
+            || (rows.iter().any(|r| r.contains("Run this command?"))
+                && rows.iter().any(|r| r.contains("Yes, run command"))
+                && rows.iter().any(|r| r.contains("Persist to settings.json"))
+                && rows.iter().any(|r| r.contains("No, cancel"))),
         "opencode" => rows.contains(&"△ Permission required")
             && rows.iter().any(|r| r.contains("Allow once") && r.contains("Allow always") && r.contains("Reject")),
         _ => false,
@@ -581,6 +591,19 @@ fn ask_of(agent: &str, screen: &str) -> String {
             let title = rows[i].trim_start_matches("△ ").to_string();
             let next = rows[i + 1..].iter().copied().find(|r| !r.starts_with('△'));
             join_ask(Some(title), next.map(str::to_string))
+        }),
+        // agy: `Requesting permission for: <command>` above the command dialog; the file card's rows between its
+        // `File access` heading and `Allow access…` (a long path wraps: rejoined, a space only where the wrap ate one)
+        "agy" => rows.iter().rev().find_map(|r| r.strip_prefix("Requesting permission for: ").map(str::to_string)).or_else(|| {
+            let from = rows.iter().rposition(|r| *r == "File access")? + 1;
+            let body = rows[from..].iter().take_while(|r| !r.starts_with("Allow access")).fold(String::new(), |mut a, r| {
+                let glue = !a.is_empty() && !a.ends_with(['/', '-', '_', '.']) && !r.starts_with(['/', '-', '_', '.']);
+                if glue {
+                    a.push(' ');
+                }
+                a + r
+            });
+            (!body.is_empty()).then_some(body)
         }),
         _ => None,
     };
@@ -863,7 +886,7 @@ pub fn send_answer(st: &State, id: u64, p: &Pane, key: &str, seq: u64) -> bool {
         k => {
             let agent = p.agent_name().unwrap_or_default();
             let screen = terminal.view.lock().unwrap().0.text();
-            keys(&agent).contains(&k) && known_dialog(&agent, &screen) && type_into_blocked(st, id, p, seq, key_bytes(k)).is_ok()
+            blocked_keys(&agent, &screen, "", false).iter().any(|(b, _)| *b == k) && type_into_blocked(st, id, p, seq, key_bytes(k)).is_ok()
         }
     }
 }
@@ -2727,7 +2750,7 @@ mod tests {
             assert_eq!(blocked, !name.contains(".after"), "{name}");
             files += 1;
         }
-        assert!(files >= 16, "dialog fixtures missing: {files}");
+        assert!(files >= 17, "dialog fixtures missing: {files}");
     }
 
     /// 11 Nov: a Claude multiSelect question goes out as a poll (Vote = Submit); its card keeps only Deny and shows the question
@@ -3033,6 +3056,13 @@ mod tests {
         let options = dialog_view("agy", &agy, "", false)["options"].as_array().unwrap().clone();
         assert_eq!(options.iter().map(|o| o["key"].as_str().unwrap()).collect::<Vec<_>>(), ["1", "2", "4"]);
         assert!(!options.iter().any(|o| o["label"].as_str().unwrap().contains("Persist")));
+        assert_eq!(dialog_view("agy", &agy, "", false)["ask"], "touch ./hello.txt");
+        // file access card (18 Nov 2026): its own keys ("2" denies here), the wrapped path rejoined
+        let file = dlg("agy-file-access.dialog");
+        let v = dialog_view("agy", &file, "", true);
+        assert_eq!(v["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap()).collect::<Vec<_>>(), ["1. Izinkan", "2. Tolak"]);
+        assert_eq!(v["ask"], "Read: /Users/aufahanif85gmail.com/Programming/E2E Phase 1/e2e-workflow-frontend/src/components/form/field-input-date.tsx");
+        assert!(blocked_keys("agy", &file, "", true).iter().all(|(k, _)| *k != "4"));
     }
 
     /// Command Code 2.1.311 (recorded 12 Nov 2026): the same numbered-dialog treatment as Claude. "No, tell Command Code

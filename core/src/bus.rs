@@ -371,6 +371,10 @@ impl Engine {
             "rejected" | "cancelled" => drop(self.closed.insert(m.id.clone())),
             _ => {}
         }
+        // a stored reply is never typed into its target (only `wait --reply` reads it): no card, no alert, nothing to push
+        if kind == "stored" && m.is_reply {
+            self.undelivered_replies.remove(&m.id);
+        }
         let ev = json!({"kind": kind, "reason": reason, "msg": m.summary(), "at": m.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)});
         self.history.push_back(ev.clone());
         while self.history.len() > 200 {
@@ -742,6 +746,17 @@ mod tests {
         assert_eq!(old.len(), 1);
         assert_eq!(old[0].id, "old");
         assert!(e.overdue_replies().is_empty());
+    }
+
+    /// 18 Nov: agy's reply to a hand-typed Claude in a shell pane was stored (target_shell) and its "reply hasn't reached"
+    /// card stayed forever with no button
+    #[test]
+    fn balasan_tersimpan_tidak_jadi_kartu() {
+        let mut e = Engine::default();
+        let old = Msg { at: SystemTime::now() - Duration::from_secs(121), is_reply: true, ..msg("r", 1) };
+        e.undelivered_replies.insert("r".into(), old.clone());
+        e.log("stored", &old, Some("target_shell"));
+        assert!(e.undelivered_replies.is_empty() && e.overdue_replies().is_empty());
     }
 
     #[test]
