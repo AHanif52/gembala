@@ -1036,16 +1036,9 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   // picked = names already completed from this `@@` list (pick several agents at once)
   let mention = $state<{ pane: number; q: string; sel: number; editor?: boolean; inline?: boolean; picked?: string[] } | null>(null);
   let lempar = $state<{ pane: number; to: number; name: string; body: string; error: string } | null>(null);
-  /// FR-57: in an agent prompt, installed agents with no pane in this workspace yet are listed too ("(buka baru)"): the
-  /// agent's `gembala send <profile>` then asks for the "Buka dan kirim" card (FR-75). Negative pane = not a real pane.
-  const freshTargets = $derived(
-    (cfg?.values.profiles ?? [])
-      .filter((p) => p.agent !== "shell" && installed.includes(p.agent) && !rows.some((r) => r.agent === p.agent))
-      .map((p, i) => ({ pane: -(i + 1), name: p.id, agent: p.agent, status: "", fresh: true }) as (typeof rows)[number] & { fresh?: boolean }),
-  );
   const mentionItems = $derived(
     mention
-      ? [...targets, ...(mention.inline ? freshTargets : [])].filter(
+      ? targets.filter(
           (r) => !mention!.picked?.includes(r.name) && [r.name, r.agent, meta[r.pane]?.busy ?? ""].some((s) => s.toLowerCase().startsWith(mention!.q.toLowerCase())),
         )
       : [],
@@ -3824,8 +3817,8 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   <button class="opt" class:on={i === mention.sel} role="option" aria-selected={i === mention.sel}
                     onpointerdown={(e) => e.preventDefault()} onclick={() => chooseMention(i)}>
                     <span class="dot {r.status}"></span>
-                    <span>{"fresh" in r ? r.name : mentionLabel(r.name, labels[r.pane], agentName(meta[r.pane]?.profile))}</span>
-                    <span class="keys">{"fresh" in r ? `${r.agent} · ${tt("men.fresh")}` : `${r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · ${stText(r.status) || r.status || "?"}`}</span>
+                    <span>{mentionLabel(r.name, labels[r.pane], agentName(meta[r.pane]?.profile))}</span>
+                    <span class="keys">{`${r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · ${stText(r.status) || r.status || "?"}`}</span>
                   </button>
                 {/each}
                 {#if mentionItems.length}<span class="keys"

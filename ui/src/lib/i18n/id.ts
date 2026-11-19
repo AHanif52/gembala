@@ -1148,7 +1148,6 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "open.modelUnsupported": "{agent} belum mendukung pilihan model.",
   "open.where": "Folder {cwd} · pane baru muncul di tab ini, paling banyak 4 agent pembantu per agent",
   "open.worktree": "Di worktree baru dari repo peminta",
-  "men.fresh": "(buka baru)",
   "open.go": "Buka dan kirim",
   "close.reqTitle": "{from} mau nutup {name}",
   "close.reqAsk": "Tutup pane-nya? Agent di dalamnya berhenti; kartu sesinya tetap tersimpan seperti pane yang lu tutup sendiri.",
