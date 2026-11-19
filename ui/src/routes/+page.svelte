@@ -36,7 +36,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
   } from "$lib/layout";
   import { safeResume, suggestion } from "$lib/resume";
   import { newer, noteLines, upgradeCmd, type Upd } from "$lib/update";
-  import { cleanTitle } from "$lib/label";
+  import { cleanTitle, mentionLabel } from "$lib/label";
   import { KINDS, actKey, blockedKind, clear, enabled, newState, plan, settle, soundOn, where as whereOf, wordKey, type Event as NoticeEvent, type NoticeKind } from "$lib/notice";
   import { frontCard, needPanes, needRows, type GateNeed, type HeldNeed, type MsgNeed, type NeedRow, type OpenNeed, type PaneNeed, type ReplyNeed, type StuckNeed } from "$lib/attention";
   import type { UsageRow } from "$lib/usage";
@@ -3824,7 +3824,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
                   <button class="opt" class:on={i === mention.sel} role="option" aria-selected={i === mention.sel}
                     onpointerdown={(e) => e.preventDefault()} onclick={() => chooseMention(i)}>
                     <span class="dot {r.status}"></span>
-                    <span>{simple ? whoOf(r.name) : r.name}</span>
+                    <span>{"fresh" in r ? r.name : mentionLabel(r.name, labels[r.pane], agentName(meta[r.pane]?.profile))}</span>
                     <span class="keys">{"fresh" in r ? `${r.agent} · ${tt("men.fresh")}` : `${r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · ${stText(r.status) || r.status || "?"}`}</span>
                   </button>
                 {/each}
@@ -4161,7 +4161,7 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         {#each targets as r (r.pane)}
           <button class="opt" class:on={compose.to === r.pane} role="option" aria-selected={compose.to === r.pane} onclick={() => compose && (compose.to = r.pane)}>
             <span class="dot {r.status}"></span>
-            <span>{simple ? whoOf(r.name) : r.name}</span>
+            <span>{mentionLabel(r.name, labels[r.pane], agentName(meta[r.pane]?.profile))}</span>
             <span class="keys">{simple ? "" : `${r.agent === "shell" ? (meta[r.pane]?.busy ?? "shell") : r.agent} · `}{stText(r.status) || r.status || "?"}</span>
           </button>
         {:else}
