@@ -213,7 +213,10 @@ pub const SUMMARY_MARK: &str = "¶ ";
 pub fn block_text_with(cwd: &str, secs: u64, code: &str, cmd: &str, resume: Option<&str>, files: u64, summary: &str) -> String {
     let exit = if code == "0" { String::new() } else { format!(" · keluar {code}") };
     // agent icon colored like in the sidebar (FR-52); other commands have no icon
-    let first = cmd.split_whitespace().next().unwrap_or_default();
+    let raw_first = cmd.split_whitespace().next().unwrap_or_default();
+    let file = std::path::Path::new(raw_first).file_name().and_then(|f| f.to_str()).unwrap_or(raw_first);
+    let bare = file.strip_suffix(".exe").unwrap_or(file);
+    let first = if bare == "antigravity" { "agy" } else { bare };
     let icon = [("claude", "\x1b[38;2;217;119;87m✳"), ("omp", "\x1b[38;2;168;85;247mπ"), ("codex", "\x1b[38;2;16;163;127m◎"), ("opencode", "\x1b[38;2;96;165;250m◇"), ("commandcode", "\x1b[38;2;234;179;8m⌘"), ("gemini", "\x1b[38;2;66;133;244m✦"), ("agy", "\x1b[38;2;167;139;250m▲"), ("cmd", "\x1b[38;2;234;179;8m⌘"), ("cmdc", "\x1b[38;2;234;179;8m⌘"), ("command-code", "\x1b[38;2;234;179;8m⌘")]
         .iter()
         .find(|(a, _)| first == *a || first.starts_with(&format!("{a}-")))
@@ -340,6 +343,7 @@ mod tests {
         assert!(safe_resume("agy --conversation 35dca435-228f-44db-ac71-9b16c6ef1eeb") && safe_resume("agy --continue"));
         assert!(!safe_resume("agy --conversation x;id") && !safe_resume("agy --conversation --yolo"));
         assert!(block_text("~", 1, "0", "agy", Some("agy --continue")).contains("▲"));
+        assert!(block_text("~", 1, "0", "/opt/homebrew/Caskroom/antigravity-cli/1.5.9/antigravity", Some("agy --continue")).contains("▲"));
         assert!(block_text("~", 1, "0", "command-code", Some("commandcode --continue")).contains("⌘"));
         assert!(!safe_resume("gemini --resume --yolo"));
         assert!(safe_resume("commandcode --continue"));

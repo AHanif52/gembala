@@ -355,21 +355,26 @@ Do not look for processes via ps.";
 /// The hint is matched by its opening sentence, not the whole text: the hook file can come from another daemon build.
 /// `--session-id` is added by Gembala's zsh function too; the session card already shows `claude --resume <id>`.
 pub fn shown_args(args: &[String]) -> String {
-    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.ends_with("/commandcode-gembala.mjs") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"") || a.starts_with("mcp_servers.") || a.starts_with("tui.status_line=") || a == "--strict-mcp-config";
+    let ours = |a: &str| a.contains(PETUNJUK_START) || a.contains("omp-gembala.ts") || a.ends_with("/commandcode-gembala.mjs") || a.contains(" hook claude ") || a.contains("\"hook\",\"codex\"") || a.starts_with("mcp_servers.") || a.starts_with("tui.status_line=") || a == "--strict-mcp-config" || a.contains("statusline agy");
     let mut out: Vec<&str> = vec![];
     let mut skip = false;
-    for a in args {
+    for (i, a) in args.iter().enumerate() {
         if std::mem::take(&mut skip) {
             continue;
         }
         // FR-78: add-on flags come from the zsh function too
-        if ["--session-id", "--plugin-dir", "--mcp-config"].contains(&a.as_str()) {
+        if ["--session-id", "--plugin-dir", "--mcp-config", "--add-dir"].contains(&a.as_str()) {
             skip = true;
         } else if ours(a) {
             // the flag that owns this value (`--settings`, `-c`, `--append-system-prompt`) is dropped too
             if !a.starts_with('-') && out.last().is_some_and(|f| f.starts_with('-') && !f.contains('=')) {
                 out.pop();
             }
+        } else if i == 0 {
+            let file = std::path::Path::new(a.as_str()).file_name().and_then(|f| f.to_str()).unwrap_or(a.as_str());
+            let bare = file.strip_suffix(".exe").unwrap_or(file);
+            let name = if bare == "antigravity" { "agy" } else { bare };
+            out.push(name);
         } else {
             out.push(a);
         }
@@ -1206,6 +1211,8 @@ mod tests {
         assert_eq!(shown_args(&addons.map(String::from)), "claude -c");
         let codex = ["codex", "-c", "mcp_servers.probe.command=\"node\"", "resume"];
         assert_eq!(shown_args(&codex.map(String::from)), "codex resume");
+        let agy = ["/opt/homebrew/Caskroom/antigravity-cli/1.5.9,4515810895593472/antigravity", "--conversation", "9621b78e-3807-4ec0-9050-1170e2dfa4b6"];
+        assert_eq!(shown_args(&agy.map(String::from)), "agy --conversation 9621b78e-3807-4ec0-9050-1170e2dfa4b6");
     }
 
     #[test]
