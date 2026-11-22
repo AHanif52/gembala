@@ -3154,6 +3154,13 @@ import { inline, sections, upgradeNotes, type ReleaseNotes } from "$lib/whatsnew
         syncHold(payload.params.pane, meta[payload.params.pane]?.limit ?? null, payload.params.login?.step ?? null);
         if (payload.params.login) notice(payload.params.pane, "failed");
       }
+      // the daemon skipped events while this window's queue was full: reload what the events carry
+      if (payload.event === "resync") {
+        refreshMsgs().then(sweep);
+        call("telegram.status").then((r) => (tg = r ?? { state: "off" })).catch(() => {});
+        call("usage.list").then((r) => (usageRows = Array.isArray(r?.rows) ? r.rows : [])).catch(() => {});
+        call("update.status").then((r) => (upd = r)).catch(() => {});
+      }
       if (payload.event === "usage.changed") usageRows = Array.isArray(payload.params?.rows) ? payload.params.rows : [];
       if (payload.event === "models.changed") void refreshOpenModels(JSON.stringify([payload.params.agent, payload.params.account]));
       if (payload.event === "update.changed") upd = payload.params;

@@ -268,8 +268,9 @@ struct State {
     /// UI channel clients currently connected (FR-20: the daemon stops at 0 when every pane is idle).
     ui_clients: AtomicUsize,
     /// Event queues of all UI clients, for events that don't belong to one pane (`config.changed`).
-    /// Removed when a client disconnects (UiClient), so its writer thread ends too.
-    ui_txs: Mutex<Vec<(u64, SyncSender<String>)>>,
+    /// Removed when a client disconnects (UiClient), so its writer thread ends too. The flag = an event was skipped
+    /// because its queue was full; `ui_broadcast` then sends `resync` as soon as there is room.
+    ui_txs: Mutex<Vec<(u64, SyncSender<String>, bool)>>,
     ui_next: AtomicU64,
     /// Config in effect + its errors (FR-42). Broken file = the last valid values stay in use.
     config: Mutex<Value>,
@@ -311,7 +312,7 @@ struct UiClient(Arc<State>, u64);
 impl Drop for UiClient {
     fn drop(&mut self) {
         self.0.ui_clients.fetch_sub(1, Ordering::Relaxed);
-        self.0.ui_txs.lock().unwrap().retain(|(id, _)| *id != self.1);
+        self.0.ui_txs.lock().unwrap().retain(|(id, _, _)| *id != self.1);
     }
 }
 
@@ -450,6 +451,32 @@ fn line(v: Value) -> String {
     s
 }
 
+/// An event for every UI client. A full queue only skips that event for that client (it stays subscribed) and marks it;
+/// once there is room again it gets `resync` first, so the UI reloads what it missed. Only a closed queue drops a client.
+fn ui_broadcast(st: &State, ev: &str) {
+    fan_out(&mut st.ui_txs.lock().unwrap(), ev);
+}
+
+fn fan_out(txs: &mut Vec<(u64, SyncSender<String>, bool)>, ev: &str) {
+    txs.retain_mut(|(_, tx, behind)| {
+        if *behind {
+            match tx.try_send("{\"event\":\"resync\",\"params\":{}}\n".into()) {
+                Ok(()) => *behind = false,
+                Err(TrySendError::Full(_)) => return true,
+                Err(TrySendError::Disconnected(_)) => return false,
+            }
+        }
+        match tx.try_send(ev.into()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                *behind = true;
+                true
+            }
+            Err(TrySendError::Disconnected(_)) => false,
+        }
+    });
+}
+
 fn reply(tx: &SyncSender<String>, id: &Value, r: Res) {
     let v = match r {
         Ok(x) => json!({"id": id, "result": x}),
@@ -532,7 +559,7 @@ fn client(s: UnixStream, st: Arc<State>, chan: Chan) -> io::Result<()> {
             if ready && chan == Chan::Ui {
                 st.ui_clients.fetch_add(1, Ordering::Relaxed);
                 let id = st.ui_next.fetch_add(1, Ordering::Relaxed);
-                st.ui_txs.lock().unwrap().push((id, tx.clone()));
+                st.ui_txs.lock().unwrap().push((id, tx.clone(), false));
                 _ui = Some(UiClient(st.clone(), id));
             }
             reply(&tx, id, r);
@@ -2086,7 +2113,7 @@ fn make_pane(st: &State, p: &Value, kind: PaneKind, agent: String, key: String) 
 
 fn bus_event(st: &State, ev: Value) {
     let ev = line(json!({"event": "msg.event", "params": ev}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    ui_broadcast(st, &ev);
 }
 
 /// FR-92: tasks for the panel: the notes (owner, title, ends) plus where each child stands right now, then the harness runs in progress.
@@ -2852,7 +2879,7 @@ fn limit_event(st: &State, id: u64, limit: Value) {
 
 fn ui_pane_event(st: &State, event: &str, params: Value) {
     let ev = line(json!({"event": event, "params": params}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    ui_broadcast(st, &ev);
 }
 
 /// FR-93: the reset time is the exhausted window of that login's Claude status line numbers; none = unknown
@@ -3712,7 +3739,7 @@ fn status_changed(st: &State, id: u64, pane: &Pane, status: &str) {
     drop(cache);
     let at = history::now().saturating_sub(pane.status_at.lock().unwrap().elapsed().as_secs());
     let ev = line(json!({"event": "pane.status", "params": {"pane": id, "status": status, "status_at": at, "last": *pane.last_preview.lock().unwrap(), "shell": shell, "reason": reason}}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    ui_broadcast(st, &ev);
     let ws = pane.workspace.lock().unwrap().clone();
     let visible = pane.agent_name().is_some() || pane.readable.load(Ordering::Relaxed);
     let name = pane.name.lock().unwrap().clone();
@@ -3774,7 +3801,7 @@ fn reload_config(st: &State) {
     let errors: Vec<Value> = c.errors.iter().map(crate::diag::Diag::json).collect();
     *cur = json!({"values": values, "errors": errors, "path": path.to_string_lossy()});
     let ev = line(json!({"event": "config.changed", "params": *cur}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    ui_broadcast(st, &ev);
 }
 
 /// Watch `mtime` + size every 1 second (TECH section 5), no dependency.
@@ -4197,7 +4224,7 @@ fn pump(st: Arc<State>, id: u64, pane: Arc<Pane>, mut pty: Pty, mut marks: mark:
         let _ = sub.tx.try_send(ev.clone());
     }
     // a tab whose xterm is detached (LIVE_TABS) has no subscriber here: without this its tab keeps a pane that's gone
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    ui_broadcast(&st, &ev);
 }
 
 impl State {
@@ -4315,6 +4342,22 @@ mod tests {
             r
         }).join().unwrap();
         assert_eq!(got, cfg!(debug_assertions).then(|| PathBuf::from("/tmp/gembala-rundir-test")));
+    }
+
+    #[test]
+    fn full_ui_queue_keeps_the_client_and_resyncs_it_later() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1);
+        let mut txs = vec![(1, tx, false)];
+        fan_out(&mut txs, "a\n"); // fills the queue
+        fan_out(&mut txs, "b\n"); // skipped: still subscribed, marked
+        assert!(txs.len() == 1 && txs[0].2);
+        assert_eq!(rx.recv().unwrap(), "a\n");
+        fan_out(&mut txs, "c\n"); // room again: resync goes first, `c` doesn't fit and is covered by it
+        assert!(rx.recv().unwrap().contains("resync"));
+        assert!(txs[0].2); // `c` found the slot taken by the resync, so the client is marked again
+        drop(rx);
+        fan_out(&mut txs, "e\n");
+        assert!(txs.is_empty()); // only a closed queue removes the client
     }
 
     #[test]

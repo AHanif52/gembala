@@ -1354,7 +1354,7 @@ pub fn status(st: &State) -> Value {
 
 fn changed(st: &State) {
     let ev = line(json!({"event": "telegram.changed", "params": status(st)}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    super::ui_broadcast(st, &ev);
 }
 
 fn spawn(st: &Arc<State>, token: String, bot: String, link: Option<Link>) -> Arc<Bot> {
@@ -1415,7 +1415,7 @@ pub fn pair(st: &Arc<State>, token: &str) -> Res {
             let mut s = status(&st);
             s["error"] = json!(err);
             let ev = line(json!({"event": "telegram.changed", "params": s}));
-            st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+            super::ui_broadcast(&st, &ev);
         };
         let me = match api(&token, "getMe", &json!({}), 15) {
             Ok(me) => me,

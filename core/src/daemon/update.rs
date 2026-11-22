@@ -64,7 +64,7 @@ fn check(st: &State) {
         }
     }
     let ev = line(json!({"event": "update.changed", "params": status(st)}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    super::ui_broadcast(st, &ev);
 }
 
 /// The API allows 60 calls an hour per IP without a token (9 Nov: an office IP ran out, 403): the web page

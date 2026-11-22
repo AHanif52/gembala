@@ -190,7 +190,7 @@ fn merge(rows: &mut Vec<Row>, mut row: Row) -> bool {
 /// The UI is told and the numbers are kept for the next run (TECH 26.1: numbers, `read_at`, and plan only).
 fn changed(st: &State) {
     let ev = line(json!({"event": "usage.changed", "params": status(st)}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    super::ui_broadcast(st, &ev);
     let path = st.usage.lock().unwrap().saved.clone();
     if let Some(path) = path
         && let Err(e) = config::write_atomic(&path, saved_json(&rows(st)).to_string().as_bytes())
