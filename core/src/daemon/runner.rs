@@ -499,7 +499,7 @@ fn save(st: &State, l: &Live) {
 
 fn ui_event(st: &State, method: &str, params: Value) {
     let ev = line(json!({"event": method, "params": params}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    super::ui_broadcast(st, &ev);
 }
 
 fn audit(st: &State, l: &Live, code: &str, step: Option<usize>, agent: Option<&str>) {

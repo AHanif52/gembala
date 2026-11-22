@@ -1447,7 +1447,7 @@ pub(super) fn close(st: &State, id: u64, pane: &super::Pane) {
     st.engine.lock().unwrap().closes.retain(|c| c.msg.from != id && c.msg.to != id);
     cc.data.lock().unwrap().subscribers.clear();
     let ev = line(json!({"event":"pane.exit", "params":{"pane":id, "code":null}}));
-    st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+    super::ui_broadcast(st, &ev);
 }
 
 /// Daemon shutdown: stop and reap every live Command Code run. A pane without a PTY doesn't get the kernel's

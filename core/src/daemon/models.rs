@@ -62,7 +62,7 @@ pub fn list(st: &Arc<State>, p: &Value) -> Result<Value, &'static str> {
                 value: json!({"models": models, "source": source, "at": now()}), checked: Some(Instant::now()), pending: false,
             });
             let ev = line(json!({"event": "models.changed", "params": {"agent": key.0, "account": key.1}}));
-            st.ui_txs.lock().unwrap().retain(|(_, tx)| tx.try_send(ev.clone()).is_ok());
+            super::ui_broadcast(&st, &ev);
         });
     }
     let mut out = entry.value.clone();
