@@ -620,13 +620,15 @@ fn why_of(screen: &str) -> String {
 fn question_of(screen: &str) -> String {
     let rows: Vec<&str> = screen.lines().collect();
     let Some(first) = rows.iter().rposition(|r| choice(r) == Some(1) && lead(r) <= 4) else { return String::new() };
-    rows[..first]
+    // a long question wraps over several rows: take the whole block above option 1, up to a blank row or a rule
+    let block: Vec<&str> = rows[..first]
         .iter()
         .rev()
         .map(|r| unbox(r))
-        .find(|r| !r.is_empty() && !rule_row(r, '─') && !rule_row(r, '╌') && !r.to_lowercase().starts_with("esc"))
-        .unwrap_or_default()
-        .to_string()
+        .skip_while(|r| r.is_empty() || rule_row(r, '─') || rule_row(r, '╌') || r.to_lowercase().starts_with("esc"))
+        .take_while(|r| !r.is_empty() && !rule_row(r, '─') && !rule_row(r, '╌'))
+        .collect();
+    block.into_iter().rev().collect::<Vec<_>>().join(" ")
 }
 
 /// FR-80: the permission card: title line, what the dialog asks for, its reason when it names one. The TUI's chrome
@@ -670,6 +672,11 @@ fn lead(row: &str) -> usize {
 /// the numbers don't run 1, 2, 3… (a list in the answer above, a dialog half drawn): nothing is offered or sent then.
 /// Recorded screens: `core/tests/dialogs/` (TECH 22, agent dialogs of 10 Nov 2026).
 fn dialog_opts(screen: &str) -> Option<Vec<String>> {
+    dialog_opts_with(screen, true)
+}
+
+/// `join` false = first row of each option only (an agent's own question: the rows under a label are its description)
+fn dialog_opts_with(screen: &str, join: bool) -> Option<Vec<String>> {
     let rows: Vec<&str> = screen.lines().collect();
     let first = rows.iter().rposition(|r| choice(r) == Some(1) && lead(r) <= 4)?;
     let at = lead(rows[first]);
@@ -686,6 +693,9 @@ fn dialog_opts(screen: &str) -> Option<Vec<String>> {
                 opts.push(r.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '│' | '❯' | '›')).split_once(". ")?.1.trim().to_string());
             }
             (l, _) if l > at && !opts.is_empty() => {
+                if !join {
+                    continue;
+                }
                 let last = opts.last_mut()?;
                 *last = format!("{last} {}", r.trim().trim_end_matches('│').trim());
             }
@@ -745,12 +755,24 @@ fn claude_keys(agent: &str, screen: &str, id_l: bool) -> Vec<(&'static str, Stri
     if multi_opts(screen).is_some() {
         return vec![("esc", button_label(agent, "esc", id_l))];
     }
-    let mut v: Vec<(&'static str, String)> = opts
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i < DIGITS.len())
-        .filter_map(|(i, l)| option_label(i, l, id_l).map(|label| (DIGITS[i], label)))
-        .collect();
+    // AskUserQuestion (it always adds "Type something"): the options are the user's own words, not Allow/Deny, and the
+    // description under each ("…Approve…") must not be read as a grant
+    let ask = opts.iter().any(|o| o.starts_with("Type something"));
+    let mut v: Vec<(&'static str, String)> = if ask {
+        dialog_opts_with(screen, false)
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .filter(|(i, l)| *i < DIGITS.len() && !l.starts_with("Type something") && !l.starts_with("Chat about this"))
+            .map(|(i, l)| (DIGITS[i], format!("{}. {}", i + 1, short(&l.split_whitespace().collect::<Vec<_>>().join(" "), 60))))
+            .collect()
+    } else {
+        opts.iter()
+            .enumerate()
+            .filter(|(i, _)| *i < DIGITS.len())
+            .filter_map(|(i, l)| option_label(i, l, id_l).map(|label| (DIGITS[i], label)))
+            .collect()
+    };
     v.push(("esc", button_label(agent, "esc", id_l)));
     v
 }
