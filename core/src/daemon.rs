@@ -1068,7 +1068,8 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
                 "stuck": st.panes.lock().unwrap().iter().filter_map(|(id, p)| p.stuck.lock().unwrap().as_ref().map(|(_, m)| { let mut v = m.summary(); v["pane"] = json!(id); v })).collect::<Vec<_>>(),
                 "reply_pending": eng.undelivered_replies.values().filter(|m| m.at.elapsed().is_ok_and(|age| age > Duration::from_secs(120))).map(|m| {
                     let mut v = m.summary();
-                    v["queued"] = json!(eng.queues.get(&m.to).is_some_and(|q| q.iter().any(|q| q.msg.id == m.id)));
+                    // "Send now" works on a queued reply and on one stored behind a background shell (an agent pane)
+                    v["queued"] = json!(eng.queues.get(&m.to).is_some_and(|q| q.iter().any(|q| q.msg.id == m.id)) || st.panes.lock().unwrap().get(&m.to).is_some_and(|p| p.agent_name().is_some()));
                     v
                 }).collect::<Vec<_>>(),
                 // FR-100: drafts an agent made for the user to review; title = first line
@@ -1117,6 +1118,8 @@ fn ui_method(st: &Arc<State>, peer: i32, m: &str, p: &Value) -> Res {
             let q = {
                 let mut eng = st.engine.lock().unwrap();
                 eng.queues.values_mut().find_map(|q| q.iter().position(|x| x.msg.id == id && x.msg.is_reply).and_then(|i| q.remove(i)))
+                    // stored, not queued (target had a background shell): the user's button is what sends it
+                    .or_else(|| eng.undelivered_replies.get(id).map(|m| bus::Queued { msg: m.clone(), since: std::time::Instant::now(), approved: true }))
             };
             Ok(send_now(st, q.ok_or("no_such_msg")?))
         }
@@ -2568,9 +2571,14 @@ fn model_effort(p: &Value) -> Result<(&str, &str), &'static str> {
 }
 
 /// Decision facts are re-read every time (SEC-28). `counted` = rate already counted on receipt.
+/// a reply waits while the target Claude has a background shell running; only the user's "Send now" goes past it
+fn shell_hold(m: &bus::Msg, to: &Pane) -> Option<&'static str> {
+    (m.is_reply && to.claude.lock().unwrap().shell).then_some("target_shell")
+}
+
 fn facts_for<'a>(st: &State, m: &bus::Msg, to: &'a Pane, from_ws: &str, want_queue: bool, approved: bool, counted: bool) -> Result<msg::Facts<'a>, &'static str> {
     let terminal = to.messaging()?;
-    if m.is_reply && (to.agent_name().is_none() || to.claude.lock().unwrap().shell) { return Err("target_shell"); }
+    if m.is_reply && to.agent_name().is_none() { return Err("target_shell"); }
     // SEC-5 exceptions to "confirm" (BRD 11 Nov 2026): the harness to a pane it drives (the recipe was approved, SEC-27),
     // and an owner to the helper it opened through an approved card (FR-75). Rate, hop, deny and pause still apply.
     // Read before the engine lock: the registry is never taken while the engine is held.
@@ -2725,6 +2733,7 @@ fn try_send(st: &State, m: bus::Msg, want_queue: bool, approved: bool) -> Value 
         return reject(st, &m, "target_gone");
     };
     if to.messaging().is_err() { return reject(st, &m, "unsupported_kind"); }
+    if let Some(reason) = shell_hold(&m, &to) { return reject(st, &m, reason); }
     let facts = match facts_for(st, &m, &to, &from_ws, want_queue, approved, approved) {
         Ok(facts) => facts,
         Err(reason) => return reject(st, &m, reason),
@@ -3001,7 +3010,7 @@ fn deliver_loop(st: Arc<State>) {
             }
             let from_ws = st.workspace_of(q.msg.from);
             // queue len 0: this message already holds its place
-            let mut f = match facts_for(&st, &q.msg, &to, &from_ws, true, q.approved, true) {
+            let mut f = match shell_hold(&q.msg, &to).map_or_else(|| facts_for(&st, &q.msg, &to, &from_ws, true, q.approved, true), Err) {
                 Ok(facts) => facts,
                 Err(reason) => {
                     if q.msg.is_reply { record(&st, "stored", &q.msg, Some(reason)); } else { reject(&st, &q.msg, reason); }

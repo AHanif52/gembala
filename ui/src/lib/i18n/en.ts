@@ -433,6 +433,7 @@ export default {
   "msg.kind.reply": "reply",
   "msg.kind.expired": "expired",
   "msg.reason.target_busy": "target is working",
+  "msg.reason.target_shell": "the agent isn't taking messages (plain shell)",
   "msg.reason.target_blocked": "target needs permission",
   "msg.reason.target_unknown": "target status unknown",
   "msg.reason.acl_denied": "access rule",

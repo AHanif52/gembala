@@ -427,6 +427,7 @@ const id: Partial<Record<keyof typeof en, string>> = {
   "msg.kind.reply": "balasan",
   "msg.kind.expired": "kedaluwarsa",
   "msg.reason.target_busy": "target lagi kerja",
+  "msg.reason.target_shell": "agent-nya nggak nerima pesan (shell polos)",
   "msg.reason.target_blocked": "target butuh izin",
   "msg.reason.target_unknown": "status target tidak diketahui",
   "msg.reason.acl_denied": "aturan akses",
